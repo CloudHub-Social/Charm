@@ -11,6 +11,8 @@ const mockToggleReaction = vi.fn();
 const mockRedactEvent = vi.fn();
 const mockResendMessage = vi.fn();
 const mockDiscardFailedMessage = vi.fn();
+const mockPinEvent = vi.fn();
+const mockUnpinEvent = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   addBookmark: (...args: unknown[]) => mockAddBookmark(...args),
@@ -20,6 +22,8 @@ vi.mock("@/lib/matrix", () => ({
   redactEvent: (...args: unknown[]) => mockRedactEvent(...args),
   resendMessage: (...args: unknown[]) => mockResendMessage(...args),
   toggleReaction: (...args: unknown[]) => mockToggleReaction(...args),
+  pinEvent: (...args: unknown[]) => mockPinEvent(...args),
+  unpinEvent: (...args: unknown[]) => mockUnpinEvent(...args),
 }));
 
 // The `bookmarks` flag defaults on here — this file exercises the bookmark
@@ -383,5 +387,79 @@ describe("useMessageActions other handlers", () => {
     });
 
     expect(mockDiscardFailedMessage).not.toHaveBeenCalled();
+  });
+});
+
+// --- Spec day-2/04: message pinning ---
+
+describe("useMessageActions pinning", () => {
+  beforeEach(() => {
+    mockListBookmarks.mockReset().mockResolvedValue([]);
+    mockPinEvent.mockReset();
+    mockUnpinEvent.mockReset();
+  });
+
+  it("pins the given event in the active room", async () => {
+    mockPinEvent.mockResolvedValue(undefined);
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handlePin("$1");
+    });
+
+    expect(mockPinEvent).toHaveBeenCalledWith("!room:localhost", "$1");
+  });
+
+  it("is a no-op when pinning with no active room", async () => {
+    const { result } = setup(null);
+
+    await act(async () => {
+      await result.current.handlePin("$1");
+    });
+
+    expect(mockPinEvent).not.toHaveBeenCalled();
+  });
+
+  it("swallows a pinEvent failure", async () => {
+    mockPinEvent.mockRejectedValue(new Error("network"));
+    const { result } = setup("!room:localhost");
+
+    await expect(
+      act(async () => {
+        await result.current.handlePin("$1");
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("unpins the given event in the active room", async () => {
+    mockUnpinEvent.mockResolvedValue(undefined);
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handleUnpin("$1");
+    });
+
+    expect(mockUnpinEvent).toHaveBeenCalledWith("!room:localhost", "$1");
+  });
+
+  it("is a no-op when unpinning with no active room", async () => {
+    const { result } = setup(null);
+
+    await act(async () => {
+      await result.current.handleUnpin("$1");
+    });
+
+    expect(mockUnpinEvent).not.toHaveBeenCalled();
+  });
+
+  it("swallows an unpinEvent failure", async () => {
+    mockUnpinEvent.mockRejectedValue(new Error("network"));
+    const { result } = setup("!room:localhost");
+
+    await expect(
+      act(async () => {
+        await result.current.handleUnpin("$1");
+      }),
+    ).resolves.toBeUndefined();
   });
 });

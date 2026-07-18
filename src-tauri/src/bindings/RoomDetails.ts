@@ -18,4 +18,15 @@ canonical_alias: string | null,
  * (or vice versa, if the state event lists a stale/foreign alias) —
  * see Spec 32's non-goals about directory vs. canonical-alias state.
  */
-alt_aliases: Array<string>, };
+alt_aliases: Array<string>, 
+/**
+ * The room's current `m.room.pinned_events` `pinned` array, in the
+ * order the state event lists them (oldest-pinned-first, per the
+ * event's own semantics — Matrix has no separate ordering field). Read
+ * straight off already-synced room state via `Room::pinned_event_ids`
+ * (no network round-trip), so the pinned-messages panel and the room
+ * header's pin-count badge stay live via the same `room_details:update`
+ * push every other `RoomDetails` field already relies on — no new
+ * sync-side plumbing needed (Spec day-2/04's stated data flow).
+ */
+pinned_event_ids: Array<string>, };

@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Message pinning
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
 
 **Workstream:** one PR / one agent. Small, sits next to Spec 07's room management
@@ -39,34 +39,87 @@ pinned rules/links/announcements loses that context entirely when viewed in Char
 
 Pin/unpin is a single state-event send (`m.room.pinned_events` with updated
 `pinned` array) — no new sync-side plumbing since room state already flows through
-existing channels. Reading the pinned-messages panel resolves each pinned event ID
-against already-synced timeline/event-fetch machinery (may need a
-`get_event_by_id` IPC call if pinned events aren't already in the locally loaded
-timeline window — confirm whether this already exists for reply-preview
-resolution, likely does, reuse it).
+existing channels. `RoomDetails.pinned_event_ids` is read straight off
+`Room::pinned_event_ids()` (already-synced room state, no network round-trip) and
+rides the existing `room_details:update` push, so the pinned-messages panel and the
+header's pin-count badge update themselves the same way every other `RoomDetails`
+field already does — no dedicated `pinned_events:update` event was needed.
+
+There is no pre-existing `get_event_by_id`-style command: reply-preview resolution
+(`ReplyRef`) resolves through `matrix-sdk-ui`'s in-memory `TimelineDetails` on an
+already-loaded `EventTimelineItem`, which only covers events inside the currently
+loaded timeline window. A pinned message is routinely *outside* that window (pinned
+long ago, or in a room whose timeline hasn't been scrolled back that far), so this
+spec adds a new `get_pinned_messages(room_id)` command that resolves each pinned
+event id via `matrix_sdk::Room::load_or_fetch_event()` (checks the local event
+cache first, falls back to a homeserver `GET /rooms/{room_id}/event/{event_id}`
+on a miss) rather than reusing the reply mechanism. An event id that fails to
+resolve (deleted room, network error, history-visibility denial) still comes
+back as a row — a placeholder with `is_unresolved: true` — rather than being
+dropped from the result: a silently-omitted row would leave a pin the user has
+no way to remove, since the Unpin control lives on the row itself.
+
+The pinned-messages panel's jump-to-message action is routed through the same
+parent-owned `jumpTarget`/`jumpToEventId` mechanism Spec 12's Saved Messages
+bookmark jumps already use, not a `ChatShell`-owned imperative ref (the panel
+renders in the separate `rightPanel` layout slot — a sibling of `ChatShell`, not a
+child of it, so `ChatShell` itself has no ref for a sibling to call into).
+`RoomsScreen` sets `{roomId, eventId}` state on click; `ChatShell` tries
+`messages.findIndex` first for a plain in-loaded-window `scrollToIndex`, falling
+back to `loadTimelineAroundEvent(room_id, eventId)` (server-side `/context`
+pagination) when the target isn't in the currently-loaded window — the common
+case for a pin from well before the loaded history. This also means a pinned-
+message jump gets the same pagination fallback bookmark jumps do, which the
+earlier no-op-outside-the-loaded-window imperative-ref approach never had.
 
 ## API/contract changes
 
-New IPC command `set_pinned_events(room_id, event_ids[])` (or `pin_event`/
-`unpin_event` if finer-grained is cleaner given potential concurrent-edit races on
-the array). No changes to existing timeline commands.
+Three new IPC commands:
+
+- `pin_event(room_id, event_id)` / `unpin_event(room_id, event_id)` — granular,
+  not a single `set_pinned_events(room_id, event_ids[])`. matrix-sdk's own
+  `Room::pin_event`/`Room::unpin_event` already do the fetch-current-list-then-
+  append read-modify-write internally (falling back to a network fetch if the
+  list isn't in local state yet), so a granular command avoids stacking a
+  *second*, frontend-driven read-modify-write race on top of that: two clients
+  concurrently pinning two different messages won't clobber each other's change
+  the way a last-write-wins full-array `set_pinned_events` could, since each
+  granular call re-reads the list at send time rather than the frontend computing
+  the full desired array ahead of time from a possibly-stale snapshot.
+- `get_pinned_messages(room_id)` — resolves `RoomDetails.pinned_event_ids` into
+  full `PinnedMessageSummary`s (sender, preview, timestamp, redacted/undecrypted
+  flags) for the panel.
+
+`RoomDetails` gained `pinned_event_ids: string[]` and `RoomPermissions` gained
+`set_pinned_events: boolean` (the `m.room.pinned_events` power-level check, same
+pattern as every other `set_*` permission field).
 
 ## Testing strategy
 
-- Frontend: pin/unpin action gated correctly by power level, pinned panel lists
-  correct events in correct order, jump-to-message works.
-- Rust: `set_pinned_events` sends correct state-event content; concurrent-pin race
-  (two clients pinning different messages near-simultaneously) doesn't silently
-  drop one — confirm expected last-write-wins semantics match Matrix spec
-  expectations and don't surprise users.
+- Frontend: `MessageActions` gates Pin/Unpin on `canPin` and swaps label based on
+  `isPinned` (`MessageActions.test.tsx`); `ChatShell` wires the header pin badge,
+  drawer toggle, and pin/unpin calls end-to-end against `RoomDetails.can` and
+  `pinned_event_ids` (`ChatShell.test.tsx`); `PinnedMessagesPanel` lists resolved
+  messages in order, jumps on click, and renders empty/error/redacted states
+  (`PinnedMessagesPanel.test.tsx`); `useMessageActions`' `handlePin`/`handleUnpin`
+  are unit-tested directly.
+- Rust: `pin_event`/`unpin_event` assert the exact PUT body sent for
+  `m.room.pinned_events` (append/remove, not a blind overwrite);
+  `get_pinned_messages` resolves multiple pinned events in order and drops one
+  that fails to resolve rather than failing the whole call (`room_admin.rs`'s
+  `#[cfg(test)]` module).
 
 ## Trade-offs
 
-- **Single set-array command vs pin/unpin granular commands**: granular avoids a
-  read-modify-write race client-side (fetch current list, append, send) that the
-  single-array approach requires; lean toward granular if the SDK/homeserver
-  round-trip cost is acceptable, otherwise document the race explicitly if going
-  with array-replace.
+- **Granular `pin_event`/`unpin_event` vs a single `set_pinned_events(room_id,
+  event_ids[])`**: implemented granular. matrix-sdk 0.18's `Room::pin_event`/
+  `Room::unpin_event` already perform the read-modify-write themselves, so a
+  granular IPC surface avoids adding a second, coarser race window on top of an
+  SDK primitive that already avoids one — see "API/contract changes" above for
+  the concurrent-pin scenario this avoids. The corresponding downside (documented
+  rather than hit in practice): if a caller ever needed to *reorder* the pinned
+  list without adding/removing anything, granular commands can't express that —
+  day-1 has no such UI, so this wasn't a real constraint here.
 
 ## What I'd revisit as this grows
 

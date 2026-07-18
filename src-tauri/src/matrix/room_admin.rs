@@ -197,6 +197,11 @@ pub struct RoomPermissions {
     /// covers the whole alias-management surface per the spec's power-level
     /// gating requirement.
     pub set_canonical_alias: bool,
+    /// Gates the "Pin"/"Unpin" entry in `MessageActions` and any other
+    /// pin/unpin affordance (Spec day-2/04) — power level required to send
+    /// `m.room.pinned_events`, same pattern as every other `set_*` field
+    /// above.
+    pub set_pinned_events: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -225,6 +230,15 @@ pub struct RoomDetails {
     /// (or vice versa, if the state event lists a stale/foreign alias) —
     /// see Spec 32's non-goals about directory vs. canonical-alias state.
     pub alt_aliases: Vec<String>,
+    /// The room's current `m.room.pinned_events` `pinned` array, in the
+    /// order the state event lists them (oldest-pinned-first, per the
+    /// event's own semantics — Matrix has no separate ordering field). Read
+    /// straight off already-synced room state via `Room::pinned_event_ids`
+    /// (no network round-trip), so the pinned-messages panel and the room
+    /// header's pin-count badge stay live via the same `room_details:update`
+    /// push every other `RoomDetails` field already relies on — no new
+    /// sync-side plumbing needed (Spec day-2/04's stated data flow).
+    pub pinned_event_ids: Vec<String>,
 }
 
 /// Room v12+ creators have an "infinite" power level (see [`UserPowerLevel::Infinite`]),
@@ -285,6 +299,8 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         ban: power_levels.user_can_ban(own_user_id),
         set_canonical_alias: power_levels
             .user_can_send_state(own_user_id, StateEventType::RoomCanonicalAlias),
+        set_pinned_events: power_levels
+            .user_can_send_state(own_user_id, StateEventType::RoomPinnedEvents),
     };
 
     let is_encrypted = room
@@ -312,6 +328,12 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
             .alt_aliases()
             .into_iter()
             .map(|alias| alias.to_string())
+            .collect(),
+        pinned_event_ids: room
+            .pinned_event_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.to_string())
             .collect(),
     })
 }
@@ -670,6 +692,684 @@ pub async fn unban_member_impl(
     Ok(())
 }
 
+/// A single pinned message resolved for display in the pinned-messages
+/// panel (Spec day-2/04). Deliberately its own small DTO rather than reusing
+/// `timeline::RoomMessageSummary`: a pinned event may be arbitrarily old and
+/// outside any currently-loaded timeline window, may be undecrypted, or may
+/// already be redacted (unpinning doesn't automatically follow a redaction),
+/// so this only carries the handful of fields the panel actually renders
+/// plus enough state to render each of those cases distinctly.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PinnedMessageSummary {
+    pub event_id: String,
+    pub sender: String,
+    pub sender_display_name: Option<String>,
+    /// Message body, or `""` if the event is redacted, undecrypted, or
+    /// isn't a `m.room.message` at all (e.g. someone pinned a state event —
+    /// Matrix's spec allows pinning any event, not just messages). Check
+    /// `is_redacted`/`is_undecrypted` before treating an empty body as "no
+    /// content".
+    pub preview: String,
+    #[ts(type = "number")]
+    pub timestamp_ms: u64,
+    pub is_redacted: bool,
+    pub is_undecrypted: bool,
+    /// `true` when the pinned event itself couldn't be resolved at all —
+    /// e.g. the homeserver returns 404 for a stale/foreign event id, or
+    /// history visibility denies access. Distinct from `is_redacted`
+    /// (event resolved, content deliberately removed) and `is_undecrypted`
+    /// (event resolved, content unreadable): here every other field is a
+    /// placeholder (`sender`/`preview` empty, `timestamp_ms` 0), since
+    /// nothing about the event could be read. Review fix: this row used to
+    /// be silently dropped instead of returned, so `pinned_event_ids`
+    /// could report a nonzero pin count with no corresponding row — and so
+    /// no Unpin control — to actually remove the broken pin from Charm.
+    pub is_unresolved: bool,
+}
+
+/// Resolves each of `room_id`'s currently-pinned event ids (per
+/// `RoomDetails.pinned_event_ids`) against synced timeline/event-fetch
+/// machinery, for the pinned-messages panel. Uses `Room::load_or_fetch_event`
+/// — checks the local event cache first, only falling back to a
+/// `/rooms/{id}/event` homeserver request on a cache miss — rather than
+/// `Room::event` (review fix: that always issues a homeserver request
+/// unconditionally, decrypting only afterward, even for an event the cache
+/// already has decrypted and ready). Doesn't require every pinned event to
+/// already be inside the currently-loaded timeline window, since a message
+/// pinned long ago is routinely outside it.
+///
+/// A pinned event id that fails to resolve at all (deleted room, network
+/// error) is dropped from the result rather than failing the whole call —
+/// one bad pin shouldn't blank the entire panel.
+#[tauri::command]
+pub async fn get_pinned_messages(
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<Vec<PinnedMessageSummary>, String> {
+    let client = state.require_client().await?;
+    get_pinned_messages_impl(state.inner(), &client, &room_id).await
+}
+
+/// Appends `sender`'s MXID to `name` when it's ambiguous (shared with
+/// another room member), matching `timeline::sender_profile_fields`'s
+/// disambiguation convention — pulled out as a pure function so it's
+/// unit-testable without a mocked homeserver's `/members` endpoint (which
+/// `RoomMember::name_ambiguous` needs a live/synced member list to compute).
+fn disambiguated_display_name(
+    name: &str,
+    ambiguous: bool,
+    sender: &matrix_sdk::ruma::UserId,
+) -> String {
+    if ambiguous {
+        format!("{name} ({sender})")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Resolves the current body of `event_id` after any `m.replace` edits, or
+/// `None` if there is no (valid) edit (or the lookup fails) — the caller
+/// falls back to the original event's own body in that case. Fetches the
+/// event's `m.replace` relations directly (network, falling back to a cached
+/// copy on a later call) rather than depending on the main timeline's own
+/// edit-collapsing, since a pinned event routinely isn't part of the
+/// currently-loaded timeline window at all.
+///
+/// Review fix: a replacement is only valid per the spec
+/// (https://spec.matrix.org/v1.11/client-server-api/#validity-of-replacement-events)
+/// if its sender matches `original_sender` — anyone else in the room can
+/// send an `m.replace` event targeting someone else's message, and without
+/// this check the pinned panel would render that attacker-supplied
+/// `m.new_content` as if the original sender had edited their own pinned
+/// message. Fetches a small batch (not just the single most recent
+/// relation) and skips any whose sender doesn't match, so one invalid edit
+/// sent after a legitimate one can't hide it.
+///
+/// Review fix: a single page only covers the 20 most recent relations. If
+/// more than 20 newer `m.replace` events from other users (invalid, per the
+/// sender check above) target the same pinned event, the original sender's
+/// actual latest valid edit could sit just past that page — this used to
+/// give up after one page and silently fall back to the stale/original
+/// body, even though the main timeline's own edit-collapsing (which has no
+/// such page limit) would still show the real edit. Now pages forward
+/// (`next_batch_token`) until a same-sender replacement is found or the
+/// relation stream is exhausted, bounded by `MAX_EDIT_RELATION_PAGES` as a
+/// deliberate safety cap against an unbounded fetch loop.
+const MAX_EDIT_RELATION_PAGES: usize = 10;
+
+async fn latest_edit_body(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+    original_sender: &matrix_sdk::ruma::UserId,
+) -> Option<String> {
+    use matrix_sdk::room::{IncludeRelations, RelationsOptions};
+    use matrix_sdk::ruma::events::relation::RelationType;
+    use matrix_sdk::ruma::events::room::message::Relation;
+    use matrix_sdk::ruma::events::{
+        AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+    };
+
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_EDIT_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .ok()?;
+
+        // Review fix: `dir: Direction::Backward` is a request for the
+        // homeserver to return relations newest-first, but nothing in the
+        // response guarantees that ordering was actually honored — sorting
+        // explicitly by `origin_server_ts` here means a homeserver that
+        // returns them in a different order still resolves to the
+        // genuinely most recent valid edit within this page, not just
+        // whichever happened to come first in the response.
+        let mut candidates: Vec<_> = relations
+            .chunk
+            .iter()
+            .filter_map(|candidate| {
+                let raw_edit = candidate.raw().deserialize().ok()?;
+                let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                    SyncMessageLikeEvent::Original(edit),
+                )) = raw_edit
+                else {
+                    return None;
+                };
+                if edit.sender != *original_sender {
+                    return None;
+                }
+                let Relation::Replacement(replacement) = edit.content.relates_to? else {
+                    return None;
+                };
+                // Review fix (P2): the relations request is scoped to
+                // `event_id`, but nothing guarantees a homeserver/aggregation
+                // response actually honors that scoping — the reaction scan
+                // in `actions.rs` defensively checks its own relation target
+                // for the same reason. Without this, a same-sender
+                // `m.replace` whose `m.relates_to.event_id` targets some
+                // *other* event could still be accepted here purely because
+                // it showed up in this response, letting the pinned-messages
+                // panel show an unrelated edit body as this message's preview.
+                if replacement.event_id != *event_id {
+                    return None;
+                }
+                Some((
+                    edit.origin_server_ts,
+                    replacement.new_content.msgtype.body().to_string(),
+                ))
+            })
+            .collect();
+        candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+        if let Some((_, body)) = candidates.into_iter().next() {
+            return Some(body);
+        }
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            None => return None,
+        }
+    }
+
+    None
+}
+
+/// A placeholder row for a pinned event id that couldn't be resolved at
+/// all — see `PinnedMessageSummary::is_unresolved`'s own doc comment.
+fn unresolved_pinned_message_summary(event_id: &matrix_sdk::ruma::EventId) -> PinnedMessageSummary {
+    PinnedMessageSummary {
+        event_id: event_id.to_string(),
+        sender: String::new(),
+        sender_display_name: None,
+        preview: String::new(),
+        timestamp_ms: 0,
+        is_redacted: false,
+        is_undecrypted: false,
+        is_unresolved: true,
+    }
+}
+
+/// Core logic behind [`get_pinned_messages`].
+///
+/// Review fix: reads through `pinned_event_cache_get_or_seed` (this
+/// module's own authoritative list — see `pin_event`'s doc comment) instead
+/// of `Room::pinned_event_ids()` directly. The latter is local, synced room
+/// state that lags a full `/sync` round-trip behind a just-completed local
+/// `pin_event`/`unpin_event` call, so opening the panel immediately after
+/// pinning a message used to show the pre-pin list until the next sync
+/// landed.
+pub async fn get_pinned_messages_impl(
+    state: &MatrixState,
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<PinnedMessageSummary>, String> {
+    let room = require_room(client, room_id)?;
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    // Review fix (HIGH): `pinned_event_locks` serializes *every* read/write
+    // of `pinned_event_cache` — see that field's own doc comment — but this
+    // read path called `pinned_event_cache_get_or_seed` without holding it.
+    // A concurrent cache-miss seed here racing a `pin_event`/`unpin_event`
+    // write could insert a stale (pre-pin) list into the cache *after* that
+    // write's own fresher insert, silently reverting a just-completed pin.
+    // Held only around the seed/read below, not the slower per-event
+    // fetch loop after it — unlike `pin_event`/`unpin_event`, nothing here
+    // writes back to the cache, so there's nothing later in this function
+    // that needs the lock's protection.
+    let pinned_event_ids = {
+        let lock = state.pinned_event_lock(&parsed_room_id).await;
+        let _guard = lock.lock().await;
+        pinned_event_cache_get_or_seed(state, client, &parsed_room_id, room_id).await?
+    };
+
+    let mut summaries = Vec::with_capacity(pinned_event_ids.len());
+    for event_id in pinned_event_ids {
+        // Review fix: return a placeholder instead of dropping the row —
+        // see `PinnedMessageSummary::is_unresolved`'s own doc comment.
+        let Ok(timeline_event) = room.load_or_fetch_event(&event_id, None).await else {
+            summaries.push(unresolved_pinned_message_summary(&event_id));
+            continue;
+        };
+        let Ok(raw_event) = timeline_event.raw().deserialize() else {
+            summaries.push(unresolved_pinned_message_summary(&event_id));
+            continue;
+        };
+
+        let sender = raw_event.sender().to_owned();
+        // Review fix: disambiguate a shared display name the same way
+        // `timeline::sender_profile_fields` does for the main timeline — the
+        // Matrix spec requires this (`RoomMember::name_ambiguous`) so one
+        // member can't pick a display name matching another's to impersonate
+        // them; the pinned-messages panel is a second surface showing a
+        // sender name, so it needs the same treatment.
+        let sender_display_name =
+            room.get_member(&sender)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|member| {
+                    member.display_name().map(|name| {
+                        disambiguated_display_name(name, member.name_ambiguous(), &sender)
+                    })
+                });
+        let timestamp_ms: u64 = raw_event.origin_server_ts().0.into();
+        let is_redacted = raw_event.is_redacted();
+
+        let (preview, is_undecrypted) = if is_redacted {
+            (String::new(), false)
+        } else {
+            match &raw_event {
+                matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+                    matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(
+                        matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(msg),
+                    ),
+                ) => {
+                    // Review fix: a pinned message that's since been edited
+                    // would otherwise always show its pre-edit body here —
+                    // unlike the main timeline (which applies `m.replace`
+                    // relations via `matrix-sdk-ui`'s own item processing),
+                    // this path reads the original `m.room.message` event
+                    // directly. Resolves the latest replacement relation (if
+                    // any) the same way the client-server API's own
+                    // aggregation endpoint would, falling back to the
+                    // original body if there is no edit or the lookup fails.
+                    let body = latest_edit_body(&room, &event_id, &sender)
+                        .await
+                        .unwrap_or_else(|| msg.content.body().to_string());
+                    (body, false)
+                }
+                matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+                    matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomEncrypted(_),
+                ) => (String::new(), true),
+                _ => (String::new(), false),
+            }
+        };
+
+        summaries.push(PinnedMessageSummary {
+            event_id: event_id.to_string(),
+            sender: sender.to_string(),
+            sender_display_name,
+            preview,
+            timestamp_ms,
+            is_redacted,
+            is_undecrypted,
+            is_unresolved: false,
+        });
+    }
+
+    Ok(summaries)
+}
+
+/// Pins `event_id` in `room_id` by sending an updated `m.room.pinned_events`
+/// state event. Granular (`pin_event`/`unpin_event`) rather than a single
+/// `set_pinned_events(room_id, event_ids[])` command taking the frontend's
+/// full desired list — see this module's doc comment / the PR description
+/// for the trade-off: matrix-sdk's own `Room::pin_event` already does the
+/// fetch-current-list-then-append read-modify-write itself (falling back to
+/// `load_pinned_events` over the network if the list isn't in local state
+/// yet), so a granular command avoids a second, frontend-driven
+/// read-modify-write race window on top of it — two clients unpinning two
+/// different messages at once won't clobber each other's change the way a
+/// last-write-wins full-array `set_pinned_events` could.
+#[tauri::command]
+pub async fn pin_event(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    // Review fix: captured before this command's own network send below —
+    // if a logout/re-login/account-switch happens while that send is still
+    // in flight (this call is still holding a clone of the *old* `Client`,
+    // which can complete the request against the old session regardless),
+    // `clear_pinned_event_cache` bumps this and the write below becomes a
+    // no-op instead of resurrecting a stale entry into the new session's
+    // freshly-cleared cache.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
+    // Review fix: serializes this room's pin/unpin state writes — see
+    // `MatrixState::pinned_event_locks`'s own doc comment for why
+    // matrix-sdk's `Room::pin_event`/`unpin_event` need this held across the
+    // call rather than relying on them to serialize themselves.
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let lock = state.pinned_event_lock(&parsed_room_id).await;
+    let _guard = lock.lock().await;
+    // Review fix: holding the lock alone isn't enough — matrix-sdk's own
+    // `Room::pin_event`/`unpin_event` build their replacement list from
+    // `Room::pinned_event_ids()`, which reads *local, synced* room state.
+    // Sending our state event doesn't retroactively update that local
+    // state; it only lands once a later `/sync` response processes it. So
+    // even fully serialized, a second call arriving before that sync
+    // round-trip completes would still read the same pre-first-write list
+    // matrix-sdk has cached and silently drop the first call's change.
+    //
+    // Review fix (P2): an earlier version of this fix used
+    // `pinned_event_cache` (this module's own cache, kept current by every
+    // pin/unpin write) as that base instead — correct for *this client's*
+    // own quick-succession calls, but not for a genuinely concurrent edit
+    // from a *different* client: if that other client's change lands on
+    // the homeserver after this cache was seeded but before this client's
+    // own sync reconciliation has processed it, the cached list is stale
+    // and this write would silently drop the other client's change too.
+    // Always fetching fresh from the homeserver here — a real GET
+    // immediately before this call's own PUT, both against the same
+    // client/session — sidesteps that: it reflects this client's own
+    // just-written state (GET-after-PUT is consistent on a single
+    // homeserver) *and* any other client's already-landed change, with no
+    // reliance on this client's own sync/cache having caught up.
+    // Review fix (P2): even with the lock and the fresh-GET base above, a
+    // *different* client's concurrent pin/unpin can still land on the
+    // homeserver in the gap between our GET and our PUT — `m.room.
+    // pinned_events` has no compare-and-swap primitive, so whichever PUT the
+    // homeserver processes last simply replaces the whole state content,
+    // silently discarding the other client's change. `pin_event_with_retry`
+    // re-reads the state immediately after sending and retries (rebuilding
+    // the list from the newer read) if the event we meant to pin isn't
+    // actually present in what's now live — narrowing, though not fully
+    // eliminating (there is no atomic primitive to eliminate it with), the
+    // window in which a genuinely simultaneous write from another client
+    // gets silently dropped.
+    let new_list =
+        pin_event_with_retry(&client, &room_id, &event_id, MAX_PINNED_EVENT_RETRIES).await?;
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id.clone(), new_list);
+        // Review fix (P2): bumped after a successful, *verified* write —
+        // see `pinned_event_local_write_seq`'s own doc comment. Lets
+        // `sync.rs`'s pin-cache reconciliation (which can be waiting on
+        // this same room's lock right now) detect that a local write
+        // completed while it waited, so it skips overwriting this
+        // just-cached, homeserver-verified list with a synced-state read
+        // that may predate it.
+        let mut local_write_seq = state.pinned_event_local_write_seq.lock().await;
+        *local_write_seq.entry(parsed_room_id).or_insert(0) += 1;
+    }
+    Ok(())
+}
+
+/// Bounded retries for [`pin_event`]'s cross-client race — see that
+/// command's own comment. Each attempt re-reads the freshest state, so a
+/// retry naturally incorporates whatever the other client just wrote instead
+/// of blindly resending the same (now stale) list.
+const MAX_PINNED_EVENT_RETRIES: u8 = 3;
+
+async fn pin_event_with_retry(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    max_attempts: u8,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    for attempt in 0..max_attempts {
+        let current = fresh_pinned_event_ids(client, room_id).await?;
+        pin_event_impl(client, room_id, event_id, current).await?;
+        // Review fix (P2): the final attempt used to return `new_list`
+        // unverified, skipping the same post-send re-read every earlier
+        // attempt uses to prove the write actually won. In the same
+        // cross-client race this whole retry loop exists to catch, another
+        // client's write could still land after this final PUT — reporting
+        // success and caching a list that was never actually live on the
+        // homeserver. Verifying every attempt (including the last) means a
+        // still-unverified final attempt now returns an error instead of a
+        // false success.
+        let after_send = fresh_pinned_event_ids(client, room_id).await?;
+        if after_send.contains(&parsed_event_id) {
+            return Ok(after_send);
+        }
+        if attempt + 1 == max_attempts {
+            return Err(format!(
+                "pin for {event_id} did not survive after {max_attempts} attempts (concurrent writes from another client keep winning)"
+            ));
+        }
+        // Our pin didn't survive — a concurrent write from another client
+        // landed after ours and won. Loop again with a freshly-read base.
+    }
+    unreachable!("loop always returns on its final attempt")
+}
+
+/// Core logic behind [`pin_event`] — pure computation over an explicit
+/// `current_pinned` list (rather than reading `Room::pinned_event_ids()`
+/// itself) so the command wrapper's authoritative-cache re-check (see its
+/// own comment) is the only source of truth for what's currently pinned.
+/// Returns the new list on success, for the caller to update that cache
+/// with.
+pub async fn pin_event_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    current_pinned: Vec<matrix_sdk::ruma::OwnedEventId>,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let room = require_room(client, room_id)?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    if current_pinned.contains(&parsed_event_id) {
+        return Ok(current_pinned);
+    }
+    let mut new_list = current_pinned;
+    new_list.push(parsed_event_id);
+    let content = matrix_sdk::ruma::events::room::pinned_events::RoomPinnedEventsEventContent::new(
+        new_list.clone(),
+    );
+    room.send_state_event(content)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(new_list)
+}
+
+/// Unpins `event_id` in `room_id`. See [`pin_event`]'s doc comment for the
+/// granular-vs-array trade-off shared by both commands.
+#[tauri::command]
+pub async fn unpin_event(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    // Review fix: same session-generation guard as `pin_event` — see that
+    // command's own comment.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
+    // Review fix: same per-room serialization and always-fresh-from-network
+    // base as `pin_event` — see that command's own comments.
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let lock = state.pinned_event_lock(&parsed_room_id).await;
+    let _guard = lock.lock().await;
+    // Review fix (P2): same cross-client race and bounded-retry mitigation
+    // as `pin_event` — see that command's own comment.
+    let new_list =
+        unpin_event_with_retry(&client, &room_id, &event_id, MAX_PINNED_EVENT_RETRIES).await?;
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id.clone(), new_list);
+        // Review fix (P2): same as `pin_event` — see
+        // `pinned_event_local_write_seq`'s own doc comment.
+        let mut local_write_seq = state.pinned_event_local_write_seq.lock().await;
+        *local_write_seq.entry(parsed_room_id).or_insert(0) += 1;
+    }
+    Ok(())
+}
+
+/// Bounded retries for [`unpin_event`]'s cross-client race — see
+/// [`pin_event_with_retry`]'s own comment; identical shape, just checking
+/// the event's *absence* after send instead of its presence.
+async fn unpin_event_with_retry(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    max_attempts: u8,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    for attempt in 0..max_attempts {
+        let current = fresh_pinned_event_ids(client, room_id).await?;
+        unpin_event_impl(client, room_id, event_id, current).await?;
+        // Review fix (P2): same as `pin_event_with_retry` — verify the final
+        // attempt too, instead of returning `new_list` unverified.
+        let after_send = fresh_pinned_event_ids(client, room_id).await?;
+        if !after_send.contains(&parsed_event_id) {
+            return Ok(after_send);
+        }
+        if attempt + 1 == max_attempts {
+            return Err(format!(
+                "unpin for {event_id} did not survive after {max_attempts} attempts (concurrent writes from another client keep winning)"
+            ));
+        }
+        // Our unpin didn't survive — a concurrent write from another client
+        // landed after ours and won. Loop again with a freshly-read base.
+    }
+    unreachable!("loop always returns on its final attempt")
+}
+
+/// Core logic behind [`unpin_event`]. See [`pin_event_impl`]'s doc comment
+/// for why this takes an explicit `current_pinned` list.
+pub async fn unpin_event_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    current_pinned: Vec<matrix_sdk::ruma::OwnedEventId>,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let room = require_room(client, room_id)?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    if !current_pinned.contains(&parsed_event_id) {
+        return Ok(current_pinned);
+    }
+    let new_list: Vec<_> = current_pinned
+        .into_iter()
+        .filter(|id| *id != parsed_event_id)
+        .collect();
+    let content = matrix_sdk::ruma::events::room::pinned_events::RoomPinnedEventsEventContent::new(
+        new_list.clone(),
+    );
+    room.send_state_event(content)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(new_list)
+}
+
+/// Always-fresh (network) read of `room_id`'s currently-pinned event ids —
+/// the base [`pin_event`]/[`unpin_event`] build their next full-replacement
+/// write from. See `pin_event`'s own comment for why this reads from the
+/// homeserver directly rather than `pinned_event_cache` or matrix-sdk's
+/// local `Room::pinned_event_ids()`: only a real GET immediately before the
+/// following PUT is guaranteed to reflect a concurrent edit from a
+/// *different* client, not just this client's own prior writes.
+async fn fresh_pinned_event_ids(
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let room = require_room(client, room_id)?;
+    Ok(room
+        .load_pinned_events()
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default())
+}
+
+/// Returns this module's authoritative last-known pinned list for
+/// `room_id` — read path only (see [`get_pinned_messages`]); a slightly
+/// stale read here is far less harmful than a write built on stale data,
+/// so this cache — updated by every [`pin_event`]/[`unpin_event`] write and
+/// by sync reconciliation — is an acceptable, network-free convenience for
+/// the panel to read from, unlike the always-fresh network read those write
+/// paths need (see `fresh_pinned_event_ids`, and [`pin_event`]'s own
+/// comment on why they parted ways). Seeds the cache from local state (or a
+/// network fallback) on first use for the room.
+async fn pinned_event_cache_get_or_seed(
+    state: &MatrixState,
+    client: &Client,
+    parsed_room_id: &matrix_sdk::ruma::RoomId,
+    room_id: &str,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    if let Some(existing) = state.pinned_event_cache.lock().await.get(parsed_room_id) {
+        return Ok(existing.clone());
+    }
+    // Review fix: same session-generation guard `pin_event`/`unpin_event`
+    // use for their own post-send cache write — captured before the
+    // network read below so a logout/re-login/account-switch racing this
+    // seed can't have its result resurrect a stale (previous-session) list
+    // into the newly-cleared cache. This is the one seed path shared by
+    // every caller of this function (`pin_event`, `unpin_event`,
+    // `get_pinned_messages_impl`), so guarding it here covers all of them
+    // — `get_pinned_messages_impl` in particular had no guard of its own
+    // at all before this.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let room = require_room(client, room_id)?;
+    // Review fix: `Room::pinned_event_ids()` returns `None` both when the
+    // room genuinely has no pins *and* when local state simply hasn't
+    // caught up yet (e.g. right after joining, before the first full
+    // `/sync` of this room's state has landed). Treating `None` as "no
+    // pins" and seeding the cache with an empty list in the latter case
+    // meant the very next pin/unpin call's full-replacement write would
+    // silently drop every pin already on the homeserver. Fall back to an
+    // explicit network read — the same fallback matrix-sdk's own
+    // `Room::pin_event`/`unpin_event` used before this cache replaced them
+    // — so a `None` only ever seeds an empty list once the homeserver has
+    // confirmed there's genuinely nothing pinned.
+    //
+    // Review fix (CRITICAL): the cache's own lock must never be held across
+    // this network `.await` — this whole function runs under the caller's
+    // `pinned_event_locks` guard already (see `pin_event`/`unpin_event`,
+    // and the sync loop's reconciliation after this round's other fix), so
+    // holding `pinned_event_cache`'s lock too for the duration of a
+    // potentially slow homeserver round-trip would stall every *other*
+    // room's pin/unpin calls and cache reconciliation for no reason — they
+    // don't touch this room's entry at all. Look the cache up again after
+    // the network read completes (another call for this exact room can't
+    // have run concurrently, since the per-room `pinned_event_locks` guard
+    // already serializes that), but re-checking costs nothing and keeps
+    // this function correct even if that invariant ever changes.
+    let seeded = match room.pinned_event_ids() {
+        Some(ids) => ids,
+        None => {
+            let from_network = room
+                .load_pinned_events()
+                .await
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            if let Some(existing) = state.pinned_event_cache.lock().await.get(parsed_room_id) {
+                return Ok(existing.clone());
+            }
+            from_network
+        }
+    };
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id.to_owned(), seeded.clone());
+    }
+    Ok(seeded)
+}
+
 /// Local (server-published, room-directory) aliases for `room_id` — distinct
 /// from `RoomDetails.canonical_alias`/`alt_aliases`, which come off the room's
 /// `m.room.canonical_alias` *state event* rather than the directory (Spec 32's
@@ -947,6 +1647,1214 @@ mod tests {
                 "#another-alias:example.org".to_string()
             ]
         );
+    }
+
+    // --- Spec day-2/04: message pinning ---
+
+    #[tokio::test]
+    async fn pin_event_impl_sends_the_updated_pinned_events_state() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        // Room starts with one already-pinned event — proves this is a
+        // read-modify-write append, not a blind overwrite.
+        let existing = matrix_sdk::ruma::owned_event_id!("$existing");
+        let to_pin = matrix_sdk::ruma::owned_event_id!("$new-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![existing.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [existing, to_pin],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$pinned_events_updated",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result =
+            pin_event_impl(&client, room_id.as_str(), to_pin.as_str(), vec![existing]).await;
+        assert!(
+            result.is_ok(),
+            "expected the pin to succeed, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: a *different* client's concurrent write
+    /// can still land between this client's fresh-GET base and its own PUT,
+    /// clobbering this client's pin — `m.room.pinned_events` has no
+    /// compare-and-swap primitive. `pin_event_with_retry` must detect that
+    /// (a post-send re-read that doesn't contain the event we just pinned)
+    /// and retry from a freshly-read base rather than silently reporting
+    /// success with a pin that didn't actually survive.
+    #[tokio::test]
+    async fn pin_event_with_retry_retries_when_a_concurrent_write_clobbers_the_first_attempt() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let to_pin = matrix_sdk::ruma::owned_event_id!("$to-pin");
+        let other_clients_pin = matrix_sdk::ruma::owned_event_id!("$other-clients-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        // Attempt 1's fresh-GET base: empty.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+        // Attempt 1's post-send verification read: a *different* client's
+        // write landed after this client's PUT and won, so the list this
+        // client just wrote (`[to_pin]`) isn't there at all — simulating
+        // the clobber.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+        // Attempt 2's fresh-GET base: the other client's write, now visible.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+        // Attempt 2's post-send verification read: this time our pin
+        // actually survives (no further concurrent write raced in).
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone(), to_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "event_id": "$updated" })),
+            )
+            .expect(2)
+            .mount(server.server())
+            .await;
+
+        let result = pin_event_with_retry(&client, room_id.as_str(), to_pin.as_str(), 2).await;
+        let new_list = result.expect("retry should eventually succeed");
+
+        assert!(
+            new_list.contains(&to_pin),
+            "expected the retried pin to survive in the final list, got {new_list:?}"
+        );
+        assert!(
+            new_list.contains(&other_clients_pin),
+            "expected the other client's concurrent pin to be preserved too, got {new_list:?}"
+        );
+    }
+
+    /// Review fix regression test: the *final* retry attempt must also be
+    /// verified by a post-send re-read, not just returned unconditionally.
+    /// In the same cross-client race the whole retry loop exists to catch,
+    /// another client's write can still land after this final PUT — without
+    /// verifying it too, `pin_event_with_retry` would report success and
+    /// cache a list that was never actually live on the homeserver.
+    #[tokio::test]
+    async fn pin_event_with_retry_errors_when_the_final_attempt_is_also_clobbered() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let to_pin = matrix_sdk::ruma::owned_event_id!("$to-pin");
+        let other_clients_pin = matrix_sdk::ruma::owned_event_id!("$other-clients-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        // Every fresh-GET / post-send-verification read (only one attempt
+        // this time, so both reads share the same mock) sees the other
+        // client's pin winning — our own pin never actually sticks.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "event_id": "$updated" })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result = pin_event_with_retry(&client, room_id.as_str(), to_pin.as_str(), 1).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when even the final attempt doesn't survive verification, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: composes two pins by feeding the first
+    /// call's *returned* list into the second, rather than having the
+    /// second independently re-derive its base list from
+    /// `Room::pinned_event_ids()` (which wouldn't yet reflect the first
+    /// call's not-actually-synced-yet write) — this is exactly what the
+    /// `pin_event`/`unpin_event` command wrappers' authoritative cache does
+    /// for two quick real-world calls. Asserts the second PUT still
+    /// carries both pins, proving the first one isn't silently dropped.
+    #[tokio::test]
+    async fn pin_event_impl_composes_two_pins_fed_through_the_returned_list() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let first_pin = matrix_sdk::ruma::owned_event_id!("$first-pin");
+        let second_pin = matrix_sdk::ruma::owned_event_id!("$second-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        // Local synced state never advances between the two calls below —
+        // simulating the sync round-trip lag the fix accounts for.
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [second_pin],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$first_update",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [second_pin, first_pin],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$second_update",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let after_first = pin_event_impl(&client, room_id.as_str(), second_pin.as_str(), vec![])
+            .await
+            .expect("first pin should succeed");
+        let after_second =
+            pin_event_impl(&client, room_id.as_str(), first_pin.as_str(), after_first)
+                .await
+                .expect("second pin should succeed");
+
+        assert_eq!(after_second, vec![second_pin, first_pin]);
+    }
+
+    #[tokio::test]
+    async fn unpin_event_impl_sends_the_updated_pinned_events_state() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let to_keep = matrix_sdk::ruma::owned_event_id!("$keep");
+        let to_unpin = matrix_sdk::ruma::owned_event_id!("$unpin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![to_keep.clone(), to_unpin.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [to_keep],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$pinned_events_updated",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = unpin_event_impl(
+            &client,
+            room_id.as_str(),
+            to_unpin.as_str(),
+            vec![to_keep, to_unpin.clone()],
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "expected the unpin to succeed, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: `fresh_pinned_event_ids` (the base
+    /// `pin_event`/`unpin_event` build their next write from) must reflect
+    /// the homeserver's *current* state, not this client's own local
+    /// synced state or cache — otherwise a concurrent edit from a
+    /// different client that already landed on the server, but hasn't
+    /// synced to this client yet, gets silently dropped by the next local
+    /// pin/unpin's full-replacement write.
+    #[tokio::test]
+    async fn fresh_pinned_event_ids_reflects_the_server_not_stale_local_state() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        // This client's own local synced state is stale — still shows the
+        // pre-concurrent-edit list.
+        let stale_local_pin = matrix_sdk::ruma::owned_event_id!("$stale-local-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![stale_local_pin.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        // A *different* client already pinned something else on the
+        // homeserver; this client's own sync hasn't caught up to it yet.
+        let concurrent_remote_pin = matrix_sdk::ruma::owned_event_id!("$concurrent-remote-pin");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [concurrent_remote_pin.clone(), stale_local_pin.clone()],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let fresh = fresh_pinned_event_ids(&client, room_id.as_str())
+            .await
+            .expect("fresh read should succeed");
+
+        assert_eq!(
+            fresh,
+            vec![concurrent_remote_pin, stale_local_pin],
+            "expected the server's current list (including the concurrent client's pin), not this client's stale local/cached state"
+        );
+    }
+
+    /// Review fix regression test: when local synced state hasn't caught up
+    /// yet (`Room::pinned_event_ids()` returns `None`, e.g. right after
+    /// joining), the cache must fall back to a network `load_pinned_events`
+    /// read instead of assuming "no pins" and seeding an empty list — the
+    /// latter would let a subsequent pin/unpin's full-replacement write
+    /// silently drop pins that genuinely exist on the homeserver.
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_falls_back_to_network_when_local_state_is_unknown() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // Deliberately synced without ever sending an `m.room.pinned_events`
+        // state event — `Room::pinned_event_ids()` reads `None` here, not
+        // an empty list, since local state has no opinion either way.
+        server.sync_joined_room(&client, room_id).await;
+
+        let from_server = matrix_sdk::ruma::owned_event_id!("$already-pinned-on-server");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [from_server],
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let state = MatrixState::default();
+        let seeded = pinned_event_cache_get_or_seed(&state, &client, room_id, room_id.as_str())
+            .await
+            .expect("seeding should fall back to the network read and succeed");
+
+        assert_eq!(
+            seeded,
+            vec![from_server],
+            "expected the cache to be seeded from the server's own pinned list, not an empty one"
+        );
+    }
+
+    /// Review fix regression test (CRITICAL): the network-fallback seed
+    /// must not hold `pinned_event_cache`'s lock for the duration of the
+    /// homeserver round-trip — an unrelated room's cache read must be able
+    /// to proceed while a slow `load_pinned_events` call for a *different*
+    /// room is still in flight.
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_does_not_hold_the_cache_lock_across_the_network_await()
+    {
+        let slow_room_id = matrix_sdk::ruma::room_id!("!slow:example.org");
+        let other_room_id = matrix_sdk::ruma::room_id!("!other:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, slow_room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        // Directly seed a cache entry for the *other* room — no network
+        // call needed for it, so if the lock were genuinely held across
+        // `slow_room_id`'s network await, reading it below would hang for
+        // the same ~300ms instead of returning immediately.
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(other_room_id.to_owned(), vec![]);
+
+        let slow_state = std::sync::Arc::clone(&state);
+        let slow_client = client.clone();
+        let slow_call = tokio::spawn(async move {
+            pinned_event_cache_get_or_seed(
+                slow_state.as_ref(),
+                &slow_client,
+                slow_room_id,
+                slow_room_id.as_str(),
+            )
+            .await
+        });
+        // Give the spawned call time to acquire-then-release the lock (if
+        // fixed) or acquire-and-hold it (if regressed) before racing the
+        // unrelated read below. Generous relative to CI/parallel-test
+        // scheduling jitter — correctness only needs "well under the 2s
+        // network delay," not tight sub-100ms precision.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let unrelated_read = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            state.pinned_event_cache.lock(),
+        )
+        .await;
+        assert!(
+            unrelated_read.is_ok(),
+            "an unrelated room's cache lock acquisition must not block on another room's in-flight network read"
+        );
+        drop(unrelated_read);
+
+        slow_call
+            .await
+            .expect("task should not panic")
+            .expect("seeding should still succeed once the delayed response lands");
+    }
+
+    /// Review fix regression test: a logout/re-login/account-switch racing
+    /// this seed's network read must not let the seed's own insert
+    /// resurrect a stale (previous-session) list into the freshly-cleared
+    /// cache — the same session-generation guard `pin_event`/`unpin_event`
+    /// already had for their own post-send write, now also covering this
+    /// seed path (which every caller, including `get_pinned_messages_impl`,
+    /// shares and which previously had no guard at all).
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_skips_its_insert_when_the_session_changes_mid_seed() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(1))
+                    .set_body_json(serde_json::json!({
+                        "pinned": [matrix_sdk::ruma::owned_event_id!("$stale-session-pin")],
+                    })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        let seed_state = std::sync::Arc::clone(&state);
+        let seed_client = client.clone();
+        let seed_call = tokio::spawn(async move {
+            pinned_event_cache_get_or_seed(
+                seed_state.as_ref(),
+                &seed_client,
+                room_id,
+                room_id.as_str(),
+            )
+            .await
+        });
+
+        // Give the seed time to start its (delayed) network read before
+        // simulating a logout/re-login racing it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        state.clear_pinned_event_cache().await;
+
+        seed_call
+            .await
+            .expect("task should not panic")
+            .expect("the seed call itself should still succeed");
+
+        assert!(
+            state.pinned_event_cache.lock().await.get(room_id).is_none(),
+            "a session change mid-seed must not let the stale seed resurrect an entry in the freshly-cleared cache"
+        );
+    }
+
+    /// Review fix regression test (HIGH): `get_pinned_messages_impl` must
+    /// hold the room's `pinned_event_lock` while it seeds the cache — the
+    /// same lock `pin_event`/`unpin_event` hold for their own cache reads
+    /// and writes (see `MatrixState::pinned_event_locks`'s own doc
+    /// comment). Without it, a cache-miss seed here racing a concurrent
+    /// pin/unpin could insert a stale (pre-pin) list *after* that write's
+    /// own fresher insert, silently reverting a just-completed pin.
+    /// Asserts the lock itself is actually held for the duration of the
+    /// seed by trying to acquire it directly while the seed is still
+    /// in flight — the inverse assertion of the CRITICAL test above,
+    /// which covers a different lock (`pinned_event_cache`'s own mutex)
+    /// that must specifically *not* be held across the same network await.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_holds_the_room_lock_while_seeding() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // No `m.room.pinned_events` state ever synced — `Room::pinned_event_ids()`
+        // reads `None`, forcing the network-fallback seed path.
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        let read_state = std::sync::Arc::clone(&state);
+        let read_client = client.clone();
+        let read_call = tokio::spawn(async move {
+            get_pinned_messages_impl(read_state.as_ref(), &read_client, room_id.as_str()).await
+        });
+        // Generous margin relative to CI/parallel-test scheduling jitter —
+        // same rationale as the CRITICAL test above.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let lock = state.pinned_event_lock(room_id).await;
+        let racing_acquire =
+            tokio::time::timeout(std::time::Duration::from_millis(500), lock.lock()).await;
+        assert!(
+            racing_acquire.is_err(),
+            "expected the room's pin lock to still be held by the in-flight seed, but it was acquired"
+        );
+
+        read_call
+            .await
+            .expect("task should not panic")
+            .expect("the read should still succeed once the delayed response lands");
+
+        // Once the seed has finished (and released the lock), it must be
+        // acquirable again promptly.
+        let _guard = tokio::time::timeout(std::time::Duration::from_millis(500), lock.lock())
+            .await
+            .expect("the room lock should be released once the seed completes");
+    }
+
+    #[tokio::test]
+    async fn get_pinned_messages_impl_resolves_pinned_events_in_order() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let first = matrix_sdk::ruma::owned_event_id!("$first");
+        let second = matrix_sdk::ruma::owned_event_id!("$second");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![first.clone(), second.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{first}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": first,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "read this first" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{second}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": second,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_001_000u64,
+                    "content": { "msgtype": "m.text", "body": "then this" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].event_id, first.to_string());
+        assert_eq!(summaries[0].preview, "read this first");
+        assert!(!summaries[0].is_redacted);
+        assert!(!summaries[0].is_undecrypted);
+        assert_eq!(summaries[1].event_id, second.to_string());
+        assert_eq!(summaries[1].preview, "then this");
+    }
+
+    /// Review fix regression test: a pinned message that's since been
+    /// edited must show its current (edited) body, not the original
+    /// `m.room.message` event's pre-edit body — this call reads the event
+    /// directly rather than going through `matrix-sdk-ui`'s own
+    /// edit-collapsing timeline processing, so it needs its own resolution
+    /// of the `m.replace` relation.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_resolves_the_latest_edit_of_a_pinned_message() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let edit = matrix_sdk::ruma::owned_event_id!("$edit");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "pre-edit body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": edit,
+                        "room_id": room_id,
+                        "sender": *ALICE,
+                        "origin_server_ts": 1_700_000_001_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* edited body",
+                            "m.new_content": { "msgtype": "m.text", "body": "edited body" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "edited body");
+    }
+
+    /// Review fix regression test: picks the edit with the latest
+    /// `origin_server_ts`, not just whichever happens to come first in the
+    /// `/relations` response — doesn't rely on the homeserver having
+    /// actually honored `dir: Direction::Backward`.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_resolves_the_latest_edit_even_when_the_server_returns_them_out_of_order(
+    ) {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let older_edit = matrix_sdk::ruma::owned_event_id!("$older-edit");
+        let newer_edit = matrix_sdk::ruma::owned_event_id!("$newer-edit");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "pre-edit body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // The newer edit (higher origin_server_ts) is listed *second* in
+        // the chunk — out of the backward/newest-first order the request
+        // asked for.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [
+                        {
+                            "type": "m.room.message",
+                            "event_id": older_edit,
+                            "room_id": room_id,
+                            "sender": *ALICE,
+                            "origin_server_ts": 1_700_000_001_000u64,
+                            "content": {
+                                "msgtype": "m.text",
+                                "body": "* older edit",
+                                "m.new_content": { "msgtype": "m.text", "body": "older edit" },
+                                "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                            },
+                        },
+                        {
+                            "type": "m.room.message",
+                            "event_id": newer_edit,
+                            "room_id": room_id,
+                            "sender": *ALICE,
+                            "origin_server_ts": 1_700_000_002_000u64,
+                            "content": {
+                                "msgtype": "m.text",
+                                "body": "* newer edit",
+                                "m.new_content": { "msgtype": "m.text", "body": "newer edit" },
+                                "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                            },
+                        },
+                    ],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "newer edit");
+    }
+
+    /// Review fix regression test: a replacement is only valid if its
+    /// sender matches the original event's sender
+    /// (https://spec.matrix.org/v1.11/client-server-api/#validity-of-replacement-events).
+    /// An `m.replace` from a *different* sender must be ignored — otherwise
+    /// any room member could inject arbitrary text into someone else's
+    /// pinned message preview.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_ignores_a_replacement_from_a_different_sender() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let forged_edit = matrix_sdk::ruma::owned_event_id!("$forged");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": forged_edit,
+                        "room_id": room_id,
+                        // Different sender than the original event — an invalid
+                        // replacement per the spec.
+                        "sender": *BOB,
+                        "origin_server_ts": 1_700_000_001_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* attacker text",
+                            "m.new_content": { "msgtype": "m.text", "body": "attacker text" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "original body");
+    }
+
+    /// Review fix regression test: a same-sender `m.replace` whose own
+    /// `m.relates_to.event_id` targets a *different* event must be ignored,
+    /// even though the relations request was scoped to the pinned event's
+    /// id — nothing guarantees a homeserver/aggregation response actually
+    /// honors that scoping, and the reaction scan in `actions.rs`
+    /// defensively checks its own relation target for the identical reason.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_ignores_a_replacement_targeting_a_different_event() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let other_event = matrix_sdk::ruma::owned_event_id!("$other-event");
+        let mistargeted_edit = matrix_sdk::ruma::owned_event_id!("$mistargeted");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // Same sender as the original (would otherwise pass that check),
+        // but this event's own `m.relates_to.event_id` targets a
+        // *different* event entirely — the relations endpoint returned it
+        // for `original`'s request anyway, simulating a homeserver/
+        // aggregation response that didn't honor the request's scoping.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": mistargeted_edit,
+                        "room_id": room_id,
+                        "sender": *ALICE,
+                        "origin_server_ts": 1_700_000_001_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* unrelated edit",
+                            "m.new_content": { "msgtype": "m.text", "body": "unrelated edit" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": other_event },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].preview, "original body",
+            "a replacement targeting a different event must not be accepted as this event's edit"
+        );
+    }
+
+    /// Review fix regression test: the original sender's genuinely latest
+    /// valid edit can sit past the first page of relations if more than 20
+    /// newer invalid (different-sender) replacements were sent after it.
+    /// `latest_edit_body` must page forward (`from`/`next_batch_token`)
+    /// until it finds a same-sender replacement, instead of giving up after
+    /// one page and falling back to the stale/original body.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_pages_past_invalid_replacements_to_find_the_valid_edit() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let valid_edit = matrix_sdk::ruma::owned_event_id!("$valid-edit");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // First page: 20 invalid (different-sender) replacements, no
+        // `from` query param, with a `next_batch` pointing at page two.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .and(wiremock::matchers::query_param_is_missing("from"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": (0..20).map(|i| serde_json::json!({
+                        "type": "m.room.message",
+                        "event_id": format!("$forged-{i}"),
+                        "room_id": room_id,
+                        "sender": *BOB,
+                        "origin_server_ts": 1_700_000_001_000u64 + i,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* attacker text",
+                            "m.new_content": { "msgtype": "m.text", "body": "attacker text" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    })).collect::<Vec<_>>(),
+                    "next_batch": "page2",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // Second page: the original sender's genuinely valid edit.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .and(wiremock::matchers::query_param("from", "page2"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": valid_edit,
+                        "room_id": room_id,
+                        "sender": *ALICE,
+                        "origin_server_ts": 1_700_000_002_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* valid edit",
+                            "m.new_content": { "msgtype": "m.text", "body": "valid edit" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "valid edit");
+    }
+
+    /// Review fix regression test: a sender whose display name is shared
+    /// with another room member must have the MXID appended, matching
+    /// `timeline::sender_profile_fields`'s disambiguation convention for the
+    /// main timeline — otherwise a member could pick a display name matching
+    /// another's to impersonate them in the pinned-messages panel too.
+    #[test]
+    fn disambiguated_display_name_appends_mxid_only_when_ambiguous() {
+        let alice = matrix_sdk::ruma::user_id!("@alice:example.org");
+        assert_eq!(disambiguated_display_name("Alex", false, alice), "Alex");
+        assert_eq!(
+            disambiguated_display_name("Alex", true, alice),
+            "Alex (@alice:example.org)"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_pinned_messages_impl_returns_a_placeholder_for_events_that_fail_to_resolve() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let missing = matrix_sdk::ruma::owned_event_id!("$missing");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![missing.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{missing}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "errcode": "M_NOT_FOUND",
+                    "error": "Event not found",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("a resolve failure shouldn't fail the whole call");
+        // Review fix: an unresolvable pin must still come back as a row
+        // (with `is_unresolved: true`) rather than being silently dropped
+        // — otherwise a nonzero pinned-event count has no corresponding
+        // row (and so no Unpin control) to actually remove it with.
+        assert_eq!(
+            summaries.len(),
+            1,
+            "expected a placeholder row for the unresolvable pin, got {summaries:?}"
+        );
+        assert_eq!(summaries[0].event_id, missing.to_string());
+        assert!(summaries[0].is_unresolved);
+        assert!(!summaries[0].is_redacted);
+        assert!(!summaries[0].is_undecrypted);
     }
 
     #[tokio::test]

@@ -24,6 +24,8 @@ export function DiscordMessageRow({
   own,
   sameSenderAsPrev,
   canRedact,
+  canPin,
+  isPinned,
   readers,
   senderNameByUserId,
   isNew,
@@ -33,6 +35,8 @@ export function DiscordMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onPin,
+  onUnpin,
   onCopy,
   onCopyLink,
   onBookmark,
@@ -134,6 +138,8 @@ export function DiscordMessageRow({
               ref={(el) => registerActionsRef(rowKey, el)}
               isOwn={own}
               canRedact={canRedact}
+              canPin={canPin}
+              isPinned={isPinned}
               disableRelationActions={disableRelationActions}
               isUndecrypted={isUndecrypted}
               isError={isError}
@@ -142,6 +148,8 @@ export function DiscordMessageRow({
               onReact={onReact}
               onEdit={onEdit}
               onDelete={onDelete}
+              onPin={onPin}
+              onUnpin={onUnpin}
               onCopy={onCopy}
               onCopyLink={onCopyLink}
               onBookmark={onBookmark}

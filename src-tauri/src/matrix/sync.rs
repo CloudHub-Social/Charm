@@ -102,7 +102,9 @@ async fn emit_room_updates(
     app: &AppHandle,
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
+    seq_before_response: &std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>,
 ) {
+    let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -161,11 +163,145 @@ async fn emit_room_updates(
                 .is_some()
         });
         if state_events_present {
+            // Review fix: `room_admin::pin_event`/`unpin_event` maintain
+            // their own `pinned_event_cache` (see its own doc comment) so a
+            // pin/unpin write can be immediately followed by another one
+            // without racing matrix-sdk's sync-lagged local state — but
+            // that means the cache goes stale the moment *another* client
+            // changes the room's pins, or once this client's own write
+            // finally lands via a later `/sync` (harmless in that case,
+            // since the two already agree). Reconciling from
+            // `Room::pinned_event_ids()` here, right after this response
+            // has just updated that same local state, keeps the cache
+            // current for both cases — but only for a room this cache
+            // already has an entry for, so a plain state-event update in a
+            // room nobody has ever pinned/unpinned via this session
+            // doesn't grow the map for no reason.
+            //
+            // Review fix: only reconcile when *this specific response*
+            // actually carried an `m.room.pinned_events` event, not on any
+            // state-event update for the room — an unrelated membership/
+            // power-level change syncing in right after a local
+            // `pin_event` call (but before that pin's own echo has synced)
+            // would otherwise roll `pinned_event_cache` back to
+            // `Room::pinned_event_ids()`'s still-pre-pin local state,
+            // discarding the just-cached write. A second quick pin would
+            // then send a full replacement list missing the first one.
+            if room_update_contains_pinned_events(update) {
+                // Review fix: this reconciliation write previously touched
+                // `pinned_event_cache` without holding the same per-room
+                // `pinned_event_locks` guard that `pin_event`/`unpin_event`
+                // use — a local pin/unpin racing this sync-triggered
+                // reconciliation could have its write silently overwritten
+                // by a stale read of `Room::pinned_event_ids()` landing in
+                // between the local write and the cache update. Acquiring
+                // the same lock here serializes reconciliation against
+                // local writes exactly like two local writes serialize
+                // against each other.
+                //
+                // Review fix (P2): captured *before* waiting on that lock,
+                // not after — `pin_event`/`unpin_event` bump this room's
+                // entry in `pinned_event_local_write_seq` right after a
+                // successful, homeserver-verified write, while still holding
+                // this same per-room lock. If one of them held the lock when
+                // this sync response arrived, this reconciliation blocks
+                // until it releases — but `Room::pinned_event_ids()` (local,
+                // synced state from this already-in-flight sync response)
+                // can still predate that just-verified write. Re-checking
+                // this room's seq after finally acquiring the lock detects
+                // that a local write for *this room* completed while this
+                // was waiting, and skips clobbering the fresher cached list
+                // with stale synced state — this sync round simply no-ops
+                // for pin reconciliation; a later sync (once the local
+                // write's own echo has landed) reconciles correctly once
+                // both agree. Scoped per-room (not a single global counter)
+                // — see `pinned_event_local_write_seq`'s own doc comment for
+                // why a different room's write must not cause this room's
+                // reconciliation to skip.
+                //
+                // Review fix (P2): read from `seq_before_response` (snapshotted
+                // by the caller *before* `emit_room_list_and_badge`'s own
+                // await, ahead of this function even being called) rather than
+                // re-reading `pinned_event_local_write_seq` live right here.
+                // `spawn_sync_task` awaits `emit_room_list_and_badge` before
+                // reaching this function at all — a pin/unpin completing
+                // during that earlier await already bumped the seq by the
+                // time this line used to run, so comparing against a
+                // just-read "before" value that already included that bump
+                // made `local_write_raced_in` below always false, silently
+                // missing the exact race this snapshot exists to catch.
+                // Capturing the whole map once, right after `sync_once`
+                // returns and before any further awaits, is the only point
+                // that's genuinely "before" for every room in this response.
+                //
+                // Not covered by an automated test: reproducing this needs a
+                // live `Client` processing a real sync response while a
+                // `pin_event`/`unpin_event` call races in during
+                // `emit_room_list_and_badge`'s own await, which this module's
+                // existing tests (a mocked-response harness with no live sync
+                // loop) can't drive. Verified by code review, consistent with
+                // this session's other unrepeatable-race findings.
+                let seq_before_wait = *seq_before_response.get(room_id).unwrap_or(&0);
+                let lock = state.pinned_event_lock(room_id).await;
+                let _guard = lock.lock().await;
+                let local_write_raced_in = *state
+                    .pinned_event_local_write_seq
+                    .lock()
+                    .await
+                    .get(room_id)
+                    .unwrap_or(&0)
+                    != seq_before_wait;
+                if !local_write_raced_in {
+                    let mut pinned_cache = state.pinned_event_cache.lock().await;
+                    if pinned_cache.contains_key(room_id) {
+                        if let Some(room) = client.get_room(room_id) {
+                            pinned_cache.insert(
+                                room_id.to_owned(),
+                                room.pinned_event_ids().unwrap_or_default(),
+                            );
+                        }
+                    }
+                }
+            }
+            // Review fix: emitted *after* the pin-cache reconciliation
+            // above, not before. `PinnedMessagesPanel`'s query key includes
+            // `pinned_event_ids`, so this event can make it refetch the
+            // instant it lands — if that refetch (via `get_pinned_messages_impl`
+            // reading `pinned_event_cache`) raced ahead of the
+            // reconciliation block above, it would read the still-stale
+            // cached list under the *new* query key, and nothing would
+            // invalidate that query again afterward once the cache finally
+            // caught up — leaving the panel showing a stale pinned list
+            // until some unrelated later refresh. Reconciling first means
+            // any refetch this event triggers already sees the fresh cache.
             if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
                 let _ = app.emit("room_details:update", details);
             }
         }
     }
+}
+
+/// Whether `update`'s sync response actually carried an `m.room.pinned_events`
+/// event for this room, in either the `state` field (pre-timeline changes)
+/// or the `timeline` field (an in-window state event) — see
+/// `emit_room_updates`'s own comment on why `pinned_event_cache`
+/// reconciliation is gated on this specific check, not just "any state
+/// event at all".
+fn room_update_contains_pinned_events(update: &matrix_sdk::sync::JoinedRoomUpdate) -> bool {
+    fn is_pinned_events<T>(raw: &matrix_sdk::ruma::serde::Raw<T>) -> bool {
+        raw.get_field::<String>("type").ok().flatten().as_deref() == Some("m.room.pinned_events")
+    }
+    let in_state = match &update.state {
+        matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
+            events.iter().any(is_pinned_events)
+        }
+    };
+    in_state
+        || update
+            .timeline
+            .events
+            .iter()
+            .any(|event| is_pinned_events(event.raw()))
 }
 
 /// Fires local notifications for new messages in rooms that do **not**
@@ -404,6 +540,11 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         let _ = previous_sync.await;
     }
     app.state::<MatrixState>().clear_timelines().await;
+    // Review fix: see `clear_pinned_event_cache`'s own doc comment — same
+    // "nothing from the old session carries over" cleanup as
+    // `clear_timelines` above, for pin/unpin's own cache instead of the
+    // timeline listeners.
+    app.state::<MatrixState>().clear_pinned_event_cache().await;
     *app.state::<MatrixState>().client.lock().await = None;
 }
 
@@ -552,8 +693,19 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
+        // Review fix (P2): snapshotted here, before `emit_room_list_and_badge`'s
+        // own await — see `emit_room_updates`'s `seq_before_response` param doc
+        // comment for why capturing it any later (even at the top of
+        // `emit_room_updates` itself) is already too late to catch a pin/unpin
+        // that completes while this response is being processed.
+        let seq_before_response = app
+            .state::<MatrixState>()
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .clone();
         emit_room_list_and_badge(&app, &client).await;
-        emit_room_updates(&app, &client, &initial_response).await;
+        emit_room_updates(&app, &client, &initial_response, &seq_before_response).await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
         // the `SyncSettings` passed to its *first* call for the whole
@@ -630,8 +782,17 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
+                    // Review fix (P2): same reasoning as the initial-response
+                    // call site above — snapshotted before
+                    // `emit_room_list_and_badge`'s own await.
+                    let seq_before_response = app
+                        .state::<MatrixState>()
+                        .pinned_event_local_write_seq
+                        .lock()
+                        .await
+                        .clone();
                     emit_room_list_and_badge(&app, &client).await;
-                    emit_room_updates(&app, &client, &response).await;
+                    emit_room_updates(&app, &client, &response, &seq_before_response).await;
                     notify_unopened_room_messages(&app, &client, &response).await;
                     if app.path().app_data_dir().is_ok_and(|dir| {
                         crate::feature_flags::flag(

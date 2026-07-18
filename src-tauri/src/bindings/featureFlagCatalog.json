@@ -72,6 +72,12 @@
     "owner": "Spec 63 (sidebar and space management)"
   },
   {
+    "key": "message_pinning",
+    "default": false,
+    "description": "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge.",
+    "owner": "day-2 Spec 04 (message pinning)"
+  },
+  {
     "key": "presence_privacy_controls",
     "default": false,
     "description": "Privacy controls for read receipts, typing indicators, presence (appear offline), and auto-idle timeout, plus expanded seen-by and presence status display.",

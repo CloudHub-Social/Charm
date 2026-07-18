@@ -41,3 +41,20 @@ export const membersDrawerOpenAtomFamily = boundedAtomFamily((_roomId: string) =
  * room's tracked entry.
  */
 export const noRoomMembersDrawerOpenAtom = atom(false);
+
+/**
+ * Whether the pinned-messages panel (Spec day-2/04) is open for a given
+ * room — same per-room-atomFamily convention as
+ * `membersDrawerOpenAtomFamily` above. The right panel is a single slot
+ * (see `RoomsScreen`), so opening this closes the members drawer and vice
+ * versa; the two atoms are independent booleans rather than one shared
+ * "which panel" enum purely to keep this additive to the existing members
+ * drawer wiring rather than restructuring it.
+ */
+export const pinnedMessagesDrawerOpenAtomFamily = boundedAtomFamily((_roomId: string) => {
+  void _roomId;
+  return atom(false);
+}, MAX_TRACKED_ROOMS);
+
+/** Fallback for `pinnedMessagesDrawerOpenAtomFamily` — see `noRoomMembersDrawerOpenAtom`'s doc comment. */
+export const noRoomPinnedMessagesDrawerOpenAtom = atom(false);

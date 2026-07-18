@@ -250,6 +250,83 @@ pub struct MatrixState {
     /// both of those conditions.
     pub(crate) preview_registered_rooms:
         std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
+    /// Per-room locks serializing `room_admin::pin_event`/`unpin_event`.
+    ///
+    /// Review fix: matrix-sdk's own `Room::pin_event`/`unpin_event` each do a
+    /// read-current-list-then-send-full-replacement-state-event
+    /// read-modify-write, with no locking of their own (confirmed by reading
+    /// their implementation) — two pin/unpin commands for the same room
+    /// firing close together (e.g. pinning two messages in quick succession)
+    /// can each read the same pre-mutation list and send a full
+    /// `m.room.pinned_events` state event built from it, so whichever send
+    /// lands second on the server silently drops the first one's change.
+    /// Serializing here, per room (so unrelated rooms never block each
+    /// other), closes that window: the second call's own read now happens
+    /// only after the first call's state event has actually been sent, so it
+    /// starts from a list that already includes the first change.
+    ///
+    /// Review fix: `clear_pinned_event_cache` (logout/account-switch)
+    /// deliberately does *not* clear this map — see that function's own
+    /// comment. An entry's `Arc<Mutex<()>>` carries no account-specific
+    /// state, so keeping it alive across a session boundary only continues
+    /// to correctly serialize that room's writes, regardless of which
+    /// session created the entry.
+    pub(crate) pinned_event_locks:
+        Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<Mutex<()>>>>,
+    /// This module's own authoritative last-known-pinned list per room,
+    /// used (and kept current) by `room_admin::pin_event`/`unpin_event`.
+    ///
+    /// Review fix: `pinned_event_locks` alone serializes *calls*, but
+    /// matrix-sdk's `Room::pin_event`/`unpin_event` still build their
+    /// replacement list from `Room::pinned_event_ids()` — local, synced
+    /// room state that our own state-event send doesn't retroactively
+    /// update; it only lands once a later `/sync` response processes it.
+    /// So even with calls fully serialized, a second call arriving before
+    /// that sync round-trip completes would still read the same
+    /// pre-first-write list matrix-sdk has cached, silently dropping the
+    /// first call's change. This cache is seeded from that same local
+    /// state on first use per room, then updated immediately after every
+    /// successful write — always read/written while holding this room's
+    /// `pinned_event_locks` guard, so no separate locking discipline is
+    /// needed between the two maps.
+    pub(crate) pinned_event_cache: Mutex<
+        std::collections::HashMap<
+            matrix_sdk::ruma::OwnedRoomId,
+            Vec<matrix_sdk::ruma::OwnedEventId>,
+        >,
+    >,
+    /// Bumped by `clear_pinned_event_cache` (logout/re-login/account
+    /// switch). `pin_event`/`unpin_event` capture this before their
+    /// homeserver send and skip their own cache write if it's since
+    /// changed — a send that outlives a client swap (the old client clone
+    /// it's holding can still complete the request against the *old*
+    /// session after the new one is already active) must not resurrect a
+    /// stale entry into the new session's freshly-cleared cache. A plain
+    /// `std::sync::atomic::AtomicU64` (not the `tokio::sync::Mutex` the
+    /// two maps above use): read/incremented without ever needing to hold
+    /// across an `.await`.
+    pub(crate) pinned_event_cache_generation: std::sync::atomic::AtomicU64,
+    /// Per-room counter, bumped by `pin_event`/`unpin_event` (`room_admin.rs`)
+    /// after a successful, verified write for that room. `sync.rs`'s
+    /// `pinned_event_cache` reconciliation captures this room's count before
+    /// waiting on the room's `pinned_event_lock` and re-checks it after
+    /// acquiring that lock — see that reconciliation's own comment for the
+    /// race this catches.
+    ///
+    /// Review fix (P2): scoped per-room, not a single global counter — a
+    /// global counter meant a local write for a *different* room bumping it
+    /// while this room's reconciliation waited would also skip this room's
+    /// reconciliation, even though nothing about this room actually raced.
+    /// This reconciliation only runs when a sync response for this room
+    /// actually carries `m.room.pinned_events`, so there's no guarantee of a
+    /// later sync round to "catch up" on for this specific room — an
+    /// unrelated skip here could leave `pinned_event_cache` stale
+    /// indefinitely, not just for one round. A plain `u64` behind the same
+    /// `Mutex<HashMap<...>>` shape as the two maps above (not an atomic per
+    /// room — reads/writes here already happen while holding this room's
+    /// `pinned_event_lock`, so there's no need for lock-free atomics).
+    pub(crate) pinned_event_local_write_seq:
+        Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>>,
 }
 
 impl Default for MatrixState {
@@ -281,6 +358,10 @@ impl Default for MatrixState {
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
             dnd: std::sync::Mutex::default(),
             preview_registered_rooms: std::sync::Mutex::default(),
+            pinned_event_locks: Mutex::default(),
+            pinned_event_cache: Mutex::default(),
+            pinned_event_cache_generation: std::sync::atomic::AtomicU64::default(),
+            pinned_event_local_write_seq: Mutex::default(),
         }
     }
 }
@@ -932,6 +1013,54 @@ impl MatrixState {
         }
     }
 
+    /// Clears this module's authoritative pinned-events cache and its
+    /// per-room lock map entirely.
+    ///
+    /// Review fix: `abort_current_sync_loop` already drops the old
+    /// `Client` (and its store) before a logout or a same-process
+    /// re-login/account-switch installs a new one, but it left
+    /// `pinned_event_cache` untouched — a process-wide map keyed only by
+    /// room id, with no notion of *which* client/session populated an
+    /// entry. A same-process re-login (or account switch) reusing a room
+    /// id the previous session had already cached would let the very next
+    /// pin/unpin send a full `m.room.pinned_events` replacement built from
+    /// the *previous* session's stale list, silently dropping any pins
+    /// that changed while that old client was signed out. Called
+    /// alongside `clear_timelines` for the same "nothing carries over from
+    /// the old client" guarantee.
+    pub(crate) async fn clear_pinned_event_cache(&self) {
+        // Review fix: bumped *before* clearing the maps below, not after.
+        // `pin_event`/`unpin_event` capture this generation up front, then
+        // re-check it (after their own network round-trip) before deciding
+        // whether to insert into `pinned_event_cache`. Bumping it only
+        // after `clear()` left a window where an in-flight operation could
+        // acquire the just-released `pinned_event_cache` lock and insert
+        // the previous session's stale list into the freshly-emptied map
+        // *before* this `fetch_add` ran — its generation check would still
+        // pass, since the bump hadn't happened yet. Bumping first means any
+        // concurrent check that runs from this point on already sees the
+        // new generation, regardless of exactly when the maps themselves
+        // finish clearing.
+        self.pinned_event_cache_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.pinned_event_cache.lock().await.clear();
+        // Review fix (P2): deliberately *not* cleared, unlike the cache
+        // above. A `pin_event`/`unpin_event` call for this room still in
+        // flight when logout/account-switch happens holds a clone of its
+        // room's `Arc<Mutex<()>>` from this map. If this map were cleared
+        // and the user logs back into the *same* room before that old call
+        // finishes, a new pin/unpin for that room would look up (and
+        // create) a *different* lock entry — so the old, still-in-flight
+        // full-state PUT and the new session's PUT would no longer
+        // serialize against each other at all, letting the stale one
+        // silently clobber the new session's pin changes. The lock itself
+        // carries no account-specific data (it's a bare `()`), so reusing
+        // the same `Arc` across a session boundary is safe — it just keeps
+        // the old and new session's writes for the same room correctly
+        // ordered, which is this map's entire purpose regardless of which
+        // session created the entry.
+    }
+
     /// Lazily initializes (on first use) and returns the shared media cache,
     /// rebuilding its in-memory index from a directory scan the first time
     /// it's created.
@@ -947,6 +1076,21 @@ impl MatrixState {
                 Ok::<_, String>(cache)
             })
             .await
+    }
+
+    /// Returns (creating if needed) the lock serializing pin/unpin state
+    /// writes for `room_id` — see `pinned_event_locks`'s own doc comment.
+    pub(crate) async fn pinned_event_lock(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> std::sync::Arc<Mutex<()>> {
+        std::sync::Arc::clone(
+            self.pinned_event_locks
+                .lock()
+                .await
+                .entry(room_id.to_owned())
+                .or_default(),
+        )
     }
 }
 
@@ -968,5 +1112,157 @@ mod tests {
         assert!(state.mark_notified("$b:example.org"));
         assert!(!state.mark_notified("$a:example.org"));
         assert!(!state.mark_notified("$b:example.org"));
+    }
+
+    /// Review fix regression test: a same-process re-login/account-switch
+    /// reusing a room id a previous session had already cached must not
+    /// see that previous session's stale pinned list — see
+    /// `clear_pinned_event_cache`'s own doc comment.
+    #[tokio::test]
+    async fn clear_pinned_event_cache_empties_the_cache_but_keeps_the_lock_map() {
+        let state = MatrixState::default();
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org").to_owned();
+        state.pinned_event_cache.lock().await.insert(
+            room_id.clone(),
+            vec![matrix_sdk::ruma::owned_event_id!("$stale")],
+        );
+        let lock_before = state.pinned_event_lock(&room_id).await;
+
+        let generation_before = state
+            .pinned_event_cache_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        state.clear_pinned_event_cache().await;
+
+        assert!(state.pinned_event_cache.lock().await.is_empty());
+        // Review fix (P2): the lock map is deliberately *not* cleared — see
+        // that field's own doc comment. Asserts the *same* `Arc` survives
+        // the clear (not just that the map is non-empty), since a lock
+        // recreated from scratch would defeat the point: an in-flight
+        // operation holding the old `Arc` needs the *next* lookup for this
+        // room to return that same instance, not a fresh, independent one.
+        let lock_after = state.pinned_event_lock(&room_id).await;
+        assert!(
+            std::sync::Arc::ptr_eq(&lock_before, &lock_after),
+            "the same room's lock Arc must survive clear_pinned_event_cache, \
+             so an in-flight pin/unpin from the old session still serializes \
+             against a new session's write for the same room"
+        );
+        // Review fix regression test: `pin_event`/`unpin_event` capture
+        // this generation before their homeserver send and skip their own
+        // cache write if it's since changed — see the field's own doc
+        // comment. Without the bump, a send outliving this clear could
+        // still resurrect a stale entry into the freshly-cleared cache.
+        assert_eq!(
+            state
+                .pinned_event_cache_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+        );
+    }
+
+    /// Review fix regression test: `clear_pinned_event_cache` must bump
+    /// `pinned_event_cache_generation` *before* taking (and clearing)
+    /// `pinned_event_cache`'s own lock — a concurrent `pin_event`/
+    /// `unpin_event`'s generation check happens right around inserting into
+    /// that same cache, so bumping the generation only after (or while)
+    /// contending for that lock leaves a window where a task blocked
+    /// waiting on the lock would, once it finally gets in, still observe
+    /// the pre-bump generation and pass its stale-session check. This test
+    /// holds `pinned_event_cache`'s lock itself (simulating that
+    /// in-flight, lock-contending task) and asserts the generation is
+    /// already bumped *before* `clear_pinned_event_cache` — which is
+    /// blocked the whole time trying to acquire that same held lock — has
+    /// had any chance to actually clear anything.
+    #[tokio::test]
+    async fn clear_pinned_event_cache_bumps_generation_before_contending_for_the_cache_lock() {
+        let state = std::sync::Arc::new(MatrixState::default());
+        let generation_before = state
+            .pinned_event_cache_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+
+        // Simulates an in-flight `pin_event`/`unpin_event` that already
+        // holds the cache lock (e.g. about to insert its own write) when
+        // logout/account-switch calls `clear_pinned_event_cache`.
+        let held_guard = state.pinned_event_cache.lock().await;
+
+        let clear_state = state.clone();
+        let clear_call = tokio::spawn(async move {
+            clear_state.clear_pinned_event_cache().await;
+        });
+
+        // Give `clear_pinned_event_cache` a chance to run and block on the
+        // still-held lock above.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !clear_call.is_finished(),
+            "clear_pinned_event_cache should still be blocked on the held cache lock"
+        );
+
+        assert_eq!(
+            state
+                .pinned_event_cache_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+            "generation must already be bumped even while clear_pinned_event_cache is \
+             still blocked trying to acquire the cache lock"
+        );
+
+        drop(held_guard);
+        clear_call
+            .await
+            .expect("clear_pinned_event_cache should complete");
+    }
+
+    /// Review fix regression test: `pinned_event_local_write_seq` is scoped
+    /// per-room, not a single global counter — bumping one room's entry
+    /// must never make a *different* room's entry look like it changed.
+    /// `sync.rs`'s pin-cache reconciliation reads this map keyed by
+    /// `room_id`, so a global counter would make an unrelated room's local
+    /// write cause this room's reconciliation to skip — and since that
+    /// reconciliation only runs when a sync response for *this* room
+    /// actually carries `m.room.pinned_events`, there's no guarantee of a
+    /// later round to catch up on, so the skip could leave this room's
+    /// cache stale indefinitely rather than just for one sync round.
+    #[tokio::test]
+    async fn pinned_event_local_write_seq_is_scoped_per_room() {
+        let state = MatrixState::default();
+        let room_a = matrix_sdk::ruma::room_id!("!room-a:example.org").to_owned();
+        let room_b = matrix_sdk::ruma::room_id!("!room-b:example.org").to_owned();
+
+        let seq_b_before = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_b)
+            .unwrap_or(&0);
+
+        // Simulates the bump `pin_event`/`unpin_event` do for room A only.
+        *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .entry(room_a.clone())
+            .or_insert(0) += 1;
+
+        let seq_a_after = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_a)
+            .unwrap_or(&0);
+        let seq_b_after = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_b)
+            .unwrap_or(&0);
+
+        assert_eq!(seq_a_after, 1, "room A's own write must bump its own count");
+        assert_eq!(
+            seq_b_after, seq_b_before,
+            "a different room's write must never affect room B's count"
+        );
     }
 }

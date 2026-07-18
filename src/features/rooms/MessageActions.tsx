@@ -6,6 +6,8 @@ import {
   Link2,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Reply,
   RotateCw,
   SmilePlus,
@@ -34,6 +36,17 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /**
+   * Gates the "Pin"/"Unpin" entry — the power level required for
+   * `m.room.pinned_events` (Spec day-2/04), same pattern as `canRedact`.
+   * Reuses Spec 07's power-level gating, resolved once by the caller from
+   * `RoomDetails.can.set_pinned_events` rather than re-checked per row.
+   */
+  canPin?: boolean;
+  /** Whether this message is currently in the room's pinned-events list. */
+  isPinned?: boolean;
+  onPin?: () => void;
+  onUnpin?: () => void;
   /**
    * Bookmarks/unbookmarks this message (Spec 12: personal, private "saved
    * messages" — purely local, no Matrix event sent, distinct from room
@@ -116,6 +129,10 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDelete,
       onCopy,
       onCopyLink,
+      canPin = false,
+      isPinned = false,
+      onPin,
+      onUnpin,
       onBookmark,
       onUnbookmark,
       isBookmarked = false,
@@ -263,6 +280,23 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               >
                 <Link2 />
                 Copy link
+              </DropdownMenuItem>
+            )}
+            {canPin && !isError && (isPinned ? onUnpin : onPin) && (
+              <DropdownMenuItem
+                onSelect={isPinned ? onUnpin : onPin}
+                // Review fix: `unpin_event` only needs the event ID — it
+                // doesn't touch message content — so an already-pinned but
+                // currently-undecrypted event (e.g. after a key gap or
+                // restore) must still be unpinnable. Gating Unpin on
+                // `isUndecrypted` the same way Pin/reply/react/edit are
+                // would leave it stuck pinned forever with no other way to
+                // remove it, since this is the only unpin affordance Spec
+                // day-2/04 defines.
+                disabled={disableRelationActions || (isUndecrypted && !isPinned)}
+              >
+                {isPinned ? <PinOff /> : <Pin />}
+                {isPinned ? "Unpin" : "Pin"}
               </DropdownMenuItem>
             )}
             {bookmarksEnabled &&

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -8,6 +8,7 @@ import {
   MessageCircle,
   MoreVertical,
   Paperclip,
+  Pin,
   Send,
   Settings,
   Type,
@@ -35,6 +36,7 @@ import {
   onRoomDetailsUpdate,
   type RoomSummary,
 } from "@/lib/matrix";
+import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -51,6 +53,8 @@ import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
 import {
   membersDrawerOpenAtomFamily,
   noRoomMembersDrawerOpenAtom,
+  noRoomPinnedMessagesDrawerOpenAtom,
+  pinnedMessagesDrawerOpenAtomFamily,
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
@@ -240,6 +244,20 @@ export function ChatShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  // Day-2 Spec 04 (message pinning) — new user-facing surface, so gated
+  // behind a flag that defaults off per CLAUDE.md's feature-flag rule. Gates
+  // the whole surface (header button/badge, mobile menu entry, and the
+  // MessageActions Pin/Unpin item below), not just the send call, so the
+  // feature is fully dark until rolled out.
+  //
+  // Review fix: also unconditionally off on the web companion build —
+  // `matrixTransport.ts`'s `invokeWeb` has no case for `get_pinned_messages`/
+  // `pin_event`/`unpin_event`, and the companion server
+  // (`crates/charm-web-server`) has no routes for them either. Same
+  // native-only reasoning as Focus/General/Notifications/Privacy elsewhere
+  // in this codebase — adding web transport/route support for pinning is out
+  // of scope for this spec.
+  const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -286,6 +304,18 @@ export function ChatShell({
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
   );
+  // The right panel is a single slot (see `RoomsScreen`) — opening one of
+  // these two drawers closes the other, same as toggling between Members
+  // and any other room-info surface would.
+  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
+    room ? pinnedMessagesDrawerOpenAtomFamily(roomId) : noRoomPinnedMessagesDrawerOpenAtom,
+  );
+  const { data: roomDetails } = useRoomDetails(room?.room_id ?? null);
+  // Both empty (rather than reading through to `roomDetails`) while the flag
+  // is off, so the header badge/button, mobile menu entry, and Pin/Unpin
+  // MessageActions item are all fully dark, not just the underlying send call.
+  const pinnedEventIds = messagePinningEnabled ? (roomDetails?.pinned_event_ids ?? []) : [];
+  const canPinMessages = messagePinningEnabled && (roomDetails?.can?.set_pinned_events ?? false);
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
@@ -464,15 +494,80 @@ export function ChatShell({
   // of-range number that Virtuoso's own clamping silently resolves to the
   // *last* item — every reply jump before this fix landed on the newest
   // message instead of the replied-to one.
+  // Review fix: a target requested right after this component (re)mounts
+  // for this room — e.g. `RoomsScreen`'s mobile pinned-message jump, which
+  // remounts `ChatShell` by closing the sibling panel that was previously
+  // occupying its slot — can arrive before `useChatTimeline`'s first page
+  // has loaded, when `messages` is still empty. That used to be a silent,
+  // permanent no-op with no later retry. Tagged with the room id it was
+  // requested for so a room switch before the retry fires can't scroll a
+  // now-different room to a target that was never its own.
+  const pendingScrollTargetRef = useRef<{ roomId: string; eventId: string } | null>(null);
   function handleJumpToMessage(eventId: string) {
     const index = messages.findIndex((m) => m.event_id === eventId);
+    // Review fix: `Virtuoso` (and so `virtuosoRef.current`) only mounts once
+    // `!loading && messages.length > 0` below, and `useChatTimeline`'s
+    // `setMessages`/`setLoading(false)` land in separate promise-chain
+    // callbacks (`.then()` vs `.finally()`) that can commit on different
+    // renders. A jump landing on the commit where `messages` has already
+    // populated but `loading` is still true used to clear
+    // `pendingScrollTargetRef` and call `scrollToIndex` on a still-null
+    // ref — a silent no-op that the later `loading=false` retry (gated on
+    // `pendingScrollTargetRef` being non-null) would never catch, since
+    // this had already cleared it. Keeping the target pending whenever the
+    // ref isn't mounted yet means the `useLayoutEffect` retry below still
+    // fires on that later commit instead. `Virtuoso` can't mount without
+    // `messages.length > 0`, so this condition alone already covers the
+    // "requested before the first page loaded" case too.
+    //
+    // Review fix: this used to also set `pendingScrollTargetRef` whenever
+    // `index < 0`, regardless of whether `virtuosoRef` was already mounted
+    // — but a target genuinely outside the loaded window (not a mount-race,
+    // just not present) would then retry forever on every later `messages`
+    // update, since it can never be found. `index < 0` with the ref already
+    // mounted is now the documented no-op case its own comment above
+    // describes, not a retry case.
+    if (!virtuosoRef.current) {
+      if (roomId) pendingScrollTargetRef.current = { roomId, eventId };
+      return;
+    }
+    pendingScrollTargetRef.current = null;
     if (index < 0) return;
-    virtuosoRef.current?.scrollToIndex({
+    virtuosoRef.current.scrollToIndex({
       index,
       align: "center",
       behavior: "smooth",
     });
   }
+  // Retries a jump that arrived before the first page of messages had
+  // loaded — see `pendingScrollTargetRef`'s own comment. Depends on both
+  // `messages` and `loading`, not just `messages`: `Virtuoso` itself only
+  // mounts once `!loading && messages.length > 0` (below), and
+  // `useChatTimeline`'s `setMessages`/`setLoading(false)` calls land in
+  // separate promise-chain callbacks (`.then()` vs `.finally()`), which can
+  // commit separately — so the render where `messages` first populates can
+  // still have `loading` true and `Virtuoso` not yet mounted at all.
+  // Depending on `loading` too means this re-runs on that later commit
+  // instead of only the (possibly premature) one.
+  //
+  // A layout effect, not a passive `useEffect`, for the commit where both
+  // conditions are already true in one render: `virtuosoRef` is populated
+  // by `Virtuoso`'s own `useImperativeHandle` (what its mock, and the real
+  // component, use to expose that ref), which is itself built on
+  // `useLayoutEffect` — a passive effect here would run in a later phase
+  // than that child's layout effect, seeing a `null` ref.
+  useLayoutEffect(() => {
+    const pending = pendingScrollTargetRef.current;
+    if (pending === null || pending.roomId !== roomId || loading) return;
+    handleJumpToMessage(pending.eventId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when `messages`/`loading` change; `handleJumpToMessage`/`roomId` are stable enough within a room visit for this retry's purpose.
+  }, [messages, loading]);
+  // A pending target only ever applies to the room it was requested for —
+  // drop it on any room change so a later, unrelated load in a *new* room
+  // can't accidentally retry a stale target into the wrong room.
+  useEffect(() => {
+    pendingScrollTargetRef.current = null;
+  }, [roomId]);
   // Jump-to-present state (Spec 26 Phase 2) lives here in `ChatShell`, not in
   // `useChatTimeline` or on the (per-room-remounted) Virtuoso instance —
   // switching rooms while scrolled away and mid-pill in room A must not
@@ -939,6 +1034,8 @@ export function ChatShell({
     handleEdit,
     handleResend,
     handleDiscard,
+    handlePin,
+    handleUnpin,
     handleBookmark,
     handleUnbookmark,
     bookmarkedEventIds,
@@ -1153,11 +1250,27 @@ export function ChatShell({
             <DropdownMenuContent align="end" className="min-w-48">
               <DropdownMenuItem
                 className="min-h-11"
-                onSelect={() => setMembersDrawerOpen((open) => !open)}
+                onSelect={() => {
+                  setMembersDrawerOpen((open) => !open);
+                  setPinnedMessagesDrawerOpen(false);
+                }}
               >
                 <Info />
                 {membersDrawerOpen ? "Hide members" : "Show members"}
               </DropdownMenuItem>
+              {messagePinningEnabled && (
+                <DropdownMenuItem
+                  className="min-h-11"
+                  onSelect={() => {
+                    setPinnedMessagesDrawerOpen((open) => !open);
+                    setMembersDrawerOpen(false);
+                  }}
+                >
+                  <Pin />
+                  {pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Pinned messages"}
+                  {pinnedEventIds.length > 0 && ` (${pinnedEventIds.length})`}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 className="min-h-11"
                 onSelect={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
@@ -1173,7 +1286,10 @@ export function ChatShell({
               type="button"
               aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
               aria-pressed={membersDrawerOpen}
-              onClick={() => setMembersDrawerOpen((open) => !open)}
+              onClick={() => {
+                setMembersDrawerOpen((open) => !open);
+                setPinnedMessagesDrawerOpen(false);
+              }}
               className={cn(
                 "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 membersDrawerOpen && "bg-accent text-accent-foreground",
@@ -1181,6 +1297,30 @@ export function ChatShell({
             >
               <Info className="size-4" />
             </button>
+            {messagePinningEnabled && (
+              <button
+                type="button"
+                aria-label={
+                  pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Show pinned messages"
+                }
+                aria-pressed={pinnedMessagesDrawerOpen}
+                onClick={() => {
+                  setPinnedMessagesDrawerOpen((open) => !open);
+                  setMembersDrawerOpen(false);
+                }}
+                className={cn(
+                  "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
+                )}
+              >
+                <Pin className="size-4" />
+                {pinnedEventIds.length > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                    {pinnedEventIds.length}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               type="button"
               aria-label="Room settings"
@@ -1307,6 +1447,8 @@ export function ChatShell({
                     sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
                     sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
                     canRedact={allowedToRedact}
+                    canPin={canPinMessages}
+                    isPinned={pinnedEventIds.includes(message.event_id)}
                     readers={readers}
                     senderNameByUserId={senderNameByUserId}
                     // Excludes `own` messages: `messageRowKey` (transaction_id ??
@@ -1350,6 +1492,8 @@ export function ChatShell({
                         )
                         .catch(logAndIgnore);
                     }}
+                    onPin={() => void handlePin(message.event_id)}
+                    onUnpin={() => void handleUnpin(message.event_id)}
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}

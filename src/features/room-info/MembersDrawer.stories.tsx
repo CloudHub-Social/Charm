@@ -39,9 +39,11 @@ const DETAILS: RoomDetails = {
     kick: true,
     ban: true,
     set_canonical_alias: true,
+    set_pinned_events: true,
   },
   canonical_alias: null,
   alt_aliases: [],
+  pinned_event_ids: [],
 };
 
 const MEMBERS: RoomMemberSummary[] = [

@@ -310,4 +310,80 @@ describe("MessageActions", () => {
 
     expect(screen.queryByText("Reply")).not.toBeInTheDocument();
   });
+
+  // --- Spec day-2/04: message pinning ---
+
+  it("doesn't show Pin when canPin is false", async () => {
+    renderActions({ canPin: false, isPinned: false });
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unpin")).not.toBeInTheDocument();
+  });
+
+  it("shows Pin when canPin is true and the message isn't pinned", async () => {
+    renderActions({ canPin: true, isPinned: false, onPin: vi.fn(), onUnpin: vi.fn() });
+    openMenu();
+
+    expect(await screen.findByText("Pin")).toBeInTheDocument();
+    expect(screen.queryByText("Unpin")).not.toBeInTheDocument();
+  });
+
+  it("shows Unpin instead of Pin when the message is already pinned", async () => {
+    renderActions({ canPin: true, isPinned: true, onPin: vi.fn(), onUnpin: vi.fn() });
+    openMenu();
+
+    expect(await screen.findByText("Unpin")).toBeInTheDocument();
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+  });
+
+  it("calls onPin when Pin is selected", async () => {
+    const onPin = vi.fn();
+    renderActions({ canPin: true, isPinned: false, onPin, onUnpin: vi.fn() });
+    openMenu();
+
+    fireEvent.click(await screen.findByText("Pin"));
+    expect(onPin).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onUnpin when Unpin is selected", async () => {
+    const onUnpin = vi.fn();
+    renderActions({ canPin: true, isPinned: true, onPin: vi.fn(), onUnpin });
+    openMenu();
+
+    fireEvent.click(await screen.findByText("Unpin"));
+    expect(onUnpin).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides Pin/Unpin for a failed send (isError), matching Delete's own gating", async () => {
+    renderActions({ canPin: true, isPinned: false, onPin: vi.fn(), isError: true });
+    openMenu();
+
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unpin")).not.toBeInTheDocument();
+  });
+
+  it("disables Pin (not yet pinned) when undecrypted", async () => {
+    renderActions({ canPin: true, isPinned: false, onPin: vi.fn(), isUndecrypted: true });
+    openMenu();
+
+    expect(await screen.findByText("Pin")).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("keeps Unpin enabled for an already-pinned message even when undecrypted", async () => {
+    // Review fix regression test: `unpin_event` only needs the event ID, not
+    // decrypted content, and is the only way to remove a stuck pin — an
+    // encrypted room can have an already-pinned message go undecrypted after
+    // a key gap or restore, and gating Unpin the same way Pin/reply/react
+    // are would leave it permanently unremovable.
+    const onUnpin = vi.fn();
+    renderActions({ canPin: true, isPinned: true, onPin: vi.fn(), onUnpin, isUndecrypted: true });
+    openMenu();
+
+    const unpinItem = await screen.findByText("Unpin");
+    expect(unpinItem).not.toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(unpinItem);
+    expect(onUnpin).toHaveBeenCalledTimes(1);
+  });
 });
