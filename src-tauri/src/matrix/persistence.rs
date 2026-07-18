@@ -1682,12 +1682,16 @@ mod tests {
 
         // Simulate `relocate_store` replacing the account's SQLCipher
         // passphrase, exactly as a logout-then-relogin to the same account
-        // does.
+        // does. Generated (not a literal) so static analysis never mistakes
+        // this test fixture for a real hard-coded credential.
+        let rotated_passphrase: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
         let passphrase_entry =
             SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&key)).unwrap();
-        passphrase_entry
-            .set_password("a-completely-different-passphrase")
-            .unwrap();
+        passphrase_entry.set_password(&rotated_passphrase).unwrap();
 
         let after = bookmarks_encryption_key(&key).unwrap();
         assert_eq!(
