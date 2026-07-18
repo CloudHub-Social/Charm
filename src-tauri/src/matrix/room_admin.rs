@@ -1097,13 +1097,24 @@ async fn pin_event_with_retry(
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
     for attempt in 0..max_attempts {
         let current = fresh_pinned_event_ids(client, room_id).await?;
-        let new_list = pin_event_impl(client, room_id, event_id, current).await?;
-        if attempt + 1 == max_attempts {
-            return Ok(new_list);
-        }
+        pin_event_impl(client, room_id, event_id, current).await?;
+        // Review fix (P2): the final attempt used to return `new_list`
+        // unverified, skipping the same post-send re-read every earlier
+        // attempt uses to prove the write actually won. In the same
+        // cross-client race this whole retry loop exists to catch, another
+        // client's write could still land after this final PUT — reporting
+        // success and caching a list that was never actually live on the
+        // homeserver. Verifying every attempt (including the last) means a
+        // still-unverified final attempt now returns an error instead of a
+        // false success.
         let after_send = fresh_pinned_event_ids(client, room_id).await?;
         if after_send.contains(&parsed_event_id) {
             return Ok(after_send);
+        }
+        if attempt + 1 == max_attempts {
+            return Err(format!(
+                "pin for {event_id} did not survive after {max_attempts} attempts (concurrent writes from another client keep winning)"
+            ));
         }
         // Our pin didn't survive — a concurrent write from another client
         // landed after ours and won. Loop again with a freshly-read base.
@@ -1188,13 +1199,17 @@ async fn unpin_event_with_retry(
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
     for attempt in 0..max_attempts {
         let current = fresh_pinned_event_ids(client, room_id).await?;
-        let new_list = unpin_event_impl(client, room_id, event_id, current).await?;
-        if attempt + 1 == max_attempts {
-            return Ok(new_list);
-        }
+        unpin_event_impl(client, room_id, event_id, current).await?;
+        // Review fix (P2): same as `pin_event_with_retry` — verify the final
+        // attempt too, instead of returning `new_list` unverified.
         let after_send = fresh_pinned_event_ids(client, room_id).await?;
         if !after_send.contains(&parsed_event_id) {
             return Ok(after_send);
+        }
+        if attempt + 1 == max_attempts {
+            return Err(format!(
+                "unpin for {event_id} did not survive after {max_attempts} attempts (concurrent writes from another client keep winning)"
+            ));
         }
         // Our unpin didn't survive — a concurrent write from another client
         // landed after ours and won. Loop again with a freshly-read base.
@@ -1726,6 +1741,20 @@ mod tests {
             .up_to_n_times(1)
             .mount(server.server())
             .await;
+        // Attempt 2's post-send verification read: this time our pin
+        // actually survives (no further concurrent write raced in).
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone(), to_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
 
         wiremock::Mock::given(wiremock::matchers::method("PUT"))
             .and(wiremock::matchers::path_regex(
@@ -1749,6 +1778,66 @@ mod tests {
         assert!(
             new_list.contains(&other_clients_pin),
             "expected the other client's concurrent pin to be preserved too, got {new_list:?}"
+        );
+    }
+
+    /// Review fix regression test: the *final* retry attempt must also be
+    /// verified by a post-send re-read, not just returned unconditionally.
+    /// In the same cross-client race the whole retry loop exists to catch,
+    /// another client's write can still land after this final PUT — without
+    /// verifying it too, `pin_event_with_retry` would report success and
+    /// cache a list that was never actually live on the homeserver.
+    #[tokio::test]
+    async fn pin_event_with_retry_errors_when_the_final_attempt_is_also_clobbered() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let to_pin = matrix_sdk::ruma::owned_event_id!("$to-pin");
+        let other_clients_pin = matrix_sdk::ruma::owned_event_id!("$other-clients-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        // Every fresh-GET / post-send-verification read (only one attempt
+        // this time, so both reads share the same mock) sees the other
+        // client's pin winning — our own pin never actually sticks.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "event_id": "$updated" })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result = pin_event_with_retry(&client, room_id.as_str(), to_pin.as_str(), 1).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when even the final attempt doesn't survive verification, got {result:?}"
         );
     }
 

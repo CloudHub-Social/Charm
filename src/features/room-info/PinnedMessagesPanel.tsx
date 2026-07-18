@@ -77,10 +77,17 @@ export function PinnedMessagesPanel({
   // room-name change), so a plain `??` fallback made every effect below
   // that depends on `pinnedEventIds` tear down and re-subscribe its
   // `onTimelineUpdate` listener on every such update. Memoizing on the
-  // ids' actual content (joined into a stable string key) instead of the
-  // array's identity keeps the reference stable across updates that don't
-  // change which events are pinned.
-  const pinnedEventIdsKey = details?.pinned_event_ids?.join(",") ?? "";
+  // ids' actual content instead of the array's identity keeps the
+  // reference stable across updates that don't change which events are
+  // pinned.
+  //
+  // Review fix: `JSON.stringify`, not `.join(",")` — Matrix event ids are
+  // opaque strings with no guarantee against containing a comma, so a
+  // joined key could collide between two genuinely different id lists
+  // (e.g. one 2-item list and a different 1-item list whose sole id
+  // happens to contain a comma). `usePinnedMessages`'s own query key has
+  // the same requirement, for the same reason.
+  const pinnedEventIdsKey = JSON.stringify(details?.pinned_event_ids ?? []);
   const pinnedEventIds = useMemo(
     () => details?.pinned_event_ids ?? EMPTY_PINNED_EVENT_IDS,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on pinnedEventIdsKey (content), not details/its array identity.
