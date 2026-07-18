@@ -426,6 +426,16 @@ export function RoomsScreen({
   // trigger the same in-timeline scroll-to-message `ChatShell` itself uses
   // for reply-preview/search-result jumps.
   const chatShellRef = useRef<ChatShellHandle>(null);
+  // Review fix: on mobile, `AppShell` renders `rightPanel ?? content` — while
+  // the pinned-messages panel is the visible `rightPanel`, `ChatShell`
+  // itself isn't mounted at all, so `chatShellRef.current` is `null` and a
+  // tap on a pinned row was a silent no-op. Closing the panel first
+  // (`setPinnedMessagesDrawerOpen(false)`) remounts `ChatShell` as `content`
+  // in the same commit; `chatShellRef.current` is populated again by the
+  // time this effect runs (refs are set during commit, before effects), so
+  // stashing the target here and scrolling once the panel has actually
+  // closed reaches a real, mounted `ChatShell` instead of a stale ref.
+  const pendingMobileJumpEventIdRef = useRef<string | null>(null);
 
   // The members drawer is desktop-only (mobile has no room besides the
   // active one to show it alongside — see `AppShell`'s non-goals). Reset
@@ -452,6 +462,17 @@ export function RoomsScreen({
     pinnedMessagesDrawerOpen,
     setPinnedMessagesDrawerOpen,
   ]);
+
+  // See `pendingMobileJumpEventIdRef`'s own doc comment — runs once the
+  // pinned-messages panel has actually closed (remounting `ChatShell`) and
+  // there's a jump this same close was for.
+  useEffect(() => {
+    if (pinnedMessagesDrawerOpen) return;
+    const eventId = pendingMobileJumpEventIdRef.current;
+    if (eventId === null) return;
+    pendingMobileJumpEventIdRef.current = null;
+    chatShellRef.current?.scrollToMessage(eventId);
+  }, [pinnedMessagesDrawerOpen]);
 
   return (
     <>
@@ -507,7 +528,14 @@ export function RoomsScreen({
             <PinnedMessagesPanel
               roomId={activeRoom.room_id}
               onClose={() => setPinnedMessagesDrawerOpen(false)}
-              onJumpToMessage={(eventId) => chatShellRef.current?.scrollToMessage(eventId)}
+              onJumpToMessage={(eventId) => {
+                if (layout === "mobile") {
+                  pendingMobileJumpEventIdRef.current = eventId;
+                  setPinnedMessagesDrawerOpen(false);
+                  return;
+                }
+                chatShellRef.current?.scrollToMessage(eventId);
+              }}
             />
           ) : activeRoom && membersDrawerOpen ? (
             <MembersDrawer

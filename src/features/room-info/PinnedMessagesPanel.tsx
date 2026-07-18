@@ -134,13 +134,16 @@ export function PinnedMessagesPanel({
                 </span>
               </button>
               {/* Review fix: every timeline row's own `MessageActions` (the
-                  normal Pin/Unpin entry point) is wrapped in `!message.redacted`,
-                  so a pinned message that's later deleted has no reachable
-                  Unpin affordance anywhere else in the app — leaving anyone
-                  with permission unable to ever remove that stale pin. This
-                  button is the one place a redacted pinned row can still be
-                  unpinned from. */}
-              {message.is_redacted && canUnpin && (
+                  normal Pin/Unpin entry point) only renders for a message
+                  that's actually mounted in the currently-loaded timeline
+                  window — a message pinned long ago and now outside that
+                  window has no reachable Unpin affordance anywhere else in
+                  the app (jumping to it is also a no-op there; see
+                  `onJumpToMessage`'s own doc comment). This button is the
+                  one place *any* pinned row — not just a redacted one — can
+                  still be unpinned from, so it's shown whenever the user has
+                  permission at all, regardless of `is_redacted`. */}
+              {canUnpin && (
                 <button
                   type="button"
                   aria-label="Unpin message"

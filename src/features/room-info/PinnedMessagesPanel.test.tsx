@@ -216,4 +216,30 @@ describe("PinnedMessagesPanel", () => {
 
     expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
   });
+
+  it("shows an unpin action for a non-redacted pinned message too, when the user has permission (review fix)", async () => {
+    // Review fix: a pinned message outside the currently-loaded timeline
+    // window has no other reachable Unpin affordance at all (its own
+    // `MessageActions` row isn't mounted, and `onJumpToMessage` is a no-op
+    // for it) — the panel is the only surface, so this must not be
+    // restricted to redacted rows.
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({ event_id: "$1", preview: "still here", is_redacted: false }),
+    ]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+    await screen.findByText("still here");
+
+    screen.getByRole("button", { name: "Unpin message" }).click();
+
+    await waitFor(() => expect(unpinEvent).toHaveBeenCalledWith(details.room_id, "$1"));
+  });
 });

@@ -210,6 +210,22 @@ pub struct MatrixState {
     /// both of those conditions.
     pub(crate) preview_registered_rooms:
         std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
+    /// Per-room locks serializing `room_admin::pin_event`/`unpin_event`.
+    ///
+    /// Review fix: matrix-sdk's own `Room::pin_event`/`unpin_event` each do a
+    /// read-current-list-then-send-full-replacement-state-event
+    /// read-modify-write, with no locking of their own (confirmed by reading
+    /// their implementation) — two pin/unpin commands for the same room
+    /// firing close together (e.g. pinning two messages in quick succession)
+    /// can each read the same pre-mutation list and send a full
+    /// `m.room.pinned_events` state event built from it, so whichever send
+    /// lands second on the server silently drops the first one's change.
+    /// Serializing here, per room (so unrelated rooms never block each
+    /// other), closes that window: the second call's own read now happens
+    /// only after the first call's state event has actually been sent, so it
+    /// starts from a list that already includes the first change.
+    pub(crate) pinned_event_locks:
+        Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<Mutex<()>>>>,
 }
 
 impl Default for MatrixState {
@@ -240,6 +256,7 @@ impl Default for MatrixState {
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
             dnd: std::sync::Mutex::default(),
             preview_registered_rooms: std::sync::Mutex::default(),
+            pinned_event_locks: Mutex::default(),
         }
     }
 }
@@ -481,6 +498,21 @@ impl MatrixState {
                 Ok::<_, String>(cache)
             })
             .await
+    }
+
+    /// Returns (creating if needed) the lock serializing pin/unpin state
+    /// writes for `room_id` — see `pinned_event_locks`'s own doc comment.
+    pub(crate) async fn pinned_event_lock(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> std::sync::Arc<Mutex<()>> {
+        std::sync::Arc::clone(
+            self.pinned_event_locks
+                .lock()
+                .await
+                .entry(room_id.to_owned())
+                .or_default(),
+        )
     }
 }
 
