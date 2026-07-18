@@ -1055,7 +1055,25 @@ async fn pinned_event_cache_get_or_seed(
         return Ok(existing.clone());
     }
     let room = require_room(client, room_id)?;
-    let seeded = room.pinned_event_ids().unwrap_or_default();
+    // Review fix: `Room::pinned_event_ids()` returns `None` both when the
+    // room genuinely has no pins *and* when local state simply hasn't
+    // caught up yet (e.g. right after joining, before the first full
+    // `/sync` of this room's state has landed). Treating `None` as "no
+    // pins" and seeding the cache with an empty list in the latter case
+    // meant the very next pin/unpin call's full-replacement write would
+    // silently drop every pin already on the homeserver. Fall back to an
+    // explicit network read — the same fallback matrix-sdk's own
+    // `Room::pin_event`/`unpin_event` used before this cache replaced them
+    // — so a `None` only ever seeds an empty list once the homeserver has
+    // confirmed there's genuinely nothing pinned.
+    let seeded = match room.pinned_event_ids() {
+        Some(ids) => ids,
+        None => room
+            .load_pinned_events()
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default(),
+    };
     cache.insert(parsed_room_id.to_owned(), seeded.clone());
     Ok(seeded)
 }
@@ -1506,6 +1524,50 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the unpin to succeed, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: when local synced state hasn't caught up
+    /// yet (`Room::pinned_event_ids()` returns `None`, e.g. right after
+    /// joining), the cache must fall back to a network `load_pinned_events`
+    /// read instead of assuming "no pins" and seeding an empty list — the
+    /// latter would let a subsequent pin/unpin's full-replacement write
+    /// silently drop pins that genuinely exist on the homeserver.
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_falls_back_to_network_when_local_state_is_unknown() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // Deliberately synced without ever sending an `m.room.pinned_events`
+        // state event — `Room::pinned_event_ids()` reads `None` here, not
+        // an empty list, since local state has no opinion either way.
+        server.sync_joined_room(&client, room_id).await;
+
+        let from_server = matrix_sdk::ruma::owned_event_id!("$already-pinned-on-server");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [from_server],
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let state = MatrixState::default();
+        let seeded = pinned_event_cache_get_or_seed(&state, &client, room_id, room_id.as_str())
+            .await
+            .expect("seeding should fall back to the network read and succeed");
+
+        assert_eq!(
+            seeded,
+            vec![from_server],
+            "expected the cache to be seeded from the server's own pinned list, not an empty one"
         );
     }
 

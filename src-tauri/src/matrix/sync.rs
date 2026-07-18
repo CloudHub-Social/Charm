@@ -186,6 +186,18 @@ async fn emit_room_updates(
             // discarding the just-cached write. A second quick pin would
             // then send a full replacement list missing the first one.
             if room_update_contains_pinned_events(update) {
+                // Review fix: this reconciliation write previously touched
+                // `pinned_event_cache` without holding the same per-room
+                // `pinned_event_locks` guard that `pin_event`/`unpin_event`
+                // use — a local pin/unpin racing this sync-triggered
+                // reconciliation could have its write silently overwritten
+                // by a stale read of `Room::pinned_event_ids()` landing in
+                // between the local write and the cache update. Acquiring
+                // the same lock here serializes reconciliation against
+                // local writes exactly like two local writes serialize
+                // against each other.
+                let lock = state.pinned_event_lock(room_id).await;
+                let _guard = lock.lock().await;
                 let mut pinned_cache = state.pinned_event_cache.lock().await;
                 if pinned_cache.contains_key(room_id) {
                     if let Some(room) = client.get_room(room_id) {
