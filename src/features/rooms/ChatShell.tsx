@@ -552,6 +552,21 @@ export function ChatShell({
   // guards against re-firing it on every subsequent `messages` update while
   // that request is still in flight.
   const loadRequestedForRef = useRef<string | null>(null);
+  // Review fix: `load_timeline_around_event`'s Rust-side focused-timeline
+  // fallback can install its listener and have that listener emit the
+  // `timeline:update` carrying the target event *before* the IPC promise
+  // itself resolves. In that ordering, the already-loaded branch below
+  // fires first, clears `loadRequestedForRef` and calls `onJumpHandled`,
+  // so when the promise's own `.then()` runs afterward, its
+  // `loadRequestedForRef.current !== requestKey` guard (there to reject
+  // truly superseded/stale requests) trips for this still-relevant one too
+  // — losing `installed_focused_view` entirely, even though Rust really
+  // did swap the room to a focused timeline. This tracks "already handled
+  // via the already-loaded branch, but still need this specific request's
+  // `installed_focused_view` once it resolves" independently of the dedup
+  // ref, so the `.then()` can still apply it without re-doing anything
+  // else (scroll/`onJumpHandled` already happened).
+  const handledAwaitingFocusedViewRef = useRef<string | null>(null);
   // Review fix: fallback for a `found: true` `loadTimelineAroundEvent`
   // result whose corresponding `timeline:update` never lands (or is
   // dropped) — see that branch's own comment for why this is needed.
@@ -576,6 +591,7 @@ export function ChatShell({
   if (previousJumpRoomIdRef.current !== (room?.room_id ?? null)) {
     previousJumpRoomIdRef.current = room?.room_id ?? null;
     loadRequestedForRef.current = null;
+    handledAwaitingFocusedViewRef.current = null;
     if (jumpFallbackTimeoutRef.current !== null) {
       clearTimeout(jumpFallbackTimeoutRef.current);
       jumpFallbackTimeoutRef.current = null;
@@ -593,6 +609,15 @@ export function ChatShell({
     const index = messages.findIndex((m) => m.event_id === jumpToEventId);
     if (index >= 0) {
       handleJumpToMessage(jumpToEventId);
+      // Review fix: if a `loadTimelineAroundEvent` call is still in flight
+      // for this exact jump (its own focused-timeline listener beat the
+      // IPC promise to emitting this update), remember that so the
+      // `.then()` below can still apply `installed_focused_view` once it
+      // resolves — everything else about this jump (scroll,
+      // `onJumpHandled`) is already handled right here.
+      if (loadRequestedForRef.current === requestKey) {
+        handledAwaitingFocusedViewRef.current = requestKey;
+      }
       loadRequestedForRef.current = null;
       // The normal path landed — cancel any fallback still pending from
       // this same jump so it can't later force-clear a subsequent one.
@@ -619,6 +644,22 @@ export function ChatShell({
     loadRequestedForRef.current = requestKey;
     loadTimelineAroundEvent(room.room_id, jumpToEventId)
       .then(({ found, installed_focused_view }) => {
+        // Review fix: the already-loaded branch above can fire for this
+        // exact request before this promise resolves (its own
+        // focused-timeline listener emitted the update first) — in that
+        // case it already cleared `loadRequestedForRef` and handled the
+        // scroll/`onJumpHandled`, but left `installed_focused_view` for
+        // this callback to still apply, tracked via
+        // `handledAwaitingFocusedViewRef`. Apply it and stop — everything
+        // else about this jump is already done.
+        if (handledAwaitingFocusedViewRef.current === requestKey) {
+          handledAwaitingFocusedViewRef.current = null;
+          if (installed_focused_view) {
+            mightHaveFocusedViewRef.current = true;
+            setHasFocusedView(true);
+          }
+          return;
+        }
         // Only act on this request if it's still the current one — cleared
         // (to `null`) the moment the already-loaded branch above fires for
         // this same jump, which can still happen before this promise

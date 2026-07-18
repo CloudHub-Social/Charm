@@ -3768,6 +3768,65 @@ describe("ChatShell", () => {
     expect(onJumpHandled).not.toHaveBeenCalled();
   });
 
+  it("still shows Jump to present when the focused timeline's own update lands before the loadTimelineAroundEvent promise resolves (review fix)", async () => {
+    // Review fix: `load_timeline_around_event`'s Rust-side fallback can
+    // install its focused-timeline listener and have that listener emit
+    // the `timeline:update` carrying the target *before* the IPC promise
+    // itself resolves. That ordering makes the already-loaded branch (scroll
+    // + onJumpHandled) fire first, which used to make the later
+    // `installed_focused_view: true` result get discarded by the
+    // requestKey guard — losing "Jump to present" entirely even though
+    // Rust really did swap the room to a focused timeline.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    const onJumpHandled = vi.fn();
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$older-bookmark"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    // The focused timeline's own listener emits its update first, landing
+    // the already-loaded branch — before the IPC promise below resolves.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+
+    // Only now does the IPC promise resolve, confirming a focused view was
+    // installed.
+    await act(async () => {
+      resolveLoadAround?.({ found: true, installed_focused_view: true });
+    });
+
+    expect(await screen.findByText("Jump to present")).toBeInTheDocument();
+    // The already-loaded branch already called onJumpHandled once — this
+    // resolution must not call it again.
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+  });
+
   it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
