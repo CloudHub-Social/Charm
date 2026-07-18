@@ -13,6 +13,7 @@ pub mod members;
 pub mod notifications;
 pub mod persistence;
 pub mod presence;
+pub mod privacy_settings;
 pub mod profiles;
 pub mod qr_login;
 pub mod room_admin;
@@ -206,15 +207,6 @@ pub struct MatrixState {
     /// aborts it and it polls `/sync` indefinitely. `spawn_sync_loop` aborts
     /// whatever's here before storing its own new handle.
     pub(crate) sync_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// The detached one-shot task `spawn_sync_loop` fires to report presence
-    /// as online (see its own doc comment for why that's separate from
-    /// `sync_loop_handle`'s long-running loop). Tracked for the same reason
-    /// as `sync_loop_handle`: it holds its own `Client` clone, so
-    /// `sync::abort_current_sync_loop` needs to abort and await this too —
-    /// otherwise a slow presence request could still be holding the old
-    /// store's SQLite files open when a login supersedes it, same hazard,
-    /// different task.
-    pub(crate) presence_task_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// The room currently open/focused in the frontend, set by
     /// `shell::set_focused_room` — read by each room's timeline listener to
     /// suppress local notifications for whatever room the user is already
@@ -280,7 +272,6 @@ impl Default for MatrixState {
             transitioning_timelines: Mutex::default(),
             latest_jump_target: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
-            presence_task_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
             notified_event_ids: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(MAX_NOTIFIED_EVENT_IDS)

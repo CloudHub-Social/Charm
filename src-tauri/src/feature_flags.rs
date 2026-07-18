@@ -125,6 +125,11 @@ define_feature_flag_keys!(
         /// entries, and the per-space context menu (Invite, Add Existing,
         /// Mark/Unmark Suggested, Remove, Leave).
         SpaceRailManagement,
+        /// Spec 40 presence and receipt privacy controls: hide read
+        /// receipts / typing indicators, appear-offline, auto-idle timeout,
+        /// plus the "seen by N" expandable list and presence status
+        /// message/last-active display.
+        PresencePrivacyControls,
         /// Day-2 Spec 12: personal, private message bookmarks and the global
         /// Saved Messages view.
         Bookmarks,
@@ -148,6 +153,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => false,
             FeatureFlagKey::RoomListMessagePreview => false,
             FeatureFlagKey::SpaceRailManagement => false,
+            FeatureFlagKey::PresencePrivacyControls => false,
             FeatureFlagKey::Bookmarks => false,
         }
     }
@@ -192,6 +198,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::SpaceRailManagement => {
                 "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave)."
             }
+            FeatureFlagKey::PresencePrivacyControls => {
+                "Privacy controls for read receipts, typing indicators, presence (appear offline), and auto-idle timeout, plus expanded seen-by and presence status display."
+            }
             FeatureFlagKey::Bookmarks => {
                 "Bookmark a message from its action menu and browse saved messages from a global Settings panel."
             }
@@ -216,6 +225,9 @@ impl FeatureFlagKey {
                 "Spec 54 (room-list enrichment and filtering)"
             }
             FeatureFlagKey::SpaceRailManagement => "Spec 63 (sidebar and space management)",
+            FeatureFlagKey::PresencePrivacyControls => {
+                "Spec 40 (presence and receipt privacy controls)"
+            }
             FeatureFlagKey::Bookmarks => "Day-2 Spec 12 (bookmarks and saved messages)",
         }
     }
@@ -236,6 +248,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
             FeatureFlagKey::SpaceRailManagement => "space_rail_management",
+            FeatureFlagKey::PresencePrivacyControls => "presence_privacy_controls",
             FeatureFlagKey::Bookmarks => "bookmarks",
         }
     }

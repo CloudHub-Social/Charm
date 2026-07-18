@@ -9,6 +9,7 @@ export type SettingsSection =
   | "general"
   | "desktop"
   | "focus"
+  | "privacy"
   | "saved-messages"
   | "about"
   | "keyboard-shortcuts"
@@ -26,6 +27,7 @@ const VALID_SECTIONS: readonly SettingsSection[] = [
   "general",
   "desktop",
   "focus",
+  "privacy",
   "saved-messages",
   "about",
   "keyboard-shortcuts",

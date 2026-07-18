@@ -71,6 +71,14 @@ vi.mock("@/features/room-info/useRoomDetails", () => ({
   useRoomDetails: () => ({ data: undefined, isLoading: false }),
 }));
 
+// Same rationale as `useRoomDetails` above — `usePrivacySettings` is also a
+// `useQuery` hook, and this test file deliberately renders `RoomsScreen`
+// without a `QueryClientProvider`. `useIdlePresence` itself is a no-op
+// without real settings, so stubbing this one stub is enough.
+vi.mock("@/features/settings/usePrivacySettings", () => ({
+  usePrivacySettings: () => ({ data: undefined, isLoading: false }),
+}));
+
 vi.mock("./ChatShell", () => ({
   ChatShell: ({
     room: activeRoom,

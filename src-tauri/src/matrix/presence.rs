@@ -106,19 +106,94 @@ pub fn register_presence_handler(app: AppHandle, client: &Client) {
 /// sync loop reports it on the *next* `/sync` too — otherwise a
 /// `Unavailable`/`Offline` choice here would be silently reverted back to
 /// `Online` by the sync loop's own `set_presence` parameter on its next poll.
+///
+/// Review fix: this used to apply whatever `presence` it was asked for
+/// unconditionally, racing Spec 40's "Appear offline" setting. The
+/// frontend's own idle timer (`useIdlePresence`) queues an `Online`/
+/// `Unavailable` call the moment activity resumes/stops, entirely
+/// independently of the privacy-settings mutation queue — if the user
+/// enabled Appear offline in the gap between that queued call being issued
+/// and it actually reaching this command, the stale idle write could land
+/// *after* `set_privacy_settings`'s own `Offline` push and silently
+/// override it, leaking real presence the user had just asked to hide.
+/// `Offline` itself is never blocked here (only `set_privacy_settings`
+/// sends it, and blocking it too would make turning Appear offline on a
+/// no-op). Enforced here rather than only in the frontend queue because
+/// this is the one place every presence-setting path — idle timer, manual
+/// toggle, any future caller — actually goes through.
 #[tauri::command]
 pub async fn set_presence(
+    app: tauri::AppHandle,
     state: State<'_, MatrixState>,
     presence: PresenceStateDto,
     status_msg: Option<String>,
 ) -> Result<(), String> {
+    // Review fix (P1): resolve the client once, up front, and read privacy
+    // settings via `current_settings_for_client` for both the pre-send and
+    // post-send checks below — using the same client throughout. This used
+    // to check settings via `current_settings(&state)` (which internally
+    // re-resolves its own client) and only resolve `state.require_client()`
+    // afterward for the actual send: a logout/login landing in that window
+    // meant the privacy check could read account A's settings while the
+    // send (and the post-send recheck) ran against account B's client,
+    // sending B's presence to the homeserver as if A's (now-irrelevant)
+    // appear_offline decision applied to it.
     let client = state.require_client().await?;
+    let appear_offline = super::privacy_settings::current_settings_for_client(&app, &client)
+        .await
+        .appear_offline;
+    if !presence_update_allowed(presence, appear_offline) {
+        // A stale idle-timer write (or any other caller) racing an
+        // `appear_offline` toggle — see this command's own doc comment.
+        return Ok(());
+    }
     set_presence_impl(&client, presence, status_msg).await?;
+    // Review fix (P1): re-checked *after* the send, not just before it — the
+    // pre-send check above only guards against `appear_offline` already
+    // being on when this call started. If it turns on while this request is
+    // still in flight, `set_privacy_settings` can persist/apply `Offline`
+    // first and then have this now-stale request land last, overwriting
+    // the homeserver's presence back to whatever non-offline value this
+    // call just sent.
+    //
+    // Review fix: this used to only skip the local `sync_presence` cache
+    // write in that case, leaving the just-sent non-offline presence live on
+    // the homeserver until the sync loop's own next poll happened to
+    // overwrite it — a real, if narrow, window where "Appear offline" was on
+    // but the homeserver (and thus every other client/user watching this
+    // account) still saw the stale non-offline state. Actively re-asserting
+    // `Offline` here closes that window immediately rather than waiting on
+    // the sync loop's timing.
+    if !presence_update_allowed(
+        presence,
+        super::privacy_settings::current_settings_for_client(&app, &client)
+            .await
+            .appear_offline,
+    ) {
+        let _ = set_presence_impl(&client, PresenceStateDto::Offline, None).await;
+        *state
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = PresenceStateDto::Offline;
+        return Ok(());
+    }
     *state
         .sync_presence
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = presence;
     Ok(())
+}
+
+/// Decides whether a `set_presence` request should actually be applied —
+/// pulled out of [`set_presence`] as a pure function so the "Appear offline
+/// wins over a stale idle write" logic (that command's own review-fix
+/// comment) is unit-testable without a live `Client`/`AppHandle`. `Offline`
+/// itself is always allowed; only `Online`/`Unavailable` get suppressed
+/// while `appear_offline` is on, matching `appear_offline_transition` in
+/// `privacy_settings.rs`, which is the only thing that's ever meant to send
+/// `Offline` in the first place.
+fn presence_update_allowed(presence: PresenceStateDto, appear_offline: bool) -> bool {
+    matches!(presence, PresenceStateDto::Offline) || !appear_offline
 }
 
 /// Core logic behind [`set_presence`], shared with [`set_presence_online`]
@@ -254,4 +329,37 @@ mod tests {
     // assert about the "unknown custom state" branch of
     // `presence_state_to_dto` here since ruma's `PresenceState::_Custom` is a
     // private variant this crate cannot construct.
+
+    // --- Spec 40 review fix: Appear offline wins over a stale idle write ---
+
+    #[test]
+    fn presence_update_allowed_blocks_online_while_appear_offline_is_on() {
+        assert!(!presence_update_allowed(PresenceStateDto::Online, true));
+    }
+
+    #[test]
+    fn presence_update_allowed_blocks_unavailable_while_appear_offline_is_on() {
+        assert!(!presence_update_allowed(
+            PresenceStateDto::Unavailable,
+            true
+        ));
+    }
+
+    #[test]
+    fn presence_update_allowed_always_allows_offline() {
+        // `Offline` is the one state `set_privacy_settings` itself sends to
+        // actually turn Appear offline on — blocking it too would make the
+        // toggle a no-op.
+        assert!(presence_update_allowed(PresenceStateDto::Offline, true));
+        assert!(presence_update_allowed(PresenceStateDto::Offline, false));
+    }
+
+    #[test]
+    fn presence_update_allowed_allows_online_and_unavailable_when_appear_offline_is_off() {
+        assert!(presence_update_allowed(PresenceStateDto::Online, false));
+        assert!(presence_update_allowed(
+            PresenceStateDto::Unavailable,
+            false
+        ));
+    }
 }

@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T16:10:08.605Z",
+  "generatedAt": "2026-07-18T06:54:09.330Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 30,
+    "shipped": 31,
     "follow-up": 10,
-    "in-progress": 2,
+    "in-progress": 1,
     "planned": 34
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 294,
-      "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-      "detail": "Day-2 Spec 12 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 293,
@@ -131,8 +124,8 @@
       ],
       "counts": {
         "shipped": 6,
-        "follow-up": 6,
-        "in-progress": 1,
+        "follow-up": 7,
+        "in-progress": 0,
         "planned": 23
       }
     },
@@ -156,8 +149,8 @@
         "day-2-13"
       ],
       "counts": {
-        "shipped": 0,
-        "follow-up": 1,
+        "shipped": 1,
+        "follow-up": 0,
         "in-progress": 1,
         "planned": 11
       }
@@ -1099,8 +1092,16 @@
       "number": 40,
       "title": "Presence and receipt privacy controls",
       "route": "/specs/day-1/spec-40--presence-and-receipt-privacy-controls/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 291,
+          "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/291",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-18T06:46:28Z"
+        },
         {
           "number": 292,
           "title": "feat(privacy): presence and receipt privacy controls (Spec 40)",
@@ -1108,14 +1109,6 @@
           "state": "closed",
           "draft": false,
           "updatedAt": "2026-07-17T01:34:22Z"
-        },
-        {
-          "number": 291,
-          "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/291",
-          "state": "open",
-          "draft": false,
-          "updatedAt": "2026-07-17T01:27:02Z"
         }
       ],
       "issues": []
@@ -1472,7 +1465,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/293",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T01:51:57Z"
+          "updatedAt": "2026-07-18T06:47:18Z"
         }
       ],
       "issues": []
@@ -1553,15 +1546,15 @@
       "number": 12,
       "title": "Bookmarks and saved messages",
       "route": "/specs/day-2/spec-12--bookmarks-and-saved-messages/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 294,
           "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-17T16:09:16Z"
+          "updatedAt": "2026-07-18T06:13:20Z"
         }
       ],
       "issues": []

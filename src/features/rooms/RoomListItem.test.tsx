@@ -269,6 +269,40 @@ describe("RoomListItem", () => {
     expect(await screen.findByText("Online")).toBeInTheDocument();
   });
 
+  // Review fix: `PresenceDot`'s detail tooltip trigger must not be
+  // independently `tabIndex`-focusable here — the whole row is already a
+  // `<button>` (see `onSelect`), so a focusable element inside it is an
+  // axe `nested-interactive` violation this repo's Storybook a11y gate
+  // enforces. `RoomListItem` passes `insideInteractiveParent` to opt out of
+  // that `tabIndex`, unlike `ChatShell`'s DM header (not itself a button).
+  it("does not nest a focusable presence-detail tooltip trigger inside the row's own button", async () => {
+    // A distinct peer id from the adjacent test above — `usePresence`'s
+    // jotai atom family isn't reset between tests here (no per-test
+    // `<Provider>`), so reusing "@peer:localhost" would read that other
+    // test's already-populated (status_msg: null) atom and skip this
+    // test's own `getPresence` fetch entirely.
+    featureFlagTestHooks.setCache({ presence_privacy_controls: true });
+    getPresence.mockResolvedValueOnce({
+      user_id: "@peer-with-detail:localhost",
+      presence: "online",
+      status_msg: "Making cupcakes",
+      last_active_ago_ms: 5 * 60_000,
+    });
+    const { container } = render(
+      <RoomListItem
+        room={makeRoomSummary({ is_direct: true, dm_peer_user_id: "@peer-with-detail:localhost" })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    await screen.findByText(/Making cupcakes/);
+
+    const row = container.querySelector("button");
+    expect(row).not.toBeNull();
+    const nestedFocusable = row?.querySelector("[tabindex]");
+    expect(nestedFocusable).toBeNull();
+  });
+
   it("shows no presence dot for a group room", () => {
     render(
       <RoomListItem

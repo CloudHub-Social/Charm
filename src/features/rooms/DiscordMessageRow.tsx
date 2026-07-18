@@ -1,5 +1,4 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
@@ -8,7 +7,8 @@ import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
-import { MAX_RECEIPT_AVATARS, formatTime, type MessageRowLayoutProps } from "./messageRowShared";
+import { SeenByChips } from "./SeenByChips";
+import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
 
 /** Flat, left-aligned, avatar-per-sender-block layout (Charm 2.0 Spec 27).
  * Own and others' messages look the same — no left/right split, no bubble
@@ -175,43 +175,11 @@ export function DiscordMessageRow({
             {isError && (message.edited ? " · failed to send" : "failed to send")}
           </span>
         )}
-        {readers.length > 0 && (
-          <TooltipProvider>
-            {/* Deliberately not the shared Avatar/AvatarGroup components:
-                those only offer sm/default/lg (24/32/40px), all too large
-                for a read-receipt chip — the design calls for a much
-                smaller 14px chip. */}
-            <div className="mt-0.5 flex items-center gap-[3px]">
-              {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => {
-                const readerName = senderNameByUserId.get(userId) ?? userId;
-                return (
-                  <Tooltip key={userId}>
-                    <TooltipTrigger asChild>
-                      {/* tabIndex={0}: keyboard/screen-reader users can tab
-                          to a chip and get the same "Read by {name}" info a
-                          mouse hover gives — not just decorative. */}
-                      {/* oxlint-disable jsx-a11y/no-noninteractive-tabindex */}
-                      <span
-                        tabIndex={0}
-                        style={{ background: avatarColor(userId) }}
-                        className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white ring-1 ring-background"
-                      >
-                        {initials(userId, senderNameByUserId.get(userId) ?? null)}
-                      </span>
-                      {/* oxlint-enable jsx-a11y/no-noninteractive-tabindex */}
-                    </TooltipTrigger>
-                    <TooltipContent>Read by {readerName}</TooltipContent>
-                  </Tooltip>
-                );
-              })}
-              {readers.length > MAX_RECEIPT_AVATARS && (
-                <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-muted text-[7px] font-bold text-muted-foreground ring-1 ring-background">
-                  +{readers.length - MAX_RECEIPT_AVATARS}
-                </span>
-              )}
-            </div>
-          </TooltipProvider>
-        )}
+        {/* Deliberately not the shared Avatar/AvatarGroup components: those
+            only offer sm/default/lg (24/32/40px), all too large for a
+            read-receipt chip — the design calls for a much smaller 14px
+            chip. */}
+        <SeenByChips readers={readers} senderNameByUserId={senderNameByUserId} className="mt-0.5" />
       </div>
     </div>
   );

@@ -3,9 +3,10 @@ use matrix_sdk::ruma::events::receipt::{ReceiptEventContent, ReceiptThread};
 use matrix_sdk::ruma::events::typing::TypingEventContent;
 use matrix_sdk::ruma::{OwnedEventId, RoomId, UserId};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
+use super::privacy_settings;
 use super::MatrixState;
 
 /// One user's receipt on one event, flattened out of the nested
@@ -125,27 +126,53 @@ fn parse_room(client: &matrix_sdk::Client, room_id: &str) -> Result<matrix_sdk::
 /// clearing the "jump to unread" fully-read marker Spec 06 depends on.
 #[tauri::command]
 pub async fn send_read_receipt(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     event_id: String,
     private: bool,
 ) -> Result<(), String> {
+    // Review fix (P1): resolve the client once and derive the privacy
+    // settings from that same client, rather than checking settings via
+    // `state` (which re-resolves its own client internally) and then
+    // separately re-resolving a possibly-different client to send — see
+    // `privacy_settings::current_settings_for_client`'s doc comment.
     let client = state.require_client().await?;
-    send_read_receipt_impl(&client, &room_id, event_id, private).await
+    let hide_read_receipts = privacy_settings::current_settings_for_client(&app, &client)
+        .await
+        .hide_read_receipts;
+    send_read_receipt_impl(&client, &room_id, event_id, private, hide_read_receipts).await
 }
 
-/// Core logic behind [`send_read_receipt`].
+/// Core logic behind [`send_read_receipt`]. Always sends the
+/// `m.fully_read` marker (a private, per-user pointer — never visible to
+/// other users, so Spec 40's "hide read receipts" doesn't apply to it and
+/// local "jump to unread" tracking keeps working). When `hide_read_receipts`
+/// is set, a requested public `m.read` receipt is downgraded to a private
+/// `m.read.private` one rather than skipped outright — see this function's
+/// own review-fix comment for why dropping it entirely was a bug.
 pub async fn send_read_receipt_impl(
     client: &matrix_sdk::Client,
     room_id: &str,
     event_id: String,
     private: bool,
+    hide_read_receipts: bool,
 ) -> Result<(), String> {
     let room = parse_room(client, room_id)?;
     let parsed_event_id = OwnedEventId::try_from(event_id).map_err(|e| e.to_string())?;
 
     let mut receipts = Receipts::new().fully_read_marker(parsed_event_id.clone());
-    receipts = if private {
+    // Review fix: this used to skip the receipt entirely whenever
+    // `hide_read_receipts` was on, even for a caller that explicitly asked
+    // for a *private* receipt (`private: true`) — but `m.read.private` is
+    // never visible to other users by definition, so hiding *public*
+    // receipts has no reason to also suppress it. `hide_read_receipts` only
+    // ever downgrades a requested public receipt to private (matching
+    // `mark_room_read_impl`'s identical fallback), never drops the receipt
+    // outright — otherwise the user's own homeserver-tracked read position
+    // stops advancing at all while hidden, leaving unread/notification
+    // counts stuck across sync and other devices.
+    receipts = if private || hide_read_receipts {
         receipts.private_read_receipt(parsed_event_id)
     } else {
         receipts.public_read_receipt(parsed_event_id)
@@ -159,13 +186,28 @@ pub async fn send_read_receipt_impl(
 /// Sends (or stops) our own `m.typing` notice for a room. The SDK
 /// deduplicates/refreshes the EDU timeout internally, so this is safe to call
 /// on every keystroke.
+/// If `typing` is `true` and the user has hidden typing indicators (Spec
+/// 40), this is a silent no-op — the SDK is never told to send an
+/// `m.typing` notice. A `typing=false` call always goes through (harmless
+/// even when nothing was started, and ensures a leftover indicator from
+/// before the setting was toggled on gets cleared).
 #[tauri::command]
 pub async fn send_typing(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     typing: bool,
 ) -> Result<(), String> {
+    // Review fix (P1): same client-snapshot ordering as `send_read_receipt`
+    // above.
     let client = state.require_client().await?;
+    if typing
+        && privacy_settings::current_settings_for_client(&app, &client)
+            .await
+            .hide_typing
+    {
+        return Ok(());
+    }
     send_typing_impl(&client, &room_id, typing).await
 }
 
@@ -181,15 +223,30 @@ pub async fn send_typing_impl(
 
 /// Convenience command used both when a room becomes active and by the
 /// room-list "mark read" action: resolves the latest event in the room and
-/// sends a public read receipt + fully-read marker to it.
+/// sends a public read receipt + fully-read marker to it (the receipt is
+/// downgraded to private, same as [`send_read_receipt`], when the user has
+/// hidden read receipts — the fully-read marker is always sent).
 #[tauri::command]
-pub async fn mark_room_read(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+pub async fn mark_room_read(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<(), String> {
+    // Review fix (P1): same client-snapshot ordering as `send_read_receipt`
+    // above.
     let client = state.require_client().await?;
-    mark_room_read_impl(&client, &room_id).await
+    let hide_read_receipts = privacy_settings::current_settings_for_client(&app, &client)
+        .await
+        .hide_read_receipts;
+    mark_room_read_impl(&client, &room_id, hide_read_receipts).await
 }
 
 /// Core logic behind [`mark_room_read`].
-pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> Result<(), String> {
+pub async fn mark_room_read_impl(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    hide_read_receipts: bool,
+) -> Result<(), String> {
     let room = parse_room(client, room_id)?;
 
     let Some(latest_event_id) = room.latest_event().event_id() else {
@@ -197,9 +254,20 @@ pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> 
         return Ok(());
     };
 
-    let receipts = Receipts::new()
-        .fully_read_marker(latest_event_id.clone())
-        .public_read_receipt(latest_event_id);
+    let mut receipts = Receipts::new().fully_read_marker(latest_event_id.clone());
+    // Review fix: hiding read receipts must only suppress the *public*
+    // `m.read` receipt (visible to other room members) — this previously
+    // skipped sending any receipt at all when hidden, including the
+    // private `m.read.private` one. `mark_room_read` is what runs on
+    // opening a room and from the room-list "mark as read" action, so a
+    // user who hid public receipts would stop advancing their own
+    // homeserver-tracked read position entirely, leaving unread/
+    // notification counts stuck across sync and other devices.
+    if hide_read_receipts {
+        receipts = receipts.private_read_receipt(latest_event_id);
+    } else {
+        receipts = receipts.public_read_receipt(latest_event_id);
+    }
 
     room.send_multiple_receipts(receipts)
         .await
@@ -299,5 +367,41 @@ mod tests {
 
         let user_ids = typing_content_to_user_ids(&content, None);
         assert_eq!(user_ids, vec!["@alice:example.com".to_string()]);
+    }
+
+    /// Review fix regression test: same downgrade-not-skip behavior for
+    /// `send_read_receipt_impl` when a *public* receipt is requested while
+    /// hidden.
+    #[tokio::test]
+    async fn send_read_receipt_impl_downgrades_a_public_receipt_when_hidden() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+        let event_id = matrix_sdk::ruma::owned_event_id!("$event");
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/read_markers"
+            )))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "m.read.private": event_id,
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result =
+            send_read_receipt_impl(&client, room_id.as_str(), event_id.to_string(), false, true)
+                .await;
+        assert!(
+            result.is_ok(),
+            "expected send-read-receipt to succeed, got {result:?}"
+        );
     }
 }

@@ -69,6 +69,12 @@ const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 const openUrl = vi.fn().mockResolvedValue(undefined);
 const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+const getPrivacySettings = vi.fn().mockResolvedValue({
+  hide_read_receipts: false,
+  hide_typing: false,
+  appear_offline: false,
+  idle_timeout_minutes: null,
+});
 const listBookmarks = vi.fn().mockResolvedValue([]);
 const addBookmark = vi.fn().mockResolvedValue(undefined);
 const removeBookmark = vi.fn().mockResolvedValue(undefined);
@@ -223,6 +229,11 @@ vi.mock("@/lib/matrix", () => ({
   // this test file doesn't mock.
   getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
   getUrlPreview: vi.fn(),
+  // `useChatTyping` reads this (Spec 40 review fix: withdraws an
+  // already-sent typing notice when hide_typing flips on) — default keeps
+  // existing typing-indicator tests unaffected; overridden where the fix
+  // itself is exercised.
+  getPrivacySettings: (...args: unknown[]) => getPrivacySettings(...args),
   // Spec 12 (bookmarks): defaults to "nothing bookmarked yet" —
   // `useMessageActions` fetches this unconditionally whenever the active
   // room changes.
@@ -358,6 +369,12 @@ describe("ChatShell", () => {
     discardFailedMessage.mockReset().mockResolvedValue(true);
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
+    getPrivacySettings.mockReset().mockResolvedValue({
+      hide_read_receipts: false,
+      hide_typing: false,
+      appear_offline: false,
+      idle_timeout_minutes: null,
+    });
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
@@ -2880,14 +2897,20 @@ describe("ChatShell", () => {
       el.className.includes("text-[7px]"),
     );
     if (!chip) throw new Error("read-receipt chip not found");
-    // Real DOM focus (not `fireEvent.focus`, which dispatches a plain
-    // non-bubbling `focus` event that React's `focusin`-based delegation
-    // never sees) — the chip is `tabIndex={0}` specifically so keyboard/
-    // screen-reader users can reach it, and Radix's TooltipTrigger opens
-    // instantly on focus, which doubles as the simplest reliable way to
-    // exercise the Radix wiring here without simulating pointer hover.
+    // Review fix: `SeenByChips` now wraps the whole chip stack in an outer
+    // `PopoverTrigger` button (so a no-overflow stack can also open the
+    // full "Seen by" list — see that file's own review-fix comment), which
+    // means the individual per-avatar tooltip trigger can no longer also be
+    // independently `tabIndex`-focusable without nesting two nested
+    // interactive controls (an axe `nested-interactive` violation this
+    // repo's Storybook a11y gate enforces). Its `onPointerMove` handler is
+    // untouched though, so real mouse hover still opens the per-avatar
+    // "Read by {name}" tooltip — exercised here via a synthetic
+    // `pointerMove` instead of the previous `chip.focus()`. Keyboard/
+    // screen-reader users now reach the same "Read by Alice" info via the
+    // outer trigger's full list instead (covered by `SeenByChips.test.tsx`).
     await act(async () => {
-      chip.focus();
+      fireEvent.pointerMove(chip, { pointerType: "mouse" });
       // Radix's Tooltip Presence/Portal content needs a tick beyond the
       // synchronous `open` state flip to actually mount into the portal.
       await new Promise((resolve) => setTimeout(resolve, 0));
