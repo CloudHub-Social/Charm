@@ -65,7 +65,7 @@ describe("useIdlePresence", () => {
     expect(setPresence).toHaveBeenCalledWith("unavailable");
   });
 
-  it("resumes to online after activity following an idle transition", () => {
+  it("resumes to online after activity following an idle transition", async () => {
     const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
       initialProps: {
         settings: {
@@ -79,6 +79,10 @@ describe("useIdlePresence", () => {
 
     vi.advanceTimersByTime(6 * 60_000);
     expect(setPresence).toHaveBeenCalledWith("unavailable");
+    // `isIdleRef` only flips once the `setPresence` promise settles (review
+    // fix) — flush the microtask queue so that resolution is observed
+    // before the next poll relies on it.
+    await vi.waitFor(() => {});
     setPresence.mockClear();
 
     window.dispatchEvent(new Event("mousemove"));
@@ -95,7 +99,7 @@ describe("useIdlePresence", () => {
     expect(setPresence).toHaveBeenCalledWith("online");
   });
 
-  it("restores online when auto-idle is disabled while already idle (review fix)", () => {
+  it("restores online when auto-idle is disabled while already idle (review fix)", async () => {
     const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
       initialProps: {
         settings: {
@@ -109,6 +113,10 @@ describe("useIdlePresence", () => {
 
     vi.advanceTimersByTime(6 * 60_000);
     expect(setPresence).toHaveBeenCalledWith("unavailable");
+    // See the equivalent flush above — this transition reads `isIdleRef`
+    // synchronously (outside the interval poll), so it must observe the
+    // post-settle value.
+    await vi.waitFor(() => {});
     setPresence.mockClear();
 
     rerender({
@@ -191,5 +199,40 @@ describe("useIdlePresence", () => {
     // not have gone idle yet.
     vi.advanceTimersByTime(4 * 60_000);
     expect(setPresence).not.toHaveBeenCalled();
+  });
+
+  it("retries the idle transition on the next poll after a transient setPresence failure (review fix)", async () => {
+    // Review fix regression test: `isIdleRef` used to flip to `true`
+    // *before* `setPresence` resolved. If that call transiently failed,
+    // the ref already reflected "idle" even though the Rust side never
+    // actually got the update, so the next poll saw
+    // `shouldBeIdle === isIdleRef.current` and silently gave up retrying
+    // until the user crossed the idle/active boundary again.
+    setPresence.mockRejectedValueOnce(new Error("transient failure"));
+    renderHook(() =>
+      useIdlePresence({
+        hide_read_receipts: false,
+        hide_typing: false,
+        appear_offline: false,
+        idle_timeout_minutes: 5,
+      }),
+    );
+
+    // Land exactly on the poll that first crosses the timeout, so only a
+    // single (rejected) attempt happens before the assertions below —
+    // advancing further would let the hook's own next poll retry on its
+    // own and mask the bug this test targets.
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(setPresence).toHaveBeenCalledOnce();
+    expect(setPresence).toHaveBeenCalledWith("unavailable");
+    // Let the rejection settle without flipping `isIdleRef`.
+    await Promise.resolve();
+    await Promise.resolve();
+    setPresence.mockClear().mockResolvedValue(undefined);
+
+    // The very next poll should retry rather than assuming the transition
+    // already succeeded.
+    vi.advanceTimersByTime(15_000);
+    expect(setPresence).toHaveBeenCalledWith("unavailable");
   });
 });

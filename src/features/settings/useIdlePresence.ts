@@ -101,12 +101,25 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
     const interval = setInterval(() => {
       const idleFor = Date.now() - lastActivityRef.current;
       const shouldBeIdle = idleFor >= timeoutMs;
+      // Review fix: only flip `isIdleRef` once `setPresence` has actually
+      // succeeded. Flipping it optimistically first meant a transient IPC
+      // failure left the Rust side's presence state un-updated while the
+      // JS-side ref already reflected the new state — the next poll would
+      // then see `shouldBeIdle === isIdleRef.current` and skip retrying,
+      // silently leaving presence wrong until the user next crossed the
+      // idle/active boundary.
       if (shouldBeIdle && !isIdleRef.current) {
-        isIdleRef.current = true;
-        setPresence("unavailable").catch(logAndIgnore);
+        setPresence("unavailable")
+          .then(() => {
+            isIdleRef.current = true;
+          })
+          .catch(logAndIgnore);
       } else if (!shouldBeIdle && isIdleRef.current) {
-        isIdleRef.current = false;
-        setPresence("online").catch(logAndIgnore);
+        setPresence("online")
+          .then(() => {
+            isIdleRef.current = false;
+          })
+          .catch(logAndIgnore);
       }
     }, CHECK_INTERVAL_MS);
 
