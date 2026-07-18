@@ -94,4 +94,60 @@ describe("useIdlePresence", () => {
     vi.advanceTimersByTime(15_000);
     expect(setPresence).toHaveBeenCalledWith("online");
   });
+
+  it("restores online when auto-idle is disabled while already idle (review fix)", () => {
+    const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
+      initialProps: {
+        settings: {
+          hide_read_receipts: false,
+          hide_typing: false,
+          appear_offline: false,
+          idle_timeout_minutes: 5 as number | null,
+        },
+      },
+    });
+
+    vi.advanceTimersByTime(6 * 60_000);
+    expect(setPresence).toHaveBeenCalledWith("unavailable");
+    setPresence.mockClear();
+
+    rerender({
+      settings: {
+        hide_read_receipts: false,
+        hide_typing: false,
+        appear_offline: false,
+        idle_timeout_minutes: null,
+      },
+    });
+
+    expect(setPresence).toHaveBeenCalledWith("online");
+  });
+
+  it("restores online when appear_offline turns on while already idle (review fix)", () => {
+    const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
+      initialProps: {
+        settings: {
+          hide_read_receipts: false,
+          hide_typing: false,
+          appear_offline: false,
+          idle_timeout_minutes: 5,
+        },
+      },
+    });
+
+    vi.advanceTimersByTime(6 * 60_000);
+    expect(setPresence).toHaveBeenCalledWith("unavailable");
+    setPresence.mockClear();
+
+    rerender({
+      settings: {
+        hide_read_receipts: false,
+        hide_typing: false,
+        appear_offline: true,
+        idle_timeout_minutes: 5,
+      },
+    });
+
+    expect(setPresence).toHaveBeenCalledWith("online");
+  });
 });

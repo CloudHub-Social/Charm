@@ -29,8 +29,17 @@ const CHECK_INTERVAL_MS = 15_000;
 export function useIdlePresence(settings: PrivacySettings | undefined): void {
   const lastActivityRef = useRef(Date.now());
   const isIdleRef = useRef(false);
+  const timeoutMinutes = settings?.idle_timeout_minutes ?? null;
+  const appearOffline = settings?.appear_offline ?? false;
+  // Review fix: auto-idle disabled (`timeoutMinutes == null`) is the
+  // default/common case — the previous version still added these global
+  // activity listeners unconditionally, tracking `lastActivityRef` for a
+  // feature that was never going to use it. Only listen while there's
+  // actually a timeout to measure against.
+  const autoIdleEnabled = timeoutMinutes != null;
 
   useEffect(() => {
+    if (!autoIdleEnabled) return undefined;
     const handleActivity = () => {
       lastActivityRef.current = Date.now();
     };
@@ -42,12 +51,24 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
         window.removeEventListener(event, handleActivity);
       }
     };
-  }, []);
+  }, [autoIdleEnabled]);
 
   useEffect(() => {
-    const timeoutMinutes = settings?.idle_timeout_minutes ?? null;
-    const appearOffline = settings?.appear_offline ?? false;
     if (timeoutMinutes == null || appearOffline) {
+      // Review fix: this used to just reset `isIdleRef` to `false` without
+      // ever calling `setPresence("online")` when auto-idle was disabled
+      // (or `appearOffline` turned on) *while already idle* — e.g. the user
+      // changes the timeout to "Never" after presence has already gone
+      // `unavailable`. Since the interval below is also torn down here,
+      // nothing would ever restore `online` afterward: the next real
+      // activity no longer has a running interval to notice it, and
+      // `isIdleRef` already reads `false` so even a later re-enable
+      // wouldn't see a stale-idle state to correct. Explicitly restore
+      // `online` here before resetting, whenever this transition happens
+      // while genuinely idle.
+      if (isIdleRef.current) {
+        setPresence("online").catch(logAndIgnore);
+      }
       isIdleRef.current = false;
       return undefined;
     }
@@ -66,5 +87,5 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
     }, CHECK_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [settings?.idle_timeout_minutes, settings?.appear_offline]);
+  }, [timeoutMinutes, appearOffline]);
 }

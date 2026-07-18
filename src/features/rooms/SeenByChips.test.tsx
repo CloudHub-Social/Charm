@@ -1,7 +1,14 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SeenByChips } from "./SeenByChips";
 import { renderWithProviders } from "@/test/renderWithProviders";
+import { useFlag } from "@/featureFlags";
+import type * as FeatureFlagsModule from "@/featureFlags";
+
+vi.mock("@/featureFlags", async () => {
+  const actual = await vi.importActual<typeof FeatureFlagsModule>("@/featureFlags");
+  return { ...actual, useFlag: vi.fn(() => true) };
+});
 
 describe("SeenByChips", () => {
   it("renders nothing when there are no readers", () => {
@@ -45,5 +52,20 @@ describe("SeenByChips", () => {
     expect(screen.getByText("Dave")).toBeInTheDocument();
     // Readers without a resolved display name fall back to the raw user id.
     expect(screen.getByText("@b:localhost")).toBeInTheDocument();
+  });
+
+  it("falls back to a static, non-interactive '+N' when presence_privacy_controls is off", () => {
+    vi.mocked(useFlag).mockReturnValueOnce(false);
+    const readers = [
+      "@a:localhost",
+      "@b:localhost",
+      "@c:localhost",
+      "@d:localhost",
+      "@e:localhost",
+    ];
+    renderWithProviders(<SeenByChips readers={readers} senderNameByUserId={new Map()} />);
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByText("+2")).toBeInTheDocument();
   });
 });

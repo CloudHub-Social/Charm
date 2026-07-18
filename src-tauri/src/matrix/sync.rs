@@ -403,19 +403,6 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         previous_sync.abort();
         let _ = previous_sync.await;
     }
-    // The detached presence-report task also holds its own `Client` clone
-    // (see `spawn_sync_loop`'s doc comment) — same handle-safety rationale
-    // as the sync loop above, just a second, separate task to stop.
-    let previous_presence = app
-        .state::<MatrixState>()
-        .presence_task_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
-    if let Some(previous_presence) = previous_presence {
-        previous_presence.abort();
-        let _ = previous_presence.await;
-    }
     app.state::<MatrixState>().clear_timelines().await;
     *app.state::<MatrixState>().client.lock().await = None;
 }
@@ -438,56 +425,47 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
 /// subsequent event.
 pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
-
-    // Best-effort: some homeservers disable presence entirely, and a failure
-    // here shouldn't ever block or fail login/session-restore.
-    //
-    // Review fix: this used to unconditionally call `set_presence_online`,
-    // ignoring a persisted `appear_offline` privacy setting (Spec 40) — so a
-    // user who'd asked to appear offline would be shown online again after
-    // every app restart or session restore, until they happened to re-open
-    // the Privacy settings panel and re-toggle it. Read the persisted
-    // setting first and seed both the initial presence request and
-    // `sync_presence` (so the sync loop's subsequent `sync_once` calls keep
-    // reasserting the right state, not just this one-shot call) to match.
-    {
-        let client = client.clone();
-        let app_for_presence = app_for_handle.clone();
-        let presence_task = tokio::spawn(async move {
-            let privacy = privacy_settings::current_settings(
-                &app_for_presence,
-                &app_for_presence.state::<MatrixState>(),
-            )
-            .await;
-            let initial_presence = if privacy.appear_offline {
-                PresenceStateDto::Offline
-            } else {
-                PresenceStateDto::Online
-            };
-            if presence::set_presence_impl(&client, initial_presence, None)
-                .await
-                .is_ok()
-            {
-                *app_for_presence
-                    .state::<MatrixState>()
-                    .sync_presence
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = initial_presence;
-            }
-        });
-        let previous = app_for_handle
-            .state::<MatrixState>()
-            .presence_task_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(presence_task);
-        if let Some(previous) = previous {
-            previous.abort();
-        }
-    }
-
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+
+        // Best-effort: some homeservers disable presence entirely, and a
+        // failure here shouldn't ever block or fail login/session-restore.
+        //
+        // Review fix: this used to unconditionally call
+        // `set_presence_online`, ignoring a persisted `appear_offline`
+        // privacy setting (Spec 40) — so a user who'd asked to appear
+        // offline would be shown online again after every app restart or
+        // session restore, until they happened to re-open the Privacy
+        // settings panel and re-toggle it. Read the persisted setting
+        // first and seed both the initial presence request and
+        // `sync_presence` (so the sync loop's subsequent `sync_once` calls
+        // keep reasserting the right state, not just this one-shot call)
+        // to match.
+        //
+        // Review fix: this used to run as a separate, detached
+        // `tokio::spawn` racing the `sync_once` call below — the initial
+        // `/sync` request has no explicit presence override of its own, so
+        // the server could still see (and broadcast) this account as
+        // online for however long that detached task took to actually
+        // apply `appear_offline`, before session-restore/restart had a
+        // chance to hide it. Awaited here, sequentially, *before*
+        // `sync_once` runs at all, so appear-offline is genuinely applied
+        // ahead of the first sync request rather than racing it.
+        let privacy = privacy_settings::current_settings(&app, &app.state::<MatrixState>()).await;
+        let initial_presence = if privacy.appear_offline {
+            PresenceStateDto::Offline
+        } else {
+            PresenceStateDto::Online
+        };
+        if presence::set_presence_impl(&client, initial_presence, None)
+            .await
+            .is_ok()
+        {
+            *app.state::<MatrixState>()
+                .sync_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = initial_presence;
+        }
 
         // Subscribing spawns the task that listens to
         // `client.subscribe_to_all_room_updates()` — the event cache (and

@@ -86,12 +86,32 @@ async fn account_key_for(state: &State<'_, MatrixState>) -> Result<String, Strin
     Ok(super::persistence::account_key(user_id.as_str()))
 }
 
-/// Best-effort helper other command modules (`ephemeral.rs`) use to check
-/// current privacy settings before deciding whether to suppress an outgoing
-/// receipt/typing event. Falls back to all-off defaults (never suppress) if
-/// the account key can't be resolved or the file can't be read, so a
-/// transient read error never silently blocks message-read/typing UX.
+/// Best-effort helper other command modules (`ephemeral.rs`, `sync.rs`) use
+/// to check current privacy settings before deciding whether to suppress an
+/// outgoing receipt/typing event or apply appear-offline presence. Falls
+/// back to all-off defaults (never suppress) if the account key can't be
+/// resolved or the file can't be read, so a transient read error never
+/// silently blocks message-read/typing UX.
+///
+/// Review fix: this used to return whatever was persisted regardless of
+/// whether `presence_privacy_controls` is currently enabled — if a rollout
+/// is killed (or a local override cleared) after a user had already turned
+/// on `hide_read_receipts`/`hide_typing`/`appear_offline`, enforcement would
+/// keep silently suppressing/forcing based on a setting the Settings UI no
+/// longer exposes at all, with no way for the user to see or undo it. All
+/// callers go through this one function, so gating it here once covers
+/// every enforcement site uniformly rather than needing the flag check
+/// duplicated at each call site.
 pub async fn current_settings(app: &AppHandle, state: &State<'_, MatrixState>) -> PrivacySettings {
+    let flag_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::PresencePrivacyControls,
+        )
+    });
+    if !flag_enabled {
+        return PrivacySettings::default();
+    }
     let Ok(account_key) = account_key_for(state).await else {
         return PrivacySettings::default();
     };
