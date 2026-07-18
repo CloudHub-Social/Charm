@@ -99,6 +99,7 @@ async fn emit_room_updates(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
 ) {
+    let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -159,6 +160,29 @@ async fn emit_room_updates(
         if state_events_present {
             if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
                 let _ = app.emit("room_details:update", details);
+            }
+            // Review fix: `room_admin::pin_event`/`unpin_event` maintain
+            // their own `pinned_event_cache` (see its own doc comment) so a
+            // pin/unpin write can be immediately followed by another one
+            // without racing matrix-sdk's sync-lagged local state — but
+            // that means the cache goes stale the moment *another* client
+            // changes the room's pins, or once this client's own write
+            // finally lands via a later `/sync` (harmless in that case,
+            // since the two already agree). Reconciling from
+            // `Room::pinned_event_ids()` here, right after this response
+            // has just updated that same local state, keeps the cache
+            // current for both cases — but only for a room this cache
+            // already has an entry for, so a plain state-event update in a
+            // room nobody has ever pinned/unpinned via this session
+            // doesn't grow the map for no reason.
+            let mut pinned_cache = state.pinned_event_cache.lock().await;
+            if pinned_cache.contains_key(room_id) {
+                if let Some(room) = client.get_room(room_id) {
+                    pinned_cache.insert(
+                        room_id.to_owned(),
+                        room.pinned_event_ids().unwrap_or_default(),
+                    );
+                }
             }
         }
     }
