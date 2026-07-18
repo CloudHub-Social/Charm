@@ -3,19 +3,19 @@ title: "Charm 2.0 Spec — User feedback categorization and GitHub label mapping
 type: spec
 project: "Charm 2.0"
 created: "2026-07-10"
-status: in-progress
+status: shipped
 sidebar:
   label: "User feedback categorization"
 ---
 
 ## Implementation status
 
-**Follow-up required.** [PR #165](https://github.com/CloudHub-Social/Charm/pull/165)
-shipped the required Bug / Feature request selector and the
-`charm.feedback.category` Sentry tag. The acceptance criterion that maps those
-categories to GitHub labels is still an owner-operated Sentry organization change;
-the PR explicitly records that no end-to-end label mapping was configured or
-verified. This spec is therefore not complete yet.
+**Done.** [PR #165](https://github.com/CloudHub-Social/Charm/pull/165) shipped
+the required Bug / Feature request selector and the `charm.feedback.category`
+Sentry tag. The remaining acceptance criterion — the owner-operated Sentry
+organization change mapping those categories to GitHub labels — was confirmed
+2026-07-18: Bug and Feature request submissions are now labeled correctly on
+the resulting GitHub issues via Sentry's GitHub integration.
 
 :::note[Historical baseline]
 The repository-state analysis below predates PR #165. Keep it as design history,
@@ -67,10 +67,12 @@ fully unimplemented, unlike Specs 23/24 which turned out partially built.
 feedback category and GitHub label mapping"). Touched `SENTRY.md`,
 `ErrorFallback.tsx`(+test), `ObservabilityPanel.tsx`(+test),
 `instrument.ts`(+test), new `FeedbackCategoryField.tsx`, and
-`e2e/settings.spec.ts`. Not yet re-diffed against this spec's acceptance
-criteria in detail — worth a follow-up pass to confirm the GitHub-side label
-mapping (criterion 3, the Sentry-org config step) was actually completed and
-not just the in-app category field/tag.
+`e2e/settings.spec.ts`.
+
+**Confirmed 2026-07-18** — the Sentry-org GitHub label mapping (acceptance
+criterion 3) is live and verified end-to-end: Bug and Feature request
+feedback submissions are labeled correctly on the resulting GitHub issues.
+All acceptance criteria are met; this spec is complete.
 
 ## Non-goals
 
