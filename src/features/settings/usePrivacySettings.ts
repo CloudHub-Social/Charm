@@ -54,6 +54,47 @@ let latestPrivacyMutationId = 0;
 // for the same multi-caller-safety reason as the write queue/generation
 // above.
 let lastConfirmedPrivacySettings: PrivacySettings | undefined;
+// Review fix (P2): `resetPrivacySettingsWriteQueue`'s write-generation check
+// (used by the query's `queryFn` below) only guards against a *canceled*
+// query resolving after a logout/account-switch. It doesn't help the
+// narrower, same-account case this pair exists for: `onMutate` cancels an
+// in-flight `getPrivacySettings()` refetch via `queryClient.cancelQueries`,
+// but that only aborts React Query's own bookkeeping for it — the
+// underlying Tauri invoke keeps running regardless, and its `queryFn` body
+// (including the `lastConfirmedPrivacySettings` write below) executes to
+// completion either way. If that stale refetch resolves *after* the
+// mutation has already recorded its own newer, real Rust-confirmed write,
+// it would move `lastConfirmedPrivacySettings` backward to the older
+// persisted data, and a later failed toggle's `onError` rollback would then
+// restore that stale snapshot. `nextConfirmationSeq`/`latestConfirmedSeq`
+// give every fetch/mutation attempt (query or mutation) an ordinal at the
+// moment it *starts*; a confirmation only wins if nothing that started
+// later has already confirmed, which handles both this race and the
+// original generation-based one (see `beginConfirmationAttempt`/
+// `recordConfirmedIfNewest` below) — sequential mutations still both get to
+// record (each starts *after* the previous one, since they're serialized by
+// `privacySettingsWriteQueue`), but a stale operation that started earlier
+// than whatever already confirmed never wins.
+let nextConfirmationSeq = 0;
+let latestConfirmedSeq = 0;
+
+/** Reserves this fetch/mutation attempt's ordinal — call once, right when it starts. */
+function beginConfirmationAttempt(): number {
+  nextConfirmationSeq += 1;
+  return nextConfirmationSeq;
+}
+
+/**
+ * Records `settings` as the last-confirmed snapshot only if no attempt that
+ * started *after* `seq` has already confirmed — see `nextConfirmationSeq`'s
+ * own doc comment.
+ */
+function recordConfirmedIfNewest(seq: number, settings: PrivacySettings): void {
+  if (seq < latestConfirmedSeq) return;
+  latestConfirmedSeq = seq;
+  lastConfirmedPrivacySettings = settings;
+}
+
 export function resetPrivacySettingsWriteQueue(): void {
   privacySettingsWriteGeneration += 1;
   privacySettingsWriteQueue = Promise.resolve();
@@ -61,6 +102,11 @@ export function resetPrivacySettingsWriteQueue(): void {
   // confirmed snapshot leak into the incoming account's cache as an
   // `onError` rollback target before its own fetch has populated one.
   lastConfirmedPrivacySettings = undefined;
+  // Bumps `latestConfirmedSeq` past every attempt started before this
+  // point, so a stale in-flight fetch/mutation from the outgoing account
+  // can never win `recordConfirmedIfNewest`'s check even if nothing else
+  // confirms in the meantime.
+  latestConfirmedSeq = beginConfirmationAttempt();
   // Review fix: bumping the write generation alone only stops the queued
   // write's *IPC call* — `serializedSetPrivacySettings` still resolves
   // successfully (just without calling into Rust), so the mutation's own
@@ -109,24 +155,19 @@ export function usePrivacySettings(enabled = true) {
     // `lastConfirmedPrivacySettings` current for `useSetPrivacySettings`'s
     // `onError` rollback, not just its own mutation successes.
     //
-    // Review fix (P2): gated on the write generation still matching the one
-    // captured when this fetch *started*, not recorded unconditionally.
-    // `resetPrivacySettingsWriteQueue` (logout/account-switch) bumps the
-    // generation and clears `lastConfirmedPrivacySettings` — but a
-    // `getPrivacySettings()` request for the outgoing account that was
-    // already in flight when that happened can still resolve afterward.
-    // Recording it unconditionally would repopulate
-    // `lastConfirmedPrivacySettings` with the *old* account's snapshot; if
-    // the new account's first privacy mutation then failed before its own
-    // fetch had confirmed anything, `onError` would roll its cache back to
-    // that stale old-account snapshot, and a later toggle could persist the
-    // whole stale thing.
+    // Review fix (P2): gated via `recordConfirmedIfNewest` — not recorded
+    // unconditionally, and not just on the write generation. This fetch
+    // might be canceled (`useSetPrivacySettings.onMutate`'s
+    // `cancelQueries`) without its underlying Tauri invoke actually
+    // aborting, or might simply be an outgoing account's request still in
+    // flight across a logout — either way, if a *later-started* mutation
+    // or fetch has already confirmed something newer by the time this one
+    // resolves, this one must not move `lastConfirmedPrivacySettings`
+    // backward. See `nextConfirmationSeq`'s own doc comment.
     queryFn: async () => {
-      const generation = privacySettingsWriteGeneration;
+      const seq = beginConfirmationAttempt();
       const settings = await getPrivacySettings();
-      if (generation === privacySettingsWriteGeneration) {
-        lastConfirmedPrivacySettings = settings;
-      }
+      recordConfirmedIfNewest(seq, settings);
       return settings;
     },
     enabled: enabled && !isWebBuild(),
@@ -183,7 +224,10 @@ export function useSetPrivacySettings() {
       // from `resetPrivacySettingsWriteQueue`'s cancellation — see that
       // review-fix comment on `onSuccess` below.
       const generation = privacySettingsWriteGeneration;
-      return { previous, mutationId, generation };
+      // Reserves this mutation attempt's ordinal for `recordConfirmedIfNewest`
+      // — see `nextConfirmationSeq`'s own doc comment.
+      const confirmationSeq = beginConfirmationAttempt();
+      return { previous, mutationId, generation, confirmationSeq };
     },
     onError: (_err, _settings, context) => {
       // Only the still-latest mutation gets to roll back — an older
@@ -222,8 +266,16 @@ export function useSetPrivacySettings() {
       // write would get recorded as confirmed, and a later failed mutation
       // (for the *new* account) could then roll the UI back to settings that
       // were never actually persisted for either account.
+      //
+      // Review fix (P2): also routed through `recordConfirmedIfNewest`
+      // (`context.confirmationSeq`) rather than an unconditional write — a
+      // canceled query fetch that started *before* this mutation could still
+      // resolve after it (its underlying Tauri invoke isn't actually
+      // aborted just because `cancelQueries` marked it canceled) and would
+      // otherwise move `lastConfirmedPrivacySettings` backward to stale
+      // data. See `nextConfirmationSeq`'s own doc comment.
       if (context?.generation === privacySettingsWriteGeneration) {
-        lastConfirmedPrivacySettings = settings;
+        recordConfirmedIfNewest(context.confirmationSeq, settings);
       }
       if (context?.mutationId !== latestPrivacyMutationId) return;
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);

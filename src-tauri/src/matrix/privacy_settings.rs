@@ -272,24 +272,55 @@ pub async fn set_privacy_settings(
         // Review fix: reuse the client snapshotted above (paired with the
         // same `account_key` used for the load/save) instead of re-resolving
         // `state.require_client()` here — see `client_and_account_key_for`.
-        // Review fix: `sync_presence` used to only get updated when this
-        // one-shot push actually succeeded — a transient failure (network
-        // blip, homeserver hiccup) left it holding the *previous* value, so
-        // every later successful `sync_once` in the steady-state loop kept
-        // resending that stale presence indefinitely, with the persisted
-        // setting and the UI both already showing the new (unapplied)
-        // state. Updating it unconditionally, before attempting the
-        // best-effort immediate push, means a failed push here still gets
-        // picked up and retried by the sync loop's own next iteration
-        // instead of silently sticking forever.
-        *state
-            .sync_presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = presence;
-        // Best-effort: a homeserver that disables presence shouldn't block
-        // saving the rest of the privacy preferences, and the update above
-        // means a failure here isn't the last word on this transition.
-        let _ = set_presence_impl(&client, presence, None).await;
+        // Review fix (P2): re-checked against the *currently* active
+        // client's user id, immediately before writing — the snapshotted
+        // `client` only proves this call's own Matrix request stays scoped
+        // to the old account; it says nothing about whether logout/
+        // account-switch has *already* installed a different client on
+        // `state` by the time we get here (the local load/save above can
+        // take a while under lock contention). `MatrixState.sync_presence`
+        // is a single, process-wide cache — account B's sync loop would
+        // otherwise inherit account A's stale appear-offline decision
+        // (`Offline`) until some unrelated later presence write happened to
+        // overwrite it. Comparing user ids is enough: matrix-sdk `Client`
+        // itself has no cheap identity-equality, and a same-process
+        // account switch always changes the active user id.
+        //
+        // Not covered by an automated test: this module's existing tests
+        // (below) exercise `appear_offline_transition` as a pure function
+        // against fixed `PrivacySettings` values, with no mocked `Client`/
+        // `MatrixState` harness for `set_privacy_settings` itself. Simulating
+        // an account switch landing on `state` mid-call would need such a
+        // harness to swap the active client between two fake logged-in
+        // accounts while this function is paused mid-execution, which
+        // doesn't exist yet — verified by code review instead, consistent
+        // with this session's other unrepeatable-race findings.
+        let still_same_account = state
+            .require_client()
+            .await
+            .ok()
+            .and_then(|current| current.user_id().map(|id| id.to_owned()))
+            == client.user_id().map(|id| id.to_owned());
+        if still_same_account {
+            // Review fix: `sync_presence` used to only get updated when this
+            // one-shot push actually succeeded — a transient failure (network
+            // blip, homeserver hiccup) left it holding the *previous* value, so
+            // every later successful `sync_once` in the steady-state loop kept
+            // resending that stale presence indefinitely, with the persisted
+            // setting and the UI both already showing the new (unapplied)
+            // state. Updating it unconditionally, before attempting the
+            // best-effort immediate push, means a failed push here still gets
+            // picked up and retried by the sync loop's own next iteration
+            // instead of silently sticking forever.
+            *state
+                .sync_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = presence;
+            // Best-effort: a homeserver that disables presence shouldn't block
+            // saving the rest of the privacy preferences, and the update above
+            // means a failure here isn't the last word on this transition.
+            let _ = set_presence_impl(&client, presence, None).await;
+        }
     }
 
     Ok(())

@@ -542,4 +542,83 @@ describe("useSetPrivacySettings", () => {
 
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(newAccountSeed);
   });
+
+  it("ignores a canceled refetch that resolves after a newer mutation has already confirmed (review fix)", async () => {
+    // Review fix (P2): `onMutate`'s `cancelQueries` only cancels React
+    // Query's own bookkeeping for an in-flight fetch — the underlying
+    // `getPrivacySettings()` invoke keeps running and its `queryFn` body
+    // still executes to completion. If that stale fetch (started *before*
+    // the mutation) resolves *after* the mutation has already recorded its
+    // own newer, real Rust-confirmed write, it must not move
+    // `lastConfirmedPrivacySettings` backward — otherwise a later failed
+    // mutation's rollback would restore the older, stale snapshot instead
+    // of the value Rust actually just persisted.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getPrivacySettings.mockResolvedValue(DEFAULT_SETTINGS);
+    const { result: query, unmount: unmountQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(query.current.isSuccess).toBe(true));
+    // No observer stays mounted past this point (same reasoning as the
+    // "does not let an already-in-flight refetch..." test above): with one
+    // active, the mutation's own `onSettled`/`invalidateQueries` call would
+    // trigger a second, later refetch that could itself "confirm" something
+    // and mask whether the race under test was actually guarded against.
+    // The stale fetch below still runs to completion regardless of any
+    // mounted observer — that's the whole premise of the bug this guards.
+    unmountQuery();
+
+    // A stale refetch starts (e.g. window-focus refetch) but never resolves
+    // on its own — it's "canceled" by the mutation's onMutate below (React
+    // Query bookkeeping only; the underlying invoke, and so the queryFn
+    // body below, keeps running regardless).
+    let resolveStaleFetch: ((settings: PrivacySettings) => void) | undefined;
+    getPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<PrivacySettings>((resolve) => {
+          resolveStaleFetch = resolve;
+        }),
+    );
+    // Mounting (then immediately unmounting) a fresh observer triggers a
+    // real refetch through the hook's own registered queryFn (which
+    // contains the confirmation-sequence logic under test) — not a raw
+    // fetchQuery call with the bare mock, which would bypass it entirely.
+    // Unmounting doesn't cancel the underlying fetch already in flight.
+    const { unmount: unmountStaleQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() =>
+      expect(client.getQueryState(PRIVACY_SETTINGS_QUERY_KEY)?.fetchStatus).toBe("fetching"),
+    );
+    unmountStaleQuery();
+
+    // The mutation starts after the stale fetch, cancels it via onMutate,
+    // and succeeds — recording its own settings as the newest confirmation.
+    const confirmed: PrivacySettings = { ...DEFAULT_SETTINGS, hide_typing: true };
+    setPrivacySettings.mockResolvedValueOnce(undefined);
+    const { result: mutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    mutation.current.mutate(confirmed);
+    await waitFor(() => expect(mutation.current.isSuccess).toBe(true));
+
+    // The stale fetch (started before the mutation) finally resolves with
+    // older data — must not overwrite the mutation's newer confirmation.
+    const staleData: PrivacySettings = { ...DEFAULT_SETTINGS, appear_offline: true };
+    resolveStaleFetch?.(staleData);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A subsequent failing mutation must roll back to the mutation's own
+    // confirmed value, not the stale fetch's data.
+    setPrivacySettings.mockRejectedValueOnce(new Error("disk full"));
+    const { result: nextMutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    nextMutation.current.mutate({ ...confirmed, hide_read_receipts: true });
+    await waitFor(() => expect(nextMutation.current.isError).toBe(true));
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(confirmed);
+  });
 });
