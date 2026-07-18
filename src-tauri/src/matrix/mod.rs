@@ -1009,15 +1009,22 @@ impl MatrixState {
     /// alongside `clear_timelines` for the same "nothing carries over from
     /// the old client" guarantee.
     pub(crate) async fn clear_pinned_event_cache(&self) {
-        self.pinned_event_cache.lock().await.clear();
-        self.pinned_event_locks.lock().await.clear();
-        // Review fix: see `pinned_event_cache_generation`'s own doc comment
-        // — lets `pin_event`/`unpin_event` detect a session change that
-        // happened while their homeserver send was still in flight, so
-        // they can skip resurrecting a stale entry into the cache this
-        // just cleared.
+        // Review fix: bumped *before* clearing the maps below, not after.
+        // `pin_event`/`unpin_event` capture this generation up front, then
+        // re-check it (after their own network round-trip) before deciding
+        // whether to insert into `pinned_event_cache`. Bumping it only
+        // after `clear()` left a window where an in-flight operation could
+        // acquire the just-released `pinned_event_cache` lock and insert
+        // the previous session's stale list into the freshly-emptied map
+        // *before* this `fetch_add` ran — its generation check would still
+        // pass, since the bump hadn't happened yet. Bumping first means any
+        // concurrent check that runs from this point on already sees the
+        // new generation, regardless of exactly when the maps themselves
+        // finish clearing.
         self.pinned_event_cache_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.pinned_event_cache.lock().await.clear();
+        self.pinned_event_locks.lock().await.clear();
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
@@ -1105,5 +1112,60 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             generation_before + 1,
         );
+    }
+
+    /// Review fix regression test: `clear_pinned_event_cache` must bump
+    /// `pinned_event_cache_generation` *before* taking (and clearing)
+    /// `pinned_event_cache`'s own lock — a concurrent `pin_event`/
+    /// `unpin_event`'s generation check happens right around inserting into
+    /// that same cache, so bumping the generation only after (or while)
+    /// contending for that lock leaves a window where a task blocked
+    /// waiting on the lock would, once it finally gets in, still observe
+    /// the pre-bump generation and pass its stale-session check. This test
+    /// holds `pinned_event_cache`'s lock itself (simulating that
+    /// in-flight, lock-contending task) and asserts the generation is
+    /// already bumped *before* `clear_pinned_event_cache` — which is
+    /// blocked the whole time trying to acquire that same held lock — has
+    /// had any chance to actually clear anything.
+    #[tokio::test]
+    async fn clear_pinned_event_cache_bumps_generation_before_contending_for_the_cache_lock() {
+        let state = std::sync::Arc::new(MatrixState::default());
+        let generation_before = state
+            .pinned_event_cache_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+
+        // Simulates an in-flight `pin_event`/`unpin_event` that already
+        // holds the cache lock (e.g. about to insert its own write) when
+        // logout/account-switch calls `clear_pinned_event_cache`.
+        let held_guard = state.pinned_event_cache.lock().await;
+
+        let clear_state = state.clone();
+        let clear_call = tokio::spawn(async move {
+            clear_state.clear_pinned_event_cache().await;
+        });
+
+        // Give `clear_pinned_event_cache` a chance to run and block on the
+        // still-held lock above.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !clear_call.is_finished(),
+            "clear_pinned_event_cache should still be blocked on the held cache lock"
+        );
+
+        assert_eq!(
+            state
+                .pinned_event_cache_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+            "generation must already be bumped even while clear_pinned_event_cache is \
+             still blocked trying to acquire the cache lock"
+        );
+
+        drop(held_guard);
+        clear_call
+            .await
+            .expect("clear_pinned_event_cache should complete");
     }
 }

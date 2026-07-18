@@ -158,9 +158,6 @@ async fn emit_room_updates(
                 .is_some()
         });
         if state_events_present {
-            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
-                let _ = app.emit("room_details:update", details);
-            }
             // Review fix: `room_admin::pin_event`/`unpin_event` maintain
             // their own `pinned_event_cache` (see its own doc comment) so a
             // pin/unpin write can be immediately followed by another one
@@ -207,6 +204,20 @@ async fn emit_room_updates(
                         );
                     }
                 }
+            }
+            // Review fix: emitted *after* the pin-cache reconciliation
+            // above, not before. `PinnedMessagesPanel`'s query key includes
+            // `pinned_event_ids`, so this event can make it refetch the
+            // instant it lands — if that refetch (via `get_pinned_messages_impl`
+            // reading `pinned_event_cache`) raced ahead of the
+            // reconciliation block above, it would read the still-stale
+            // cached list under the *new* query key, and nothing would
+            // invalidate that query again afterward once the cache finally
+            // caught up — leaving the panel showing a stale pinned list
+            // until some unrelated later refresh. Reconciling first means
+            // any refetch this event triggers already sees the fresh cache.
+            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
+                let _ = app.emit("room_details:update", details);
             }
         }
     }
