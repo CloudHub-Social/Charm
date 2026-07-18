@@ -8,10 +8,11 @@
 //! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
 //! `resend_message`/`discard_failed_message`.
 
+use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, ReplacementMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplacementMetadata, RoomMessageEventContent,
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
@@ -528,6 +529,262 @@ pub async fn discard_failed_message_impl(
     // task.
     room.send_queue().set_enabled(true);
     Ok(aborted)
+}
+
+/// Reports `event_id` in `room_id` to the homeserver via
+/// `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`
+/// (`report_content::v3::Request`). The vendored ruma (0.24.0 client-api)
+/// only carries a `reason: Option<String>` on this request — there is no
+/// `score` field in this version, so the `score` parameter accepted here is
+/// currently unused (kept in the signature for forward-compatibility/
+/// frontend simplicity, in case a future ruma bump reintroduces it).
+#[tauri::command]
+pub async fn report_event(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+    score: Option<i32>,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    report_event_impl(&client, &room_id, &event_id, reason, score).await
+}
+
+/// Core logic behind [`report_event`].
+pub async fn report_event_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    reason: Option<String>,
+    _score: Option<i32>,
+) -> Result<(), String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let parsed_event_id = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let mut request = report_content::v3::Request::new(parsed_room_id, parsed_event_id);
+    request.reason = reason;
+
+    client.send(request).await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Fetches the raw JSON of `event_id` in `room_id`, pretty-printed, for a
+/// debug "view source" viewer. Uses the same cache-first
+/// `load_or_fetch_event` as `edit_message_impl`/`send_reply_impl`.
+#[tauri::command]
+pub async fn get_event_source(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    get_event_source_impl(&client, &room_id, &event_id).await
+}
+
+/// Core logic behind [`get_event_source`].
+pub async fn get_event_source_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> Result<String, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_event_id = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let event = room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let value: serde_json::Value =
+        serde_json::to_value(event.kind.raw()).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
+/// Extracts the formatted (HTML) body from a message's `msgtype`, for the
+/// kinds that carry one (`m.text`/`m.notice`/`m.emote`). Other msgtypes
+/// (media, location, ...) have no formatted body.
+fn formatted_body_of(
+    msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
+) -> Option<String> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    match msgtype {
+        MessageType::Text(text) => text.formatted.as_ref().map(|f| f.body.clone()),
+        MessageType::Notice(notice) => notice.formatted.as_ref().map(|f| f.body.clone()),
+        MessageType::Emote(emote) => emote.formatted.as_ref().map(|f| f.body.clone()),
+        _ => None,
+    }
+}
+
+/// One entry in a message's edit history — either the original event, or one
+/// of its `m.replace` edits, in chronological (oldest-first) order.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct EditHistoryEntry {
+    pub event_id: String,
+    pub body: String,
+    pub formatted_body: Option<String>,
+    pub sender: String,
+    #[ts(type = "number")]
+    pub origin_server_ts: u64,
+}
+
+/// Returns the full edit history of `event_id` in `room_id`: the original
+/// event first, followed by each `m.replace` in chronological order. Walks
+/// relations the same way `toggle_reaction_impl` walks reactions.
+#[tauri::command]
+pub async fn get_edit_history(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<Vec<EditHistoryEntry>, String> {
+    let client = state.require_client().await?;
+    get_edit_history_impl(&client, &room_id, &event_id).await
+}
+
+/// Core logic behind [`get_edit_history`].
+pub async fn get_edit_history_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> Result<Vec<EditHistoryEntry>, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_target = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let (original_event, relations) = room
+        .load_or_fetch_event_with_relations(&parsed_target, None, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let original_deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = original_event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = original_deserialized
+    else {
+        return Err("target event is not a room message".to_string());
+    };
+    let original_message = msg
+        .as_original()
+        .ok_or_else(|| "target event has already been redacted".to_string())?;
+
+    let mut entries = vec![EditHistoryEntry {
+        event_id: original_message.event_id.to_string(),
+        body: original_message.content.msgtype.body().to_string(),
+        formatted_body: formatted_body_of(&original_message.content.msgtype),
+        sender: original_message.sender.to_string(),
+        origin_server_ts: original_message.origin_server_ts.0.into(),
+    }];
+
+    let mut edits: Vec<EditHistoryEntry> = Vec::new();
+    for related in &relations {
+        let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
+            related.kind.raw().deserialize();
+        let Ok(deserialized) = deserialized else {
+            continue;
+        };
+        let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+            AnySyncMessageLikeEvent::RoomMessage(edit_msg),
+        ) = deserialized
+        else {
+            continue;
+        };
+        let Some(edit) = edit_msg.as_original() else {
+            continue;
+        };
+        let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
+            continue;
+        };
+        if replacement.event_id != parsed_target {
+            continue;
+        }
+
+        edits.push(EditHistoryEntry {
+            event_id: edit.event_id.to_string(),
+            body: replacement.new_content.msgtype.body().to_string(),
+            formatted_body: formatted_body_of(&replacement.new_content.msgtype),
+            sender: edit.sender.to_string(),
+            origin_server_ts: edit.origin_server_ts.0.into(),
+        });
+    }
+    edits.sort_by_key(|entry| entry.origin_server_ts);
+    entries.extend(edits);
+
+    Ok(entries)
+}
+
+/// One reactor on a given reaction `key` for a target event — who reacted
+/// and when.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct ReactionDetail {
+    pub sender: String,
+    #[ts(type = "number")]
+    pub origin_server_ts: u64,
+}
+
+/// Returns every reactor who reacted to `target_event_id` with `key` — the
+/// "who reacted" detail view. Reuses the same relation-walk as
+/// `toggle_reaction_impl`, but collects *all* matching reactions rather than
+/// stopping at the current user's own.
+#[tauri::command]
+pub async fn get_reaction_details(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    target_event_id: String,
+    key: String,
+) -> Result<Vec<ReactionDetail>, String> {
+    let client = state.require_client().await?;
+    get_reaction_details_impl(&client, &room_id, &target_event_id, key).await
+}
+
+/// Core logic behind [`get_reaction_details`].
+pub async fn get_reaction_details_impl(
+    client: &Client,
+    room_id: &str,
+    target_event_id: &str,
+    key: String,
+) -> Result<Vec<ReactionDetail>, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_target = EventId::parse(target_event_id).map_err(|e| e.to_string())?;
+
+    let (_event, relations) = room
+        .load_or_fetch_event_with_relations(&parsed_target, None, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut details = Vec::new();
+    for related in &relations {
+        let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
+            related.kind.raw().deserialize();
+        let Ok(deserialized) = deserialized else {
+            continue;
+        };
+        let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+            AnySyncMessageLikeEvent::Reaction(reaction),
+        ) = deserialized
+        else {
+            continue;
+        };
+        let Some(original) = reaction.as_original() else {
+            continue;
+        };
+        if original.content.relates_to.event_id != parsed_target
+            || original.content.relates_to.key != key
+        {
+            continue;
+        }
+
+        details.push(ReactionDetail {
+            sender: original.sender.to_string(),
+            origin_server_ts: original.origin_server_ts.0.into(),
+        });
+    }
+
+    Ok(details)
 }
 
 #[cfg(test)]

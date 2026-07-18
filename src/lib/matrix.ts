@@ -5,6 +5,7 @@ import type { DndSnapshot } from "@bindings/DndSnapshot";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DeviceSummary } from "@bindings/DeviceSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
+import type { EditHistoryEntry } from "@bindings/EditHistoryEntry";
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
@@ -27,6 +28,7 @@ import type { PusherKind } from "@bindings/PusherKind";
 import type { PushRegistration } from "@bindings/PushRegistration";
 import type { PushStatus } from "@bindings/PushStatus";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
+import type { ReactionDetail } from "@bindings/ReactionDetail";
 import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
@@ -475,6 +477,43 @@ export function resendMessage(roomId: string, transactionId: string): Promise<vo
  */
 export function discardFailedMessage(roomId: string, transactionId: string): Promise<boolean> {
   return invoke("discard_failed_message", { roomId, transactionId });
+}
+
+/** Reports a message to the homeserver's moderators, with an optional reason. */
+export function reportEvent(
+  roomId: string,
+  eventId: string,
+  reason?: string | null,
+): Promise<void> {
+  return invoke("report_event", { roomId, eventId, reason: reason ?? null, score: null });
+}
+
+/** Fetches the raw, pretty-printed JSON source of an event, for a "view source" viewer. */
+export function getEventSource(roomId: string, eventId: string): Promise<string> {
+  return invoke("get_event_source", { roomId, eventId });
+}
+
+/** Fetches the full edit history of a message (original first, then edits chronologically). */
+export function getEditHistory(roomId: string, eventId: string): Promise<EditHistoryEntry[]> {
+  return invoke("get_edit_history", { roomId, eventId });
+}
+
+/** Fetches every reactor who reacted to `eventId` with `key`, for a "who reacted" view. */
+export function getReactionDetails(
+  roomId: string,
+  eventId: string,
+  key: string,
+): Promise<ReactionDetail[]> {
+  return invoke("get_reaction_details", { roomId, targetEventId: eventId, key });
+}
+
+/** Forwards an existing message into another room as a brand-new message. Returns the new transaction id. */
+export function forwardMessage(
+  sourceRoomId: string,
+  eventId: string,
+  targetRoomId: string,
+): Promise<string> {
+  return invoke("forward_message", { sourceRoomId, eventId, targetRoomId });
 }
 
 // captureOnError: false — UIA-gated. useUiaRetry treats both the initial

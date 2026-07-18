@@ -52,6 +52,10 @@ export function DiscordMessageRow({
   disableRelationActions,
   isUndecrypted,
   rowKey,
+  onForward,
+  onViewSource,
+  onReport,
+  onViewEditHistory,
 }: MessageRowLayoutProps) {
   const showHeader = !sameSenderAsPrev;
 
@@ -157,6 +161,11 @@ export function DiscordMessageRow({
               isBookmarked={isBookmarked}
               onResend={onResend}
               onDiscard={onDiscard}
+              onForward={onForward}
+              onViewSource={onViewSource}
+              onReport={onReport}
+              isEdited={message.edited}
+              onViewEditHistory={onViewEditHistory}
             />
           )}
         </div>
@@ -174,6 +183,8 @@ export function DiscordMessageRow({
             reactions={message.reactions}
             onToggle={onReact}
             disabled={disableRelationActions || isUndecrypted}
+            roomId={roomId}
+            eventId={message.event_id}
           />
         )}
         {!showHeader && (message.edited || isPending || isError) && (

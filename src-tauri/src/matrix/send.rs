@@ -211,6 +211,74 @@ pub async fn send_message(
     send_and_capture_transaction_id(&client, &room, content).await
 }
 
+/// Forwards an existing event (`event_id`, in `source_room_id`) into
+/// `target_room_id` as a brand-new message: fetches the source event's
+/// `RoomMessageEventContent`, strips any `m.relates_to` (a forwarded message
+/// shouldn't carry the original's reply/edit relation), and queues it via
+/// the normal send-queue path in the target room. Returns the new
+/// transaction id, same convention as [`super::actions::send_reply`].
+#[tauri::command]
+pub async fn forward_message(
+    state: State<'_, MatrixState>,
+    source_room_id: String,
+    event_id: String,
+    target_room_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    forward_message_impl(&client, &source_room_id, &event_id, &target_room_id).await
+}
+
+/// Core logic behind [`forward_message`].
+pub async fn forward_message_impl(
+    client: &Client,
+    source_room_id: &str,
+    event_id: &str,
+    target_room_id: &str,
+) -> Result<String, String> {
+    let parsed_source_room_id = RoomId::parse(source_room_id).map_err(|e| e.to_string())?;
+    let source_room = client
+        .get_room(&parsed_source_room_id)
+        .ok_or_else(|| format!("room {source_room_id} not found"))?;
+
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    let source_event = source_room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = source_event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return Err("source event is not a room message".to_string());
+    };
+    let original_message = msg
+        .as_original()
+        .ok_or_else(|| "source event has already been redacted".to_string())?;
+
+    // Strip any relation (reply/edit) on the forwarded copy — forwarding
+    // should send a clean new message, not a relation to the original.
+    let mut content = original_message.content.clone();
+    content.relates_to = None;
+
+    let parsed_target_room_id = RoomId::parse(target_room_id).map_err(|e| e.to_string())?;
+    let target_room = client
+        .get_room(&parsed_target_room_id)
+        .ok_or_else(|| format!("room {target_room_id} not found"))?;
+
+    send_and_capture_transaction_id(
+        client,
+        &target_room,
+        AnyMessageLikeEventContent::RoomMessage(content),
+    )
+    .await
+}
+
 /// Builds a `RoomMessageEventContent` from a plain body, an optional
 /// sanitized HTML body, and optional mention user ids. Used by
 /// `send_message`. `commands::run_command`'s `/me` arm does NOT go through
@@ -632,6 +700,32 @@ mod tests {
         .unwrap();
         let json = serde_json::to_value(&content).unwrap();
         assert_eq!(json["m.mentions"]["user_ids"][0], "@alice:example.org");
+    }
+
+    #[test]
+    fn forwarded_content_strips_relates_to() {
+        // Same shape check as forward_message_impl's stripping step: build a
+        // reply (which carries an m.relates_to/m.in_reply_to relation), then
+        // confirm clearing `relates_to` removes it from the serialized JSON
+        // entirely, so a forwarded copy never carries the source's relation.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+        assert!(serde_json::to_value(&content).unwrap()["m.relates_to"].is_object());
+
+        content.relates_to = None;
+        let json = serde_json::to_value(&content).unwrap();
+        assert!(
+            json.get("m.relates_to").is_none(),
+            "forwarded content must not carry the source event's m.relates_to"
+        );
     }
 
     #[test]

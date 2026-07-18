@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Message action parity
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 **Workstream:** one PR / one agent (or split forward-message out if it grows).
@@ -11,19 +11,35 @@ Extends Spec 03 (message actions), which shipped a deliberately minimal action m
 
 ## Implementation status
 
-**In progress.** Independently releasable slices behind the default-off
-`message_action_parity` flag now provide a **Copy link** action for server-backed,
-decrypted events, a confirmation dialog with an optional reason before message
-redaction, and **Resend/Discard** for a failed send. The permalink produces the
-fully percent-encoded room/event form required by the
+**Shipped.** All independently releasable slices are in behind the default-off
+`message_action_parity` flag: **Copy link** for server-backed, decrypted events; a
+confirmation dialog with an optional reason before message redaction;
+**Resend/Discard** for a failed send; **Forward message** to another joined room via
+a filterable room-picker dialog; **View source** (a read-only pretty-printed JSON
+viewer of the raw event); **Report message** (reusing the redact-with-reason
+dialog's shared confirm-with-reason primitive) via a new `report_event` Tauri
+command; **Edit history** viewing (original + each `m.replace` revision,
+oldest-first) via a new `get_edit_history` command; and the UI-parity additions —
+a hover tooltip on each reaction chip naming reactors (with a "View all" overflow
+into a fuller who-reacted dialog once the list is long), and a quick-react row of
+~4 recent/frequent one-tap emoji tracked in local storage.
+
+The permalink produces the fully percent-encoded room/event form required by the
 [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
 and the redaction reason uses the existing desktop and web transport support.
-Resend/discard call new `resend_message`/`discard_failed_message` Tauri commands
-that operate directly on matrix-rust-sdk's own send-queue local-echo handle
+Resend/discard call `resend_message`/`discard_failed_message` Tauri commands that
+operate directly on matrix-rust-sdk's own send-queue local-echo handle
 (`SendHandle::unwedge`/`abort`) for the failed local echo's transaction id — not a
 re-composed re-send — and appear in the action menu (in place of Delete, which a
 failed local echo can't support anyway) only while a message's `send_state.state`
-is `"error"`. The remaining actions in this document are still planned.
+is `"error"`. Forward strips any `m.relates_to` from the source event's content
+before resending it into the target room, so a forwarded reply/edit doesn't carry
+its original relation. `report_event` sends ruma's `report_content::v3::Request`;
+the vendored ruma 0.24.0 client-api shape only carries `reason`, not a numeric
+`score`, so the frontend doesn't expose a score control. Reaction-detail lookups
+(`get_reaction_details`) walk the same relation set `toggle_reaction` already reads,
+returning `{sender, origin_server_ts}` per reactor rather than resolving display
+names — the tooltip/dialog show raw Matrix user IDs.
 
 ## Problem & why now
 

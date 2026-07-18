@@ -3,6 +3,10 @@ import {
   Bookmark,
   BookmarkX,
   Copy,
+  FileJson,
+  Flag,
+  Forward,
+  History,
   Link2,
   MoreHorizontal,
   Pencil,
@@ -23,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useFlag } from "@/featureFlags";
 import { EmojiPicker } from "./EmojiPicker";
+import { useRecentReactions } from "./useRecentReactions";
 
 /** How long a touch must be held before it counts as a long-press. */
 const LONG_PRESS_MS = 400;
@@ -93,6 +98,16 @@ export interface MessageActionsProps {
    * or discarding it are the only actions that make sense.
    */
   isError?: boolean;
+  /** Forwards this message to another room, via `ForwardMessageDialog`. */
+  onForward?: () => void;
+  /** Opens the raw event JSON in `MessageSourceDialog`. */
+  onViewSource?: () => void;
+  /** Reports this message to the homeserver's moderators, via `ConfirmWithReasonDialog`. */
+  onReport?: () => void;
+  /** Whether this message has been edited — gates the "Edit history" entry. */
+  isEdited?: boolean;
+  /** Opens this message's edit history in `EditHistoryDialog`. Only rendered when `isEdited` is set. */
+  onViewEditHistory?: () => void;
 }
 
 /** Imperative handle so a parent can drive the long-press-to-open behavior
@@ -142,6 +157,11 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       disableRelationActions = false,
       isUndecrypted = false,
       isError = false,
+      onForward,
+      onViewSource,
+      onReport,
+      isEdited = false,
+      onViewEditHistory,
     },
     ref,
   ) {
@@ -149,6 +169,12 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const { recent, recordReaction } = useRecentReactions();
+
+    function react(emoji: string) {
+      recordReaction(emoji);
+      onReact(emoji);
+    }
 
     function startLongPress() {
       longPressTimer.current = setTimeout(() => setMenuOpen(true), LONG_PRESS_MS);
@@ -201,7 +227,21 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
           cancelLongPress();
         }}
       >
-        <EmojiPicker onSelect={onReact}>
+        {messageActionParityEnabled &&
+          !disableRelationActions &&
+          !isUndecrypted &&
+          recent.slice(0, 4).map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              aria-label={`React with ${emoji}`}
+              onClick={() => react(emoji)}
+              className="flex size-11 items-center justify-center rounded-md text-base hover:bg-secondary"
+            >
+              {emoji}
+            </button>
+          ))}
+        <EmojiPicker onSelect={react}>
           <button
             type="button"
             aria-label="React"
@@ -282,6 +322,24 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 Copy link
               </DropdownMenuItem>
             )}
+            {messageActionParityEnabled && onForward && !isError && (
+              <DropdownMenuItem onSelect={onForward} disabled={isUndecrypted}>
+                <Forward />
+                Forward
+              </DropdownMenuItem>
+            )}
+            {messageActionParityEnabled && onViewSource && (
+              <DropdownMenuItem onSelect={onViewSource}>
+                <FileJson />
+                View source
+              </DropdownMenuItem>
+            )}
+            {messageActionParityEnabled && isEdited && onViewEditHistory && (
+              <DropdownMenuItem onSelect={onViewEditHistory}>
+                <History />
+                Edit history
+              </DropdownMenuItem>
+            )}
             {canPin && !isError && (isPinned ? onUnpin : onPin) && (
               <DropdownMenuItem
                 onSelect={isPinned ? onUnpin : onPin}
@@ -336,6 +394,12 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
                 <X />
                 Discard
+              </DropdownMenuItem>
+            )}
+            {messageActionParityEnabled && !isOwn && onReport && !isError && (
+              <DropdownMenuItem variant="destructive" onSelect={onReport} disabled={isUndecrypted}>
+                <Flag />
+                Report
               </DropdownMenuItem>
             )}
             {canRedact && !isError && (

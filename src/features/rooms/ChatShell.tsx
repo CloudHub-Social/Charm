@@ -17,6 +17,9 @@ import {
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ConfirmWithReasonDialog } from "@/components/ui/confirm-with-reason-dialog";
+import { EditHistoryDialog } from "./EditHistoryDialog";
+import { ForwardMessageDialog } from "./ForwardMessageDialog";
+import { MessageSourceDialog } from "./MessageSourceDialog";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
@@ -270,6 +273,10 @@ export function ChatShell({
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
   const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
+  const [reportTargetEventId, setReportTargetEventId] = useState<string | null>(null);
+  const [viewSourceTargetEventId, setViewSourceTargetEventId] = useState<string | null>(null);
+  const [editHistoryTargetEventId, setEditHistoryTargetEventId] = useState<string | null>(null);
+  const [forwardTargetEventId, setForwardTargetEventId] = useState<string | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
@@ -1030,6 +1037,7 @@ export function ChatShell({
   const {
     handleToggleReaction,
     handleDelete,
+    handleReport,
     handleReply,
     handleEdit,
     handleResend,
@@ -1494,6 +1502,26 @@ export function ChatShell({
                     }}
                     onPin={() => void handlePin(message.event_id)}
                     onUnpin={() => void handleUnpin(message.event_id)}
+                    onForward={
+                      messageActionParityEnabled
+                        ? () => setForwardTargetEventId(message.event_id)
+                        : undefined
+                    }
+                    onViewSource={
+                      messageActionParityEnabled
+                        ? () => setViewSourceTargetEventId(message.event_id)
+                        : undefined
+                    }
+                    onReport={
+                      messageActionParityEnabled
+                        ? () => setReportTargetEventId(message.event_id)
+                        : undefined
+                    }
+                    onViewEditHistory={
+                      messageActionParityEnabled
+                        ? () => setEditHistoryTargetEventId(message.event_id)
+                        : undefined
+                    }
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
@@ -1551,6 +1579,48 @@ export function ChatShell({
             ? handleDelete(redactionTargetEventId, reason)
             : Promise.resolve(false)
         }
+      />
+
+      <ConfirmWithReasonDialog
+        open={reportTargetEventId !== null}
+        title="Report message?"
+        description="This sends a report to your homeserver's moderators for review."
+        confirmLabel="Report"
+        submittingLabel="Reporting…"
+        reasonDescription="The reason is sent to your homeserver's moderators."
+        onOpenChange={(open) => {
+          if (!open) setReportTargetEventId(null);
+        }}
+        onConfirm={(reason) =>
+          reportTargetEventId ? handleReport(reportTargetEventId, reason) : Promise.resolve(false)
+        }
+      />
+
+      <MessageSourceDialog
+        open={viewSourceTargetEventId !== null}
+        roomId={room.room_id}
+        eventId={viewSourceTargetEventId}
+        onOpenChange={(open) => {
+          if (!open) setViewSourceTargetEventId(null);
+        }}
+      />
+
+      <EditHistoryDialog
+        open={editHistoryTargetEventId !== null}
+        roomId={room.room_id}
+        eventId={editHistoryTargetEventId}
+        onOpenChange={(open) => {
+          if (!open) setEditHistoryTargetEventId(null);
+        }}
+      />
+
+      <ForwardMessageDialog
+        open={forwardTargetEventId !== null}
+        sourceRoomId={room.room_id}
+        eventId={forwardTargetEventId}
+        onOpenChange={(open) => {
+          if (!open) setForwardTargetEventId(null);
+        }}
       />
 
       {typingText && (
