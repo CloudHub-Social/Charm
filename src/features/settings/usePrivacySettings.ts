@@ -163,7 +163,11 @@ export function useSetPrivacySettings() {
       const previous = queryClient.getQueryData<PrivacySettings>(PRIVACY_SETTINGS_QUERY_KEY);
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
       const mutationId = ++latestPrivacyMutationId;
-      return { previous, mutationId };
+      // Captured so `onSuccess` can tell a real Rust-confirmed write apart
+      // from `resetPrivacySettingsWriteQueue`'s cancellation — see that
+      // review-fix comment on `onSuccess` below.
+      const generation = privacySettingsWriteGeneration;
+      return { previous, mutationId, generation };
     },
     onError: (_err, _settings, context) => {
       // Only the still-latest mutation gets to roll back — an older
@@ -192,7 +196,19 @@ export function useSetPrivacySettings() {
       // first mutation's already-persisted result, and a subsequent toggle
       // reading the stale rolled-back cache could resend a full settings
       // object that silently cleared what Rust had actually just saved.
-      lastConfirmedPrivacySettings = settings;
+      //
+      // Review fix (P2): gated on `context.generation` still matching the
+      // *current* write generation, though — `resetPrivacySettingsWriteQueue`
+      // (called on logout/account-switch) makes `serializedSetPrivacySettings`
+      // resolve successfully *without* ever calling into Rust, for any write
+      // still queued behind the reset. React Query still treats that as a
+      // successful mutation, so without this check a canceled old-account
+      // write would get recorded as confirmed, and a later failed mutation
+      // (for the *new* account) could then roll the UI back to settings that
+      // were never actually persisted for either account.
+      if (context?.generation === privacySettingsWriteGeneration) {
+        lastConfirmedPrivacySettings = settings;
+      }
       if (context?.mutationId !== latestPrivacyMutationId) return;
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
     },

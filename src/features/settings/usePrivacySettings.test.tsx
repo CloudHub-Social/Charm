@@ -410,4 +410,81 @@ describe("useSetPrivacySettings", () => {
 
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(firstSuccess);
   });
+
+  it("does not record a canceled (post-reset) write as confirmed (review fix)", async () => {
+    // Review fix (P2): resetPrivacySettingsWriteQueue (called on logout/
+    // account-switch) makes a still-queued write resolve successfully
+    // *without* ever calling into Rust. React Query still treats that as
+    // mutation success, so lastConfirmedPrivacySettings must not record
+    // that canceled snapshot — otherwise a later, genuinely failing
+    // mutation for the *new* account could roll the UI back to a value
+    // that was never actually persisted for either account.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getPrivacySettings.mockResolvedValue(DEFAULT_SETTINGS);
+    const { result: query, unmount: unmountQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(query.current.isSuccess).toBe(true));
+    unmountQuery();
+
+    // A first write blocks the shared queue while still in flight...
+    let resolveBlocking: (() => void) | undefined;
+    setPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveBlocking = resolve;
+        }),
+    );
+    const { result: blocking } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    blocking.current.mutate({ ...DEFAULT_SETTINGS, hide_read_receipts: true });
+    await waitFor(() => expect(setPrivacySettings).toHaveBeenCalledTimes(1));
+
+    // ...and a second, "old account" write is queued *behind* it — not yet
+    // actually sent, just enqueued.
+    const { result: mutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const oldAccountWrite: PrivacySettings = { ...DEFAULT_SETTINGS, hide_typing: true };
+    mutation.current.mutate(oldAccountWrite);
+    await waitFor(() => expect(mutation.current.isPending).toBe(true));
+
+    // Logout/account-switch happens *before* the queued write's turn
+    // arrives — bumps the write generation, so when the queue advances to
+    // it, `serializedSetPrivacySettings`'s own generation check makes it a
+    // no-op (never actually calling into Rust) while still resolving
+    // "successfully" from React Query's perspective.
+    resetPrivacySettingsWriteQueue();
+
+    // The Settings screen remounts for the new account and its own
+    // `usePrivacySettings()` fetch confirms `DEFAULT_SETTINGS` — the new
+    // account's genuinely persisted state — *before* the still-queued old
+    // write finally settles. This ordering is what actually exposes the
+    // bug: without the fix, the skipped write's `onSuccess` unconditionally
+    // overwrites this just-confirmed value with the old account's data.
+    const { result: newAccountQuery, unmount: unmountNewAccountQuery } = renderHook(
+      () => usePrivacySettings(),
+      { wrapper: makeWrapper(client) },
+    );
+    await waitFor(() => expect(newAccountQuery.current.isSuccess).toBe(true));
+    unmountNewAccountQuery();
+
+    resolveBlocking?.();
+    await waitFor(() => expect(mutation.current.isSuccess).toBe(true));
+    // Confirms the queued write really was skipped, not actually sent.
+    expect(setPrivacySettings).toHaveBeenCalledTimes(1);
+
+    // A genuinely failing mutation for the new account must roll back to
+    // DEFAULT_SETTINGS (the last real confirmed snapshot), not the
+    // canceled old-account write above.
+    setPrivacySettings.mockRejectedValueOnce(new Error("disk full"));
+    const { result: newAccountMutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    newAccountMutation.current.mutate({ ...DEFAULT_SETTINGS, appear_offline: true });
+    await waitFor(() => expect(newAccountMutation.current.isError).toBe(true));
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(DEFAULT_SETTINGS);
+  });
 });

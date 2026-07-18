@@ -181,11 +181,28 @@ pub async fn current_settings_for_client(
     load_settings(app, &account_key).unwrap_or_default()
 }
 
+/// Review fix (LOW): reads through the same `presence_privacy_controls`
+/// flag check `current_settings`/`current_settings_for_client` enforce
+/// with, instead of returning whatever's persisted on disk unconditionally.
+/// Without this, a rollout kill (or a local override cleared) after a user
+/// had already turned on e.g. `hide_typing` left the Settings UI showing
+/// that toggle on — reading straight from the file — while every
+/// enforcement site had already reverted to defaults, a UI/enforcement
+/// mismatch the user has no way to see or reconcile from the panel itself.
 #[tauri::command]
 pub async fn get_privacy_settings(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<PrivacySettings, String> {
+    let flag_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::PresencePrivacyControls,
+        )
+    });
+    if !flag_enabled {
+        return Ok(PrivacySettings::default());
+    }
     let account_key = account_key_for(&state).await?;
     let _guard = PRIVACY_PREFS_LOCK.lock().await;
     load_settings(&app, &account_key)

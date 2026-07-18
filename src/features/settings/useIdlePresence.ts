@@ -12,6 +12,40 @@ const ACTIVITY_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart", "scr
  * this. */
 const CHECK_INTERVAL_MS = 15_000;
 
+/** Delay between retry attempts for `restoreOnlineWithRetry` below. */
+const RESTORE_ONLINE_RETRY_DELAY_MS = 2_000;
+/** Bounded retry count — a deliberate cap, not an infinite retry loop. */
+const RESTORE_ONLINE_MAX_ATTEMPTS = 3;
+
+/**
+ * Retries `setPresence("online")` a bounded number of times, only resolving
+ * `true` once it actually succeeds.
+ *
+ * Review fix (P3): disabling auto-away while already idle used to send this
+ * once and unconditionally clear `isIdleRef` regardless of whether it
+ * succeeded — since disabling auto-idle also tears down the polling
+ * interval that's the *only* other path that ever retries a presence
+ * transition, a single transient IPC/network failure here left `sync_presence`
+ * stuck at `unavailable` indefinitely even though the user explicitly chose
+ * "Never", with nothing left to notice and correct it. A bounded retry gives
+ * a transient failure a real chance to recover before giving up.
+ */
+async function restoreOnlineWithRetry(): Promise<boolean> {
+  for (let attempt = 0; attempt < RESTORE_ONLINE_MAX_ATTEMPTS; attempt++) {
+    try {
+      await setPresence("online");
+      return true;
+    } catch (err) {
+      if (attempt + 1 === RESTORE_ONLINE_MAX_ATTEMPTS) {
+        logAndIgnore(err);
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RESTORE_ONLINE_RETRY_DELAY_MS));
+    }
+  }
+  return false;
+}
+
 /**
  * Spec 40 item 4 — auto-idle/away: after `idleTimeoutMinutes` of no
  * mouse/keyboard/touch/scroll activity, sets presence to `unavailable`;
@@ -91,9 +125,16 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
       // restore `online` here before resetting, whenever this transition
       // happens while genuinely idle.
       if (isIdleRef.current) {
-        setPresence("online").catch(logAndIgnore);
+        // Review fix (P3): keeps `isIdleRef` `true` until the restore
+        // actually succeeds — see `restoreOnlineWithRetry`'s own comment.
+        // Deliberately not `await`ed (this effect can't be async); the ref
+        // is written once the retried call resolves, whichever tick that is.
+        restoreOnlineWithRetry().then((succeeded) => {
+          if (succeeded) isIdleRef.current = false;
+        });
+      } else {
+        isIdleRef.current = false;
       }
-      isIdleRef.current = false;
       return undefined;
     }
     const timeoutMs = timeoutMinutes * 60_000;

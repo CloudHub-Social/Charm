@@ -131,6 +131,47 @@ describe("useIdlePresence", () => {
     expect(setPresence).toHaveBeenCalledWith("online");
   });
 
+  it("retries the online restore when disabling auto-idle while idle hits a transient failure (review fix)", async () => {
+    // Review fix (P3): disabling auto-idle while already idle used to send
+    // setPresence("online") once and unconditionally clear isIdleRef
+    // regardless of success — since disabling auto-idle also tears down
+    // the polling interval (the only other retry path), a single transient
+    // failure here left sync_presence stuck at unavailable indefinitely,
+    // with nothing left to notice and retry it.
+    const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
+      initialProps: {
+        settings: {
+          hide_read_receipts: false,
+          hide_typing: false,
+          appear_offline: false,
+          idle_timeout_minutes: 5 as number | null,
+        },
+      },
+    });
+
+    vi.advanceTimersByTime(6 * 60_000);
+    expect(setPresence).toHaveBeenCalledWith("unavailable");
+    await vi.waitFor(() => {});
+    setPresence.mockClear();
+    setPresence.mockRejectedValueOnce(new Error("transient failure"));
+
+    rerender({
+      settings: {
+        hide_read_receipts: false,
+        hide_typing: false,
+        appear_offline: false,
+        idle_timeout_minutes: null,
+      },
+    });
+
+    // The first attempt fails; the retry (after RESTORE_ONLINE_RETRY_DELAY_MS)
+    // must still happen even though the polling interval is already gone.
+    expect(setPresence).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(setPresence).toHaveBeenCalledTimes(2);
+    expect(setPresence).toHaveBeenLastCalledWith("online");
+  });
+
   it("does not restore online when appear_offline turns on while already idle (review fix)", () => {
     // Review fix: an earlier version of this hook shared its "disable"
     // branch between "auto-idle turned off" and "appear_offline turned on",
