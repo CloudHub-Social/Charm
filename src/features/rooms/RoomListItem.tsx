@@ -1,4 +1,4 @@
-import { BellOff } from "lucide-react";
+import { BellOff, PencilLine } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { memo, type CSSProperties } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -20,6 +20,10 @@ import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay
 interface RoomListItemProps {
   room: RoomSummary;
   active: boolean;
+  /** Spec 54: someone other than the current user is currently typing in
+   * this room — computed by `useRoomListTyping` and gated on the
+   * `room_list_typing_indicator` flag by the caller. */
+  isTyping?: boolean;
   onSelect: () => void;
   onToggleFavourite?: () => void;
   onToggleLowPriority?: () => void;
@@ -50,6 +54,7 @@ interface RoomListItemProps {
 function RoomListItemImpl({
   room,
   active,
+  isTyping = false,
   onSelect,
   onToggleFavourite,
   onToggleLowPriority,
@@ -120,6 +125,12 @@ function RoomListItemImpl({
             {room.is_muted && (
               <BellOff aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
             )}
+            {isTyping && (
+              <PencilLine
+                aria-label="Typing"
+                className="size-3.5 shrink-0 animate-pulse text-muted-foreground"
+              />
+            )}
           </span>
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text — see button.tsx's comment / tokens.css.
@@ -155,11 +166,16 @@ function RoomListItemImpl({
             )
           )}
         </div>
-        {messagePreviewEnabled && preview && (
-          <p className="min-w-0 truncate text-xs text-muted-foreground">
-            {previewSenderLabel && <span className="font-medium">{previewSenderLabel}: </span>}
-            {preview.text}
-          </p>
+        {isTyping ? (
+          <p className="min-w-0 truncate text-xs font-medium text-primary">Typing…</p>
+        ) : (
+          messagePreviewEnabled &&
+          preview && (
+            <p className="min-w-0 truncate text-xs text-muted-foreground">
+              {previewSenderLabel && <span className="font-medium">{previewSenderLabel}: </span>}
+              {preview.text}
+            </p>
+          )
         )}
       </div>
     </button>
@@ -230,6 +246,7 @@ function RoomListItemImpl({
 // RoomListItem.test.tsx. Not otherwise part of this module's public API.
 export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListItemProps): boolean {
   if (prev.active !== next.active) return false;
+  if (Boolean(prev.isTyping) !== Boolean(next.isTyping)) return false;
   if (prev.style !== next.style) return false;
   if (prev.dragHandleProps !== next.dragHandleProps) return false;
   // Unlike the other callback props, this one's mere *presence* gates

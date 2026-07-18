@@ -396,6 +396,34 @@ describe("RoomListItem", () => {
       expect(preview).toHaveTextContent(longText);
     });
   });
+
+  describe("typing indicator", () => {
+    it("shows a Typing… line instead of the last-message preview", () => {
+      featureFlagTestHooks.setCache({ room_list_message_preview: true });
+      render(
+        <RoomListItem
+          room={makeRoomSummary({
+            last_message_preview: {
+              sender_id: "@alice:example.org",
+              sender_display_name: "Alice",
+              text: "see you at 6",
+            },
+          })}
+          active={false}
+          isTyping
+          onSelect={() => {}}
+        />,
+      );
+      expect(screen.getByText("Typing…")).toBeInTheDocument();
+      expect(screen.queryByText("see you at 6", { exact: false })).not.toBeInTheDocument();
+    });
+
+    it("renders no typing indicator by default", () => {
+      render(<RoomListItem room={room} active={false} onSelect={() => {}} />);
+      expect(screen.queryByText("Typing…")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Typing")).not.toBeInTheDocument();
+    });
+  });
 });
 
 describe("roomListItemPropsEqual", () => {
@@ -407,6 +435,10 @@ describe("roomListItemPropsEqual", () => {
 
   it("treats a different active flag as unequal", () => {
     expect(roomListItemPropsEqual(baseProps, { ...baseProps, active: true })).toBe(false);
+  });
+
+  it("treats a different isTyping flag as unequal", () => {
+    expect(roomListItemPropsEqual(baseProps, { ...baseProps, isTyping: true })).toBe(false);
   });
 
   it("treats a different style reference as unequal, even with equivalent content", () => {

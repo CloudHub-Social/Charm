@@ -111,7 +111,7 @@ fn room_message_preview_from_raw(
 /// message) yields a preview today; a pending invite, a still-sending local
 /// echo, or "nothing computed yet" all yield `None` and the row falls back to
 /// showing just the room name.
-async fn last_message_preview(client: &Client, room: &Room) -> Option<LastMessagePreview> {
+async fn fetch_latest_event_value(client: &Client, room: &Room) -> Option<LatestEventValue> {
     // Cheap/idempotent: only actually subscribes to sync updates once per
     // client, regardless of how many times `snapshot_rooms` calls this.
     let _ = client.event_cache().subscribe();
@@ -122,7 +122,22 @@ async fn last_message_preview(client: &Client, room: &Room) -> Option<LastMessag
         .listen_and_subscribe_to_room(room_id)
         .await
         .ok()??;
-    let value = subscriber.get().await;
+    Some(subscriber.get().await)
+}
+
+/// Spec 54 activity sort: the latest event's own timestamp, regardless of
+/// whether it's remote or still a local echo — a still-sending message
+/// should already bump its room to the top of an "activity" sort, not wait
+/// for the server to accept it. Milliseconds since the Unix epoch, matching
+/// `MilliSecondsSinceUnixEpoch`'s own unit.
+fn last_activity_ts(value: &LatestEventValue) -> Option<u64> {
+    value.timestamp().map(|ts| ts.0.into())
+}
+
+async fn build_last_message_preview(
+    room: &Room,
+    value: &LatestEventValue,
+) -> Option<LastMessagePreview> {
     let LatestEventValue::Remote(timeline_event) = value else {
         return None;
     };
@@ -293,6 +308,13 @@ pub struct RoomSummary {
     /// the room's most recent message, or `None` when none is available yet
     /// — see [`last_message_preview`].
     pub last_message_preview: Option<LastMessagePreview>,
+    /// Spec 54 activity sort: the latest event's timestamp (remote or a
+    /// still-sending local echo), milliseconds since the Unix epoch. `None`
+    /// when activity sort is off or no latest event has been computed yet —
+    /// the frontend falls back to the default section/manual-order/name
+    /// ordering in that case. See [`last_activity_ts`].
+    #[ts(type = "number | null")]
+    pub last_activity_ts: Option<u64>,
 }
 
 /// The tag a room's manual order lives on: whichever section tag is
@@ -489,6 +511,7 @@ pub async fn snapshot_rooms(
     client: &Client,
     media_cache: Option<&media::MediaCache>,
     include_message_preview: bool,
+    include_activity_sort: bool,
     preview_registered_rooms: &std::sync::Mutex<
         std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
     >,
@@ -564,21 +587,30 @@ pub async fn snapshot_rooms(
             };
             // Pending invites have no readable message history to preview
             // yet. Skip the `LatestEvents` subscription + member lookup
-            // entirely when the feature is off, rather than computing a
-            // value the frontend will just discard.
-            let (last_message_preview, registered) =
-                if include_message_preview && membership == RoomMembershipKind::Join {
-                    // Registers with `LatestEvents` as a side effect
-                    // regardless of whether a preview value is available
-                    // yet — track it as "still wanted" either way, so it
-                    // isn't forgotten below.
-                    (
-                        last_message_preview(client, &room).await,
-                        Some(room.room_id().to_owned()),
-                    )
+            // entirely when neither feature needing it is on, rather than
+            // computing a value the frontend will just discard.
+            let (last_message_preview, last_activity_ts, registered) = if (include_message_preview
+                || include_activity_sort)
+                && membership == RoomMembershipKind::Join
+            {
+                // Registers with `LatestEvents` as a side effect
+                // regardless of whether a preview value is available
+                // yet — track it as "still wanted" either way, so it
+                // isn't forgotten below.
+                let value = fetch_latest_event_value(client, &room).await;
+                let preview = if include_message_preview {
+                    match &value {
+                        Some(v) => build_last_message_preview(&room, v).await,
+                        None => None,
+                    }
                 } else {
-                    (None, None)
+                    None
                 };
+                let activity_ts = value.as_ref().and_then(last_activity_ts);
+                (preview, activity_ts, Some(room.room_id().to_owned()))
+            } else {
+                (None, None, None)
+            };
 
             Some((
                 membership_rank(membership),
@@ -607,6 +639,7 @@ pub async fn snapshot_rooms(
                     inviter_user_id,
                     inviter_display_name,
                     last_message_preview,
+                    last_activity_ts,
                 },
                 registered,
             ))
@@ -701,10 +734,14 @@ pub async fn list_rooms(
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
         )
     });
+    let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
+    });
     Ok(snapshot_rooms(
         &client,
         media_cache,
         include_message_preview,
+        include_activity_sort,
         &state.preview_registered_rooms,
     )
     .await)

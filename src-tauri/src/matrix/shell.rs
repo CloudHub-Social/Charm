@@ -537,6 +537,7 @@ mod tests {
             inviter_user_id: None,
             inviter_display_name: None,
             last_message_preview: None,
+            last_activity_ts: None,
         }
     }
 

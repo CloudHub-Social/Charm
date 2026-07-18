@@ -88,5 +88,17 @@
     "default": false,
     "description": "Bookmark a message from its action menu and browse saved messages from a global Settings panel.",
     "owner": "Day-2 Spec 12 (bookmarks and saved messages)"
+  },
+  {
+    "key": "room_list_sort",
+    "default": false,
+    "description": "Switch Home, direct-message, and space room lists between default, alphabetical, unread-first, and activity ordering.",
+    "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "room_list_typing_indicator",
+    "default": false,
+    "description": "Show a typing badge on room-list rows for rooms with someone currently typing.",
+    "owner": "Spec 54 (room-list enrichment and filtering)"
   }
 ]
