@@ -65,23 +65,38 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
   // an edit or redaction landing while this panel was already open and had
   // already resolved a preview would keep showing the stale pre-edit body
   // until something unrelated (e.g. a bookmark add/remove) happened to
-  // trigger a refetch. Bookmarks change rarely enough that it's cheap to
-  // just invalidate whenever a currently-listed bookmark's own event shows
-  // up in a `timeline:update`, rather than plumbing a narrower per-event
-  // subscription.
+  // trigger a refetch.
+  //
+  // `timeline:update` payloads are always a full snapshot of the room's
+  // currently-loaded window, not a delta — so a bookmarked event's id shows
+  // up in `update.messages` on nearly every update to that room (new
+  // messages, reactions, etc.), not just an edit/redaction to that specific
+  // event. Only invalidate when the tracked event's own content actually
+  // changed since we last saw it: compare `body`+`redacted` against a
+  // per-event signature cache rather than invalidating on mere presence.
   const bookmarksRef = useRef(bookmarks);
   bookmarksRef.current = bookmarks;
+  const knownSignaturesRef = useRef(new Map<string, string>());
   useEffect(() => {
     const unlistenPromise = onTimelineUpdate((update) => {
       const current = bookmarksRef.current;
       if (!current) return;
-      const touchesABookmark = update.messages.some((message) =>
-        current.some(
+      const knownSignatures = knownSignaturesRef.current;
+      let changed = false;
+      for (const message of update.messages) {
+        const isBookmarked = current.some(
           (bookmark) =>
             bookmark.room_id === update.room_id && bookmark.event_id === message.event_id,
-        ),
-      );
-      if (touchesABookmark) {
+        );
+        if (!isBookmarked) continue;
+        const key = `${update.room_id}:${message.event_id}`;
+        const signature = `${message.body}|${message.redacted}`;
+        if (knownSignatures.get(key) !== signature) {
+          knownSignatures.set(key, signature);
+          changed = true;
+        }
+      }
+      if (changed) {
         void queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
       }
     });

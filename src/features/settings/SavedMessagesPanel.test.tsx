@@ -166,10 +166,47 @@ describe("SavedMessagesPanel", () => {
 
     timelineUpdateCallback?.({
       room_id: "!room:localhost",
-      messages: [{ event_id: "$a" } as RoomTimelineUpdate["messages"][number]],
+      messages: [
+        {
+          event_id: "$a",
+          body: "edited",
+          redacted: false,
+        } as RoomTimelineUpdate["messages"][number],
+      ],
     });
 
     await screen.findByText("edited");
+  });
+
+  it("does not refetch when a later timeline:update repeats the same signature for a bookmarked event", async () => {
+    // Review fix regression test: `timeline:update` payloads are full
+    // snapshots, not deltas, so a bookmarked event's id can appear on
+    // nearly every unrelated update to that room. Only a genuine
+    // body/redacted change for that specific event should trigger a
+    // refetch — a repeat of the same content should not.
+    listBookmarks
+      .mockResolvedValueOnce([makeBookmark({ event_id: "$a", body_preview: "original" })])
+      .mockResolvedValue([makeBookmark({ event_id: "$a", body_preview: "should not appear" })]);
+    renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
+
+    await screen.findByText("original");
+
+    const unchangedMessage = {
+      event_id: "$a",
+      body: "same body",
+      redacted: false,
+    } as RoomTimelineUpdate["messages"][number];
+
+    // First observation establishes the baseline signature and is expected
+    // to trigger one refetch (no prior signature to compare against).
+    timelineUpdateCallback?.({ room_id: "!room:localhost", messages: [unchangedMessage] });
+    await waitFor(() => expect(listBookmarks).toHaveBeenCalledTimes(2));
+
+    // A second update with the identical body/redacted signature must not
+    // trigger another refetch.
+    timelineUpdateCallback?.({ room_id: "!room:localhost", messages: [unchangedMessage] });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(listBookmarks).toHaveBeenCalledTimes(2);
   });
 
   it("ignores a timeline:update for an event that isn't bookmarked", async () => {
