@@ -353,4 +353,61 @@ describe("useSetPrivacySettings", () => {
 
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(DEFAULT_SETTINGS);
   });
+
+  it("rolls back to an older mutation's successful write, not the pre-first-mutation snapshot, when a newer queued mutation fails (review fix)", async () => {
+    // Review fix (P2): the older (first) mutation's `onSuccess` used to
+    // only update `lastConfirmedPrivacySettings` when it was also still
+    // "the latest" mutation — so with a second mutation already queued
+    // behind it, the first one's real, Rust-confirmed success never got
+    // recorded. If that second (newer) mutation then failed, `onError`
+    // rolled back to the pre-*first*-mutation snapshot instead of the
+    // first mutation's actually-persisted result, silently discarding a
+    // setting Rust had genuinely just saved.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getPrivacySettings.mockResolvedValue(DEFAULT_SETTINGS);
+    const { result: query, unmount: unmountQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(query.current.isSuccess).toBe(true));
+    unmountQuery();
+
+    let resolveFirst: (() => void) | undefined;
+    let rejectSecond: ((err: Error) => void) | undefined;
+    setPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    setPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSecond = reject;
+        }),
+    );
+
+    const { result: first } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const { result: second } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+
+    const firstSuccess: PrivacySettings = { ...DEFAULT_SETTINGS, hide_typing: true };
+    first.current.mutate(firstSuccess);
+    await waitFor(() => expect(setPrivacySettings).toHaveBeenCalledTimes(1));
+    second.current.mutate({ ...firstSuccess, appear_offline: true });
+    await waitFor(() => expect(second.current.isPending).toBe(true));
+
+    // The first mutation succeeds while the second is still pending —
+    // must still be recorded as confirmed even though it's no longer "the
+    // latest" mutation.
+    resolveFirst?.();
+    await waitFor(() => expect(first.current.isSuccess).toBe(true));
+
+    rejectSecond?.(new Error("disk full"));
+    await waitFor(() => expect(second.current.isError).toBe(true));
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(firstSuccess);
+  });
 });

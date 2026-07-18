@@ -182,8 +182,18 @@ export function useSetPrivacySettings() {
       }
     },
     onSuccess: (_, settings, context) => {
-      if (context?.mutationId !== latestPrivacyMutationId) return;
+      // Review fix (P2): recorded *before* the latest-mutation guard below,
+      // not after — an older mutation succeeding while a newer one is still
+      // queued is a real, Rust-confirmed write regardless of whether it's
+      // still "the latest" one. Gating this update on that check too meant
+      // an older mutation's success never updated `lastConfirmedPrivacySettings`
+      // at all: if the newer (queued-behind) mutation then failed, `onError`
+      // rolled back to the pre-*first*-mutation snapshot instead of that
+      // first mutation's already-persisted result, and a subsequent toggle
+      // reading the stale rolled-back cache could resend a full settings
+      // object that silently cleared what Rust had actually just saved.
       lastConfirmedPrivacySettings = settings;
+      if (context?.mutationId !== latestPrivacyMutationId) return;
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
     },
     // Review fix: reconciles with the server's actual persisted state
