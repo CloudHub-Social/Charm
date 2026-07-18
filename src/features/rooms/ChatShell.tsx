@@ -667,6 +667,21 @@ export function ChatShell({
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpToEventId, room?.room_id, messages, loading, activeRoomId]);
+  // Review fix: only clears the fallback timer on unmount, not on every
+  // dependency change of the effect above — the fallback timer is the *only*
+  // thing that will ever call `onJumpHandled` for a request whose
+  // `timeline:update` never lands, so clearing it whenever `messages`/
+  // `loading` change (as a cleanup returned from that effect itself would)
+  // would leave a jump permanently "in progress" instead of just avoiding a
+  // stale callback into an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (jumpFallbackTimeoutRef.current !== null) {
+        clearTimeout(jumpFallbackTimeoutRef.current);
+        jumpFallbackTimeoutRef.current = null;
+      }
+    };
+  }, []);
   // The memo callback below is pure — no ref mutation inside it. `React.
   // StrictMode` (see `src/main.tsx`) double-invokes memo callbacks for the
   // same commit; mutating `seenRowKeysRef`/`seededRoomIdRef` *inside this

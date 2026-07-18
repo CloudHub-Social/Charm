@@ -1242,10 +1242,12 @@ async fn load_focused_event_timeline(
     }
 
     // `replace_timeline` returns `None` if its own re-check finds the
-    // active client no longer matches by the time it's ready to install —
-    // treat that identically to "not found", not as a successful jump.
+    // active client no longer matches, or this jump has since been
+    // superseded by a newer one for the same room, by the time it's ready
+    // to install — treat that identically to "not found", not as a
+    // successful jump.
     Ok(state
-        .replace_timeline(app, client, room_id, focused)
+        .replace_timeline(app, client, room_id, focused, Some(event_id))
         .await
         .is_some())
 }

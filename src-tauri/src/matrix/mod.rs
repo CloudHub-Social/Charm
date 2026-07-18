@@ -528,13 +528,23 @@ impl MatrixState {
         // call's in-flight room-open notification handling.
         {
             let mut timelines = self.timelines.lock().await;
-            if let Some((existing, _, _)) = timelines.get(room_id) {
-                let existing = std::sync::Arc::clone(existing);
-                drop(timelines);
-                if inserted_transition_marker {
-                    self.transitioning_timelines.lock().await.remove(room_id);
+            if let Some((existing, _, existing_is_focused)) = timelines.get(room_id) {
+                // Review fix: when this call lost the transition-marker
+                // claim above (`claimed == false`), it never popped the old
+                // entry itself and has no way to know whether the winning
+                // call has popped it yet. Returning a still-focused entry
+                // here would hand back the bookmarked view even though the
+                // caller explicitly asked for `force_live` — fall through
+                // and build a fresh live `Timeline` instead in that case,
+                // same as if the pop had already happened.
+                if !(force_live && *existing_is_focused) {
+                    let existing = std::sync::Arc::clone(existing);
+                    drop(timelines);
+                    if inserted_transition_marker {
+                        self.transitioning_timelines.lock().await.remove(room_id);
+                    }
+                    return Ok(existing);
                 }
-                return Ok(existing);
             }
         }
 
@@ -562,13 +572,20 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        if let Some((existing, _, _)) = timelines.get(room_id) {
-            let existing = std::sync::Arc::clone(existing);
-            drop(timelines);
-            if inserted_transition_marker {
-                self.transitioning_timelines.lock().await.remove(room_id);
+        //
+        // Review fix: same `force_live` guard as the earlier check above —
+        // this second await window gives the same narrow race another
+        // chance to surface a still-focused entry the winning call hasn't
+        // popped yet.
+        if let Some((existing, _, existing_is_focused)) = timelines.get(room_id) {
+            if !(force_live && *existing_is_focused) {
+                let existing = std::sync::Arc::clone(existing);
+                drop(timelines);
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
+                return Ok(existing);
             }
-            return Ok(existing);
         }
 
         let handle = timeline::spawn_timeline_listener(
@@ -632,13 +649,20 @@ impl MatrixState {
     /// previous listener has fully stopped, the active client is no longer
     /// the same one `client` was captured from (see the review fix below) —
     /// callers should treat that the same as "this jump/replacement no
-    /// longer applies", not as success.
+    /// longer applies", not as success. Also returns `None` if
+    /// `expected_event_id` is given and no longer matches this room's
+    /// `latest_jump_target` by that same point — a newer jump for this room
+    /// superseded this one while the previous listener was still unwinding.
+    /// Pass `None` for callers that aren't part of the jump-to-event flow
+    /// (none currently are, but this keeps the re-check optional rather than
+    /// coupling every caller to that map).
     pub(crate) async fn replace_timeline(
         &self,
         app: &AppHandle,
         client: &Client,
         room_id: &matrix_sdk::ruma::RoomId,
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
+        expected_event_id: Option<&matrix_sdk::ruma::EventId>,
     ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
         // Review fix: this used to only `.abort()` the previous listener *in
         // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
@@ -712,6 +736,32 @@ impl MatrixState {
             drop(timelines);
             self.transitioning_timelines.lock().await.remove(room_id);
             return None;
+        }
+
+        // Review fix: the caller's own `still_latest` check (comparing
+        // against `latest_jump_target`) only covers the window *before*
+        // this call — it says nothing about a *newer* jump for this same
+        // room superseding this one during the `previous_handle.await`
+        // above, which is a genuine wait for the old listener to fully
+        // unwind. If that newer jump's own `load_focused_event_timeline`
+        // resolves and calls this function first, this (now-stale) call
+        // would still go on to overwrite the cache with its own outdated
+        // focused view once it resumes. Re-checking here, atomically with
+        // the push below (same `self.timelines` guard already held),
+        // closes that window the same way the `still_active` check above
+        // does for a concurrent logout.
+        if let Some(event_id) = expected_event_id {
+            let still_latest = self
+                .latest_jump_target
+                .lock()
+                .await
+                .get(room_id)
+                .is_some_and(|target| target == event_id);
+            if !still_latest {
+                drop(timelines);
+                self.transitioning_timelines.lock().await.remove(room_id);
+                return None;
+            }
         }
 
         let handle = timeline::spawn_timeline_listener(
