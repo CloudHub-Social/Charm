@@ -798,25 +798,38 @@ async fn latest_edit_body(
         )
         .await
         .ok()?;
-    for candidate in &relations.chunk {
-        let Ok(raw_edit) = candidate.raw().deserialize() else {
-            continue;
-        };
-        let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
-            SyncMessageLikeEvent::Original(edit),
-        )) = raw_edit
-        else {
-            continue;
-        };
-        if edit.sender != *original_sender {
-            continue;
-        }
-        let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
-            continue;
-        };
-        return Some(replacement.new_content.msgtype.body().to_string());
-    }
-    None
+    // Review fix: `dir: Direction::Backward` is a request for the
+    // homeserver to return relations newest-first, but nothing in the
+    // response guarantees that ordering was actually honored — sorting
+    // explicitly by `origin_server_ts` here means a homeserver that
+    // returns them in a different order still resolves to the genuinely
+    // most recent valid edit, not just whichever happened to come first in
+    // the response.
+    let mut candidates: Vec<_> = relations
+        .chunk
+        .iter()
+        .filter_map(|candidate| {
+            let raw_edit = candidate.raw().deserialize().ok()?;
+            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                SyncMessageLikeEvent::Original(edit),
+            )) = raw_edit
+            else {
+                return None;
+            };
+            if edit.sender != *original_sender {
+                return None;
+            }
+            let Relation::Replacement(replacement) = edit.content.relates_to? else {
+                return None;
+            };
+            Some((
+                edit.origin_server_ts,
+                replacement.new_content.msgtype.body().to_string(),
+            ))
+        })
+        .collect();
+    candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+    candidates.into_iter().next().map(|(_, body)| body)
 }
 
 /// Core logic behind [`get_pinned_messages`].
@@ -1636,6 +1649,99 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "edited body");
+    }
+
+    /// Review fix regression test: picks the edit with the latest
+    /// `origin_server_ts`, not just whichever happens to come first in the
+    /// `/relations` response — doesn't rely on the homeserver having
+    /// actually honored `dir: Direction::Backward`.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_resolves_the_latest_edit_even_when_the_server_returns_them_out_of_order(
+    ) {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let older_edit = matrix_sdk::ruma::owned_event_id!("$older-edit");
+        let newer_edit = matrix_sdk::ruma::owned_event_id!("$newer-edit");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "pre-edit body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // The newer edit (higher origin_server_ts) is listed *second* in
+        // the chunk — out of the backward/newest-first order the request
+        // asked for.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [
+                        {
+                            "type": "m.room.message",
+                            "event_id": older_edit,
+                            "room_id": room_id,
+                            "sender": *ALICE,
+                            "origin_server_ts": 1_700_000_001_000u64,
+                            "content": {
+                                "msgtype": "m.text",
+                                "body": "* older edit",
+                                "m.new_content": { "msgtype": "m.text", "body": "older edit" },
+                                "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                            },
+                        },
+                        {
+                            "type": "m.room.message",
+                            "event_id": newer_edit,
+                            "room_id": room_id,
+                            "sender": *ALICE,
+                            "origin_server_ts": 1_700_000_002_000u64,
+                            "content": {
+                                "msgtype": "m.text",
+                                "body": "* newer edit",
+                                "m.new_content": { "msgtype": "m.text", "body": "newer edit" },
+                                "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                            },
+                        },
+                    ],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
+            .await
+            .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "newer edit");
     }
 
     /// Review fix regression test: a replacement is only valid if its

@@ -175,17 +175,52 @@ async fn emit_room_updates(
             // already has an entry for, so a plain state-event update in a
             // room nobody has ever pinned/unpinned via this session
             // doesn't grow the map for no reason.
-            let mut pinned_cache = state.pinned_event_cache.lock().await;
-            if pinned_cache.contains_key(room_id) {
-                if let Some(room) = client.get_room(room_id) {
-                    pinned_cache.insert(
-                        room_id.to_owned(),
-                        room.pinned_event_ids().unwrap_or_default(),
-                    );
+            //
+            // Review fix: only reconcile when *this specific response*
+            // actually carried an `m.room.pinned_events` event, not on any
+            // state-event update for the room — an unrelated membership/
+            // power-level change syncing in right after a local
+            // `pin_event` call (but before that pin's own echo has synced)
+            // would otherwise roll `pinned_event_cache` back to
+            // `Room::pinned_event_ids()`'s still-pre-pin local state,
+            // discarding the just-cached write. A second quick pin would
+            // then send a full replacement list missing the first one.
+            if room_update_contains_pinned_events(update) {
+                let mut pinned_cache = state.pinned_event_cache.lock().await;
+                if pinned_cache.contains_key(room_id) {
+                    if let Some(room) = client.get_room(room_id) {
+                        pinned_cache.insert(
+                            room_id.to_owned(),
+                            room.pinned_event_ids().unwrap_or_default(),
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+/// Whether `update`'s sync response actually carried an `m.room.pinned_events`
+/// event for this room, in either the `state` field (pre-timeline changes)
+/// or the `timeline` field (an in-window state event) — see
+/// `emit_room_updates`'s own comment on why `pinned_event_cache`
+/// reconciliation is gated on this specific check, not just "any state
+/// event at all".
+fn room_update_contains_pinned_events(update: &matrix_sdk::sync::JoinedRoomUpdate) -> bool {
+    fn is_pinned_events<T>(raw: &matrix_sdk::ruma::serde::Raw<T>) -> bool {
+        raw.get_field::<String>("type").ok().flatten().as_deref() == Some("m.room.pinned_events")
+    }
+    let in_state = match &update.state {
+        matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
+            events.iter().any(is_pinned_events)
+        }
+    };
+    in_state
+        || update
+            .timeline
+            .events
+            .iter()
+            .any(|event| is_pinned_events(event.raw()))
 }
 
 /// Fires local notifications for new messages in rooms that do **not**

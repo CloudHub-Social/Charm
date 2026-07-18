@@ -1,5 +1,5 @@
 import { Pin, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { onTimelineUpdate, unpinEvent, type RoomMessageSummary } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -60,7 +60,20 @@ export function PinnedMessagesPanel({
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
   const { data: details } = useRoomDetails(roomId);
-  const pinnedEventIds = details?.pinned_event_ids ?? EMPTY_PINNED_EVENT_IDS;
+  // Review fix: `details?.pinned_event_ids` is a fresh array reference on
+  // every `room_details:update` (even one unrelated to pinning, e.g. a
+  // room-name change), so a plain `??` fallback made every effect below
+  // that depends on `pinnedEventIds` tear down and re-subscribe its
+  // `onTimelineUpdate` listener on every such update. Memoizing on the
+  // ids' actual content (joined into a stable string key) instead of the
+  // array's identity keeps the reference stable across updates that don't
+  // change which events are pinned.
+  const pinnedEventIdsKey = details?.pinned_event_ids?.join(",") ?? "";
+  const pinnedEventIds = useMemo(
+    () => details?.pinned_event_ids ?? EMPTY_PINNED_EVENT_IDS,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on pinnedEventIdsKey (content), not details/its array identity.
+    [pinnedEventIdsKey],
+  );
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
   const canUnpin = details?.can.set_pinned_events ?? false;
   const queryClient = useQueryClient();
