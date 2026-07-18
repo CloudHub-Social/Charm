@@ -40,9 +40,27 @@ let privacySettingsWriteGeneration = 0;
 // bumped by `resetPrivacySettingsWriteQueue` below, for the same logout
 // scenario that function's own write-generation bump handles.
 let latestPrivacyMutationId = 0;
+// Review fix (P2): `onError`'s rollback used to restore whatever `onMutate`
+// captured as `previous` — but with two toggles queued before either IPC
+// write settles, the second mutation's `onMutate` runs *after* the first
+// mutation's own optimistic cache write, so its `previous` is that
+// still-unconfirmed first snapshot, not anything Rust has actually
+// persisted. If both writes then fail, rolling back to that snapshot left
+// the UI showing e.g. `hide_read_receipts: true` while Rust enforcement
+// still read the old file on disk — a privacy setting that looked applied
+// but wasn't. Tracks the last snapshot actually confirmed by a successful
+// mutation (or the initial fetch) separately, so a rollback always lands on
+// real persisted state, not a still-in-flight optimistic layer. Module-level
+// for the same multi-caller-safety reason as the write queue/generation
+// above.
+let lastConfirmedPrivacySettings: PrivacySettings | undefined;
 export function resetPrivacySettingsWriteQueue(): void {
   privacySettingsWriteGeneration += 1;
   privacySettingsWriteQueue = Promise.resolve();
+  // Review fix: an account switch must not let the outgoing account's
+  // confirmed snapshot leak into the incoming account's cache as an
+  // `onError` rollback target before its own fetch has populated one.
+  lastConfirmedPrivacySettings = undefined;
   // Review fix: bumping the write generation alone only stops the queued
   // write's *IPC call* — `serializedSetPrivacySettings` still resolves
   // successfully (just without calling into Rust), so the mutation's own
@@ -87,7 +105,14 @@ function serializedSetPrivacySettings(settings: PrivacySettings): Promise<void> 
 export function usePrivacySettings(enabled = true) {
   return useQuery({
     queryKey: PRIVACY_SETTINGS_QUERY_KEY,
-    queryFn: getPrivacySettings,
+    // Every successful fetch is real, server-confirmed state — keeps
+    // `lastConfirmedPrivacySettings` current for `useSetPrivacySettings`'s
+    // `onError` rollback, not just its own mutation successes.
+    queryFn: async () => {
+      const settings = await getPrivacySettings();
+      lastConfirmedPrivacySettings = settings;
+      return settings;
+    },
     enabled: enabled && !isWebBuild(),
   });
 }
@@ -145,12 +170,20 @@ export function useSetPrivacySettings() {
       // mutation's failure settling after a newer one has already
       // optimistically written its own snapshot must not stomp on it.
       if (context?.mutationId !== latestPrivacyMutationId) return;
-      if (context?.previous) {
-        queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, context.previous);
+      // Review fix (P2): rolls back to the last *confirmed* snapshot, not
+      // `context.previous` — see `lastConfirmedPrivacySettings`'s own doc
+      // comment. Falls back to `context.previous` only if nothing has ever
+      // been confirmed yet (e.g. the very first load also failed), so a
+      // rollback still restores *something* rather than leaving the cache
+      // with no data at all.
+      const rollback = lastConfirmedPrivacySettings ?? context?.previous;
+      if (rollback) {
+        queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, rollback);
       }
     },
     onSuccess: (_, settings, context) => {
       if (context?.mutationId !== latestPrivacyMutationId) return;
+      lastConfirmedPrivacySettings = settings;
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
     },
     // Review fix: reconciles with the server's actual persisted state

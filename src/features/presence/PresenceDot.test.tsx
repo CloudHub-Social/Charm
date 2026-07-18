@@ -108,6 +108,32 @@ describe("PresenceDot", () => {
       expect(screen.getByText(/Active 1m ago/)).toBeInTheDocument();
     });
 
+    it("re-anchors from a fresh update even when it carries the exact same lastActiveAgoMs value (review fix)", () => {
+      // Review fix (P3): re-anchoring keyed only on the numeric value
+      // missed a genuinely fresh update that happens to report the same
+      // duration as the last one — e.g. two consecutive "just now" (`0`)
+      // pings. Without `updateToken` (here, a fresh object per update,
+      // mirroring `usePresence`'s real return value) the anchor wouldn't
+      // reset, and the label would keep aging from the *first* update's
+      // arrival time well past when the second one landed.
+      const { rerender, client } = renderWithProviders(
+        <PresenceDot presence="online" lastActiveAgoMs={0} updateToken={{ id: 1 }} />,
+      );
+      expect(screen.getByText(/Active just now/)).toBeInTheDocument();
+
+      // Real time passes, then a second, genuinely fresh "just now" update
+      // arrives — same `lastActiveAgoMs` value, but a new update identity.
+      vi.setSystemTime(new Date("2026-01-01T00:30:00.000Z"));
+      rerender(
+        wrapWithProviders(
+          <PresenceDot presence="online" lastActiveAgoMs={0} updateToken={{ id: 2 }} />,
+          client,
+        ),
+      );
+
+      expect(screen.getByText(/Active just now/)).toBeInTheDocument();
+    });
+
     it("ages the label on its own via a periodic timer, with no external re-render trigger", () => {
       // Review fix: re-anchoring alone only recomputes the displayed label
       // when *something else* causes a re-render. A long-mounted component

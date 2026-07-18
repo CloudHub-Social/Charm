@@ -59,14 +59,37 @@ export function formatLastActiveAgo(lastActiveAgoMs: number): string {
 // timestamp is actually being shown.
 const LAST_ACTIVE_TICK_MS = 60_000;
 
-function useAnchoredLastActiveAgoMs(lastActiveAgoMs: number | null | undefined): number | null {
-  const anchorRef = useRef<{ source: number; at: number } | null>(null);
+// Review fix (P3): re-anchoring keyed only on `lastActiveAgoMs`'s numeric
+// value missed a fresh update that happens to carry the *same* value as the
+// previous one — e.g. two consecutive "just now" (`0`) updates as a peer
+// stays active. That looked like no update at all, so the anchor (and so
+// the displayed label) kept aging from the *first* one's arrival time
+// instead of resetting to the second's, and could show a stale "Active 30m
+// ago" immediately after a fresh just-now update landed. `updateToken` is an
+// opaque per-update identity (callers pass the `PresenceUpdate` object
+// itself, which is a fresh reference on every incoming update even when its
+// fields are numerically identical) — re-anchoring on *either* the value or
+// this token changing catches a same-value update that a value-only compare
+// would treat as a no-op.
+function useAnchoredLastActiveAgoMs(
+  lastActiveAgoMs: number | null | undefined,
+  updateToken: unknown,
+): number | null {
+  const anchorRef = useRef<{ source: number; token: unknown; at: number } | null>(null);
   const [, forceRerender] = useState(0);
 
   if (lastActiveAgoMs == null) {
     anchorRef.current = null;
-  } else if (anchorRef.current === null || anchorRef.current.source !== lastActiveAgoMs) {
-    anchorRef.current = { source: lastActiveAgoMs, at: Date.now() - lastActiveAgoMs };
+  } else if (
+    anchorRef.current === null ||
+    anchorRef.current.source !== lastActiveAgoMs ||
+    anchorRef.current.token !== updateToken
+  ) {
+    anchorRef.current = {
+      source: lastActiveAgoMs,
+      token: updateToken,
+      at: Date.now() - lastActiveAgoMs,
+    };
   }
 
   useEffect(() => {
@@ -85,6 +108,16 @@ interface PresenceDotProps {
   statusMsg?: string | null;
   /** Milliseconds since this user was last active, from `PresenceUpdate.last_active_ago_ms`. */
   lastActiveAgoMs?: number | null;
+  /**
+   * An opaque per-update identity — pass the `PresenceUpdate` object itself
+   * (e.g. `usePresence`'s return value). Lets the last-active anchor tell a
+   * genuinely fresh update apart from an unrelated re-render even when the
+   * new update happens to carry the exact same `lastActiveAgoMs` value as
+   * the previous one (e.g. two consecutive "just now" pings) — see
+   * `useAnchoredLastActiveAgoMs`'s own comment. Optional: omitting it just
+   * means same-value repeats won't re-anchor, matching the prior behavior.
+   */
+  updateToken?: unknown;
   className?: string;
   /**
    * Set when the caller already renders this inside its own interactive
@@ -120,6 +153,7 @@ export function PresenceDot({
   presence,
   statusMsg,
   lastActiveAgoMs,
+  updateToken,
   className,
   insideInteractiveParent = false,
 }: PresenceDotProps) {
@@ -132,7 +166,7 @@ export function PresenceDot({
   // Called unconditionally, before the early `return null` below, per the
   // rules of hooks — the anchor itself is cheap to maintain even when
   // there's no `presence` to render yet.
-  const anchoredLastActiveAgoMs = useAnchoredLastActiveAgoMs(lastActiveAgoMs);
+  const anchoredLastActiveAgoMs = useAnchoredLastActiveAgoMs(lastActiveAgoMs, updateToken);
   if (!presence) return null;
 
   const label = PRESENCE_LABELS[presence];

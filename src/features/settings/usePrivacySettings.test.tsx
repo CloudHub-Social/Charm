@@ -2,7 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useSetPrivacySettings, resetPrivacySettingsWriteQueue } from "./usePrivacySettings";
+import {
+  useSetPrivacySettings,
+  usePrivacySettings,
+  resetPrivacySettingsWriteQueue,
+} from "./usePrivacySettings";
 import type { PrivacySettings } from "@/lib/matrix";
 
 const setPrivacySettings = vi.fn();
@@ -278,5 +282,75 @@ describe("useSetPrivacySettings", () => {
     await Promise.resolve();
 
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(updated);
+  });
+
+  it("rolls back to the last confirmed snapshot, not an earlier unconfirmed optimistic write, when both queued mutations fail (review fix)", async () => {
+    // Review fix (P2): with two toggles queued before either IPC write
+    // settles, the second mutation's `onMutate` captures `previous` from
+    // whatever's in the cache at that point — which is already the first
+    // mutation's own optimistic (not yet confirmed) write. If both writes
+    // then fail, rolling back to that snapshot left the UI showing an
+    // unsaved value (e.g. `hide_typing: true`) as if it were real, even
+    // though Rust never actually persisted anything beyond `DEFAULT_SETTINGS`.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getPrivacySettings.mockResolvedValue(DEFAULT_SETTINGS);
+    // Confirms `DEFAULT_SETTINGS` as the last-known-good snapshot via a real
+    // mount of `usePrivacySettings()`'s own query, the same way the app
+    // actually populates `lastConfirmedPrivacySettings` — then unmounts it.
+    // Deliberately not left mounted: with an active observer, `onSettled`'s
+    // own (later, legitimate) `invalidateQueries` call would trigger a real
+    // refetch that converges back to `DEFAULT_SETTINGS` regardless of
+    // whether `onError`'s rollback target was actually fixed, masking
+    // exactly the bug this test exists to catch (same reasoning as the
+    // "does not let an already-in-flight refetch..." test above).
+    const { result: query, unmount: unmountQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(query.current.isSuccess).toBe(true));
+    unmountQuery();
+
+    // Routed by call order (not by field content) — the second toggle's
+    // full snapshot still carries `hide_typing: true` from the first, so
+    // distinguishing by that field would misroute it back to "first".
+    let rejectFirst: ((err: Error) => void) | undefined;
+    let rejectSecond: ((err: Error) => void) | undefined;
+    setPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+    setPrivacySettings.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSecond = reject;
+        }),
+    );
+
+    const { result: first } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const { result: second } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+
+    first.current.mutate({ ...DEFAULT_SETTINGS, hide_typing: true });
+    await waitFor(() => expect(setPrivacySettings).toHaveBeenCalledTimes(1));
+    second.current.mutate({ ...DEFAULT_SETTINGS, hide_typing: true, appear_offline: true });
+    await waitFor(() => expect(second.current.isPending).toBe(true));
+    // The second mutation's optimistic write (combining both toggles) is
+    // now in the cache — this is the value a naive rollback would restore.
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual({
+      ...DEFAULT_SETTINGS,
+      hide_typing: true,
+      appear_offline: true,
+    });
+
+    rejectFirst?.(new Error("disk full"));
+    await waitFor(() => expect(first.current.isError).toBe(true));
+    rejectSecond?.(new Error("disk full"));
+    await waitFor(() => expect(second.current.isError).toBe(true));
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(DEFAULT_SETTINGS);
   });
 });

@@ -1133,6 +1133,7 @@ export function ChatShell({
                 presence={headerPresence?.presence}
                 statusMsg={headerPresence?.status_msg}
                 lastActiveAgoMs={headerPresence?.last_active_ago_ms}
+                updateToken={headerPresence}
               />
             )}
           </Avatar>
