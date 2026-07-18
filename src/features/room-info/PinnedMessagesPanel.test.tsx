@@ -3,16 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { makeRoomDetails } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
-import type { PinnedMessageSummary, RoomTimelineUpdate } from "@/lib/matrix";
+import type { PinnedMessageSummary, RoomDetails, RoomTimelineUpdate } from "@/lib/matrix";
 
 const getRoomDetails = vi.fn();
 const getPinnedMessages = vi.fn();
 const unpinEvent = vi.fn();
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
+// Both `useRoomDetails` (internal to `PinnedMessagesPanel`) and the panel's
+// own review-fix listener call `onRoomDetailsUpdate` — an array, not a
+// single captured callback, since both registrations must fire.
+let roomDetailsUpdateCallbacks: ((details: RoomDetails) => void)[] = [];
 
 vi.mock("@/lib/matrix", () => ({
   getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
-  onRoomDetailsUpdate: vi.fn().mockResolvedValue(() => {}),
+  onRoomDetailsUpdate: vi.fn((callback: (details: RoomDetails) => void) => {
+    roomDetailsUpdateCallbacks.push(callback);
+    return Promise.resolve(() => {});
+  }),
   getPinnedMessages: (...args: unknown[]) => getPinnedMessages(...args),
   unpinEvent: (...args: unknown[]) => unpinEvent(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
@@ -39,6 +46,7 @@ describe("PinnedMessagesPanel", () => {
   beforeEach(() => {
     unpinEvent.mockReset().mockResolvedValue(undefined);
     timelineUpdateCallback = undefined;
+    roomDetailsUpdateCallbacks = [];
   });
 
   it("lists resolved pinned messages in order and calls onClose", async () => {
@@ -278,6 +286,44 @@ describe("PinnedMessagesPanel", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(getPinnedMessages).not.toHaveBeenCalled();
+  });
+
+  it("refetches on a room_details:update even when the pinned id list stays the same (review fix)", async () => {
+    // Review fix (P2): usePinnedMessages only refetches when the pinned id
+    // *list* itself changes — a membership/profile update (e.g. another
+    // member renaming to match a pinned message's sender) doesn't touch
+    // that list at all, so it wouldn't otherwise trigger a refetch, and the
+    // row would keep showing the earlier sender_display_name/disambiguation
+    // result, defeating the backend's display-name-spoofing protection.
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({ event_id: "$1", sender_display_name: "Alice" }),
+    ]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+    await screen.findByText("Alice");
+    getPinnedMessages.mockClear();
+
+    // A room_details:update with the *same* pinned_event_ids (only member
+    // state changed) must still trigger a refetch.
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({ event_id: "$1", sender_display_name: "Alice (@alice:example.org)" }),
+    ]);
+    act(() => {
+      for (const callback of roomDetailsUpdateCallbacks) {
+        callback(details);
+      }
+    });
+
+    await waitFor(() => expect(getPinnedMessages).toHaveBeenCalled());
+    expect(await screen.findByText("Alice (@alice:example.org)")).toBeInTheDocument();
   });
 
   it("shows an unpin action for a redacted pinned message the user has permission to unpin (Codex review fix)", async () => {

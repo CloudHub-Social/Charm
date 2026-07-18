@@ -1,7 +1,12 @@
 import { Pin, PinOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { onTimelineUpdate, unpinEvent, type RoomMessageSummary } from "@/lib/matrix";
+import {
+  onRoomDetailsUpdate,
+  onTimelineUpdate,
+  unpinEvent,
+  type RoomMessageSummary,
+} from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
@@ -96,6 +101,33 @@ export function PinnedMessagesPanel({
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
   const canUnpin = details?.can.set_pinned_events ?? false;
   const queryClient = useQueryClient();
+
+  // Review fix: `usePinnedMessages`'s query key only covers the pinned id
+  // *list* (`pinnedEventIds`) — a membership/profile change (e.g. another
+  // member renaming to match a pinned message's sender) doesn't touch that
+  // list at all, so it wouldn't otherwise trigger a refetch. Left
+  // unaddressed, the row keeps showing `get_pinned_messages`'s earlier
+  // `sender_display_name`/disambiguation result, defeating that backend's
+  // display-name-spoofing protection until the panel happens to remount.
+  // `room_details:update` already fires for any state-event batch on this
+  // room (see `useRoomDetails`'s own doc comment, which uses the same event
+  // to invalidate the room-members query for the identical reason), so
+  // subscribing to it here and invalidating on every occurrence — rather
+  // than only reacting to the subset that actually changes `pinned_event_ids`
+  // — re-resolves sender names/disambiguation whenever room membership
+  // could plausibly have changed.
+  useEffect(() => {
+    if (!roomId) return undefined;
+    const unlisten = onRoomDetailsUpdate((update) => {
+      if (update.room_id !== roomId) return;
+      void queryClient.invalidateQueries({
+        queryKey: pinnedMessagesQueryKey(roomId, pinnedEventIds),
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
+    };
+  }, [roomId, pinnedEventIds, queryClient]);
 
   // Review fix: `spawn_timeline_listener` re-emits the *full* loaded-window
   // snapshot on every `timeline:update`, not just the changed messages — so
