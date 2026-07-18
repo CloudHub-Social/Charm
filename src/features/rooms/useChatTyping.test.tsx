@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatTyping } from "./useChatTyping";
@@ -14,6 +14,11 @@ vi.mock("@/lib/matrix", () => ({
   getPrivacySettings: (...args: unknown[]) => getPrivacySettings(...args),
   onTypingUpdate: vi.fn().mockResolvedValue(() => {}),
 }));
+
+// `presence_privacy_controls` on by default here — these tests exercise the
+// hide_typing behavior itself, which only applies while the flag is on;
+// the flag-off case (review fix) is covered by its own test below.
+vi.mock("@/featureFlags", () => ({ useFlag: vi.fn(() => true) }));
 
 const DEFAULT_SETTINGS: PrivacySettings = {
   hide_read_receipts: false,
@@ -91,5 +96,38 @@ describe("useChatTyping", () => {
     });
 
     expect(sendTyping).not.toHaveBeenCalled();
+  });
+
+  it("does not suppress typing when presence_privacy_controls is off, even with a stale hide_typing: true cached (review fix)", async () => {
+    // Review fix (P2): `usePrivacySettings`'s cache can still hold a stale
+    // hide_typing: true from before the flag was turned off (Labs, or a
+    // remote kill switch) — neither the query key nor its enabled state
+    // changes just because the flag flipped, so a plain cache read alone
+    // doesn't notice. With the flag off, Rust's own enforcement already
+    // falls back to defaults and the Privacy tab is hidden from Settings,
+    // so there's no in-app way to un-toggle it — handleTypingInput must not
+    // keep suppressing typing based on that now-inert cached value.
+    const { useFlag } = await import("@/featureFlags");
+    vi.mocked(useFlag).mockReturnValue(false);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    getPrivacySettings.mockResolvedValue({ ...DEFAULT_SETTINGS, hide_typing: true });
+    const { result } = renderHook(() => useChatTyping("!room:localhost", "@me:localhost"), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    // Waits for the query to actually settle with data (not just for the
+    // fetch to have started) — otherwise `handleTypingInput` below could
+    // run while `usePrivacySettings().data` is still `undefined`, which
+    // would pass regardless of whether the flag gate itself works.
+    await waitFor(() => expect(getPrivacySettings).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    sendTyping.mockClear();
+
+    result.current.handleTypingInput();
+
+    expect(sendTyping).toHaveBeenCalledWith("!room:localhost", true);
   });
 });

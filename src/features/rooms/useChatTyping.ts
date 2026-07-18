@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
+import { useFlag } from "@/featureFlags";
 
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
@@ -45,7 +46,23 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   // between the toggle and that write settling is exactly what this
   // guards against — the UI already shows typing hidden, so it shouldn't
   // ask to send it at all in the meantime.
-  const hideTyping = usePrivacySettings().data?.hide_typing ?? false;
+  //
+  // Review fix (P2): also gated on `presence_privacy_controls` itself —
+  // `usePrivacySettings`'s cache can still hold a stale `hide_typing: true`
+  // from before the flag was turned off (Labs, or a remote kill switch),
+  // and neither the query key nor its `enabled` state changes just because
+  // the flag flipped, so a plain cache read alone doesn't notice. Without
+  // this, a user with the feature already killed server-side (Rust's own
+  // `current_settings` already falls back to defaults, and the Privacy tab
+  // is hidden from Settings, so there's no in-app way to un-toggle it) would
+  // still have every typing notice silently suppressed here until an
+  // unrelated refetch happened to land.
+  const detailControlsEnabled = useFlag("presence_privacy_controls");
+  // Called unconditionally, per the rules of hooks — `detailControlsEnabled`
+  // only gates whether its *result* is honored below, not whether the hook
+  // itself runs.
+  const privacySettings = usePrivacySettings();
+  const hideTyping = detailControlsEnabled && (privacySettings.data?.hide_typing ?? false);
 
   useEffect(() => {
     // Clear on every room change, not just to `null` — otherwise switching
