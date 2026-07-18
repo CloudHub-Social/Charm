@@ -1011,12 +1011,22 @@ pub async fn pin_event(
     // even fully serialized, a second call arriving before that sync
     // round-trip completes would still read the same pre-first-write list
     // matrix-sdk has cached and silently drop the first call's change.
-    // `pinned_event_cache` is this module's own authoritative list, seeded
-    // once from `Room::pinned_event_ids()` and updated immediately after
-    // each successful write — every call under this lock reads and writes
-    // through it instead of matrix-sdk's own (sync-lagged) local state.
-    let current =
-        pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
+    //
+    // Review fix (P2): an earlier version of this fix used
+    // `pinned_event_cache` (this module's own cache, kept current by every
+    // pin/unpin write) as that base instead — correct for *this client's*
+    // own quick-succession calls, but not for a genuinely concurrent edit
+    // from a *different* client: if that other client's change lands on
+    // the homeserver after this cache was seeded but before this client's
+    // own sync reconciliation has processed it, the cached list is stale
+    // and this write would silently drop the other client's change too.
+    // Always fetching fresh from the homeserver here — a real GET
+    // immediately before this call's own PUT, both against the same
+    // client/session — sidesteps that: it reflects this client's own
+    // just-written state (GET-after-PUT is consistent on a single
+    // homeserver) *and* any other client's already-landed change, with no
+    // reliance on this client's own sync/cache having caught up.
+    let current = fresh_pinned_event_ids(&client, &room_id).await?;
     let new_list = pin_event_impl(&client, &room_id, &event_id, current).await?;
     if state
         .pinned_event_cache_generation
@@ -1074,13 +1084,12 @@ pub async fn unpin_event(
     let generation = state
         .pinned_event_cache_generation
         .load(std::sync::atomic::Ordering::SeqCst);
-    // Review fix: same per-room serialization and authoritative-cache
-    // re-check as `pin_event` — see that command's own comment.
+    // Review fix: same per-room serialization and always-fresh-from-network
+    // base as `pin_event` — see that command's own comments.
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let lock = state.pinned_event_lock(&parsed_room_id).await;
     let _guard = lock.lock().await;
-    let current =
-        pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
+    let current = fresh_pinned_event_ids(&client, &room_id).await?;
     let new_list = unpin_event_impl(&client, &room_id, &event_id, current).await?;
     if state
         .pinned_event_cache_generation
@@ -1122,10 +1131,34 @@ pub async fn unpin_event_impl(
     Ok(new_list)
 }
 
+/// Always-fresh (network) read of `room_id`'s currently-pinned event ids —
+/// the base [`pin_event`]/[`unpin_event`] build their next full-replacement
+/// write from. See `pin_event`'s own comment for why this reads from the
+/// homeserver directly rather than `pinned_event_cache` or matrix-sdk's
+/// local `Room::pinned_event_ids()`: only a real GET immediately before the
+/// following PUT is guaranteed to reflect a concurrent edit from a
+/// *different* client, not just this client's own prior writes.
+async fn fresh_pinned_event_ids(
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let room = require_room(client, room_id)?;
+    Ok(room
+        .load_pinned_events()
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default())
+}
+
 /// Returns this module's authoritative last-known pinned list for
-/// `room_id` — see [`pin_event`]'s own comment for why matrix-sdk's local
-/// `Room::pinned_event_ids()` isn't sufficient on its own. Seeds the cache
-/// from that same local state on first use for the room.
+/// `room_id` — read path only (see [`get_pinned_messages`]); a slightly
+/// stale read here is far less harmful than a write built on stale data,
+/// so this cache — updated by every [`pin_event`]/[`unpin_event`] write and
+/// by sync reconciliation — is an acceptable, network-free convenience for
+/// the panel to read from, unlike the always-fresh network read those write
+/// paths need (see `fresh_pinned_event_ids`, and [`pin_event`]'s own
+/// comment on why they parted ways). Seeds the cache from local state (or a
+/// network fallback) on first use for the room.
 async fn pinned_event_cache_get_or_seed(
     state: &MatrixState,
     client: &Client,
@@ -1646,6 +1679,60 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the unpin to succeed, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: `fresh_pinned_event_ids` (the base
+    /// `pin_event`/`unpin_event` build their next write from) must reflect
+    /// the homeserver's *current* state, not this client's own local
+    /// synced state or cache — otherwise a concurrent edit from a
+    /// different client that already landed on the server, but hasn't
+    /// synced to this client yet, gets silently dropped by the next local
+    /// pin/unpin's full-replacement write.
+    #[tokio::test]
+    async fn fresh_pinned_event_ids_reflects_the_server_not_stale_local_state() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        // This client's own local synced state is stale — still shows the
+        // pre-concurrent-edit list.
+        let stale_local_pin = matrix_sdk::ruma::owned_event_id!("$stale-local-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![stale_local_pin.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        // A *different* client already pinned something else on the
+        // homeserver; this client's own sync hasn't caught up to it yet.
+        let concurrent_remote_pin = matrix_sdk::ruma::owned_event_id!("$concurrent-remote-pin");
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [concurrent_remote_pin.clone(), stale_local_pin.clone()],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let fresh = fresh_pinned_event_ids(&client, room_id.as_str())
+            .await
+            .expect("fresh read should succeed");
+
+        assert_eq!(
+            fresh,
+            vec![concurrent_remote_pin, stale_local_pin],
+            "expected the server's current list (including the concurrent client's pin), not this client's stale local/cached state"
         );
     }
 
