@@ -54,6 +54,14 @@ interface MessageRowProps {
   onJumpToMessage: (eventId: string) => void;
   onUserPillClick?: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
+  /** Forwards this message to another room. */
+  onForward?: () => void;
+  /** Opens this message's raw event JSON. */
+  onViewSource?: () => void;
+  /** Reports this message to the homeserver's moderators. */
+  onReport?: () => void;
+  /** Opens this message's edit history. Only rendered when the message has been edited. */
+  onViewEditHistory?: () => void;
 }
 
 /**

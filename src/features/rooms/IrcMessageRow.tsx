@@ -47,6 +47,10 @@ export function IrcMessageRow({
   disableRelationActions,
   isUndecrypted,
   rowKey,
+  onForward,
+  onViewSource,
+  onReport,
+  onViewEditHistory,
 }: MessageRowLayoutProps) {
   const nick = message.sender_display_name ?? message.sender;
 
@@ -143,6 +147,8 @@ export function IrcMessageRow({
             reactions={message.reactions}
             onToggle={onReact}
             disabled={disableRelationActions || isUndecrypted}
+            roomId={roomId}
+            eventId={message.event_id}
           />
           <MessageActions
             ref={(el) => registerActionsRef(rowKey, el)}
@@ -167,6 +173,11 @@ export function IrcMessageRow({
             isBookmarked={isBookmarked}
             onResend={onResend}
             onDiscard={onDiscard}
+            onForward={onForward}
+            onViewSource={onViewSource}
+            onReport={onReport}
+            isEdited={message.edited}
+            onViewEditHistory={onViewEditHistory}
           />
         </>
       )}
