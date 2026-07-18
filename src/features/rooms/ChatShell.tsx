@@ -505,12 +505,25 @@ export function ChatShell({
   const pendingScrollTargetRef = useRef<{ roomId: string; eventId: string } | null>(null);
   function handleJumpToMessage(eventId: string) {
     const index = messages.findIndex((m) => m.event_id === eventId);
-    if (index < 0) {
+    // Review fix: finding the target in `messages` isn't enough on its
+    // own — `Virtuoso` (and so `virtuosoRef.current`) only mounts once
+    // `!loading && messages.length > 0` below, and `useChatTimeline`'s
+    // `setMessages`/`setLoading(false)` land in separate promise-chain
+    // callbacks (`.then()` vs `.finally()`) that can commit on different
+    // renders. A jump landing on the commit where `messages` has already
+    // populated but `loading` is still true used to clear
+    // `pendingScrollTargetRef` and call `scrollToIndex` on a still-null
+    // ref — a silent no-op that the later `loading=false` retry (gated on
+    // `pendingScrollTargetRef` being non-null) would never catch, since
+    // this had already cleared it. Keeping the target pending whenever the
+    // ref isn't mounted yet means the `useLayoutEffect` retry below still
+    // fires on that later commit instead.
+    if (index < 0 || !virtuosoRef.current) {
       if (roomId) pendingScrollTargetRef.current = { roomId, eventId };
       return;
     }
     pendingScrollTargetRef.current = null;
-    virtuosoRef.current?.scrollToIndex({
+    virtuosoRef.current.scrollToIndex({
       index,
       align: "center",
       behavior: "smooth",

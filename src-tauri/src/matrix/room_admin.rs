@@ -1054,8 +1054,20 @@ pub async fn pin_event(
     // just-written state (GET-after-PUT is consistent on a single
     // homeserver) *and* any other client's already-landed change, with no
     // reliance on this client's own sync/cache having caught up.
-    let current = fresh_pinned_event_ids(&client, &room_id).await?;
-    let new_list = pin_event_impl(&client, &room_id, &event_id, current).await?;
+    // Review fix (P2): even with the lock and the fresh-GET base above, a
+    // *different* client's concurrent pin/unpin can still land on the
+    // homeserver in the gap between our GET and our PUT — `m.room.
+    // pinned_events` has no compare-and-swap primitive, so whichever PUT the
+    // homeserver processes last simply replaces the whole state content,
+    // silently discarding the other client's change. `pin_event_with_retry`
+    // re-reads the state immediately after sending and retries (rebuilding
+    // the list from the newer read) if the event we meant to pin isn't
+    // actually present in what's now live — narrowing, though not fully
+    // eliminating (there is no atomic primitive to eliminate it with), the
+    // window in which a genuinely simultaneous write from another client
+    // gets silently dropped.
+    let new_list =
+        pin_event_with_retry(&client, &room_id, &event_id, MAX_PINNED_EVENT_RETRIES).await?;
     if state
         .pinned_event_cache_generation
         .load(std::sync::atomic::Ordering::SeqCst)
@@ -1068,6 +1080,35 @@ pub async fn pin_event(
             .insert(parsed_room_id, new_list);
     }
     Ok(())
+}
+
+/// Bounded retries for [`pin_event`]'s cross-client race — see that
+/// command's own comment. Each attempt re-reads the freshest state, so a
+/// retry naturally incorporates whatever the other client just wrote instead
+/// of blindly resending the same (now stale) list.
+const MAX_PINNED_EVENT_RETRIES: u8 = 3;
+
+async fn pin_event_with_retry(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    max_attempts: u8,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    for attempt in 0..max_attempts {
+        let current = fresh_pinned_event_ids(client, room_id).await?;
+        let new_list = pin_event_impl(client, room_id, event_id, current).await?;
+        if attempt + 1 == max_attempts {
+            return Ok(new_list);
+        }
+        let after_send = fresh_pinned_event_ids(client, room_id).await?;
+        if after_send.contains(&parsed_event_id) {
+            return Ok(after_send);
+        }
+        // Our pin didn't survive — a concurrent write from another client
+        // landed after ours and won. Loop again with a freshly-read base.
+    }
+    unreachable!("loop always returns on its final attempt")
 }
 
 /// Core logic behind [`pin_event`] — pure computation over an explicit
@@ -1117,8 +1158,10 @@ pub async fn unpin_event(
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let lock = state.pinned_event_lock(&parsed_room_id).await;
     let _guard = lock.lock().await;
-    let current = fresh_pinned_event_ids(&client, &room_id).await?;
-    let new_list = unpin_event_impl(&client, &room_id, &event_id, current).await?;
+    // Review fix (P2): same cross-client race and bounded-retry mitigation
+    // as `pin_event` — see that command's own comment.
+    let new_list =
+        unpin_event_with_retry(&client, &room_id, &event_id, MAX_PINNED_EVENT_RETRIES).await?;
     if state
         .pinned_event_cache_generation
         .load(std::sync::atomic::Ordering::SeqCst)
@@ -1131,6 +1174,32 @@ pub async fn unpin_event(
             .insert(parsed_room_id, new_list);
     }
     Ok(())
+}
+
+/// Bounded retries for [`unpin_event`]'s cross-client race — see
+/// [`pin_event_with_retry`]'s own comment; identical shape, just checking
+/// the event's *absence* after send instead of its presence.
+async fn unpin_event_with_retry(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    max_attempts: u8,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    for attempt in 0..max_attempts {
+        let current = fresh_pinned_event_ids(client, room_id).await?;
+        let new_list = unpin_event_impl(client, room_id, event_id, current).await?;
+        if attempt + 1 == max_attempts {
+            return Ok(new_list);
+        }
+        let after_send = fresh_pinned_event_ids(client, room_id).await?;
+        if !after_send.contains(&parsed_event_id) {
+            return Ok(after_send);
+        }
+        // Our unpin didn't survive — a concurrent write from another client
+        // landed after ours and won. Loop again with a freshly-read base.
+    }
+    unreachable!("loop always returns on its final attempt")
 }
 
 /// Core logic behind [`unpin_event`]. See [`pin_event_impl`]'s doc comment
@@ -1585,6 +1654,101 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the pin to succeed, got {result:?}"
+        );
+    }
+
+    /// Review fix regression test: a *different* client's concurrent write
+    /// can still land between this client's fresh-GET base and its own PUT,
+    /// clobbering this client's pin — `m.room.pinned_events` has no
+    /// compare-and-swap primitive. `pin_event_with_retry` must detect that
+    /// (a post-send re-read that doesn't contain the event we just pinned)
+    /// and retry from a freshly-read base rather than silently reporting
+    /// success with a pin that didn't actually survive.
+    #[tokio::test]
+    async fn pin_event_with_retry_retries_when_a_concurrent_write_clobbers_the_first_attempt() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let to_pin = matrix_sdk::ruma::owned_event_id!("$to-pin");
+        let other_clients_pin = matrix_sdk::ruma::owned_event_id!("$other-clients-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        // Attempt 1's fresh-GET base: empty.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+        // Attempt 1's post-send verification read: a *different* client's
+        // write landed after this client's PUT and won, so the list this
+        // client just wrote (`[to_pin]`) isn't there at all — simulating
+        // the clobber.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+        // Attempt 2's fresh-GET base: the other client's write, now visible.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pinned": [other_clients_pin.clone()],
+                })),
+            )
+            .up_to_n_times(1)
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "event_id": "$updated" })),
+            )
+            .expect(2)
+            .mount(server.server())
+            .await;
+
+        let result = pin_event_with_retry(&client, room_id.as_str(), to_pin.as_str(), 2).await;
+        let new_list = result.expect("retry should eventually succeed");
+
+        assert!(
+            new_list.contains(&to_pin),
+            "expected the retried pin to survive in the final list, got {new_list:?}"
+        );
+        assert!(
+            new_list.contains(&other_clients_pin),
+            "expected the other client's concurrent pin to be preserved too, got {new_list:?}"
         );
     }
 
