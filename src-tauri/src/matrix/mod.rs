@@ -307,6 +307,17 @@ pub struct MatrixState {
     /// two maps above use): read/incremented without ever needing to hold
     /// across an `.await`.
     pub(crate) pinned_event_cache_generation: std::sync::atomic::AtomicU64,
+    /// Bumped by `pin_event`/`unpin_event` (`room_admin.rs`) after a
+    /// successful, verified write. `sync.rs`'s `pinned_event_cache`
+    /// reconciliation captures this before waiting on a room's
+    /// `pinned_event_lock` and re-checks it after acquiring that lock —
+    /// see that reconciliation's own comment for the race this catches.
+    /// Global rather than per-room: a false-positive skip (a *different*
+    /// room's write bumping this while we're waiting) is harmless — the
+    /// reconciliation just no-ops for one sync round and catches up on the
+    /// next — whereas under-detecting the real per-room race would
+    /// silently roll a cache entry back to stale state.
+    pub(crate) pinned_event_local_write_seq: std::sync::atomic::AtomicU64,
 }
 
 impl Default for MatrixState {
@@ -342,6 +353,7 @@ impl Default for MatrixState {
             pinned_event_locks: Mutex::default(),
             pinned_event_cache: Mutex::default(),
             pinned_event_cache_generation: std::sync::atomic::AtomicU64::default(),
+            pinned_event_local_write_seq: std::sync::atomic::AtomicU64::default(),
         }
     }
 }

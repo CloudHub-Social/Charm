@@ -3544,6 +3544,25 @@ describe("ChatShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /long gone/ }));
 
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+
+    // Review fix regression test: a target genuinely outside the loaded
+    // window (Virtuoso already mounted, index just not found) used to also
+    // set `pendingScrollTargetRef`, so an unrelated later `messages` update
+    // retried the same never-resolving jump indefinitely via the retry
+    // `useLayoutEffect`. A completely unrelated message arriving afterward
+    // must not trigger any further scroll attempt.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$reply", sender: "@alice:localhost", body: "hi back" }),
+          summary({ event_id: "$unrelated", sender: "@bob:localhost", body: "unrelated" }),
+        ],
+      });
+    });
+    await screen.findByText("unrelated");
+
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
   it("jumps to an already-loaded bookmark without paginating (Spec 12 Saved Messages)", async () => {

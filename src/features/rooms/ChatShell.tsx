@@ -505,8 +505,7 @@ export function ChatShell({
   const pendingScrollTargetRef = useRef<{ roomId: string; eventId: string } | null>(null);
   function handleJumpToMessage(eventId: string) {
     const index = messages.findIndex((m) => m.event_id === eventId);
-    // Review fix: finding the target in `messages` isn't enough on its
-    // own — `Virtuoso` (and so `virtuosoRef.current`) only mounts once
+    // Review fix: `Virtuoso` (and so `virtuosoRef.current`) only mounts once
     // `!loading && messages.length > 0` below, and `useChatTimeline`'s
     // `setMessages`/`setLoading(false)` land in separate promise-chain
     // callbacks (`.then()` vs `.finally()`) that can commit on different
@@ -517,12 +516,23 @@ export function ChatShell({
     // `pendingScrollTargetRef` being non-null) would never catch, since
     // this had already cleared it. Keeping the target pending whenever the
     // ref isn't mounted yet means the `useLayoutEffect` retry below still
-    // fires on that later commit instead.
-    if (index < 0 || !virtuosoRef.current) {
+    // fires on that later commit instead. `Virtuoso` can't mount without
+    // `messages.length > 0`, so this condition alone already covers the
+    // "requested before the first page loaded" case too.
+    //
+    // Review fix: this used to also set `pendingScrollTargetRef` whenever
+    // `index < 0`, regardless of whether `virtuosoRef` was already mounted
+    // — but a target genuinely outside the loaded window (not a mount-race,
+    // just not present) would then retry forever on every later `messages`
+    // update, since it can never be found. `index < 0` with the ref already
+    // mounted is now the documented no-op case its own comment above
+    // describes, not a retry case.
+    if (!virtuosoRef.current) {
       if (roomId) pendingScrollTargetRef.current = { roomId, eventId };
       return;
     }
     pendingScrollTargetRef.current = null;
+    if (index < 0) return;
     virtuosoRef.current.scrollToIndex({
       index,
       align: "center",

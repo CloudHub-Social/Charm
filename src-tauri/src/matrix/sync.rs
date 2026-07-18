@@ -193,15 +193,40 @@ async fn emit_room_updates(
                 // the same lock here serializes reconciliation against
                 // local writes exactly like two local writes serialize
                 // against each other.
+                //
+                // Review fix (P2): captured *before* waiting on that lock,
+                // not after — `pin_event`/`unpin_event` bump
+                // `pinned_event_local_write_seq` right after a successful,
+                // homeserver-verified write, while still holding this same
+                // per-room lock. If one of them held the lock when this sync
+                // response arrived, this reconciliation blocks until it
+                // releases — but `Room::pinned_event_ids()` (local, synced
+                // state from this already-in-flight sync response) can
+                // still predate that just-verified write. Re-checking the
+                // seq after finally acquiring the lock detects that a local
+                // write completed while this was waiting, and skips
+                // clobbering the fresher cached list with stale synced
+                // state — this sync round simply no-ops for pin
+                // reconciliation; a later sync (once the local write's own
+                // echo has landed) reconciles correctly once both agree.
+                let seq_before_wait = state
+                    .pinned_event_local_write_seq
+                    .load(std::sync::atomic::Ordering::SeqCst);
                 let lock = state.pinned_event_lock(room_id).await;
                 let _guard = lock.lock().await;
-                let mut pinned_cache = state.pinned_event_cache.lock().await;
-                if pinned_cache.contains_key(room_id) {
-                    if let Some(room) = client.get_room(room_id) {
-                        pinned_cache.insert(
-                            room_id.to_owned(),
-                            room.pinned_event_ids().unwrap_or_default(),
-                        );
+                let local_write_raced_in = state
+                    .pinned_event_local_write_seq
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != seq_before_wait;
+                if !local_write_raced_in {
+                    let mut pinned_cache = state.pinned_event_cache.lock().await;
+                    if pinned_cache.contains_key(room_id) {
+                        if let Some(room) = client.get_room(room_id) {
+                            pinned_cache.insert(
+                                room_id.to_owned(),
+                                room.pinned_event_ids().unwrap_or_default(),
+                            );
+                        }
                     }
                 }
             }
