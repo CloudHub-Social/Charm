@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
+import { useFlag } from "@/featureFlags";
 
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
@@ -33,6 +35,34 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const lastTypingSentAt = useRef(0);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Review fix (P2): `handleTypingInput` used to send `typing: true` on
+  // every keystroke regardless of this — the withdrawal effect below only
+  // fires once, right when `hideTyping` flips on, but composer input can
+  // keep arriving afterward (especially while a privacy write is still
+  // queued or hasn't reached Rust yet) and would send a fresh public
+  // typing notice moments after the user asked to hide it. Rust's own
+  // `send_typing` enforcement does suppress it server-side once the
+  // *persisted* setting has actually landed, but the optimistic window
+  // between the toggle and that write settling is exactly what this
+  // guards against — the UI already shows typing hidden, so it shouldn't
+  // ask to send it at all in the meantime.
+  //
+  // Review fix (P2): also gated on `presence_privacy_controls` itself —
+  // `usePrivacySettings`'s cache can still hold a stale `hide_typing: true`
+  // from before the flag was turned off (Labs, or a remote kill switch),
+  // and neither the query key nor its `enabled` state changes just because
+  // the flag flipped, so a plain cache read alone doesn't notice. Without
+  // this, a user with the feature already killed server-side (Rust's own
+  // `current_settings` already falls back to defaults, and the Privacy tab
+  // is hidden from Settings, so there's no in-app way to un-toggle it) would
+  // still have every typing notice silently suppressed here until an
+  // unrelated refetch happened to land.
+  const detailControlsEnabled = useFlag("presence_privacy_controls");
+  // Called unconditionally, per the rules of hooks — `detailControlsEnabled`
+  // only gates whether its *result* is honored below, not whether the hook
+  // itself runs.
+  const privacySettings = usePrivacySettings();
+  const hideTyping = detailControlsEnabled && (privacySettings.data?.hide_typing ?? false);
 
   useEffect(() => {
     // Clear on every room change, not just to `null` — otherwise switching
@@ -92,12 +122,30 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   }, [roomId]);
 
   function handleTypingInput() {
-    if (!roomId) return;
+    if (!roomId || hideTyping) return;
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
     sendTyping(roomId, true).catch(logAndIgnore);
   }
+
+  // Review fix: `send_typing`'s own Rust enforcement (Spec 40) only
+  // suppresses *future* typing sends once `hide_typing` is on — it can't
+  // retroactively withdraw an `m.typing: true` notice already sent to
+  // other room members before the toggle flipped. Without this, other
+  // members keep seeing "is typing…" until the notice's own server
+  // timeout, or until the composer blurs/the room changes, even though the
+  // user just explicitly asked to hide it. `sendTyping(roomId, false)` is
+  // documented as always going through (harmless if nothing was actually
+  // pending), so this fires unconditionally on the toggle rather than
+  // tracking whether a notice is actually outstanding.
+  const wasHidingTyping = useRef(hideTyping);
+  useEffect(() => {
+    if (hideTyping && !wasHidingTyping.current && roomId) {
+      sendTyping(roomId, false).catch(logAndIgnore);
+    }
+    wasHidingTyping.current = hideTyping;
+  }, [hideTyping, roomId]);
 
   function stopTyping() {
     if (roomId) sendTyping(roomId, false).catch(logAndIgnore);

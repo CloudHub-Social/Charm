@@ -73,7 +73,7 @@ here.
 | 37 | [Message action parity](/specs/day-1/spec-37--message-action-parity/) | **In progress** | Feature-gated message permalinks and confirmed redaction with optional reasons are implemented; the remaining actions are still planned |
 | 38 | [Full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) | **Planned** | No matching merged implementation found |
 | 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
-| 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Planned** | No matching merged implementation found |
+| 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **In progress** | Feature-gated attachment drag-and-drop target implemented; captions, size preflight, cancellation, GIF controls, and EXIF stripping remain |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |

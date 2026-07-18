@@ -39,6 +39,8 @@ import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
+import { useIdlePresence } from "@/features/settings/useIdlePresence";
+import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
 
 const noopDismissCrashRecoveryPrompt = () => {};
 
@@ -87,6 +89,7 @@ export function RoomsScreen({
   // two definitions in sync avoids it becoming one the next time either
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
+  const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
@@ -244,6 +247,16 @@ export function RoomsScreen({
   usePresenceListener();
   useBadgeListener();
   useSettingsHashSync();
+
+  // Spec 40 auto-idle/away: flag-gated (the settings surface itself is
+  // gated by `presence_privacy_controls`, so `idle_timeout_minutes` can
+  // never be non-null with the flag off) — `usePrivacySettings`'s `enabled`
+  // arg keeps this from even fetching privacy settings when the flag is off
+  // (review fix: it previously always fetched regardless of the flag, and
+  // regardless of web build — `usePrivacySettings` now also refuses to fire
+  // on the web companion build, which has no transport for this command).
+  const { data: privacySettings } = usePrivacySettings(presencePrivacyControlsEnabled);
+  useIdlePresence(presencePrivacyControlsEnabled ? privacySettings : undefined);
 
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
   const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;

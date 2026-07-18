@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-18T07:03:58.942Z",
+  "generatedAt": "2026-07-18T17:44:16.971Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 31,
+    "shipped": 32,
     "follow-up": 10,
-    "in-progress": 1,
+    "in-progress": 0,
     "planned": 34
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 291,
-      "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/291",
-      "detail": "Day-1 Spec 40 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 293,
@@ -123,9 +116,9 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 6,
+        "shipped": 7,
         "follow-up": 6,
-        "in-progress": 1,
+        "in-progress": 0,
         "planned": 23
       }
     },
@@ -1092,15 +1085,15 @@
       "number": 40,
       "title": "Presence and receipt privacy controls",
       "route": "/specs/day-1/spec-40--presence-and-receipt-privacy-controls/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 291,
           "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/291",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-18T07:03:28Z"
+          "updatedAt": "2026-07-18T17:35:44Z"
         },
         {
           "number": 292,
@@ -1465,7 +1458,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/293",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-18T06:56:18Z"
+          "updatedAt": "2026-07-18T17:41:09Z"
         }
       ],
       "issues": []

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "excludedFlags": ["canary", "message_pinning"],
+  "excludedFlags": ["canary", "message_pinning", "presence_privacy_controls"],
   "features": [
     {
       "slug": "onboarding",

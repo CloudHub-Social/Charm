@@ -35,14 +35,15 @@ export default defineConfig({
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
         // 2026-07-18, merging main (PR #294's review-fix coverage) into
-        // day-2 Spec 04's message-pinning coverage — kept the higher floor
-        // per metric from each side, per the ratchet rule (never lower a
-        // floor to make CI pass).
+        // day-2 Spec 04's message-pinning coverage and Spec 40's
+        // presence/receipt privacy controls coverage — kept the higher
+        // floor per metric from each side, per the ratchet rule (never
+        // lower a floor to make CI pass).
         // When tests raise coverage, raise these floors in the same PR.
         lines: 86.5,
         statements: 84.4,
-        functions: 77.25,
-        branches: 83.75,
+        functions: 77.4,
+        branches: 83.8,
       },
     },
   },

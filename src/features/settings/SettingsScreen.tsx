@@ -13,6 +13,7 @@ import { DesktopPanel } from "./DesktopPanel";
 import { FocusPanel } from "./FocusPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { ObservabilityPanel } from "./ObservabilityPanel";
+import { PrivacyPanel } from "./PrivacyPanel";
 import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
@@ -51,7 +52,10 @@ const SECTIONS: {
   label: string;
   desktopOnly?: boolean;
   webUnsupported?: boolean;
-  flagGated?: boolean;
+  /** Which section-specific flag gates visibility — `"focus_mode"`'s check
+   * also has a DND-active off-ramp (see `SettingsBody`); other flags gate
+   * plainly. */
+  flagGated?: "focus_mode" | "presence_privacy_controls";
   productionHidden?: boolean;
 }[] = [
   { value: "account", label: "Account" },
@@ -66,7 +70,16 @@ const SECTIONS: {
   // concept (tray icon, OS notifications) the web companion build has no
   // transport for, same reason `general`/`notifications` above are
   // `webUnsupported` rather than adding web-side command support.
-  { value: "focus", label: "Focus", flagGated: true, webUnsupported: true },
+  { value: "focus", label: "Focus", flagGated: "focus_mode", webUnsupported: true },
+  // Review fix: `invokeWeb` (matrixTransport.ts) has no case for
+  // `get_privacy_settings`/`set_privacy_settings` either — same reasoning as
+  // `general`/`notifications`/`focus` above.
+  {
+    value: "privacy",
+    label: "Privacy",
+    flagGated: "presence_privacy_controls",
+    webUnsupported: true,
+  },
   // Bookmarks (Spec 12) are stored in a local per-account file the Tauri
   // process owns — same rationale as `focus`/`general`/`notifications`
   // above, the web companion build has no store for this and no
@@ -103,11 +116,17 @@ function SettingsBody({
   // off-ramp; `!webBuild` still applies since the underlying IPC is
   // Tauri-only either way.
   const { enabled: dndActive } = useFocusMode();
+  const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
+  const sectionFlagEnabled = (flagGated: (typeof SECTIONS)[number]["flagGated"]) => {
+    if (!flagGated) return true;
+    if (flagGated === "focus_mode") return focusModeEnabled || dndActive;
+    return presencePrivacyControlsEnabled;
+  };
   const sections = SECTIONS.filter(
     (s) =>
       (!s.desktopOnly || showDesktopSection) &&
       (!s.webUnsupported || !webBuild) &&
-      (!s.flagGated || focusModeEnabled || dndActive) &&
+      sectionFlagEnabled(s.flagGated) &&
       (!s.productionHidden || !isProductionEnv) &&
       // Callers without a room-selection surface to jump to (e.g. a future
       // embedding of `SettingsScreen` without `RoomsScreen`'s wiring) get no
@@ -194,6 +213,11 @@ function SettingsBody({
         {(focusModeEnabled || dndActive) && (
           <TabsContent value="focus">
             <FocusPanel />
+          </TabsContent>
+        )}
+        {!webBuild && presencePrivacyControlsEnabled && (
+          <TabsContent value="privacy">
+            <PrivacyPanel />
           </TabsContent>
         )}
         {!webBuild && bookmarksEnabled && onJumpToBookmark && (

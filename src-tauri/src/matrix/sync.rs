@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use super::{ephemeral, presence, profiles, room_admin, rooms, shell, verification, MatrixState};
+use super::presence::PresenceStateDto;
+use super::{
+    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, shell, verification,
+    MatrixState,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -535,19 +539,6 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         previous_sync.abort();
         let _ = previous_sync.await;
     }
-    // The detached presence-report task also holds its own `Client` clone
-    // (see `spawn_sync_loop`'s doc comment) — same handle-safety rationale
-    // as the sync loop above, just a second, separate task to stop.
-    let previous_presence = app
-        .state::<MatrixState>()
-        .presence_task_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
-    if let Some(previous_presence) = previous_presence {
-        previous_presence.abort();
-        let _ = previous_presence.await;
-    }
     app.state::<MatrixState>().clear_timelines().await;
     // Review fix: see `clear_pinned_event_cache`'s own doc comment — same
     // "nothing from the old session carries over" cleanup as
@@ -555,6 +546,49 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // timeline listeners.
     app.state::<MatrixState>().clear_pinned_event_cache().await;
     *app.state::<MatrixState>().client.lock().await = None;
+}
+
+/// Decides what the sync loop's next `sync_once` call should report as this
+/// account's presence — pulled out of the loop body as a pure function so
+/// the "reconcile with the privacy setting every iteration, in *both*
+/// directions" logic (this block's own review-fix comments) is unit-
+/// testable without a live sync loop.
+///
+/// - Flag disabled: lifts a cached `Offline` back to `Online` — Appear
+///   offline is a `presence_privacy_controls`-gated feature, and its
+///   settings UI disappears along with the flag, so this is the only
+///   remaining off-ramp for an `Offline` value that flag left behind.
+///   Anything else (`Online`/`Unavailable`) is left alone.
+///
+///   Review fix (P2): this used to force `Online` unconditionally whenever
+///   the flag was disabled, regardless of `current` — that also caught
+///   pre-existing Spec 05 presence choices unrelated to this privacy
+///   feature (e.g. `Unavailable` from the auto-idle timer, or a future
+///   manual "away" control), silently overriding them back to `Online` on
+///   every sync iteration purely because the flag happened to be off.
+///   Only `Offline` is treated as this feature's own artifact here.
+/// - Flag enabled and `appear_offline` persisted: always `Offline` — closes
+///   the gap where the flag is *re*-enabled after being off and a
+///   previously-persisted `appear_offline` was never re-applied.
+/// - Flag enabled and `appear_offline` not set: leaves `current` alone —
+///   this function has no opinion on auto-idle/manual presence in that
+///   case, only on enforcing (or lifting) Appear offline.
+fn reconciled_sync_presence(
+    presence_privacy_controls_enabled: bool,
+    appear_offline: bool,
+    current: PresenceStateDto,
+) -> PresenceStateDto {
+    if !presence_privacy_controls_enabled {
+        if current == PresenceStateDto::Offline {
+            PresenceStateDto::Online
+        } else {
+            current
+        }
+    } else if appear_offline {
+        PresenceStateDto::Offline
+    } else {
+        current
+    }
 }
 
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
@@ -575,27 +609,47 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
 /// subsequent event.
 pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
-
-    // Best-effort: some homeservers disable presence entirely, and a failure
-    // here shouldn't ever block or fail login/session-restore.
-    {
-        let client = client.clone();
-        let presence_task = tokio::spawn(async move {
-            let _ = presence::set_presence_online(&client).await;
-        });
-        let previous = app_for_handle
-            .state::<MatrixState>()
-            .presence_task_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(presence_task);
-        if let Some(previous) = previous {
-            previous.abort();
-        }
-    }
-
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+
+        // Review fix: this used to unconditionally call
+        // `set_presence_online`, ignoring a persisted `appear_offline`
+        // privacy setting (Spec 40) — so a user who'd asked to appear
+        // offline would be shown online again after every app restart or
+        // session restore, until they happened to re-open the Privacy
+        // settings panel and re-toggle it. Read the persisted setting
+        // first and seed both `initial_presence` and `sync_presence` (so
+        // the sync loop's subsequent `sync_once` calls keep reasserting
+        // the right state) to match.
+        //
+        // Review fix (P2): there used to also be a standalone, awaited
+        // `presence::set_presence_impl(&client, initial_presence, None)`
+        // call here, sequenced *before* the initial `sync_once` below so
+        // appear-offline was genuinely applied ahead of that first request
+        // rather than racing it (an earlier, detached-`tokio::spawn`
+        // version of this same call raced it and lost). But a slow or
+        // hanging presence endpoint on that blocking call delayed the
+        // entire sync task — room-list updates, receipts, typing,
+        // notifications, verification traffic — from ever starting, even
+        // though login itself had already succeeded. The initial
+        // `sync_once` call below already passes this exact
+        // `initial_presence` via its own `set_presence` request parameter
+        // (which sets presence for that request at the protocol level, the
+        // same mechanism `presence::set_presence_impl` uses under the
+        // hood) — so the standalone call was purely redundant, not load-
+        // bearing for correctness, and removing it here closes the P2 gap
+        // without reopening the ordering race the two earlier fixes above
+        // exist to avoid.
+        let privacy = privacy_settings::current_settings(&app, &app.state::<MatrixState>()).await;
+        let initial_presence = if privacy.appear_offline {
+            PresenceStateDto::Offline
+        } else {
+            PresenceStateDto::Online
+        };
+        *app.state::<MatrixState>()
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = initial_presence;
 
         // Subscribing spawns the task that listens to
         // `client.subscribe_to_all_room_updates()` — the event cache (and
@@ -612,7 +666,21 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         let _ = client.event_cache().subscribe();
 
         // Establish initial sync state before entering the long-running loop below.
-        let initial_response = match client.sync_once(SyncSettings::default()).await {
+        //
+        // Review fix: this used to call `sync_once` with a bare
+        // `SyncSettings::default()`, which has no explicit `set_presence`
+        // of its own — per the `/sync` endpoint's spec, an absent
+        // `set_presence` defaults to reporting the account online (see the
+        // steady-state loop's own comment below), so even with
+        // `appear_offline` persisted, this very first request would report
+        // the account online at the protocol level regardless. Explicitly
+        // passing `initial_presence` here is what actually applies it —
+        // see this block's own comment above for why a separate one-shot
+        // `set_presence_impl` call is unnecessary alongside it.
+        let initial_response = match client
+            .sync_once(SyncSettings::default().set_presence(initial_presence.into()))
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let _ = app.emit(
@@ -659,11 +727,57 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
         let mut consecutive_failures: u32 = 0;
         loop {
-            let presence = *app
-                .state::<MatrixState>()
-                .sync_presence
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            // Review fix: `sync_presence` can be cached as `Offline` from an
+            // `appear_offline` privacy setting applied earlier in this same
+            // session — but if `presence_privacy_controls` is then disabled
+            // mid-session (a local override cleared, or a remote kill
+            // switch), the Privacy tab that would let the user undo it
+            // disappears too, while this loop kept resending the cached
+            // value on every sync regardless, with no in-app off-ramp
+            // until restart or some other presence write happened to reset
+            // it. Rechecking the flag every iteration and forcing `Online`
+            // while it's off closes that gap.
+            let presence_privacy_controls_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+                crate::feature_flags::flag(
+                    &dir,
+                    crate::feature_flags::FeatureFlagKey::PresencePrivacyControls,
+                )
+            });
+            // Review fix (P1): the flag-disabled path above forces `Online`
+            // and gives the user no other off-ramp — but the reverse
+            // transition (flag re-enabled after being off, e.g. via Labs or
+            // a remote kill switch recovering) never re-read the persisted
+            // setting at all. An account with `appear_offline` already
+            // persisted would keep advertising whatever `sync_presence`
+            // last held (typically `Online`, from the disabled branch)
+            // indefinitely, even though the Privacy panel shows Appear
+            // offline as on. Reconciling from `current_settings` here too —
+            // *before* acquiring the (non-async) `sync_presence` lock, so
+            // nothing holds it across this `.await` — closes that gap the
+            // same way the disabled branch already closes its own.
+            let appear_offline_when_enabled = if presence_privacy_controls_enabled {
+                privacy_settings::current_settings(&app, &app.state::<MatrixState>())
+                    .await
+                    .appear_offline
+            } else {
+                false
+            };
+            let presence = {
+                let state = app.state::<MatrixState>();
+                let mut sync_presence = state
+                    .sync_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let reconciled = reconciled_sync_presence(
+                    presence_privacy_controls_enabled,
+                    appear_offline_when_enabled,
+                    *sync_presence,
+                );
+                if reconciled != *sync_presence {
+                    *sync_presence = reconciled;
+                }
+                *sync_presence
+            };
             let settings = SyncSettings::default().set_presence(presence.into());
             match client.sync_once(settings).await {
                 Ok(response) => {
@@ -770,5 +884,65 @@ mod invite_notification_tests {
             RoomNotificationMode::MentionsAndKeywordsOnly,
         ));
         assert!(should_notify_invite(RoomNotificationMode::AllMessages));
+    }
+}
+
+#[cfg(test)]
+mod reconciled_sync_presence_tests {
+    use super::{reconciled_sync_presence, PresenceStateDto};
+
+    #[test]
+    fn lifts_a_cached_offline_when_the_flag_is_disabled_regardless_of_appear_offline() {
+        assert_eq!(
+            reconciled_sync_presence(false, true, PresenceStateDto::Offline),
+            PresenceStateDto::Online
+        );
+        assert_eq!(
+            reconciled_sync_presence(false, false, PresenceStateDto::Offline),
+            PresenceStateDto::Online
+        );
+    }
+
+    /// Review fix (P2) regression test: the flag being disabled must only
+    /// lift a cached `Offline` (this feature's own artifact) — it must not
+    /// also override an unrelated Spec 05 presence choice like
+    /// `Unavailable` (e.g. from the auto-idle timer) back to `Online`.
+    #[test]
+    fn leaves_non_offline_presence_alone_when_the_flag_is_disabled() {
+        assert_eq!(
+            reconciled_sync_presence(false, false, PresenceStateDto::Unavailable),
+            PresenceStateDto::Unavailable
+        );
+        assert_eq!(
+            reconciled_sync_presence(false, true, PresenceStateDto::Unavailable),
+            PresenceStateDto::Unavailable
+        );
+        assert_eq!(
+            reconciled_sync_presence(false, false, PresenceStateDto::Online),
+            PresenceStateDto::Online
+        );
+    }
+
+    /// Review fix (P1) regression test: re-enabling the flag after it was
+    /// off must re-apply a persisted `appear_offline`, not just leave
+    /// whatever `Online` value the disabled branch left behind.
+    #[test]
+    fn forces_offline_when_the_flag_is_enabled_and_appear_offline_is_set() {
+        assert_eq!(
+            reconciled_sync_presence(true, true, PresenceStateDto::Online),
+            PresenceStateDto::Offline
+        );
+    }
+
+    #[test]
+    fn leaves_current_alone_when_the_flag_is_enabled_and_appear_offline_is_off() {
+        assert_eq!(
+            reconciled_sync_presence(true, false, PresenceStateDto::Unavailable),
+            PresenceStateDto::Unavailable
+        );
+        assert_eq!(
+            reconciled_sync_presence(true, false, PresenceStateDto::Online),
+            PresenceStateDto::Online
+        );
     }
 }

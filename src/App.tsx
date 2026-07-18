@@ -9,6 +9,7 @@ import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -87,6 +88,14 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
         // a *different* account in the same app session never shows stale
         // data from this one before its own queries have refetched.
         queryClient.clear();
+        // Review fix: a privacy-settings write can still be queued (not
+        // yet executed — behind an earlier one) at the moment of logout.
+        // Without this, it would still run once its turn came, saving this
+        // account's full settings snapshot (and its `appear_offline`
+        // choice) onto whatever account signs in next in the same
+        // session. Bumps the write generation so any such queued write
+        // becomes a no-op instead of actually calling into Rust.
+        resetPrivacySettingsWriteQueue();
         // Logout/deactivate unmount SettingsScreen directly rather than via
         // closeSettings, so a lingering `#/settings/<section>` hash would
         // otherwise make the next sign-in's `useSettingsHashSync` reopen
