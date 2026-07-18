@@ -4,6 +4,31 @@ import { isWebBuild } from "@/lib/platform";
 
 const PRIVACY_SETTINGS_QUERY_KEY = ["privacySettings"] as const;
 
+// Review fix: two privacy toggles in quick succession each send a *full*
+// settings snapshot (see `useSetPrivacySettings`'s own doc comment for why
+// that's the Rust command's shape) — the optimistic cache write makes the
+// second snapshot include the first change, but that's only a client-side
+// guarantee. Both IPC calls are still independently in flight, and if the
+// older one's request reaches/acquires Rust's `PRIVACY_PREFS_LOCK` *after*
+// the newer one, its stale full snapshot gets saved last, silently
+// dropping whatever the newer toggle added. Serializing here — queuing
+// each write behind the previous one's settlement, not just its start —
+// means the second IPC call can never begin (and so can never finish)
+// before the first one already has, so persisted writes land in the same
+// order they were issued.
+let privacySettingsWriteQueue: Promise<void> = Promise.resolve();
+function serializedSetPrivacySettings(settings: PrivacySettings): Promise<void> {
+  const run = privacySettingsWriteQueue.then(() => setPrivacySettings(settings));
+  // Swallowed here (not on `run`, which the caller still awaits/rejects
+  // normally) purely so one failed write doesn't permanently wedge the
+  // queue for every later call.
+  privacySettingsWriteQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /**
  * Spec 40's privacy toggles: read receipts, typing indicators, appear-offline,
  * and auto-idle timeout.
@@ -34,7 +59,7 @@ export function usePrivacySettings(enabled = true) {
 export function useSetPrivacySettings() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (settings: PrivacySettings) => setPrivacySettings(settings),
+    mutationFn: (settings: PrivacySettings) => serializedSetPrivacySettings(settings),
     // Optimistic, synchronous cache write — see `usePatchPrivacySettings`'s
     // doc comment for why this matters for back-to-back toggles.
     onMutate: (settings) => {

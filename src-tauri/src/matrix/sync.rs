@@ -457,15 +457,22 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         } else {
             PresenceStateDto::Online
         };
-        if presence::set_presence_impl(&client, initial_presence, None)
-            .await
-            .is_ok()
-        {
-            *app.state::<MatrixState>()
-                .sync_presence
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = initial_presence;
-        }
+        // Review fix: this used to only update `sync_presence` when the
+        // one-shot push above actually succeeded — a transient failure
+        // here (presence endpoint rejected, network blip, while `/sync`
+        // itself still goes on to succeed) left `sync_presence` at its
+        // previous/default `Online`, and every later steady-state
+        // `sync_once` iteration reads *that* field, not the result of this
+        // call. So the account would advertise online on every subsequent
+        // sync despite `appear_offline` being persisted, until something
+        // else happened to update `sync_presence` again. Same fix as
+        // `set_privacy_settings`'s identical bug: write the intended value
+        // unconditionally, since the immediate push is best-effort anyway.
+        *app.state::<MatrixState>()
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = initial_presence;
+        let _ = presence::set_presence_impl(&client, initial_presence, None).await;
 
         // Subscribing spawns the task that listens to
         // `client.subscribe_to_all_room_updates()` — the event cache (and

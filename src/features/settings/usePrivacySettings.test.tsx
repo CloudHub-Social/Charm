@@ -57,6 +57,52 @@ describe("useSetPrivacySettings", () => {
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(DEFAULT_SETTINGS);
   });
 
+  it("serializes two quick mutations so the second IPC call never starts before the first settles (review fix)", async () => {
+    // Review fix: a later mutation's actual setPrivacySettings call used to
+    // fire immediately, in parallel with an earlier still-in-flight one —
+    // if the earlier call happened to reach Rust's prefs lock *after* the
+    // later one, its stale snapshot would be saved last and silently drop
+    // whatever the later toggle added. Two independent hook instances
+    // (mirroring two components/renders each calling mutate once) must
+    // still serialize through the shared write queue.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
+
+    const callOrder: string[] = [];
+    let resolveFirst: (() => void) | undefined;
+    setPrivacySettings.mockImplementation((settings: PrivacySettings) => {
+      if (settings.hide_typing) {
+        callOrder.push("start:first");
+        return new Promise<void>((resolve) => {
+          resolveFirst = () => {
+            callOrder.push("end:first");
+            resolve();
+          };
+        });
+      }
+      callOrder.push("start:second");
+      return Promise.resolve();
+    });
+
+    const { result: first } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const { result: second } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+
+    first.current.mutate({ ...DEFAULT_SETTINGS, hide_typing: true });
+    await waitFor(() => expect(callOrder).toContain("start:first"));
+
+    second.current.mutate({ ...DEFAULT_SETTINGS, appear_offline: true });
+    // The second call must not have started yet — it's queued behind the
+    // first, which hasn't resolved.
+    expect(callOrder).toEqual(["start:first"]);
+
+    resolveFirst?.();
+    await waitFor(() => expect(callOrder).toEqual(["start:first", "end:first", "start:second"]));
+  });
+
   it("keeps the optimistic value once the mutation succeeds", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
