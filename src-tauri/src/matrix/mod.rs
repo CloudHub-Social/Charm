@@ -272,6 +272,13 @@ pub struct MatrixState {
     /// other), closes that window: the second call's own read now happens
     /// only after the first call's state event has actually been sent, so it
     /// starts from a list that already includes the first change.
+    ///
+    /// Review fix: `clear_pinned_event_cache` (logout/account-switch)
+    /// deliberately does *not* clear this map — see that function's own
+    /// comment. An entry's `Arc<Mutex<()>>` carries no account-specific
+    /// state, so keeping it alive across a session boundary only continues
+    /// to correctly serialize that room's writes, regardless of which
+    /// session created the entry.
     pub(crate) pinned_event_locks:
         Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<Mutex<()>>>>,
     /// This module's own authoritative last-known-pinned list per room,
@@ -1046,7 +1053,21 @@ impl MatrixState {
         self.pinned_event_cache_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.pinned_event_cache.lock().await.clear();
-        self.pinned_event_locks.lock().await.clear();
+        // Review fix (P2): deliberately *not* cleared, unlike the cache
+        // above. A `pin_event`/`unpin_event` call for this room still in
+        // flight when logout/account-switch happens holds a clone of its
+        // room's `Arc<Mutex<()>>` from this map. If this map were cleared
+        // and the user logs back into the *same* room before that old call
+        // finishes, a new pin/unpin for that room would look up (and
+        // create) a *different* lock entry — so the old, still-in-flight
+        // full-state PUT and the new session's PUT would no longer
+        // serialize against each other at all, letting the stale one
+        // silently clobber the new session's pin changes. The lock itself
+        // carries no account-specific data (it's a bare `()`), so reusing
+        // the same `Arc` across a session boundary is safe — it just keeps
+        // the old and new session's writes for the same room correctly
+        // ordered, which is this map's entire purpose regardless of which
+        // session created the entry.
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
@@ -1107,14 +1128,14 @@ mod tests {
     /// see that previous session's stale pinned list — see
     /// `clear_pinned_event_cache`'s own doc comment.
     #[tokio::test]
-    async fn clear_pinned_event_cache_empties_the_cache_and_lock_map() {
+    async fn clear_pinned_event_cache_empties_the_cache_but_keeps_the_lock_map() {
         let state = MatrixState::default();
         let room_id = matrix_sdk::ruma::room_id!("!room:example.org").to_owned();
         state.pinned_event_cache.lock().await.insert(
             room_id.clone(),
             vec![matrix_sdk::ruma::owned_event_id!("$stale")],
         );
-        let _lock = state.pinned_event_lock(&room_id).await;
+        let lock_before = state.pinned_event_lock(&room_id).await;
 
         let generation_before = state
             .pinned_event_cache_generation
@@ -1122,7 +1143,19 @@ mod tests {
         state.clear_pinned_event_cache().await;
 
         assert!(state.pinned_event_cache.lock().await.is_empty());
-        assert!(state.pinned_event_locks.lock().await.is_empty());
+        // Review fix (P2): the lock map is deliberately *not* cleared — see
+        // that field's own doc comment. Asserts the *same* `Arc` survives
+        // the clear (not just that the map is non-empty), since a lock
+        // recreated from scratch would defeat the point: an in-flight
+        // operation holding the old `Arc` needs the *next* lookup for this
+        // room to return that same instance, not a fresh, independent one.
+        let lock_after = state.pinned_event_lock(&room_id).await;
+        assert!(
+            std::sync::Arc::ptr_eq(&lock_before, &lock_after),
+            "the same room's lock Arc must survive clear_pinned_event_cache, \
+             so an in-flight pin/unpin from the old session still serializes \
+             against a new session's write for the same room"
+        );
         // Review fix regression test: `pin_event`/`unpin_event` capture
         // this generation before their homeserver send and skip their own
         // cache write if it's since changed — see the field's own doc
