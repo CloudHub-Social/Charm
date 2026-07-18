@@ -1,7 +1,13 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { formatLastActiveAgo, PresenceDot } from "./PresenceDot";
 import { renderWithProviders } from "@/test/renderWithProviders";
+import type * as FeatureFlagsModule from "@/featureFlags";
+
+vi.mock("@/featureFlags", async () => {
+  const actual = await vi.importActual<typeof FeatureFlagsModule>("@/featureFlags");
+  return { ...actual, useFlag: vi.fn(() => true) };
+});
 
 describe("formatLastActiveAgo", () => {
   it("formats sub-minute durations as 'just now'", () => {
@@ -38,5 +44,16 @@ describe("PresenceDot", () => {
     );
     expect(screen.getByText(/Online — Making cupcakes/)).toBeInTheDocument();
     expect(screen.getByText(/Active 5m ago/)).toBeInTheDocument();
+  });
+
+  it("ignores the status message and last-active detail when presence_privacy_controls is off (review fix)", async () => {
+    const { useFlag } = await import("@/featureFlags");
+    vi.mocked(useFlag).mockReturnValueOnce(false);
+    renderWithProviders(
+      <PresenceDot presence="online" statusMsg="Making cupcakes" lastActiveAgoMs={5 * 60_000} />,
+    );
+    expect(screen.getByText("Online")).toBeInTheDocument();
+    expect(screen.queryByText(/Making cupcakes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Active 5m ago/)).not.toBeInTheDocument();
   });
 });

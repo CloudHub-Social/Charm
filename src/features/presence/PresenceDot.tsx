@@ -2,6 +2,7 @@ import { AvatarBadge } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { PresenceStateDto } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
+import { useFlag } from "@/featureFlags";
 
 const PRESENCE_COLORS: Record<PresenceStateDto, string> = {
   online: "var(--color-success)",
@@ -57,12 +58,18 @@ interface PresenceDotProps {
  * the `PresenceUpdate` DTO but never shown anywhere.
  */
 export function PresenceDot({ presence, statusMsg, lastActiveAgoMs, className }: PresenceDotProps) {
+  // Review fix: the status-message/last-active detail tooltip is Spec 40's
+  // own display addition and must be killed by the same default-off
+  // `presence_privacy_controls` flag that gates the rest of that spec — the
+  // call sites (`ChatShell`, `RoomListItem`) pass these fields unconditionally,
+  // so gating has to happen here, not at each caller.
+  const detailEnabled = useFlag("presence_privacy_controls");
   if (!presence) return null;
 
   const label = PRESENCE_LABELS[presence];
   const tooltipLines = [
-    statusMsg ? `${label} — ${statusMsg}` : label,
-    lastActiveAgoMs != null ? formatLastActiveAgo(lastActiveAgoMs) : null,
+    detailEnabled && statusMsg ? `${label} — ${statusMsg}` : label,
+    detailEnabled && lastActiveAgoMs != null ? formatLastActiveAgo(lastActiveAgoMs) : null,
   ].filter((line): line is string => line != null);
 
   const dot = (

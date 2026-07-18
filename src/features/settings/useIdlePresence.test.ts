@@ -123,7 +123,13 @@ describe("useIdlePresence", () => {
     expect(setPresence).toHaveBeenCalledWith("online");
   });
 
-  it("restores online when appear_offline turns on while already idle (review fix)", () => {
+  it("does not restore online when appear_offline turns on while already idle (review fix)", () => {
+    // Review fix: an earlier version of this hook shared its "disable"
+    // branch between "auto-idle turned off" and "appear_offline turned on",
+    // so enabling Appear offline while idle incorrectly sent
+    // `setPresence("online")` — racing (and sometimes beating) the Rust
+    // `set_privacy_settings` command's own `offline` push. `appearOffline`
+    // must be a true no-op here regardless of prior idle state.
     const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
       initialProps: {
         settings: {
@@ -148,6 +154,6 @@ describe("useIdlePresence", () => {
       },
     });
 
-    expect(setPresence).toHaveBeenCalledWith("online");
+    expect(setPresence).not.toHaveBeenCalled();
   });
 });

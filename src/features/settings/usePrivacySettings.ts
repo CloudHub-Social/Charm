@@ -38,10 +38,40 @@ export function useSetPrivacySettings() {
     // Optimistic, synchronous cache write — see `usePatchPrivacySettings`'s
     // doc comment for why this matters for back-to-back toggles.
     onMutate: (settings) => {
+      // Review fix: this used to only ever write the optimistic value and
+      // never roll it back — if `set_privacy_settings` failed (IPC/disk/
+      // client error), the cache (and this hook's own `useIdlePresence`
+      // consumer, and the Privacy panel's toggles) kept showing the
+      // unsaved value while Rust enforcement still read the old
+      // persisted file, so a user could believe receipts/typing were
+      // hidden while they were still being sent. Snapshot the previous
+      // value here so `onError` can restore it.
+      //
+      // Deliberately synchronous (not `async`, no awaited
+      // `cancelQueries` before the write) — `usePatchPrivacySettings`'s own
+      // doc comment depends on this write landing before the *next*
+      // synchronous `fireEvent`/click in the same tick can read the cache,
+      // for back-to-back toggles. An awaited `cancelQueries` first would
+      // push this write a microtask later, reopening that exact race.
+      const previous = queryClient.getQueryData<PrivacySettings>(PRIVACY_SETTINGS_QUERY_KEY);
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
+      return { previous };
+    },
+    onError: (_err, _settings, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, context.previous);
+      }
     },
     onSuccess: (_, settings) => {
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
+    },
+    // Review fix: reconciles with the server's actual persisted state
+    // either way — a failed mutation's `onError` rollback restores the
+    // last-known-good *client* snapshot, but this is what confirms it
+    // still matches what Rust actually has on disk (e.g. if the IPC call
+    // itself succeeded but this hook never got the response).
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: PRIVACY_SETTINGS_QUERY_KEY });
     },
   });
 }

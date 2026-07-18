@@ -54,18 +54,32 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
   }, [autoIdleEnabled]);
 
   useEffect(() => {
-    if (timeoutMinutes == null || appearOffline) {
+    if (appearOffline) {
+      // Review fix: this branch used to be shared with the "auto-idle
+      // disabled" case below, restoring `online` whenever either condition
+      // was true. That's wrong specifically for `appearOffline` — turning
+      // "Appear offline" *on* while already idle hit this same branch and
+      // sent `setPresence("online")`, racing (and sometimes beating) the
+      // Rust `set_privacy_settings` command's own `offline` push, so the
+      // user could stay/appear online right after asking to look offline.
+      // `appearOffline` owns presence entirely while it's on (this hook is
+      // a documented no-op for it) — never send anything here, just stop
+      // tracking idle state so a later disable doesn't see a stale
+      // `isIdleRef`.
+      isIdleRef.current = false;
+      return undefined;
+    }
+    if (timeoutMinutes == null) {
       // Review fix: this used to just reset `isIdleRef` to `false` without
       // ever calling `setPresence("online")` when auto-idle was disabled
-      // (or `appearOffline` turned on) *while already idle* — e.g. the user
-      // changes the timeout to "Never" after presence has already gone
-      // `unavailable`. Since the interval below is also torn down here,
-      // nothing would ever restore `online` afterward: the next real
-      // activity no longer has a running interval to notice it, and
-      // `isIdleRef` already reads `false` so even a later re-enable
-      // wouldn't see a stale-idle state to correct. Explicitly restore
-      // `online` here before resetting, whenever this transition happens
-      // while genuinely idle.
+      // *while already idle* — e.g. the user changes the timeout to "Never"
+      // after presence has already gone `unavailable`. Since the interval
+      // below is also torn down here, nothing would ever restore `online`
+      // afterward: the next real activity no longer has a running interval
+      // to notice it, and `isIdleRef` already reads `false` so even a later
+      // re-enable wouldn't see a stale-idle state to correct. Explicitly
+      // restore `online` here before resetting, whenever this transition
+      // happens while genuinely idle.
       if (isIdleRef.current) {
         setPresence("online").catch(logAndIgnore);
       }
