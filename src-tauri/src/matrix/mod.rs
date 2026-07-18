@@ -680,7 +680,35 @@ impl MatrixState {
             .lock()
             .await
             .insert(room_id.to_owned());
-        let previous = self.timelines.lock().await.pop(room_id);
+
+        // Review fix: this used to pop unconditionally, before ever
+        // checking `expected_event_id` — so a stale call (already
+        // superseded by a newer jump for this room by the time it got
+        // here) could pop and abort the *newer* jump's just-installed
+        // entry, then fail its own `expected_event_id` re-check further
+        // below and return `None` without restoring anything, leaving the
+        // room with no cached timeline/listener at all until some later
+        // fetch happened to recreate one. Checking here, atomically with
+        // the pop (both under the same `self.timelines` guard, so nothing
+        // else can install a fresher entry in between), means a stale call
+        // never touches whatever's currently cached in the first place.
+        let previous = {
+            let mut timelines = self.timelines.lock().await;
+            if let Some(event_id) = expected_event_id {
+                let still_latest = self
+                    .latest_jump_target
+                    .lock()
+                    .await
+                    .get(room_id)
+                    .is_some_and(|target| target == event_id);
+                if !still_latest {
+                    drop(timelines);
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                    return None;
+                }
+            }
+            timelines.pop(room_id)
+        };
         if let Some((_, previous_handle, _)) = previous {
             previous_handle.abort();
             let _ = previous_handle.await;
