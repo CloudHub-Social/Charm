@@ -156,4 +156,40 @@ describe("useIdlePresence", () => {
 
     expect(setPresence).not.toHaveBeenCalled();
   });
+
+  it("does not immediately go idle when auto-idle is enabled after a period of inactivity (review fix)", () => {
+    // Review fix: `lastActivityRef` is only ever touched while auto-idle
+    // is enabled (the activity listeners aren't registered otherwise) —
+    // so it can hold a stale mount-time value from well before the user
+    // actually enabled the setting. Mount with auto-idle off, let a long
+    // stretch of "inactivity" pass, then enable it — this must not
+    // immediately treat the user as already idle for the whole timeout.
+    const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
+      initialProps: {
+        settings: {
+          hide_read_receipts: false,
+          hide_typing: false,
+          appear_offline: false,
+          idle_timeout_minutes: null as number | null,
+        },
+      },
+    });
+
+    vi.advanceTimersByTime(20 * 60_000);
+    expect(setPresence).not.toHaveBeenCalled();
+
+    rerender({
+      settings: {
+        hide_read_receipts: false,
+        hide_typing: false,
+        appear_offline: false,
+        idle_timeout_minutes: 5,
+      },
+    });
+
+    // Just under the timeout since auto-idle was actually enabled — should
+    // not have gone idle yet.
+    vi.advanceTimersByTime(4 * 60_000);
+    expect(setPresence).not.toHaveBeenCalled();
+  });
 });

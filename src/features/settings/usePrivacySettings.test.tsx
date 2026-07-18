@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useSetPrivacySettings } from "./usePrivacySettings";
+import { useSetPrivacySettings, resetPrivacySettingsWriteQueue } from "./usePrivacySettings";
 import type { PrivacySettings } from "@/lib/matrix";
 
 const setPrivacySettings = vi.fn();
@@ -29,6 +29,10 @@ const DEFAULT_SETTINGS: PrivacySettings = {
 beforeEach(() => {
   setPrivacySettings.mockReset();
   getPrivacySettings.mockReset();
+  // The write queue/generation counter are module-level state (by design,
+  // shared across every hook instance in the app) — reset between tests so
+  // one test's queued/failed writes can't bleed into the next.
+  resetPrivacySettingsWriteQueue();
 });
 
 function makeWrapper(client: QueryClient) {
@@ -101,6 +105,54 @@ describe("useSetPrivacySettings", () => {
 
     resolveFirst?.();
     await waitFor(() => expect(callOrder).toEqual(["start:first", "end:first", "start:second"]));
+  });
+
+  it("makes an already-queued write a no-op once the write queue is reset (review fix)", async () => {
+    // Review fix: resetPrivacySettingsWriteQueue is called on logout so a
+    // write that was still queued behind an earlier one (not yet actually
+    // sent to Rust) doesn't execute against whatever account signs in
+    // next in the same session.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
+
+    let resolveFirst: (() => void) | undefined;
+    setPrivacySettings.mockImplementation((settings: PrivacySettings) => {
+      if (settings.hide_typing) {
+        return new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const { result: first } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const { result: second } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+
+    first.current.mutate({ ...DEFAULT_SETTINGS, hide_typing: true });
+    await waitFor(() => expect(setPrivacySettings).toHaveBeenCalledTimes(1));
+
+    // The second write is enqueued (behind the first) before logout
+    // happens. Waits for it to actually reach "pending" — mutationFn
+    // invocation (and so this queue's generation capture) happens on a
+    // microtask relative to `.mutate()`, not synchronously with it, so
+    // resetting immediately after the synchronous call below would
+    // reset before the write had actually captured its generation, making
+    // this test's ordering unrepresentative of the real logout scenario
+    // (a genuinely later, unrelated event).
+    second.current.mutate({ ...DEFAULT_SETTINGS, appear_offline: true });
+    await waitFor(() => expect(second.current.isPending).toBe(true));
+    resetPrivacySettingsWriteQueue();
+
+    // Letting the first request settle should let the queue advance, but
+    // the second (queued-before-reset) write must never actually call
+    // setPrivacySettings.
+    resolveFirst?.();
+    await waitFor(() => expect(second.current.isSuccess || second.current.isError).toBe(true));
+    expect(setPrivacySettings).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the optimistic value once the mutation succeeds", async () => {

@@ -40,6 +40,16 @@ export function useIdlePresence(settings: PrivacySettings | undefined): void {
 
   useEffect(() => {
     if (!autoIdleEnabled) return undefined;
+    // Review fix: `lastActivityRef` is otherwise never touched while
+    // auto-idle is disabled (the listeners below aren't even registered
+    // then) — so it can still hold its initial mount-time value, or
+    // whatever it was last set to before being disabled, however long ago
+    // that was. Enabling auto-idle after a period of inactivity would
+    // otherwise immediately treat the user as already idle-for-the-whole-
+    // timeout on the very next `CHECK_INTERVAL_MS` poll, even though they
+    // just interacted with the app to enable the setting. Reset it here,
+    // the moment the timer actually starts tracking again.
+    lastActivityRef.current = Date.now();
     const handleActivity = () => {
       lastActivityRef.current = Date.now();
     };

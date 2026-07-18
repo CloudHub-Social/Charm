@@ -539,11 +539,34 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
         let mut consecutive_failures: u32 = 0;
         loop {
-            let presence = *app
-                .state::<MatrixState>()
-                .sync_presence
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            // Review fix: `sync_presence` can be cached as `Offline` from an
+            // `appear_offline` privacy setting applied earlier in this same
+            // session — but if `presence_privacy_controls` is then disabled
+            // mid-session (a local override cleared, or a remote kill
+            // switch), the Privacy tab that would let the user undo it
+            // disappears too, while this loop kept resending the cached
+            // value on every sync regardless, with no in-app off-ramp
+            // until restart or some other presence write happened to reset
+            // it. Rechecking the flag every iteration and forcing `Online`
+            // while it's off closes that gap.
+            let presence_privacy_controls_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+                crate::feature_flags::flag(
+                    &dir,
+                    crate::feature_flags::FeatureFlagKey::PresencePrivacyControls,
+                )
+            });
+            let presence = {
+                let state = app.state::<MatrixState>();
+                let mut sync_presence = state
+                    .sync_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !presence_privacy_controls_enabled && *sync_presence != PresenceStateDto::Online
+                {
+                    *sync_presence = PresenceStateDto::Online;
+                }
+                *sync_presence
+            };
             let settings = SyncSettings::default().set_presence(presence.into());
             match client.sync_once(settings).await {
                 Ok(response) => {
