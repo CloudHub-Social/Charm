@@ -1135,6 +1135,18 @@ async fn pinned_event_cache_get_or_seed(
     if let Some(existing) = state.pinned_event_cache.lock().await.get(parsed_room_id) {
         return Ok(existing.clone());
     }
+    // Review fix: same session-generation guard `pin_event`/`unpin_event`
+    // use for their own post-send cache write — captured before the
+    // network read below so a logout/re-login/account-switch racing this
+    // seed can't have its result resurrect a stale (previous-session) list
+    // into the newly-cleared cache. This is the one seed path shared by
+    // every caller of this function (`pin_event`, `unpin_event`,
+    // `get_pinned_messages_impl`), so guarding it here covers all of them
+    // — `get_pinned_messages_impl` in particular had no guard of its own
+    // at all before this.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
     let room = require_room(client, room_id)?;
     // Review fix: `Room::pinned_event_ids()` returns `None` both when the
     // room genuinely has no pins *and* when local state simply hasn't
@@ -1174,11 +1186,17 @@ async fn pinned_event_cache_get_or_seed(
             from_network
         }
     };
-    state
-        .pinned_event_cache
-        .lock()
-        .await
-        .insert(parsed_room_id.to_owned(), seeded.clone());
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id.to_owned(), seeded.clone());
+    }
     Ok(seeded)
 }
 
@@ -1747,6 +1765,65 @@ mod tests {
             .await
             .expect("task should not panic")
             .expect("seeding should still succeed once the delayed response lands");
+    }
+
+    /// Review fix regression test: a logout/re-login/account-switch racing
+    /// this seed's network read must not let the seed's own insert
+    /// resurrect a stale (previous-session) list into the freshly-cleared
+    /// cache — the same session-generation guard `pin_event`/`unpin_event`
+    /// already had for their own post-send write, now also covering this
+    /// seed path (which every caller, including `get_pinned_messages_impl`,
+    /// shares and which previously had no guard at all).
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_skips_its_insert_when_the_session_changes_mid_seed() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(1))
+                    .set_body_json(serde_json::json!({
+                        "pinned": [matrix_sdk::ruma::owned_event_id!("$stale-session-pin")],
+                    })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        let seed_state = std::sync::Arc::clone(&state);
+        let seed_client = client.clone();
+        let seed_call = tokio::spawn(async move {
+            pinned_event_cache_get_or_seed(
+                seed_state.as_ref(),
+                &seed_client,
+                room_id,
+                room_id.as_str(),
+            )
+            .await
+        });
+
+        // Give the seed time to start its (delayed) network read before
+        // simulating a logout/re-login racing it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        state.clear_pinned_event_cache().await;
+
+        seed_call
+            .await
+            .expect("task should not panic")
+            .expect("the seed call itself should still succeed");
+
+        assert!(
+            state.pinned_event_cache.lock().await.get(room_id).is_none(),
+            "a session change mid-seed must not let the stale seed resurrect an entry in the freshly-cleared cache"
+        );
     }
 
     /// Review fix regression test (HIGH): `get_pinned_messages_impl` must
