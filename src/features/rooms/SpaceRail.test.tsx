@@ -23,7 +23,9 @@ const setAccountData = vi.fn().mockResolvedValue(undefined);
 // existing/Suggested/Remove don't need to know about power-level gating;
 // tests that specifically cover the gating (Spec 63's known-gap fix)
 // override this per-call.
-const getRoomDetails = vi.fn((roomId: string) => Promise.resolve(makeRoomDetails({ room_id: roomId })));
+const getRoomDetails = vi.fn((roomId: string) =>
+  Promise.resolve(makeRoomDetails({ room_id: roomId })),
+);
 
 vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixLib>()),
@@ -445,7 +447,10 @@ describe("SpaceRail", () => {
     expectMenuItemDisabled(/Invite/);
 
     resolveDetails(
-      makeRoomDetails({ room_id: "!space:localhost", can: { ...makeRoomDetails().can, invite: true } }),
+      makeRoomDetails({
+        room_id: "!space:localhost",
+        can: { ...makeRoomDetails().can, invite: true },
+      }),
     );
     await waitFor(() => expectMenuItemEnabled(/Invite/));
   });
@@ -502,9 +507,7 @@ describe("SpaceRail", () => {
     renderRail();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
-    await waitFor(() =>
-      expectMenuItemEnabled(/Add existing/),
-    );
+    await waitFor(() => expectMenuItemEnabled(/Add existing/));
     fireEvent.click(screen.getByRole("menuitem", { name: /Add existing/ }));
 
     expect(
@@ -515,7 +518,10 @@ describe("SpaceRail", () => {
   it("disables Add existing when the user lacks power to send m.space.child in that space", async () => {
     getRoomDetails.mockImplementationOnce((roomId: string) =>
       Promise.resolve(
-        makeRoomDetails({ room_id: roomId, can: { ...makeRoomDetails().can, set_space_child: false } }),
+        makeRoomDetails({
+          room_id: roomId,
+          can: { ...makeRoomDetails().can, set_space_child: false },
+        }),
       ),
     );
     renderRail();
@@ -536,16 +542,12 @@ describe("SpaceRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
 
-    await waitFor(() =>
-      expectMenuItemEnabled("Remove from space"),
-    );
+    await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child-space:localhost");
 
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
-    await waitFor(() =>
-      expectMenuItemEnabled("Mark as suggested"),
-    );
+    await waitFor(() => expectMenuItemEnabled("Mark as suggested"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Mark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
       "!space:localhost",
@@ -554,9 +556,7 @@ describe("SpaceRail", () => {
     );
 
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
-    await waitFor(() =>
-      expectMenuItemEnabled("Unmark as suggested"),
-    );
+    await waitFor(() => expectMenuItemEnabled("Unmark as suggested"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Unmark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
       "!space:localhost",
@@ -594,9 +594,7 @@ describe("SpaceRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
-    await waitFor(() =>
-      expectMenuItemEnabled("Remove from space"),
-    );
+    await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
     await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
@@ -608,9 +606,7 @@ describe("SpaceRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
-    await waitFor(() =>
-      expectMenuItemEnabled("Remove from space"),
-    );
+    await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("lacking power level");
