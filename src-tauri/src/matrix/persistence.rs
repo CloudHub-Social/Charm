@@ -26,6 +26,10 @@ const SESSION_ACCOUNT: &str = "session";
 /// — matrix-sdk doesn't unify the two, so neither does this persistence
 /// layer. `try_restore_session` checks both accounts.
 const OAUTH_SESSION_ACCOUNT: &str = "oauth-session";
+/// Deliberately its own keychain entry, never touched by `relocate_store` —
+/// see [`bookmarks_encryption_key`]'s own doc comment for why bookmarks
+/// can't be encrypted with `PASSPHRASE_ACCOUNT`'s secret.
+const BOOKMARKS_SECRET_ACCOUNT: &str = "bookmarks-encryption-secret";
 
 /// Prefix marking a `matrix_store/` subdirectory as a not-yet-adopted temp
 /// store from an in-progress SSO/QR login (see [`temp_store_key`]) rather
@@ -567,6 +571,10 @@ pub fn migrate_legacy_single_account_store(app: &AppHandle) -> Result<(), String
 
 fn passphrase_account(store_key: &str) -> String {
     format!("{PASSPHRASE_ACCOUNT}-{store_key}")
+}
+
+fn bookmarks_secret_account(account_key: &str) -> String {
+    format!("{BOOKMARKS_SECRET_ACCOUNT}-{account_key}")
 }
 
 fn session_account(account_key: &str) -> String {
@@ -1304,17 +1312,53 @@ fn bookmarks_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> 
 }
 
 /// Derives the AES-256-GCM key used to encrypt `account_key`'s bookmarks
-/// file at rest, from that account's existing SQLCipher store passphrase
-/// (see [`get_or_create_passphrase`]) — reusing the keychain-backed secret
-/// already provisioned per account rather than provisioning and managing a
-/// second one. Domain-separated via a fixed label before hashing, so this
-/// key can never collide with the passphrase's own use as a SQLCipher key
-/// or with any other derivation that might reuse the same passphrase in the
-/// future.
+/// file at rest, from a keychain secret of its own (`BOOKMARKS_SECRET_ACCOUNT`),
+/// not the account's SQLCipher store passphrase.
+///
+/// Review fix: this used to derive from `get_or_create_passphrase(account_key)`
+/// — but `relocate_store` *replaces* that same keychain entry with a fresh
+/// temp store's passphrase on every successful login (a new device always
+/// gets a new crypto/SQLCipher store, so the passphrase has to change too;
+/// see `relocate_store_at_locked_with`'s doc comment). Bookmarks aren't
+/// re-encrypted when that happens — they're a separate file this function's
+/// caller (`load_bookmarks`/`save_bookmarks`) reads directly, untouched by
+/// relocation — so every bookmark saved before a logout-then-relogin to the
+/// *same* account became permanently undecryptable the moment the
+/// passphrase rotated. A dedicated secret, created once and never touched
+/// by relocation, keeps bookmarks readable across as many relogins as the
+/// user does.
 fn bookmarks_encryption_key(account_key: &str) -> Result<aes_gcm::Key<Aes256Gcm>, String> {
-    let passphrase = get_or_create_passphrase(account_key)?;
-    let digest = Sha256::digest(format!("bookmarks-encryption-key:{passphrase}").as_bytes());
+    let secret = get_or_create_bookmarks_secret(account_key)?;
+    let digest = Sha256::digest(format!("bookmarks-encryption-key:{secret}").as_bytes());
     Ok(aes_gcm::Key::<Aes256Gcm>::from(<[u8; 32]>::from(digest)))
+}
+
+/// Fetches `account_key`'s dedicated bookmarks-encryption secret from the OS
+/// keychain, generating and storing a new random one on first use — the
+/// same get-or-create shape as [`get_or_create_passphrase`], just a
+/// separate keychain entry that `relocate_store` never rotates.
+fn get_or_create_bookmarks_secret(account_key: &str) -> Result<String, String> {
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &bookmarks_secret_account(account_key))
+        .map_err(|e| e.to_string())?;
+
+    match entry.get_password() {
+        Ok(secret) => Ok(secret),
+        Err(SecretStoreError::NotFound) => {
+            let secret: String = rand::rng()
+                .sample_iter(&Alphanumeric)
+                .take(32)
+                .map(char::from)
+                .collect();
+            // Same race-tolerance as `get_or_create_passphrase`: if another
+            // caller wins the race to create this entry first, use theirs
+            // rather than failing.
+            if let Err(e) = entry.set_password(&secret) {
+                return entry.get_password().map_err(|_| e.to_string());
+            }
+            Ok(secret)
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// AES-GCM nonces are 96 bits; a fresh random one is generated for every
@@ -1477,6 +1521,7 @@ mod tests {
     const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
     const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
     const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
+    const TEST_MXID_BOOKMARKS_SECRET: &str = "@charm-persistence-test-bookmarks-secret:localhost";
 
     /// A scratch `matrix_store/`-equivalent directory for tests that need a
     /// real filesystem root, cleaned up on drop so parallel `cargo test`
@@ -1620,6 +1665,35 @@ mod tests {
 
         let other_account = get_or_create_passphrase(&key_b).unwrap();
         assert_ne!(first, other_account);
+    }
+
+    /// Review fix regression test: `bookmarks_encryption_key` used to derive
+    /// from `get_or_create_passphrase(account_key)` — the same keychain
+    /// entry `relocate_store` overwrites with a fresh passphrase on every
+    /// successful login. Simulates that rotation directly (rather than
+    /// running a full relocation) and confirms the derived bookmarks key is
+    /// unaffected, since every bookmark saved before the rotation must
+    /// still decrypt afterward.
+    #[test]
+    fn bookmarks_encryption_key_survives_passphrase_rotation() {
+        let key = account_key(TEST_MXID_BOOKMARKS_SECRET);
+
+        let before = bookmarks_encryption_key(&key).unwrap();
+
+        // Simulate `relocate_store` replacing the account's SQLCipher
+        // passphrase, exactly as a logout-then-relogin to the same account
+        // does.
+        let passphrase_entry =
+            SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&key)).unwrap();
+        passphrase_entry
+            .set_password("a-completely-different-passphrase")
+            .unwrap();
+
+        let after = bookmarks_encryption_key(&key).unwrap();
+        assert_eq!(
+            before, after,
+            "bookmarks encryption key must survive passphrase rotation"
+        );
     }
 
     #[test]
