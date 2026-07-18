@@ -676,7 +676,23 @@ impl MatrixState {
         // (see its own doc comment on `MatrixState`) is what keeps
         // `is_timeline_open` correct while this room briefly has no entry
         // cached during that pop-to-repush span.
-        self.transitioning_timelines
+        // Review fix: this call's own `HashSet::insert` return value used
+        // to be discarded — every early-return and the final success path
+        // below unconditionally removed the room's marker regardless of
+        // whether *this* call was the one that actually inserted it. If
+        // this raced a *different* concurrent transition for the same room
+        // (e.g. `get_or_create_timeline`'s own `force_live` reset), that
+        // other call's `insert` would return `false` (already present), yet
+        // this call could still finish first and remove the marker while
+        // the other transition was still mid-flight (popped its old entry,
+        // still building the replacement) — reopening the exact
+        // `is_timeline_open` false-negative window the marker exists to
+        // close, for however long that other call had left to run.
+        // `inserted_transition_marker`, gated the same way
+        // `get_or_create_timeline` already gates its own removal, means
+        // only the call that actually claimed the marker ever clears it.
+        let inserted_transition_marker = self
+            .transitioning_timelines
             .lock()
             .await
             .insert(room_id.to_owned());
@@ -703,7 +719,9 @@ impl MatrixState {
                     .is_some_and(|target| target == event_id);
                 if !still_latest {
                     drop(timelines);
-                    self.transitioning_timelines.lock().await.remove(room_id);
+                    if inserted_transition_marker {
+                        self.transitioning_timelines.lock().await.remove(room_id);
+                    }
                     return None;
                 }
             }
@@ -762,7 +780,9 @@ impl MatrixState {
         });
         if !still_active {
             drop(timelines);
-            self.transitioning_timelines.lock().await.remove(room_id);
+            if inserted_transition_marker {
+                self.transitioning_timelines.lock().await.remove(room_id);
+            }
             return None;
         }
 
@@ -787,7 +807,9 @@ impl MatrixState {
                 .is_some_and(|target| target == event_id);
             if !still_latest {
                 drop(timelines);
-                self.transitioning_timelines.lock().await.remove(room_id);
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
                 return None;
             }
         }
@@ -819,7 +841,9 @@ impl MatrixState {
             (std::sync::Arc::clone(&timeline), handle, true),
         );
         drop(timelines);
-        self.transitioning_timelines.lock().await.remove(room_id);
+        if inserted_transition_marker {
+            self.transitioning_timelines.lock().await.remove(room_id);
+        }
         if let Some((_, (_, displaced_handle, _))) = displaced {
             displaced_handle.abort();
             let _ = displaced_handle.await;

@@ -3614,6 +3614,47 @@ describe("ChatShell", () => {
     expect(markRoomRead).not.toHaveBeenCalled();
   });
 
+  it("eventually clears mark-read suppression via the fallback timer if Virtuoso's atBottomStateChange never fires (review fix)", async () => {
+    // A jump whose target leaves Virtuoso's at-bottom state genuinely
+    // unchanged (e.g. the bookmark is already the latest message) never
+    // triggers `atBottomStateChange` at all — that's the only other place
+    // suppression clears, so without a bounded fallback it would stay set
+    // forever. Real timers (not `vi.useFakeTimers`), same rationale as the
+    // sibling "force-clears a bookmark jump" fallback-timer test above.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    expect(markRoomRead).not.toHaveBeenCalled();
+
+    // No `atBottomStateChange` is ever fired for this jump — only the
+    // fallback timer (5000ms) should eventually clear suppression and
+    // allow mark-read to run.
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id), {
+      timeout: 7000,
+    });
+  }, 10000);
+
   it("does not leak mark-read suppression into a different room after a bookmark jump is interrupted by a room switch (Sentry review fix)", async () => {
     // Room A's jump target is never found (loadTimelineAroundEvent hangs),
     // so Virtuoso never gets to report a post-jump position and clear the

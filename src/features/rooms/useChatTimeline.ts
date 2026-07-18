@@ -19,6 +19,12 @@ import { messageRowKey } from "./messageRowShared";
 // `scrollHeight`/`scrollTop` delta math entirely.
 const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
 
+// Matches `ChatShell`'s own `JUMP_FALLBACK_TIMEOUT_MS` — same rationale
+// (give the normal signal, here Virtuoso's `atBottomStateChange`, a window
+// to land before forcing the fallback), not shared/exported since the two
+// aren't required to move in lockstep.
+const MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS = 5000;
+
 export function useChatTimeline(
   room: RoomSummary | null,
   roomSettingsOpen: boolean,
@@ -86,6 +92,9 @@ export function useChatTimeline(
   // suppressed for the entire gap, however long it turns out to be.
   const suppressMarkReadRef = useRef(false);
   if (hasPendingJump) suppressMarkReadRef.current = true;
+  // See the `hasPendingJump` transition-clearing effect below for why this
+  // is needed alongside `handleAtBottomStateChange`'s own clearing.
+  const prevHasPendingJumpRef = useRef(hasPendingJump);
   // Tracks which room `loadMoreHistory`'s in-flight request was issued for,
   // so a slow response landing after the user has since switched rooms (or
   // this room's own subsequent request) doesn't apply its scroll anchor or
@@ -468,6 +477,36 @@ export function useChatTimeline(
   // `atBottomStateChange` firing (Virtuoso only calls it on an actual
   // visibility transition).
   useEffect(() => {
+    // Review fix: a jump that resolves to a target which leaves Virtuoso's
+    // at-bottom state *unchanged* (e.g. the bookmark is already the latest
+    // message, or the list was already scrolled to bottom before the jump)
+    // never fires `atBottomStateChange` at all — that's the only other
+    // place suppression gets cleared, so without this it would stay set
+    // forever, permanently blocking mark-read for the rest of this room's
+    // session.
+    //
+    // Not cleared immediately on this `true -> false` transition, though —
+    // `ChatShell`'s existing regression test ("does not mark read in the
+    // gap between onJumpHandled clearing jumpToEventId and Virtuoso's own
+    // atBottomStateChange report") documents that `hasPendingJump` reading
+    // `false` again can itself still be one render ahead of Virtuoso's
+    // actual post-jump scroll report, with `isAtBottomRef.current` still
+    // holding a stale pre-jump value. Clearing here unconditionally would
+    // reopen exactly that gap. Instead this is a bounded fallback (same
+    // `JUMP_FALLBACK_TIMEOUT_MS` pattern `ChatShell`'s own jump effect
+    // uses for its analogous "the normal signal might never arrive"
+    // problem): if Virtuoso's own `atBottomStateChange` hasn't cleared
+    // suppression within the window, force it here so a jump whose bottom
+    // state never changes doesn't suppress mark-read forever.
+    const wasPending = prevHasPendingJumpRef.current;
+    prevHasPendingJumpRef.current = hasPendingJump;
+    if (wasPending && !hasPendingJump) {
+      const timeoutId = setTimeout(() => {
+        suppressMarkReadRef.current = false;
+        markReadIfAtBottom();
+      }, MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS);
+      return () => clearTimeout(timeoutId);
+    }
     markReadIfAtBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `markReadIfAtBottom` closes over refs, not state.
   }, [room, latestEventId, roomSettingsOpen, hasPendingJump]);
