@@ -11,12 +11,24 @@ import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
  * the fields the panel renders — comparable across `PinnedMessageSummary`
  * (this panel's own query data) and `RoomMessageSummary` (a `timeline:update`
  * payload), since the two DTOs name the same content differently
- * (`preview`/`is_redacted` vs `body`/`redacted`). */
+ * (`preview`/`is_redacted` vs `body`/`redacted`).
+ *
+ * Review fix: an undecrypted event's body text isn't stable across the two
+ * DTOs — `PinnedMessageSummary.preview` is `""` while `RoomMessageSummary.body`
+ * is the fixed `"Unable to decrypt message"` placeholder — so comparing the
+ * raw text directly made every unrelated `timeline:update` that re-sent the
+ * same still-undecrypted row look like a content change, invalidating and
+ * refetching the pinned-messages query for no reason in busy encrypted
+ * rooms. Both signatures now collapse to a fixed `"<undecrypted>"` marker
+ * whenever the undecrypted flag is set, instead of the DTO-specific text,
+ * so an unchanged undecrypted row keeps producing the same signature. */
 function pinnedSummarySignature(message: PinnedMessageSummary): string {
-  return `${message.preview}|${message.is_redacted}`;
+  const body = message.is_undecrypted ? "<undecrypted>" : message.preview;
+  return `${body}|${message.is_redacted}`;
 }
 function timelineMessageSignature(message: RoomMessageSummary): string {
-  return `${message.body}|${message.redacted}`;
+  const body = message.is_undecrypted ? "<undecrypted>" : message.body;
+  return `${body}|${message.redacted}`;
 }
 
 interface PinnedMessagesPanelProps {

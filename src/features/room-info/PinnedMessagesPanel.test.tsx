@@ -237,6 +237,49 @@ describe("PinnedMessagesPanel", () => {
     expect(getPinnedMessages).not.toHaveBeenCalled();
   });
 
+  it("does not refetch when a timeline:update resends an unchanged undecrypted pinned message (review fix)", async () => {
+    // Review fix: an undecrypted pinned message's body text isn't stable
+    // across `PinnedMessageSummary` (`preview: ""`) and `RoomMessageSummary`
+    // (`body: "Unable to decrypt message"`) — comparing that raw text
+    // directly made every unrelated timeline:update that resent the same
+    // still-undecrypted row look like a content change, triggering a
+    // needless refetch in busy encrypted rooms. Both DTOs report
+    // `is_undecrypted: true` here and must be treated as unchanged.
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({ event_id: "$1", preview: "", is_undecrypted: true }),
+    ]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+    await screen.findByText("Unable to decrypt message");
+    expect(timelineUpdateCallback).toBeDefined();
+    getPinnedMessages.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: details.room_id,
+        messages: [
+          {
+            event_id: "$1",
+            body: "Unable to decrypt message",
+            redacted: false,
+            is_undecrypted: true,
+          } as never,
+        ],
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getPinnedMessages).not.toHaveBeenCalled();
+  });
+
   it("shows an unpin action for a redacted pinned message the user has permission to unpin (Codex review fix)", async () => {
     // MessageActions' own Pin/Unpin entry is unreachable for a redacted
     // message (every timeline row wraps it in `!message.redacted`), so a

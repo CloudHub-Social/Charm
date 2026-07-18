@@ -785,6 +785,19 @@ fn disambiguated_display_name(
 /// message. Fetches a small batch (not just the single most recent
 /// relation) and skips any whose sender doesn't match, so one invalid edit
 /// sent after a legitimate one can't hide it.
+///
+/// Review fix: a single page only covers the 20 most recent relations. If
+/// more than 20 newer `m.replace` events from other users (invalid, per the
+/// sender check above) target the same pinned event, the original sender's
+/// actual latest valid edit could sit just past that page — this used to
+/// give up after one page and silently fall back to the stale/original
+/// body, even though the main timeline's own edit-collapsing (which has no
+/// such page limit) would still show the real edit. Now pages forward
+/// (`next_batch_token`) until a same-sender replacement is found or the
+/// relation stream is exhausted, bounded by `MAX_EDIT_RELATION_PAGES` as a
+/// deliberate safety cap against an unbounded fetch loop.
+const MAX_EDIT_RELATION_PAGES: usize = 10;
+
 async fn latest_edit_body(
     room: &Room,
     event_id: &matrix_sdk::ruma::EventId,
@@ -797,50 +810,65 @@ async fn latest_edit_body(
         AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
     };
 
-    let relations = room
-        .relations(
-            event_id.to_owned(),
-            RelationsOptions {
-                dir: matrix_sdk::ruma::api::Direction::Backward,
-                include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
-                limit: matrix_sdk::ruma::UInt::new(20),
-                ..Default::default()
-            },
-        )
-        .await
-        .ok()?;
-    // Review fix: `dir: Direction::Backward` is a request for the
-    // homeserver to return relations newest-first, but nothing in the
-    // response guarantees that ordering was actually honored — sorting
-    // explicitly by `origin_server_ts` here means a homeserver that
-    // returns them in a different order still resolves to the genuinely
-    // most recent valid edit, not just whichever happened to come first in
-    // the response.
-    let mut candidates: Vec<_> = relations
-        .chunk
-        .iter()
-        .filter_map(|candidate| {
-            let raw_edit = candidate.raw().deserialize().ok()?;
-            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
-                SyncMessageLikeEvent::Original(edit),
-            )) = raw_edit
-            else {
-                return None;
-            };
-            if edit.sender != *original_sender {
-                return None;
-            }
-            let Relation::Replacement(replacement) = edit.content.relates_to? else {
-                return None;
-            };
-            Some((
-                edit.origin_server_ts,
-                replacement.new_content.msgtype.body().to_string(),
-            ))
-        })
-        .collect();
-    candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
-    candidates.into_iter().next().map(|(_, body)| body)
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_EDIT_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .ok()?;
+
+        // Review fix: `dir: Direction::Backward` is a request for the
+        // homeserver to return relations newest-first, but nothing in the
+        // response guarantees that ordering was actually honored — sorting
+        // explicitly by `origin_server_ts` here means a homeserver that
+        // returns them in a different order still resolves to the
+        // genuinely most recent valid edit within this page, not just
+        // whichever happened to come first in the response.
+        let mut candidates: Vec<_> = relations
+            .chunk
+            .iter()
+            .filter_map(|candidate| {
+                let raw_edit = candidate.raw().deserialize().ok()?;
+                let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                    SyncMessageLikeEvent::Original(edit),
+                )) = raw_edit
+                else {
+                    return None;
+                };
+                if edit.sender != *original_sender {
+                    return None;
+                }
+                let Relation::Replacement(replacement) = edit.content.relates_to? else {
+                    return None;
+                };
+                Some((
+                    edit.origin_server_ts,
+                    replacement.new_content.msgtype.body().to_string(),
+                ))
+            })
+            .collect();
+        candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+        if let Some((_, body)) = candidates.into_iter().next() {
+            return Some(body);
+        }
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            None => return None,
+        }
+    }
+
+    None
 }
 
 /// A placeholder row for a pinned event id that couldn't be resolved at
@@ -2292,6 +2320,112 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "original body");
+    }
+
+    /// Review fix regression test: the original sender's genuinely latest
+    /// valid edit can sit past the first page of relations if more than 20
+    /// newer invalid (different-sender) replacements were sent after it.
+    /// `latest_edit_body` must page forward (`from`/`next_batch_token`)
+    /// until it finds a same-sender replacement, instead of giving up after
+    /// one page and falling back to the stale/original body.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_pages_past_invalid_replacements_to_find_the_valid_edit() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let valid_edit = matrix_sdk::ruma::owned_event_id!("$valid-edit");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // First page: 20 invalid (different-sender) replacements, no
+        // `from` query param, with a `next_batch` pointing at page two.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .and(wiremock::matchers::query_param_is_missing("from"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": (0..20).map(|i| serde_json::json!({
+                        "type": "m.room.message",
+                        "event_id": format!("$forged-{i}"),
+                        "room_id": room_id,
+                        "sender": *BOB,
+                        "origin_server_ts": 1_700_000_001_000u64 + i,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* attacker text",
+                            "m.new_content": { "msgtype": "m.text", "body": "attacker text" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    })).collect::<Vec<_>>(),
+                    "next_batch": "page2",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // Second page: the original sender's genuinely valid edit.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .and(wiremock::matchers::query_param("from", "page2"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": valid_edit,
+                        "room_id": room_id,
+                        "sender": *ALICE,
+                        "origin_server_ts": 1_700_000_002_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* valid edit",
+                            "m.new_content": { "msgtype": "m.text", "body": "valid edit" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "valid edit");
     }
 
     /// Review fix regression test: a sender whose display name is shared
