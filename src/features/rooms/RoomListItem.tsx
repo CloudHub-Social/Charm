@@ -95,6 +95,7 @@ function RoomListItemImpl({
             presence={presence?.presence}
             statusMsg={presence?.status_msg}
             lastActiveAgoMs={presence?.last_active_ago_ms}
+            insideInteractiveParent
           />
         )}
       </Avatar>

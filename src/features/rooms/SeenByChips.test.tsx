@@ -65,6 +65,22 @@ describe("SeenByChips", () => {
     expect(screen.getByText("@b:localhost")).toBeInTheDocument();
   });
 
+  // Review fix: `className` (e.g. a caller's layout spacing) must land on
+  // the outer `<button>` once `expandableListEnabled` wraps the stack in
+  // one — it used to be applied to the inner chip-row `div` instead,
+  // leaving the actual outer box without the caller's intended margin.
+  it("applies the className prop to the outer button when the stack is wrapped in a popover trigger", () => {
+    renderWithProviders(
+      <SeenByChips
+        readers={["@alice:localhost", "@bob:localhost"]}
+        senderNameByUserId={new Map()}
+        className="mt-0.5"
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Seen by 2 people/i });
+    expect(trigger.className).toContain("mt-0.5");
+  });
+
   it("falls back to a static, non-interactive '+N' when presence_privacy_controls is off", () => {
     vi.mocked(useFlag).mockReturnValueOnce(false);
     const readers = [

@@ -86,6 +86,19 @@ interface PresenceDotProps {
   /** Milliseconds since this user was last active, from `PresenceUpdate.last_active_ago_ms`. */
   lastActiveAgoMs?: number | null;
   className?: string;
+  /**
+   * Set when the caller already renders this inside its own interactive
+   * element (e.g. `RoomListItem`'s whole row is a `<button>`). The detail
+   * tooltip's trigger is then rendered non-`tabIndex`-focusable, since a
+   * focusable element nested inside another interactive one is an axe
+   * `nested-interactive` violation this repo's Storybook a11y gate
+   * enforces — mouse hover still opens it regardless (`onPointerMove` isn't
+   * gated on `tabIndex`); keyboard/screen-reader users reach the same
+   * presence detail via the outer row control instead. Defaults to `false`
+   * for standalone placements like `ChatShell`'s DM header, which isn't
+   * itself interactive.
+   */
+  insideInteractiveParent?: boolean;
 }
 
 /**
@@ -103,7 +116,13 @@ interface PresenceDotProps {
  * tooltip surfaces them alongside the presence label — previously carried by
  * the `PresenceUpdate` DTO but never shown anywhere.
  */
-export function PresenceDot({ presence, statusMsg, lastActiveAgoMs, className }: PresenceDotProps) {
+export function PresenceDot({
+  presence,
+  statusMsg,
+  lastActiveAgoMs,
+  className,
+  insideInteractiveParent = false,
+}: PresenceDotProps) {
   // Review fix: the status-message/last-active detail tooltip is Spec 40's
   // own display addition and must be killed by the same default-off
   // `presence_privacy_controls` flag that gates the rest of that spec — the
@@ -147,10 +166,13 @@ export function PresenceDot({ presence, statusMsg, lastActiveAgoMs, className }:
     <TooltipProvider>
       <Tooltip>
         {/* tabIndex={0}: keyboard/screen-reader users get the same detail a
-            mouse hover gives — the dot itself has no interactive role. */}
+            mouse hover gives — the dot itself has no interactive role.
+            Omitted when `insideInteractiveParent` (see that prop's own
+            comment) to avoid nesting a focusable element inside the
+            caller's own interactive row/button. */}
         {/* oxlint-disable jsx-a11y/no-noninteractive-tabindex */}
         <TooltipTrigger asChild>
-          <span tabIndex={0} className="inline-flex">
+          <span tabIndex={insideInteractiveParent ? undefined : 0} className="inline-flex">
             {dot}
           </span>
         </TooltipTrigger>

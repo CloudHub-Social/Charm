@@ -40,8 +40,16 @@ export function SeenByChips({ readers, senderNameByUserId, className }: SeenByCh
   // (flagged by the axe `nested-interactive` rule this repo's Storybook CI
   // gate enforces). They stay purely decorative/hover-only in that case; the
   // outer button already carries the "Seen by N people" accessible name.
-  const renderAvatarRow = (interactiveAvatars: boolean) => (
-    <div className={cn("flex items-center gap-[3px]", className)}>
+  // Review fix: `className` (e.g. `RoomListItem`/message-row layout spacing
+  // like `mt-0.5`) must land on whichever element is actually the outermost
+  // one in the rendered tree — the inner `div` when there's no wrapping
+  // button, but the `<button>` itself once `expandableListEnabled` wraps
+  // everything in one. Applying it to the inner `div` in that second case
+  // left the button (the real outer box) without the caller's intended
+  // margin/spacing, a layout regression. `renderAvatarRow` itself never
+  // takes `className` — callers below decide where it belongs.
+  const renderAvatarRow = (interactiveAvatars: boolean, rowClassName?: string) => (
+    <div className={cn("flex items-center gap-[3px]", rowClassName)}>
       {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => (
         <Tooltip key={userId}>
           <TooltipTrigger asChild>
@@ -73,7 +81,9 @@ export function SeenByChips({ readers, senderNameByUserId, className }: SeenByCh
   // chip to be clickable regardless of overflow. Wrapping the whole stack
   // itself in the trigger (instead of just the overflow chip) covers both
   // cases with one trigger.
-  if (!expandableListEnabled) return <TooltipProvider>{renderAvatarRow(true)}</TooltipProvider>;
+  if (!expandableListEnabled) {
+    return <TooltipProvider>{renderAvatarRow(true, className)}</TooltipProvider>;
+  }
 
   return (
     <Popover>
@@ -82,7 +92,7 @@ export function SeenByChips({ readers, senderNameByUserId, className }: SeenByCh
           <button
             type="button"
             aria-label={`Seen by ${readers.length} people. Show full list.`}
-            className="flex items-center gap-[3px] rounded hover:opacity-80"
+            className={cn("flex items-center gap-[3px] rounded hover:opacity-80", className)}
           >
             {renderAvatarRow(false)}
           </button>
