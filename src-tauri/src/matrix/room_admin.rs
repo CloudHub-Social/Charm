@@ -851,6 +851,18 @@ async fn latest_edit_body(
                 let Relation::Replacement(replacement) = edit.content.relates_to? else {
                     return None;
                 };
+                // Review fix (P2): the relations request is scoped to
+                // `event_id`, but nothing guarantees a homeserver/aggregation
+                // response actually honors that scoping — the reaction scan
+                // in `actions.rs` defensively checks its own relation target
+                // for the same reason. Without this, a same-sender
+                // `m.replace` whose `m.relates_to.event_id` targets some
+                // *other* event could still be accepted here purely because
+                // it showed up in this response, letting the pinned-messages
+                // panel show an unrelated edit body as this message's preview.
+                if replacement.event_id != *event_id {
+                    return None;
+                }
                 Some((
                     edit.origin_server_ts,
                     replacement.new_content.msgtype.body().to_string(),
@@ -2586,6 +2598,91 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "original body");
+    }
+
+    /// Review fix regression test: a same-sender `m.replace` whose own
+    /// `m.relates_to.event_id` targets a *different* event must be ignored,
+    /// even though the relations request was scoped to the pinned event's
+    /// id — nothing guarantees a homeserver/aggregation response actually
+    /// honors that scoping, and the reaction scan in `actions.rs`
+    /// defensively checks its own relation target for the identical reason.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_ignores_a_replacement_targeting_a_different_event() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let other_event = matrix_sdk::ruma::owned_event_id!("$other-event");
+        let mistargeted_edit = matrix_sdk::ruma::owned_event_id!("$mistargeted");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        // Same sender as the original (would otherwise pass that check),
+        // but this event's own `m.relates_to.event_id` targets a
+        // *different* event entirely — the relations endpoint returned it
+        // for `original`'s request anyway, simulating a homeserver/
+        // aggregation response that didn't honor the request's scoping.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": mistargeted_edit,
+                        "room_id": room_id,
+                        "sender": *ALICE,
+                        "origin_server_ts": 1_700_000_001_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* unrelated edit",
+                            "m.new_content": { "msgtype": "m.text", "body": "unrelated edit" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": other_event },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].preview, "original body",
+            "a replacement targeting a different event must not be accepted as this event's edit"
+        );
     }
 
     /// Review fix regression test: the original sender's genuinely latest
