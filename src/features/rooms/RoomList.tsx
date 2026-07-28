@@ -61,6 +61,12 @@ interface RoomListProps {
   rooms: RoomSummary[];
   loading?: boolean;
   activeRoomId: string | null;
+  /** The signed-in user's id, from `RoomsScreen`'s own stable session state
+   * — used for `useRoomListTyping`'s self-filter instead of the `useOwnProfile`
+   * query below, which can still be loading (or fail, e.g. offline) well
+   * after the session itself is known, and would otherwise drop every
+   * other user's typing notice received during that window. */
+  currentUserId: string;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
   /**
@@ -119,6 +125,7 @@ export function RoomList({
   rooms,
   loading = false,
   activeRoomId,
+  currentUserId,
   onSelectRoom,
   onSelectSpace,
   onSelectSearchResult,
@@ -188,7 +195,7 @@ export function RoomList({
   // of its return value below is also independently gated on the flag as a
   // second layer, mirroring `useChatTyping`'s own `detailControlsEnabled`
   // pattern.
-  const typingRoomIds = useRoomListTyping(ownProfile?.user_id ?? "", roomListTypingFlagEnabled);
+  const typingRoomIds = useRoomListTyping(currentUserId, roomListTypingFlagEnabled);
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled

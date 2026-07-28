@@ -112,6 +112,7 @@ function roomListProps(overrides: Partial<ComponentProps<typeof RoomList>> = {})
   return {
     rooms: [],
     activeRoomId: null,
+    currentUserId: "@me:localhost",
     onSelectRoom: () => {},
     onSelectSpace: () => {},
     mode: "home" as const,
