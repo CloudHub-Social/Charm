@@ -40,7 +40,7 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
           setLightboxOpen={setLightboxOpen}
           animated={mediaSendPolishEnabled && autoplayGifs && content.mime === "image/gif"}
         />
-        {content.caption && <MediaCaption text={content.caption} />}
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
       </div>
     );
   }
@@ -57,7 +57,7 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
           lightboxOpen={lightboxOpen}
           setLightboxOpen={setLightboxOpen}
         />
-        {content.caption && <MediaCaption text={content.caption} />}
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
       </div>
     );
   }
