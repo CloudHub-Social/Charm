@@ -494,8 +494,14 @@ export function RoomList({
 
   function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
     // Reordering a filtered subset would compute positions against missing
-    // rows and silently corrupt the full section order once "All" is restored.
-    const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
+    // rows and silently corrupt the full section order once "All" is
+    // restored, and reordering under a non-default sort would write a
+    // manual order that the visible (sorted) order doesn't actually reflect
+    // — checking `activeSort` directly rather than inferring it from order
+    // equality, since a non-default sort can coincidentally produce the same
+    // order as default (e.g. A-Z with no manual orders yet).
+    const canReorder =
+      !unreadOnly && activeSort === "default" && hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => {
       // Favourite/low-priority rooms bypass the hierarchy view entirely (see
       // `isHiddenHierarchyRoom`) and render through this same section-rows

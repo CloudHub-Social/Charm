@@ -24,6 +24,11 @@ export function useRoomListTyping(currentUserId: string): Set<string> {
     const timers = autoHideTimersRef.current;
     const unlisten = onTypingUpdate((update) => {
       if (cancelled) return;
+      // currentUserId is "" until the own-profile query resolves — treating
+      // that as "no id" would make our own typing match `id !== currentUserId`
+      // and show up as someone else typing, so ignore updates until we
+      // actually know who we are.
+      if (!currentUserId) return;
       const othersTyping = update.user_ids.some((id) => id !== currentUserId);
       clearTimeout(timers.get(update.room_id));
       timers.delete(update.room_id);
