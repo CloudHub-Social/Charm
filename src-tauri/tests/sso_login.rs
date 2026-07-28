@@ -23,6 +23,39 @@ const DEX_USERNAME: &str = "sso-test@localhost";
 const DEX_PASSWORD: &str = "testpass123";
 const REDIRECT_URL: &str = "charm://sso-callback";
 
+/// Recent Dex versions insert a `/dex/auth?hmac=...&req=...` confirmation
+/// hop after login (before showing `/dex/approval`) and again after approval
+/// (before the final external callback redirect), minting a fresh `hmac`
+/// each time. Follows it via GET, resolved against `base`, until the
+/// redirect target is no longer `/dex/auth`, and returns that final
+/// (unresolved, relative-or-absolute) location string.
+async fn follow_dex_auth_confirmation(
+    http: &reqwest::Client,
+    base: &reqwest::Url,
+    mut location: String,
+) -> String {
+    loop {
+        let url = base
+            .join(&location)
+            .expect("resolve /dex/auth redirect location");
+        if url.path() != "/dex/auth" {
+            return location;
+        }
+        let response = http
+            .get(url)
+            .send()
+            .await
+            .expect("follow /dex/auth confirmation redirect");
+        location = response
+            .headers()
+            .get("location")
+            .expect("/dex/auth confirmation redirects onward")
+            .to_str()
+            .expect("location header is valid UTF-8")
+            .to_string();
+    }
+}
+
 /// Walks the full browser-facing redirect chain and returns the final
 /// `charm://sso-callback?loginToken=...` URL, without ever needing a real
 /// browser or a headless one — Dex's local-password connector is a plain
@@ -74,13 +107,15 @@ async fn drive_sso_flow_to_callback_url(sso_login_url: &str) -> String {
         .send()
         .await
         .expect("submit Dex login form");
-    let approval_location = after_login
+    let post_login_location = after_login
         .headers()
         .get("location")
-        .expect("login redirects to the approval page")
+        .expect("login redirects onward")
         .to_str()
         .expect("location header is valid UTF-8")
         .to_string();
+    let approval_location =
+        follow_dex_auth_confirmation(&http, &login_page_url, post_login_location).await;
     let approval_url = login_page_url
         .join(&approval_location)
         .expect("resolve the approval page location");
@@ -109,13 +144,15 @@ async fn drive_sso_flow_to_callback_url(sso_login_url: &str) -> String {
         .send()
         .await
         .expect("submit Dex approval form");
-    let synapse_callback_url = after_approval
+    let post_approval_location = after_approval
         .headers()
         .get("location")
-        .expect("approval redirects to Synapse's OIDC callback")
+        .expect("approval redirects onward")
         .to_str()
         .expect("location header is valid UTF-8")
         .to_string();
+    let synapse_callback_url =
+        follow_dex_auth_confirmation(&http, &approval_url, post_approval_location).await;
 
     // 4. Synapse completes the exchange and shows a "Continue to your
     //    account" page linking to our (non-http, so un-followable) redirect
