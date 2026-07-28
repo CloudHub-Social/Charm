@@ -1,15 +1,43 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-18T22:54:20.195Z",
+  "generatedAt": "2026-07-28T22:10:35.030Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 34,
-    "follow-up": 8,
+    "shipped": 35,
+    "follow-up": 7,
     "in-progress": 0,
     "planned": 34
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 298,
+      "title": "Spec 63: power-level gating for SpaceRail context menu",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/298",
+      "detail": "Day-1 Spec 63 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 301,
+      "title": "feat(rooms): complete Spec 54 — room-list sort and typing indicator",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/301",
+      "detail": "Day-1 Spec 54 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 302,
+      "title": "feat(media): finish Spec 42 media send polish",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/302",
+      "detail": "Day-1 Spec 42 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 300,
+      "title": "Message action parity: forward, view source, report, edit history, reaction viewer",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/300",
+      "detail": "Day-1 Spec 37 · ready for review"
+    },
     {
       "type": "issue",
       "number": 296,
@@ -60,8 +88,8 @@
         "day-1-27"
       ],
       "counts": {
-        "shipped": 24,
-        "follow-up": 3,
+        "shipped": 25,
+        "follow-up": 2,
         "in-progress": 0,
         "planned": 0
       }
@@ -686,7 +714,7 @@
       "number": 22,
       "title": "User feedback categorization and GitHub label mapping",
       "route": "/specs/day-1/spec-22--user-feedback-categorization-and-github-label-mapping/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 165,
@@ -869,6 +897,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 299,
+          "title": "docs(specs): mark Spec 29 and Spec 32 as shipped",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/299",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-18T23:25:27Z"
+        },
+        {
           "number": 273,
           "title": "feat(web): proxy link previews through the companion server (Spec 29)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/273",
@@ -922,8 +958,16 @@
       "number": 32,
       "title": "Room alias management",
       "route": "/specs/day-1/spec-32--room-alias-management/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
+        {
+          "number": 299,
+          "title": "docs(specs): mark Spec 29 and Spec 32 as shipped",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/299",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-18T23:25:27Z"
+        },
         {
           "number": 251,
           "title": "Spec 32: Room alias management",
@@ -1026,6 +1070,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 300,
+          "title": "Message action parity: forward, view source, report, edit history, reaction viewer",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/300",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-18T23:27:19Z"
+        },
+        {
           "number": 282,
           "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/282",
@@ -1117,6 +1169,14 @@
       "route": "/specs/day-1/spec-42--media-send-polish/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 302,
+          "title": "feat(media): finish Spec 42 media send polish",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/302",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-28T22:07:06Z"
+        },
         {
           "number": 279,
           "title": "feat(rooms): add file drop target",
@@ -1264,6 +1324,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 301,
+          "title": "feat(rooms): complete Spec 54 — room-list sort and typing indicator",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/301",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-28T22:08:22Z"
+        },
+        {
           "number": 283,
           "title": "feat(rooms): add last-message preview to room-list rows (Spec 54)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/283",
@@ -1394,8 +1462,16 @@
       "number": 63,
       "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 298,
+          "title": "Spec 63: power-level gating for SpaceRail context menu",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/298",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-28T22:09:55Z"
+        },
         {
           "number": 290,
           "title": "Sidebar and space management: pin, reorder, context menu, add existing (Spec 63)",
