@@ -775,24 +775,30 @@ export function RoomList({
               </fieldset>
             </div>
           )}
-          {roomListSortFlagEnabled && (
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <label htmlFor="room-list-sort" className="text-xs text-muted-foreground">
-                Sort
-              </label>
-              <select
-                id="room-list-sort"
-                value={activeSort}
-                onChange={(event) => selectRoomSort(event.target.value as RoomListSort)}
-                className="rounded-md border border-border bg-muted/40 px-2 py-1 text-xs font-medium text-foreground"
-              >
-                <option value="default">Default</option>
-                <option value="activity">Activity</option>
-                <option value="az">A-Z</option>
-                <option value="unread">Unread first</option>
-              </select>
-            </div>
-          )}
+          {roomListSortFlagEnabled &&
+            mode !== "space" && (
+              // Space mode renders `filteredSpaceHierarchy` via `renderHierarchy`,
+              // which never passes through `sortRoomsForDisplay` — `activeSort`
+              // only affects the grouped Home/DM `sections` below. Showing the
+              // control here would let it appear to apply while silently doing
+              // nothing to the space's room list.
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <label htmlFor="room-list-sort" className="text-xs text-muted-foreground">
+                  Sort
+                </label>
+                <select
+                  id="room-list-sort"
+                  value={activeSort}
+                  onChange={(event) => selectRoomSort(event.target.value as RoomListSort)}
+                  className="rounded-md border border-border bg-muted/40 px-2 py-1 text-xs font-medium text-foreground"
+                >
+                  <option value="default">Default</option>
+                  <option value="activity">Activity</option>
+                  <option value="az">A-Z</option>
+                  <option value="unread">Unread first</option>
+                </select>
+              </div>
+            )}
           <div className="mt-2 flex items-center gap-2">
             <div className="relative min-w-0 flex-1">
               <SearchIcon
