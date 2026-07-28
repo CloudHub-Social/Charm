@@ -290,6 +290,14 @@ export function ChatShell({
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
+    // These dialogs' event IDs otherwise survive a room switch and get
+    // combined with the newly selected room.room_id — report/forward/
+    // view-source/edit-history would then target the wrong room, and the
+    // source/history dialogs could briefly show stale data mid-refetch.
+    setReportTargetEventId(null);
+    setViewSourceTargetEventId(null);
+    setEditHistoryTargetEventId(null);
+    setForwardTargetEventId(null);
     if (fileDragLeaveTimerRef.current !== null) {
       clearTimeout(fileDragLeaveTimerRef.current);
       fileDragLeaveTimerRef.current = null;

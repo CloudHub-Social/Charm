@@ -323,13 +323,16 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               </DropdownMenuItem>
             )}
             {messageActionParityEnabled && onForward && !isError && (
-              <DropdownMenuItem onSelect={onForward} disabled={isUndecrypted}>
+              <DropdownMenuItem
+                onSelect={onForward}
+                disabled={disableRelationActions || isUndecrypted}
+              >
                 <Forward />
                 Forward
               </DropdownMenuItem>
             )}
             {messageActionParityEnabled && onViewSource && (
-              <DropdownMenuItem onSelect={onViewSource}>
+              <DropdownMenuItem onSelect={onViewSource} disabled={disableRelationActions}>
                 <FileJson />
                 View source
               </DropdownMenuItem>
