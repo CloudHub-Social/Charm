@@ -2,7 +2,13 @@ import { useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { stripExifOnUploadAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
-import { cancelAttachmentUpload, getMediaConfig, onUploadProgress, sendAttachment } from "@/lib/matrix";
+import {
+  cancelAttachmentUpload,
+  getFileSize,
+  getMediaConfig,
+  onUploadProgress,
+  sendAttachment,
+} from "@/lib/matrix";
 import { isWebBuild } from "@/lib/platform";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { PendingUpload } from "./UploadTray";
@@ -18,8 +24,16 @@ function formatMebibytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function fileSize(file: string | File): number | null {
-  return typeof file === "string" ? null : file.size;
+/** `file` is a filesystem path string for a native desktop attachment (no
+ * `.size` of its own — see `getFileSize`'s doc comment), or a browser `File`
+ * for web, which already carries its size. */
+async function fileSize(file: string | File): Promise<number | null> {
+  if (typeof file !== "string") return file.size;
+  try {
+    return await getFileSize(file);
+  } catch {
+    return null;
+  }
 }
 
 export function useAttachmentUploads(roomId: string | null) {
@@ -69,7 +83,7 @@ export function useAttachmentUploads(roomId: string | null) {
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    const size = fileSize(file);
+    const size = mediaSendPolishEnabled && maxUploadBytes != null ? await fileSize(file) : null;
     if (mediaSendPolishEnabled && maxUploadBytes != null && size != null && size > maxUploadBytes) {
       setUploads((prev) => [
         ...prev,

@@ -2,6 +2,7 @@ import { useAtomValue } from "jotai";
 import { useState } from "react";
 import { Play } from "lucide-react";
 import { autoplayGifsAtom } from "@/features/appearance/atoms";
+import { useFlag } from "@/featureFlags";
 import type { MediaContent } from "@/lib/matrix";
 import { AudioPlayer } from "./AudioPlayer";
 import { FileChip } from "./FileChip";
@@ -23,6 +24,7 @@ interface MediaMessageProps {
 /** Renders the correct media viewer for a message's `media` field; text messages (where `media` is `null`) never reach this component. */
 export function MediaMessage({ content, roomId, eventId, body }: MediaMessageProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const mediaSendPolishEnabled = useFlag("media_send_polish");
   const autoplayGifs = useAtomValue(autoplayGifsAtom);
 
   if (content.type === "Image") {
@@ -36,7 +38,7 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
           height={content.height}
           lightboxOpen={lightboxOpen}
           setLightboxOpen={setLightboxOpen}
-          animated={autoplayGifs && content.mime === "image/gif"}
+          animated={mediaSendPolishEnabled && autoplayGifs && content.mime === "image/gif"}
         />
         {content.caption && <MediaCaption text={content.caption} />}
       </div>

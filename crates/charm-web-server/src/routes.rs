@@ -268,6 +268,11 @@ pub fn router(state: AppState) -> Router {
             )),
         )
         .route(
+            "/api/media/attachments/{txn_id}/cancel",
+            post(cancel_attachment_upload),
+        )
+        .route("/api/media/config", get(get_media_config))
+        .route(
             "/api/profile/avatar",
             put(set_avatar)
                 .delete(remove_avatar)
@@ -3473,6 +3478,7 @@ async fn send_attachment(
     let mut declared_mime: Option<mime::Mime> = None;
     let mut data: Option<Vec<u8>> = None;
     let mut caption = None;
+    let mut strip_exif_enabled = false;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -3503,12 +3509,18 @@ async fn send_attachment(
                         .map_err(|e| ApiError::bad_request(e.to_string()))?,
                 );
             }
+            Some("strip_exif") => {
+                strip_exif_enabled = field
+                    .text()
+                    .await
+                    .map_err(|e| ApiError::bad_request(e.to_string()))?
+                    == "true";
+            }
             _ => {}
         }
     }
     let filename = filename.ok_or_else(|| ApiError::bad_request("missing file field"))?;
     let data = data.ok_or_else(|| ApiError::bad_request("missing file field"))?;
-    let total_bytes = data.len() as u64;
 
     // Prefer the part's own `Content-Type` (a `File` object's `.type`,
     // sniffed from its actual bytes/extension by the browser itself — more
@@ -3522,6 +3534,15 @@ async fn send_attachment(
     let mime = declared_mime
         .filter(|m| *m != mime::APPLICATION_OCTET_STREAM && *m != mime::TEXT_PLAIN)
         .unwrap_or_else(|| mime_guess::from_path(&filename).first_or_octet_stream());
+    // Best-effort, mirrors desktop's `send_attachment`: an unstrippable image
+    // (animated GIF/WebP, or one that fails to decode) sends with its
+    // original bytes rather than failing the whole upload.
+    let data = if strip_exif_enabled {
+        charm_lib::matrix::send::strip_exif(&mime, &data).unwrap_or(data)
+    } else {
+        data
+    };
+    let total_bytes = data.len() as u64;
     let info = attachment_info_for(&mime, &data, total_bytes);
 
     let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
@@ -3542,16 +3563,36 @@ async fn send_attachment(
         total_bytes,
     );
 
+    // Registered before the upload starts so a cancel request that arrives
+    // while this is still uploading isn't lost — see desktop's
+    // `send_attachment` for the equivalent `tokio::select!` pattern. Removed
+    // unconditionally once this call settles (success, failure, or
+    // cancellation) so the map doesn't grow across a session's uploads.
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .insert(query.txn_id.clone(), cancellation.clone());
+
     let send = room
         .send_attachment(filename, &mime, data, config)
         .with_send_progress_observable(progress);
-    let result = send.await;
+    let result = tokio::select! {
+        result = send => result.map_err(|e| e.to_string()),
+        () = cancellation.cancelled() => Err("upload cancelled".to_string()),
+    };
     // The forwarder holds its own clone of `progress`, so it doesn't close
     // on its own when this function's binding is dropped — abort it
     // explicitly once the upload settles, same as desktop's
     // `send_attachment` does with its own forwarder handle.
     forwarder.abort();
-    result.map_err(|e| ApiError::bad_request(e.to_string()))?;
+    session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .remove(&query.txn_id);
+    result.map_err(ApiError::bad_request)?;
 
     // A terminal 100% event, in case the observable's last tick didn't land
     // exactly on completion — lets the frontend's progress bar clear
@@ -3568,6 +3609,45 @@ async fn send_attachment(
         ));
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Cancels an in-flight `send_attachment` call for `txn_id`, if one is still
+/// running — the web companion-server counterpart to desktop's
+/// `send::cancel_attachment_upload`. A no-op (not an error) if the upload
+/// already settled or was never started, same rationale as the desktop
+/// command's own doc comment.
+async fn cancel_attachment_upload(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(txn_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    if let Some(token) = session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .get(&txn_id)
+    {
+        token.cancel();
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The homeserver's `m.upload.size` limit, in bytes — the web
+/// companion-server counterpart to desktop's `send::get_media_config`, used
+/// by the frontend to warn pre-flight instead of letting an over-limit
+/// upload fail opaquely against the server.
+async fn get_media_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let upload_size = session
+        .client
+        .load_or_fetch_max_upload_size()
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(i64::from(upload_size) as u64))
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`

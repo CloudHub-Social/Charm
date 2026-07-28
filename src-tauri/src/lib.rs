@@ -1450,6 +1450,7 @@ pub fn run() {
             matrix::send::send_attachment,
             matrix::send::cancel_attachment_upload,
             matrix::send::get_media_config,
+            matrix::send::get_file_size,
             matrix::media::resolve_media,
             matrix::actions::edit_message,
             matrix::actions::redact_event,

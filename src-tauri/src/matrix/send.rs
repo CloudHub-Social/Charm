@@ -43,7 +43,11 @@ fn apply_exif_orientation(img: image::DynamicImage, orientation: u32) -> image::
 /// would collapse them to a single frame, which is worse than leaving their
 /// (comparatively low-signal) metadata in place — and for anything that fails
 /// to decode, so a corrupt-but-otherwise-uploadable file still sends.
-fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
+///
+/// `pub` (not module-private) so `charm-web-server`'s `send_attachment` route
+/// can apply the same EXIF stripping the desktop command does — see that
+/// route's doc comment.
+pub fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
     let format = match (mime.type_().as_str(), mime.subtype().as_str()) {
         ("image", "jpeg") => image::ImageFormat::Jpeg,
         ("image", "png") => image::ImageFormat::Png,
@@ -599,6 +603,18 @@ pub async fn get_media_config(state: State<'_, MatrixState>) -> Result<u64, Stri
         .await
         .map_err(|e| e.to_string())?;
     Ok(i64::from(upload_size) as u64)
+}
+
+/// Byte size of a file on disk, so the frontend can run the same
+/// `size > maxUploadBytes` pre-flight check for a native desktop attachment
+/// (picker/drop payload is a filesystem path string, not a browser `File`
+/// with its own `.size`) as it already does for a web upload.
+#[tauri::command]
+pub async fn get_file_size(file_path: String) -> Result<u64, String> {
+    tokio::fs::metadata(&file_path)
+        .await
+        .map(|metadata| metadata.len())
+        .map_err(|e| e.to_string())
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`

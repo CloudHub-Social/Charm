@@ -567,6 +567,14 @@ export function getMediaConfig(): Promise<number> {
   return invoke("get_media_config");
 }
 
+/** Byte size of a file on disk — desktop-only (the picker/drop payload for a
+ * native attachment is a filesystem path string, not a browser `File` with
+ * its own `.size`), so the same upload-size pre-flight check web already
+ * gets from `File.size` can run for a native attachment too. */
+export function getFileSize(filePath: string): Promise<number> {
+  return invoke("get_file_size", { filePath });
+}
+
 /**
  * Resolves the media attached to `eventId` in `roomId`, fetching,
  * decrypting, and caching on a miss. No handle crosses IPC: the frontend just
