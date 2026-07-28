@@ -45,8 +45,10 @@ suggested`/`Remove from space` (checked against the child's *parent* space,
 since that's whose edge is mutated). `Invite` reuses the existing `invite`
 field. `SpaceRail` fetches each relevant space's `RoomPermissions` lazily via
 `get_room_details` when a context menu opens (not eagerly for every rail
-entry), caches the result per room for the component's lifetime, and
-disables the gated menu item until a permitted result lands — so a member
+entry), refetches on every open rather than caching for the component's
+lifetime — dropping the prior value first so a stale permission from an
+earlier open never stays visible mid-refetch — and disables the gated menu
+item until a fresh, permitted result lands — so a member
 without the required power level never sees an action that would just fail
 server-side.
 
