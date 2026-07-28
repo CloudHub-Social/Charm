@@ -39,8 +39,20 @@ beforeEach(() => {
 describe("ForwardMessageDialog", () => {
   it("lists rooms and forwards to the clicked one", async () => {
     listRooms.mockResolvedValue([
-      { room_id: "!a:localhost", name: "Alpha", avatar_url: null, avatar_path: null },
-      { room_id: "!b:localhost", name: "Bravo", avatar_url: null, avatar_path: null },
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!b:localhost",
+        name: "Bravo",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
     ]);
     forwardMessage.mockResolvedValue("txn-1");
     const onForwarded = vi.fn();
@@ -58,8 +70,20 @@ describe("ForwardMessageDialog", () => {
 
   it("filters rooms by name", async () => {
     listRooms.mockResolvedValue([
-      { room_id: "!a:localhost", name: "Alpha", avatar_url: null, avatar_path: null },
-      { room_id: "!b:localhost", name: "Bravo", avatar_url: null, avatar_path: null },
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!b:localhost",
+        name: "Bravo",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
     ]);
 
     renderDialog();
@@ -75,7 +99,13 @@ describe("ForwardMessageDialog", () => {
 
   it("shows an inline error when forwarding fails", async () => {
     listRooms.mockResolvedValue([
-      { room_id: "!a:localhost", name: "Alpha", avatar_url: null, avatar_path: null },
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
     ]);
     forwardMessage.mockRejectedValue(new Error("boom"));
 
@@ -84,5 +114,29 @@ describe("ForwardMessageDialog", () => {
     fireEvent.click(await screen.findByText("Alpha"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("excludes pending invites from the forward targets", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!c:localhost",
+        name: "Charlie",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "invite",
+      },
+    ]);
+
+    renderDialog();
+
+    await screen.findByText("Alpha");
+    expect(screen.queryByText("Charlie")).not.toBeInTheDocument();
   });
 });

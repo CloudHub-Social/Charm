@@ -241,8 +241,8 @@ pub async fn forward_message_impl(
         .ok_or_else(|| format!("room {source_room_id} not found"))?;
 
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
-    let source_event = source_room
-        .load_or_fetch_event(&parsed_event_id, None)
+    let (source_event, relations) = source_room
+        .load_or_fetch_event_with_relations(&parsed_event_id, None, None)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -261,9 +261,50 @@ pub async fn forward_message_impl(
         .as_original()
         .ok_or_else(|| "source event has already been redacted".to_string())?;
 
+    // Forward whatever is currently shown in the timeline, not the pre-edit
+    // original: find the latest same-sender `m.replace` targeting this event
+    // (same sender check as `actions::get_edit_history_impl`/
+    // `room_admin::latest_edit_body` — a different member's replacement is
+    // never a real edit) and apply it if one exists.
+    let mut latest_edit: Option<(
+        matrix_sdk::ruma::MilliSecondsSinceUnixEpoch,
+        matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
+    )> = None;
+    for related in &relations {
+        let Ok(matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+            matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(edit_msg),
+        )) = related.kind.raw().deserialize()
+        else {
+            continue;
+        };
+        let Some(edit) = edit_msg.as_original() else {
+            continue;
+        };
+        if edit.sender != original_message.sender {
+            continue;
+        }
+        let Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(replacement)) =
+            &edit.content.relates_to
+        else {
+            continue;
+        };
+        if replacement.event_id != parsed_event_id {
+            continue;
+        }
+        if latest_edit
+            .as_ref()
+            .is_none_or(|(ts, _)| edit.origin_server_ts > *ts)
+        {
+            latest_edit = Some((edit.origin_server_ts, replacement.new_content.clone()));
+        }
+    }
+
     // Strip any relation (reply/edit) on the forwarded copy — forwarding
     // should send a clean new message, not a relation to the original.
     let mut content = original_message.content.clone();
+    if let Some((_, new_content)) = latest_edit {
+        content.apply_replacement(new_content);
+    }
     content.relates_to = None;
 
     let parsed_target_room_id = RoomId::parse(target_room_id).map_err(|e| e.to_string())?;

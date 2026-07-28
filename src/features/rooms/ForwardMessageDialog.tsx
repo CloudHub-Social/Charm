@@ -44,9 +44,14 @@ export function ForwardMessageDialog({
 
   const filteredRooms = useMemo(() => {
     if (!rooms) return [];
+    // Only joined rooms are valid forward targets — `list_rooms` also
+    // returns pending invites (`membership: "invite"`), and forwarding into
+    // one would fail with an avoidable IPC error since the account hasn't
+    // actually joined it yet.
+    const joinedRooms = rooms.filter((room) => room.membership === "join");
     const needle = filter.trim().toLowerCase();
-    if (needle === "") return rooms;
-    return rooms.filter((room) => (room.name ?? room.room_id).toLowerCase().includes(needle));
+    if (needle === "") return joinedRooms;
+    return joinedRooms.filter((room) => (room.name ?? room.room_id).toLowerCase().includes(needle));
   }, [rooms, filter]);
 
   async function handleForward(targetRoomId: string) {

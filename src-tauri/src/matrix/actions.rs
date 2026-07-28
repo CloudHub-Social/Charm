@@ -695,6 +695,13 @@ pub async fn get_edit_history_impl(
         let Some(edit) = edit_msg.as_original() else {
             continue;
         };
+        // Matrix clients only apply an `m.replace` from the original
+        // event's own sender — same check `latest_edit_body` (room_admin.rs)
+        // already applies — so a different member's replacement targeting
+        // this event is not a real edit and must not be shown as one.
+        if edit.sender != original_message.sender {
+            continue;
+        }
         let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
             continue;
         };

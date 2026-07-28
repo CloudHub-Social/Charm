@@ -19,7 +19,8 @@ use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
     can_redact_impl, can_redact_others_impl, discard_failed_message_impl, edit_message_impl,
-    redact_event_impl, resend_message_impl, send_reply_impl, toggle_reaction_impl,
+    get_edit_history_impl, get_event_source_impl, get_reaction_details_impl, redact_event_impl,
+    report_event_impl, resend_message_impl, send_reply_impl, toggle_reaction_impl,
 };
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
@@ -48,7 +49,8 @@ use charm_lib::matrix::rooms::{
     snapshot_rooms,
 };
 use charm_lib::matrix::send::{
-    attachment_info_for, build_message_content, send_and_capture_transaction_id,
+    attachment_info_for, build_message_content, forward_message_impl,
+    send_and_capture_transaction_id,
 };
 use charm_lib::matrix::spaces::{
     add_existing_space_child_impl, create_space_impl, join_room_impl, knock_room_impl,
@@ -143,6 +145,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
+        )
+        .route(
+            "/api/rooms/{room_id}/events/{event_id}/report",
+            post(report_event),
+        )
+        .route(
+            "/api/rooms/{room_id}/events/{event_id}/source",
+            get(get_event_source),
+        )
+        .route(
+            "/api/rooms/{room_id}/events/{event_id}/edit-history",
+            get(get_edit_history),
+        )
+        .route(
+            "/api/rooms/{room_id}/events/{target_event_id}/reactions/{key}",
+            get(get_reaction_details),
+        )
+        .route(
+            "/api/rooms/{source_room_id}/events/{event_id}/forward/{target_room_id}",
+            post(forward_message),
         )
         .route(
             "/api/rooms/{room_id}/send-queue/{transaction_id}/resend",
@@ -2375,6 +2397,80 @@ async fn toggle_reaction(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReportEventRequest {
+    reason: Option<String>,
+    score: Option<i32>,
+}
+
+async fn report_event(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, event_id)): Path<(String, String)>,
+    Json(request): Json<ReportEventRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    report_event_impl(
+        &session.client,
+        &room_id,
+        &event_id,
+        request.reason,
+        request.score,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_event_source(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let source = get_event_source_impl(&session.client, &room_id, &event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(source))
+}
+
+async fn get_edit_history(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let history = get_edit_history_impl(&session.client, &room_id, &event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(history))
+}
+
+async fn get_reaction_details(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, target_event_id, key)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let details = get_reaction_details_impl(&session.client, &room_id, &target_event_id, key)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(details))
+}
+
+async fn forward_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((source_room_id, event_id, target_room_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let transaction_id =
+        forward_message_impl(&session.client, &source_room_id, &event_id, &target_room_id)
+            .await
+            .map_err(ApiError::bad_request)?;
+    Ok(Json(transaction_id))
 }
 
 async fn resend_message(

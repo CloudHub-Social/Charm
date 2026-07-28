@@ -444,6 +444,42 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         )}/react`,
         { key: args.key },
       );
+    case "report_event":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
+          String(args.eventId),
+        )}/report`,
+        { reason: args.reason ?? null, score: args.score ?? null },
+      );
+    case "get_event_source":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
+          String(args.eventId),
+        )}/source`,
+      );
+    case "get_edit_history":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
+          String(args.eventId),
+        )}/edit-history`,
+      );
+    case "get_reaction_details":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
+          String(args.targetEventId),
+        )}/reactions/${encodeSegment(String(args.key))}`,
+      );
+    case "forward_message":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.sourceRoomId))}/events/${encodeSegment(
+          String(args.eventId),
+        )}/forward/${encodeSegment(String(args.targetRoomId))}`,
+      );
     case "run_command":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/command`, {
         command: args.command,
