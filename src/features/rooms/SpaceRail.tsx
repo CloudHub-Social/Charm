@@ -102,10 +102,17 @@ export function SpaceRail({
   // fetch is swallowed, not surfaced via `reportActionError` — the user
   // didn't take an action yet, and the gated items simply stay disabled.
   const [permissionsById, setPermissionsById] = useState<Record<string, RoomPermissions>>({});
-  const permissionsFetchInFlight = useRef<Set<string>>(new Set());
+  // Per-room request generation counter, not a plain "in flight" boolean —
+  // closing and reopening the menu while the first request for the same
+  // room is still pending must still issue a fresh request (the user's
+  // power level could have changed in between), rather than letting that
+  // first request's now-possibly-stale response populate the reopened
+  // menu. Each call bumps the room's generation and only applies its own
+  // response if it's still the latest generation by the time it resolves.
+  const permissionsRequestGeneration = useRef<Map<string, number>>(new Map());
   function ensurePermissionsLoaded(roomId: string) {
-    if (permissionsFetchInFlight.current.has(roomId)) return;
-    permissionsFetchInFlight.current.add(roomId);
+    const generation = (permissionsRequestGeneration.current.get(roomId) ?? 0) + 1;
+    permissionsRequestGeneration.current.set(roomId, generation);
     // Drop any previously fetched value for this room before the new
     // request lands, rather than leaving it visible mid-refetch — a stale
     // `true` from the prior open would otherwise stay clickable for the
@@ -117,16 +124,15 @@ export function SpaceRail({
     });
     getRoomDetails(roomId)
       .then((details) => {
+        if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
         setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
       })
       .catch(() => {
+        if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
         setPermissionsById((prev) => {
           const { [roomId]: _removed, ...rest } = prev;
           return rest;
         });
-      })
-      .finally(() => {
-        permissionsFetchInFlight.current.delete(roomId);
       });
   }
   function reportActionError(err: unknown) {

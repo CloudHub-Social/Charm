@@ -3,7 +3,7 @@ title: "Charm 2.0 Spec — Sidebar and space management (pin, reorder, context m
 type: spec
 project: Charm 2.0
 created: "2026-07-16"
-status: shipped
+status: in-progress
 sidebar:
   label: "Sidebar & space management"
 ---
