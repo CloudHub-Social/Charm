@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Room alias management
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 ## Implementation status
