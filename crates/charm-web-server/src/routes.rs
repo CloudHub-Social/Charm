@@ -2463,8 +2463,12 @@ async fn get_reaction_details(
 async fn forward_message(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((source_room_id, event_id, target_room_id)): Path<(String, String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Bodyless POST — same CSRF exposure as `mark_room_read`/`resend_message`,
+    // so it needs the same explicit `Origin` check.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let transaction_id =
         forward_message_impl(&session.client, &source_room_id, &event_id, &target_room_id)
