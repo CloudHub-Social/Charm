@@ -213,7 +213,7 @@ jobs:
           && (github.event_name != 'workflow_dispatch' || steps.resolve-dispatch.outputs.is_bot != 'true')
         # v1.2 (v1.2.1 per its release commit message) — see the header
         # comment for why this is pinned to a SHA rather than the mutable tag.
-        uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
+        uses: JoeyTeng/codex-review-gate-action@bdb524a7ca7e0d5780dd396144f76f04e4bf770c
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
