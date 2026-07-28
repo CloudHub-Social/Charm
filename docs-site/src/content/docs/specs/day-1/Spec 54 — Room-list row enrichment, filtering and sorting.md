@@ -42,11 +42,13 @@ back to `None`, and the row shows just the room name as before.
 the room name when the flag is on. Independent of `room_list_unread_filter`
 since it's a separately shippable slice.
 
-**Sort control (`room_list_sort`).** Each list (Home, DMs, a space) exposes a
+**Sort control (`room_list_sort`).** Home and DMs each expose a
 `<select>` — Default / Activity / A-Z / Unread first — persisted per list
-mode the same way the unread filter is. Sorting applies within each existing
-section (Favourites, a space group, plain Rooms, Low priority), never across
-them. "Default" is a no-op over the Rust-computed
+mode the same way the unread filter is. A selected space hides the control:
+its room list renders from the space hierarchy, which doesn't route through
+this sort. Sorting applies within each existing section (Favourites, plain
+Rooms, Low priority), never across them. "Default" is a no-op over the
+Rust-computed
 (section, manual_order, name) order. "A-Z" and "Unread first" are pure
 frontend re-sorts (`roomListSort.ts`). "Activity" sorts by a new
 `RoomSummary.last_activity_ts` field — the latest event's own timestamp
