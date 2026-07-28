@@ -37,8 +37,8 @@ current children to prevent cycles/duplicates.
 UI-parity addition, which doesn't exist yet; the menu simply omits the item
 until it does.
 
-**Power-level gating closed.** `RoomPermissions` (Spec 07's existing
-`room_admin.rs` pattern) gained a `set_space_child` field —
+**Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
+(Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —
 `user_can_send_state(.., StateEventType::SpaceChild)` — reused by both `Add
 existing…` (checked against the target space itself) and `Mark/Unmark
 suggested`/`Remove from space` (checked against the child's *parent* space,
@@ -48,9 +48,13 @@ field. `SpaceRail` fetches each relevant space's `RoomPermissions` lazily via
 entry), refetches on every open rather than caching for the component's
 lifetime — dropping the prior value first so a stale permission from an
 earlier open never stays visible mid-refetch — and disables the gated menu
-item until a fresh, permitted result lands — so a member
-without the required power level never sees an action that would just fail
-server-side.
+item until a fresh, permitted result lands — so a member without the
+required power level never sees this action in the rail's context menu.
+`RoomList`'s own hierarchy-row `Remove from space` action (a separate
+surface, gated only behind the `space_rail_management` flag) is
+intentionally *not* covered by this pass — it stays reachable and
+server-validates on click, surfacing a rejection message rather than hiding
+the row. Gating that surface too is left for a follow-up.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy
