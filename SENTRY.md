@@ -259,34 +259,19 @@ form field. Instead:
   `beforeSendFeedback` hook that already sets `charm.feedback.surface` and
   `charm.feedback.screenshot`, plus on the `createForm` call's default tags.
 
-**What still needs Sentry-org-side configuration** (cloudhubsocial.sentry.io,
-outside this repo, not app code): the `charm.feedback.category` tag exists on
-every feedback event once this ships, but nothing on the Sentry side maps it
-to a GitHub label yet. Per Spec 22's escalation path:
-
-1. Check the GitHub integration's alert-rule action that creates the issue
-   from feedback (Project Settings → Alerts, and Integrations → GitHub) — the
-   fixed `bug` label from issue #162 most likely comes from that action's
-   configured label, not from Sentry inferring anything from content.
-2. If the alert-rule action supports templating the label from a tag value
-   (e.g. `{{ tags.charm.feedback.category }}`), configure one templated rule
-   (or two rules keyed on the tag) mapping `bug` → GitHub `bug`,
-   `feature_request` → GitHub `enhancement`.
-3. If per-item dynamic labeling isn't supported, use two separate alert rules
-   filtered on `charm.feedback.category = bug` vs. `= feature_request`, each
-   creating an issue with a different fixed label — but first confirm the
-   filter condition actually evaluates against feedback-event tags in this
-   Sentry plan/version (feedback events and error events aren't always exposed
-   identically to alert-rule conditions).
-4. Only as a last resort — if neither works for feedback events specifically —
-   consider a Sentry-side webhook/serverless relabeling step after issue
-   creation. This adds new infrastructure to maintain and should not be built
-   unless 1–3 are confirmed impossible.
+**Sentry-org-side configuration (cloudhubsocial.sentry.io, outside this repo,
+not app code) — confirmed done 2026-07-18.** The `charm.feedback.category` tag
+is mapped to GitHub labels via the GitHub integration's alert-rule action
+(Project Settings → Alerts, and Integrations → GitHub): Bug submissions
+(`charm.feedback.category: "bug"`) create a GitHub issue labeled `bug`, and
+Feature request submissions (`"feature_request"`) create one labeled
+`enhancement`. Verified end-to-end against real feedback submissions of each
+category. If this mapping needs to be recreated (e.g. after a Sentry
+integration reset), see Spec 22's escalation path (Options 2–4) for how the
+label was derived from the tag.
 
 The `enhancement` label already exists on `CloudHub-Social/Charm`, so no
-repo-side label creation was needed for this spec. Verify end-to-end by
-submitting one test feedback item of each category and checking the resulting
-GitHub issue's label — this can't be automated from the app repo.
+repo-side label creation was needed for this spec.
 
 ## Distributed Tracing
 
@@ -386,8 +371,8 @@ feedback from settings and the crash fallback, with optional SDK-provided
 screenshot capture when supported.
 
 Spec 22 added the required Bug / Feature request feedback category described
-above; the Sentry-org-side GitHub label mapping it depends on is tracked as an
-owner follow-up, not shipped in that PR.
+above; the Sentry-org-side GitHub label mapping it depends on was completed
+and verified as an owner follow-up (confirmed 2026-07-18).
 
 Broader Rust tracing/log bridges, NDK/native Android crash capture, Android
 Mobile Vitals, and signed iOS device-release dSYMs remain separate follow-up
