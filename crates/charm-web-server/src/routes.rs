@@ -2460,9 +2460,20 @@ async fn send_read_receipt(
     Json(request): Json<ReadReceiptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    send_read_receipt_impl(&session.client, &room_id, request.event_id, request.private)
-        .await
-        .map_err(ApiError::bad_request)?;
+    // Spec 40's `hide_read_receipts` privacy toggle is desktop-only for now
+    // — it's persisted to a local `app_data_dir()` JSON file
+    // (`privacy_settings.rs`), which has no equivalent in a web session, so
+    // there's no synced value to enforce here. `false` matches how the flag
+    // itself is already excluded from the web-facing feature-gallery.
+    send_read_receipt_impl(
+        &session.client,
+        &room_id,
+        request.event_id,
+        request.private,
+        false,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2495,7 +2506,9 @@ async fn mark_room_read(
     // raw-body routes already have.
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    mark_room_read_impl(&session.client, &room_id)
+    // Same rationale as `send_read_receipt` above: no web-session equivalent
+    // of the desktop-only, locally-persisted `hide_read_receipts` setting.
+    mark_room_read_impl(&session.client, &room_id, false)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
