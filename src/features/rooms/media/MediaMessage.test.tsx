@@ -97,6 +97,7 @@ describe("MediaMessage", () => {
       mime: "audio/ogg",
       size: 512,
       duration_ms: 3000,
+      caption: null,
     };
     const { container } = renderWithClient(
       <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="voice.ogg" />,
@@ -110,6 +111,7 @@ describe("MediaMessage", () => {
       filename: "report.pdf",
       mime: "application/pdf",
       size: 4096,
+      caption: null,
     };
     renderWithClient(
       <MediaMessage

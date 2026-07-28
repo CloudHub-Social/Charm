@@ -63,17 +63,25 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
   }
 
   if (content.type === "Audio") {
-    return <AudioPlayer roomId={roomId} eventId={eventId} />;
+    return (
+      <div className="flex flex-col gap-1">
+        <AudioPlayer roomId={roomId} eventId={eventId} />
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+      </div>
+    );
   }
 
   return (
-    <FileChip
-      filename={content.filename}
-      mime={content.mime}
-      size={content.size}
-      roomId={roomId}
-      eventId={eventId}
-    />
+    <div className="flex flex-col gap-1">
+      <FileChip
+        filename={content.filename}
+        mime={content.mime}
+        size={content.size}
+        roomId={roomId}
+        eventId={eventId}
+      />
+      {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+    </div>
   );
 }
 

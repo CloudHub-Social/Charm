@@ -20,4 +20,12 @@ caption: string | null, } | { "type": "Video", mime: string | null, size: number
 /**
  * See `MediaContent::Image::caption`.
  */
-caption: string | null, } | { "type": "Audio", mime: string | null, size: number | null, duration_ms: number | null, } | { "type": "File", filename: string, mime: string | null, size: number | null, };
+caption: string | null, } | { "type": "Audio", mime: string | null, size: number | null, duration_ms: number | null, 
+/**
+ * See `MediaContent::Image::caption`.
+ */
+caption: string | null, } | { "type": "File", filename: string, mime: string | null, size: number | null, 
+/**
+ * See `MediaContent::Image::caption`.
+ */
+caption: string | null, };

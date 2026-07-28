@@ -3453,6 +3453,27 @@ struct AttachmentQuery {
     txn_id: String,
 }
 
+/// Removes `txn_id`'s entry from `session.attachment_cancellations` on
+/// every exit path out of `send_attachment` (success, an early `?` return,
+/// or a panic unwind) — registering the token as early as possible (so a
+/// cancel during multipart parsing isn't lost) means there are several such
+/// paths, and this guard is simpler than threading manual cleanup through
+/// each one.
+struct AttachmentCancellationGuard {
+    session: Arc<Session>,
+    txn_id: String,
+}
+
+impl Drop for AttachmentCancellationGuard {
+    fn drop(&mut self) {
+        self.session
+            .attachment_cancellations
+            .lock()
+            .expect("attachment_cancellations mutex poisoned")
+            .remove(&self.txn_id);
+    }
+}
+
 async fn send_attachment(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -3473,6 +3494,27 @@ async fn send_attachment(
         .client
         .get_room(&parsed_room_id)
         .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+
+    // Registered as soon as txn_id is known — before the multipart body is
+    // even read — so a cancel that arrives during body parsing or EXIF
+    // re-encoding isn't lost. `cancel_attachment_upload` finding no entry
+    // yet would otherwise report success while this handler proceeds to
+    // `room.send_attachment` anyway. `_cancellation_guard` removes the
+    // registration on *every* exit path (including the early returns below
+    // for a missing field, over-size upload, or bad multipart framing) —
+    // not just the success/upload path — so a request that fails before
+    // reaching the upload doesn't leave an unreachable, never-cancellable
+    // entry in the map.
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .insert(query.txn_id.clone(), cancellation.clone());
+    let _cancellation_guard = AttachmentCancellationGuard {
+        session: session.clone(),
+        txn_id: query.txn_id.clone(),
+    };
 
     let mut filename = None;
     let mut declared_mime: Option<mime::Mime> = None;
@@ -3521,6 +3563,12 @@ async fn send_attachment(
     }
     let filename = filename.ok_or_else(|| ApiError::bad_request("missing file field"))?;
     let data = data.ok_or_else(|| ApiError::bad_request("missing file field"))?;
+    // The body may have taken a while to read (a large upload, or an EXIF
+    // re-encode below) — check whether a cancel arrived during that window
+    // before spending more time/bandwidth on the actual Matrix upload.
+    if cancellation.is_cancelled() {
+        return Err(ApiError::bad_request("upload cancelled"));
+    }
 
     // Prefer the part's own `Content-Type` (a `File` object's `.type`,
     // sniffed from its actual bytes/extension by the browser itself — more
@@ -3563,18 +3611,6 @@ async fn send_attachment(
         total_bytes,
     );
 
-    // Registered before the upload starts so a cancel request that arrives
-    // while this is still uploading isn't lost — see desktop's
-    // `send_attachment` for the equivalent `tokio::select!` pattern. Removed
-    // unconditionally once this call settles (success, failure, or
-    // cancellation) so the map doesn't grow across a session's uploads.
-    let cancellation = tokio_util::sync::CancellationToken::new();
-    session
-        .attachment_cancellations
-        .lock()
-        .expect("attachment_cancellations mutex poisoned")
-        .insert(query.txn_id.clone(), cancellation.clone());
-
     let send = room
         .send_attachment(filename, &mime, data, config)
         .with_send_progress_observable(progress);
@@ -3585,13 +3621,10 @@ async fn send_attachment(
     // The forwarder holds its own clone of `progress`, so it doesn't close
     // on its own when this function's binding is dropped — abort it
     // explicitly once the upload settles, same as desktop's
-    // `send_attachment` does with its own forwarder handle.
+    // `send_attachment` does with its own forwarder handle. (Cancellation
+    // registry cleanup is `_cancellation_guard`'s job now, on every exit
+    // path uniformly.)
     forwarder.abort();
-    session
-        .attachment_cancellations
-        .lock()
-        .expect("attachment_cancellations mutex poisoned")
-        .remove(&query.txn_id);
     result.map_err(ApiError::bad_request)?;
 
     // A terminal 100% event, in case the observable's last tick didn't land

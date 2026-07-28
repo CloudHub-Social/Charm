@@ -68,12 +68,16 @@ pub enum MediaContent {
         size: Option<u64>,
         #[ts(type = "number | null")]
         duration_ms: Option<u64>,
+        /// See `MediaContent::Image::caption`.
+        caption: Option<String>,
     },
     File {
         filename: String,
         mime: Option<String>,
         #[ts(type = "number | null")]
         size: Option<u64>,
+        /// See `MediaContent::Image::caption`.
+        caption: Option<String>,
     },
 }
 
@@ -144,11 +148,13 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
                 .as_ref()
                 .and_then(|i| i.duration)
                 .map(|d| d.as_millis() as u64),
+            caption: caption_from(&audio.body, audio.filename.as_deref()),
         }),
         MessageType::File(file) => Some(MediaContent::File {
             filename: file.filename.clone().unwrap_or_else(|| file.body.clone()),
             mime: file.info.as_ref().and_then(|i| i.mimetype.clone()),
             size: file.info.as_ref().and_then(|i| i.size).map(u64::from),
+            caption: caption_from(&file.body, file.filename.as_deref()),
         }),
         _ => None,
     }
