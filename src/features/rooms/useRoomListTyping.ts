@@ -15,11 +15,16 @@ import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
  * covers the case where it doesn't (crash, network drop) so a room doesn't
  * show "typing" forever.
  */
-export function useRoomListTyping(currentUserId: string): Set<string> {
+export function useRoomListTyping(currentUserId: string, enabled: boolean): Set<string> {
   const [typingRoomIds, setTypingRoomIds] = useState<Set<string>>(new Set());
   const autoHideTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
+    // A disabled `room_list_typing_indicator` flag is meant to be a real
+    // kill switch, not just a "discard the result" toggle — skip
+    // subscribing at all rather than still processing every `m.typing`
+    // update across every room just to throw the result away.
+    if (!enabled) return undefined;
     let cancelled = false;
     const timers = autoHideTimersRef.current;
     const unlisten = onTypingUpdate((update) => {
@@ -61,8 +66,13 @@ export function useRoomListTyping(currentUserId: string): Set<string> {
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
       unlisten.then((fn) => fn()).catch(logAndIgnore);
+      // currentUserId starts as "" until the own-profile query resolves, so
+      // this effect reruns once the real id arrives — clear stale state from
+      // that first subscription rather than leaving rooms stuck "typing"
+      // until their next update.
+      setTypingRoomIds(new Set());
     };
-  }, [currentUserId]);
+  }, [currentUserId, enabled]);
 
   return typingRoomIds;
 }

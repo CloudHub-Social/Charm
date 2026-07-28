@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe("useRoomListTyping", () => {
   it("adds a room once someone other than the current user is typing", () => {
-    const { result } = renderHook(() => useRoomListTyping("@me:localhost"));
+    const { result } = renderHook(() => useRoomListTyping("@me:localhost", true));
     expect(result.current.has("!a:localhost")).toBe(false);
 
     act(() => {
@@ -37,7 +37,7 @@ describe("useRoomListTyping", () => {
   });
 
   it("excludes a room where only the current user is typing", () => {
-    const { result } = renderHook(() => useRoomListTyping("@me:localhost"));
+    const { result } = renderHook(() => useRoomListTyping("@me:localhost", true));
 
     act(() => {
       typingListener?.({ room_id: "!a:localhost", user_ids: ["@me:localhost"] });
@@ -47,7 +47,7 @@ describe("useRoomListTyping", () => {
   });
 
   it("removes a room once its typing set becomes empty", () => {
-    const { result } = renderHook(() => useRoomListTyping("@me:localhost"));
+    const { result } = renderHook(() => useRoomListTyping("@me:localhost", true));
 
     act(() => {
       typingListener?.({ room_id: "!a:localhost", user_ids: ["@other:localhost"] });
@@ -61,7 +61,7 @@ describe("useRoomListTyping", () => {
   });
 
   it("auto-hides a stale typing notice after TYPING_AUTO_HIDE_MS with no follow-up", () => {
-    const { result } = renderHook(() => useRoomListTyping("@me:localhost"));
+    const { result } = renderHook(() => useRoomListTyping("@me:localhost", true));
 
     act(() => {
       typingListener?.({ room_id: "!a:localhost", user_ids: ["@other:localhost"] });
@@ -75,7 +75,7 @@ describe("useRoomListTyping", () => {
   });
 
   it("tracks multiple rooms independently", () => {
-    const { result } = renderHook(() => useRoomListTyping("@me:localhost"));
+    const { result } = renderHook(() => useRoomListTyping("@me:localhost", true));
 
     act(() => {
       typingListener?.({ room_id: "!a:localhost", user_ids: ["@other:localhost"] });
@@ -84,5 +84,25 @@ describe("useRoomListTyping", () => {
 
     expect(result.current.has("!a:localhost")).toBe(true);
     expect(result.current.has("!b:localhost")).toBe(true);
+  });
+
+  it("doesn't subscribe at all while disabled", () => {
+    renderHook(() => useRoomListTyping("@me:localhost", false));
+    expect(onTypingUpdate).not.toHaveBeenCalled();
+  });
+
+  it("clears typingRoomIds when disabled after being enabled", () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useRoomListTyping("@me:localhost", enabled),
+      { initialProps: { enabled: true } },
+    );
+
+    act(() => {
+      typingListener?.({ room_id: "!a:localhost", user_ids: ["@other:localhost"] });
+    });
+    expect(result.current.has("!a:localhost")).toBe(true);
+
+    rerender({ enabled: false });
+    expect(result.current.has("!a:localhost")).toBe(false);
   });
 });

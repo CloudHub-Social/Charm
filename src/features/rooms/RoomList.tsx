@@ -182,10 +182,13 @@ export function RoomList({
   const spaceRailManagementEnabled = useFlag("space_rail_management");
   const roomListSortFlagEnabled = useFlag("room_list_sort");
   const roomListTypingFlagEnabled = useFlag("room_list_typing_indicator");
-  // Called unconditionally (rules of hooks); only its result is honored
-  // below, gated on the flag — mirrors `useChatTyping`'s own
-  // `detailControlsEnabled` pattern.
-  const typingRoomIds = useRoomListTyping(ownProfile?.user_id ?? "");
+  // Called unconditionally (rules of hooks) — the `enabled` flag it's given
+  // makes the disabled case a real kill switch (no subscription, no
+  // cross-room typing processing), not just a discarded result; every read
+  // of its return value below is also independently gated on the flag as a
+  // second layer, mirroring `useChatTyping`'s own `detailControlsEnabled`
+  // pattern.
+  const typingRoomIds = useRoomListTyping(ownProfile?.user_id ?? "", roomListTypingFlagEnabled);
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
