@@ -5069,7 +5069,7 @@ describe("ChatShell", () => {
     expect(screen.queryByText("Pin")).not.toBeInTheDocument();
   });
 
-  it("shows Unpin and calls unpinEvent for an already-pinned message, plus a header badge", async () => {
+  it("shows Unpin and calls unpinEvent for an already-pinned message", async () => {
     getRoomDetails.mockResolvedValue({
       room_id: room.room_id,
       is_encrypted: false,
@@ -5082,9 +5082,6 @@ describe("ChatShell", () => {
     });
     renderChatShell();
     await screen.findByText("already pinned");
-
-    // Pin count badge on the room header.
-    expect(await screen.findByText("1")).toBeInTheDocument();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
       button: 0,

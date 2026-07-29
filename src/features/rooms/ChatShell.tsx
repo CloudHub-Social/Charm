@@ -1,41 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import {
-  ArrowLeft,
-  ChevronDown,
-  Info,
-  MessageCircle,
-  MoreVertical,
-  Paperclip,
-  Pin,
-  Send,
-  Settings,
-  Type,
-  X,
-} from "lucide-react";
+import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ConfirmWithReasonDialog } from "@/components/ui/confirm-with-reason-dialog";
 import { EditHistoryDialog } from "./EditHistoryDialog";
 import { ForwardMessageDialog } from "./ForwardMessageDialog";
 import { MessageSourceDialog } from "./MessageSourceDialog";
-import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFlag } from "@/featureFlags";
 import { eventPermalink, userIdServerName } from "@/lib/matrixPermalink";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
-import { useRoomDetails } from "@/features/room-info/useRoomDetails";
-import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { avatarColor, displayName, initials } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
 import { MessageRow, messageRowKey } from "./MessageRow";
@@ -51,8 +30,6 @@ import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
 import {
   membersDrawerOpenAtomFamily,
   noRoomMembersDrawerOpenAtom,
-  noRoomPinnedMessagesDrawerOpenAtom,
-  pinnedMessagesDrawerOpenAtomFamily,
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
@@ -66,6 +43,8 @@ import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
 import { MessagePillProfileDialog, type MessagePillProfile } from "./MessagePillProfileDialog";
 import { useTimelineViewport } from "./useTimelineViewport";
+import { ChatHeader } from "./ChatHeader";
+import { useMessagePinning } from "./useMessagePinning";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -233,20 +212,6 @@ export function ChatShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
-  // Day-2 Spec 04 (message pinning) — new user-facing surface, so gated
-  // behind a flag that defaults off per CLAUDE.md's feature-flag rule. Gates
-  // the whole surface (header button/badge, mobile menu entry, and the
-  // MessageActions Pin/Unpin item below), not just the send call, so the
-  // feature is fully dark until rolled out.
-  //
-  // Review fix: also unconditionally off on the web companion build —
-  // `matrixTransport.ts`'s `invokeWeb` has no case for `get_pinned_messages`/
-  // `pin_event`/`unpin_event`, and the companion server
-  // (`crates/charm-web-server`) has no routes for them either. Same
-  // native-only reasoning as Focus/General/Notifications/Privacy elsewhere
-  // in this codebase — adding web transport/route support for pinning is out
-  // of scope for this spec.
-  const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -316,18 +281,16 @@ export function ChatShell({
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
   );
-  // The right panel is a single slot (see `RoomsScreen`) — opening one of
-  // these two drawers closes the other, same as toggling between Members
-  // and any other room-info surface would.
-  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
-    room ? pinnedMessagesDrawerOpenAtomFamily(roomId) : noRoomPinnedMessagesDrawerOpenAtom,
-  );
-  const { data: roomDetails } = useRoomDetails(room?.room_id ?? null);
-  // Both empty (rather than reading through to `roomDetails`) while the flag
-  // is off, so the header badge/button, mobile menu entry, and Pin/Unpin
-  // MessageActions item are all fully dark, not just the underlying send call.
-  const pinnedEventIds = messagePinningEnabled ? (roomDetails?.pinned_event_ids ?? []) : [];
-  const canPinMessages = messagePinningEnabled && (roomDetails?.can?.set_pinned_events ?? false);
+  // The right panel is a single slot (see `RoomsScreen`) — ChatShell keeps
+  // the cross-feature exclusivity wiring while the pinning hook owns the
+  // pinning-specific state below.
+  const {
+    enabled: messagePinningEnabled,
+    drawerOpen: pinnedMessagesDrawerOpen,
+    setDrawerOpen: setPinnedMessagesDrawerOpen,
+    pinnedEventIds,
+    canPinMessages,
+  } = useMessagePinning(room);
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
@@ -638,138 +601,27 @@ export function ChatShell({
           </div>
         </output>
       )}
-      <div
-        className={cn(
-          "flex items-center justify-between border-b border-border",
-          mobile ? "h-14 gap-1 px-1.5" : "gap-2 p-4",
-        )}
-      >
-        {mobile && (
-          <button
-            type="button"
-            aria-label="Back to chats"
-            onClick={onBack}
-            className="flex size-11 shrink-0 items-center justify-center rounded-full text-foreground hover:bg-accent"
-          >
-            <ArrowLeft className="size-5" />
-          </button>
-        )}
-        <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold text-foreground">
-          <Avatar size="sm">
-            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
-            <AvatarFallback
-              style={{ background: avatarColor(room.room_id) }}
-              className="font-bold text-white"
-            >
-              {initials(room.room_id, room.name)}
-            </AvatarFallback>
-            {room.is_direct && (
-              <PresenceDot
-                presence={headerPresence?.presence}
-                statusMsg={headerPresence?.status_msg}
-                lastActiveAgoMs={headerPresence?.last_active_ago_ms}
-                updateToken={headerPresence}
-              />
-            )}
-          </Avatar>
-          <span className="truncate">{displayName(room.room_id, room.name)}</span>
-        </div>
-        {mobile ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Room actions"
-                className="flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              >
-                <MoreVertical className="size-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-48">
-              <DropdownMenuItem
-                className="min-h-11"
-                onSelect={() => {
-                  setMembersDrawerOpen((open) => !open);
-                  setPinnedMessagesDrawerOpen(false);
-                }}
-              >
-                <Info />
-                {membersDrawerOpen ? "Hide members" : "Show members"}
-              </DropdownMenuItem>
-              {messagePinningEnabled && (
-                <DropdownMenuItem
-                  className="min-h-11"
-                  onSelect={() => {
-                    setPinnedMessagesDrawerOpen((open) => !open);
-                    setMembersDrawerOpen(false);
-                  }}
-                >
-                  <Pin />
-                  {pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Pinned messages"}
-                  {pinnedEventIds.length > 0 && ` (${pinnedEventIds.length})`}
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                className="min-h-11"
-                onSelect={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
-              >
-                <Settings />
-                Room settings
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
-              aria-pressed={membersDrawerOpen}
-              onClick={() => {
-                setMembersDrawerOpen((open) => !open);
-                setPinnedMessagesDrawerOpen(false);
-              }}
-              className={cn(
-                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                membersDrawerOpen && "bg-accent text-accent-foreground",
-              )}
-            >
-              <Info className="size-4" />
-            </button>
-            {messagePinningEnabled && (
-              <button
-                type="button"
-                aria-label={
-                  pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Show pinned messages"
-                }
-                aria-pressed={pinnedMessagesDrawerOpen}
-                onClick={() => {
-                  setPinnedMessagesDrawerOpen((open) => !open);
-                  setMembersDrawerOpen(false);
-                }}
-                className={cn(
-                  "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
-                )}
-              >
-                <Pin className="size-4" />
-                {pinnedEventIds.length > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
-                    {pinnedEventIds.length}
-                  </span>
-                )}
-              </button>
-            )}
-            <button
-              type="button"
-              aria-label="Room settings"
-              onClick={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
-              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            >
-              <Settings className="size-4" />
-            </button>
-          </div>
-        )}
-      </div>
+      <ChatHeader
+        room={room}
+        mobile={mobile}
+        onBack={onBack}
+        presence={headerPresence}
+        membersDrawerOpen={membersDrawerOpen}
+        onToggleMembers={() => {
+          setMembersDrawerOpen((open) => !open);
+          setPinnedMessagesDrawerOpen(false);
+        }}
+        messagePinningEnabled={messagePinningEnabled}
+        pinnedMessagesDrawerOpen={pinnedMessagesDrawerOpen}
+        pinnedMessageCount={pinnedEventIds.length}
+        onTogglePinnedMessages={() => {
+          setPinnedMessagesDrawerOpen((open) => !open);
+          setMembersDrawerOpen(false);
+        }}
+        onOpenRoomSettings={() =>
+          setRoomSettingsTarget({ roomId: room.room_id, section: "general" })
+        }
+      />
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         {/* While `messages` is empty but `hasMore` is true (and no request
