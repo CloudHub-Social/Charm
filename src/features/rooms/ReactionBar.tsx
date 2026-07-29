@@ -153,6 +153,8 @@ export function ReactionBar({
         key={reaction.key}
         type="button"
         onClick={() => onToggle(reaction.key)}
+        // Radix opens the tooltip for either input path; load for both so
+        // keyboard and assistive-technology users receive the same details.
         onMouseEnter={() => loadDetails(reaction)}
         onFocus={() => loadDetails(reaction)}
         disabled={disabled}
