@@ -33,16 +33,57 @@ fn apply_exif_orientation(img: image::DynamicImage, orientation: u32) -> image::
     }
 }
 
+/// Detects an animated PNG (APNG) by scanning the raw chunk stream for an
+/// `acTL` chunk ahead of the first `IDAT` — the same ordering rule
+/// (https://wiki.mozilla.org/APNG_Specification#.60acTL.60:_The_Animation_Control_Chunk)
+/// browsers and the PNG spec itself use to distinguish "a static PNG with an
+/// unrelated `acTL`-shaped byte sequence somewhere after image data" from a
+/// genuine APNG. `image::guess_format`/`ImageFormat::Png` can't tell an APNG
+/// apart from a static one — both are valid PNG containers — so this must be
+/// checked separately before treating a PNG as safe to decode-and-re-encode.
+fn is_animated_png(data: &[u8]) -> bool {
+    const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if data.len() < PNG_SIGNATURE.len() || data[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
+        return false;
+    }
+
+    let mut pos = PNG_SIGNATURE.len();
+    while pos + 8 <= data.len() {
+        let length =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let chunk_type = &data[pos + 4..pos + 8];
+        match chunk_type {
+            b"acTL" => return true,
+            // Per the APNG spec, `acTL` (if present) must precede the first
+            // `IDAT` — reaching `IDAT` first means this is a static PNG, or
+            // at best a malformed APNG that browsers themselves would also
+            // render as static.
+            b"IDAT" => return false,
+            _ => {}
+        }
+        // 4-byte length + 4-byte type + `length` bytes of data + 4-byte CRC.
+        let Some(next) = pos
+            .checked_add(8)
+            .and_then(|p| p.checked_add(length)?.checked_add(4))
+        else {
+            return false;
+        };
+        pos = next;
+    }
+    false
+}
+
 /// Strips EXIF/metadata (GPS location, camera info, capture timestamp, etc.)
 /// from a JPEG or PNG image by decoding and re-encoding it — `image`'s
 /// encoders don't carry the source's metadata segments forward, so a
 /// straightforward round-trip is a real strip, not just a best-effort one.
 /// Bakes in any EXIF `Orientation` first so the re-encoded, metadata-free
 /// image still displays upright. Returns `None` (leaving the original bytes
-/// untouched) for animated GIF/WebP — re-encoding through `image::DynamicImage`
-/// would collapse them to a single frame, which is worse than leaving their
-/// (comparatively low-signal) metadata in place — and for anything that fails
-/// to decode, so a corrupt-but-otherwise-uploadable file still sends.
+/// untouched) for animated GIF/WebP/PNG — re-encoding through
+/// `image::DynamicImage` would collapse them to a single frame, which is
+/// worse than leaving their (comparatively low-signal) metadata in place —
+/// and for anything that fails to decode, so a corrupt-but-otherwise-
+/// uploadable file still sends.
 ///
 /// `pub` (not module-private) so `charm-web-server`'s `send_attachment` route
 /// can apply the same EXIF stripping the desktop command does — see that
@@ -63,6 +104,15 @@ pub fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
             ("image", "png") => Some(image::ImageFormat::Png),
             _ => None,
         })?;
+
+    // Review fix: an APNG is still a well-formed PNG container, so the
+    // format sniff/MIME check above accepts it — but the decode-and-
+    // re-encode round trip below goes through a single `DynamicImage`,
+    // silently collapsing an animated sticker/screenshot to its first
+    // frame. Bail out the same way animated GIF/WebP already do.
+    if format == image::ImageFormat::Png && is_animated_png(data) {
+        return None;
+    }
 
     let orientation = exif::Reader::new()
         .read_from_container(&mut std::io::Cursor::new(data))
@@ -758,6 +808,56 @@ mod tests {
         // fails too, and this must stay `None` rather than panicking.
         let claimed_jpeg_mime: mime::Mime = "image/jpeg".parse().unwrap();
         assert!(strip_exif(&claimed_jpeg_mime, b"not an image").is_none());
+    }
+
+    /// Builds a length-prefixed PNG chunk (4-byte length + 4-byte type +
+    /// data + a dummy 4-byte CRC) — `is_animated_png` only walks chunk
+    /// framing, so a real CRC isn't needed for these tests.
+    fn png_chunk(chunk_type: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(chunk_type);
+        chunk.extend_from_slice(data);
+        chunk.extend_from_slice(&[0u8; 4]);
+        chunk
+    }
+
+    #[test]
+    fn is_animated_png_true_when_actl_precedes_idat() {
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"acTL", &[0; 8]));
+        data.extend(png_chunk(b"IDAT", &[]));
+        assert!(is_animated_png(&data));
+    }
+
+    #[test]
+    fn is_animated_png_false_when_idat_precedes_any_actl() {
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"IDAT", &[]));
+        assert!(!is_animated_png(&data));
+    }
+
+    #[test]
+    fn is_animated_png_false_for_non_png_bytes() {
+        assert!(!is_animated_png(b"not a png"));
+    }
+
+    #[test]
+    fn strip_exif_skips_animated_png_despite_matching_format() {
+        // An APNG is still a well-formed PNG container — `guess_format`
+        // alone can't distinguish it from a static one — so without the
+        // `is_animated_png` check this would decode-and-re-encode through a
+        // single `DynamicImage`, silently collapsing an animated
+        // sticker/screenshot to its first frame.
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"acTL", &[0; 8]));
+        data.extend(png_chunk(b"IDAT", &[]));
+
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        assert!(strip_exif(&mime, &data).is_none());
     }
 
     #[test]

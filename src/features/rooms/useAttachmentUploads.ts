@@ -21,7 +21,7 @@ export function attachmentUploadPayload(file: File & { path?: string }): string 
 }
 
 function formatMebibytes(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 /** `file` is a filesystem path string for a native desktop attachment (no

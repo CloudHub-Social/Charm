@@ -73,6 +73,7 @@ const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
 const cancelAttachmentUpload = vi.fn().mockResolvedValue(undefined);
 const getMediaConfig = vi.fn().mockResolvedValue(100 * 1024 * 1024);
+const getFileSize = vi.fn().mockResolvedValue(1024);
 const openFileDialog = vi.fn();
 const getRoomMembers = vi.fn().mockResolvedValue([]);
 const listRooms = vi.fn().mockResolvedValue([]);
@@ -212,6 +213,7 @@ vi.mock("@/lib/matrix", () => ({
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
   cancelAttachmentUpload: (...args: unknown[]) => cancelAttachmentUpload(...args),
   getMediaConfig: (...args: unknown[]) => getMediaConfig(...args),
+  getFileSize: (...args: unknown[]) => getFileSize(...args),
   getRoomMembers: (...args: unknown[]) => getRoomMembers(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   runCommand: (...args: unknown[]) => runCommand(...args),
@@ -397,6 +399,7 @@ describe("ChatShell", () => {
     sendAttachment.mockReset().mockResolvedValue(undefined);
     cancelAttachmentUpload.mockReset().mockResolvedValue(undefined);
     getMediaConfig.mockReset().mockResolvedValue(100 * 1024 * 1024);
+    getFileSize.mockReset().mockResolvedValue(1024);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
     listBookmarks.mockReset().mockResolvedValue([]);
