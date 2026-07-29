@@ -37,6 +37,7 @@ export function EditHistoryDialog({ open, roomId, eventId, onOpenChange }: EditH
     if (!open || !roomId || !eventId) {
       setEntries(null);
       setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;

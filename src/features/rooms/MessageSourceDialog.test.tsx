@@ -129,4 +129,21 @@ describe("MessageSourceDialog", () => {
     );
     expect(getEventSource).not.toHaveBeenCalled();
   });
+
+  it("clears loading when an in-flight target is invalidated", () => {
+    getEventSource.mockReturnValue(new Promise(() => {}));
+    const { rerender } = render(
+      <MessageSourceDialog
+        open
+        roomId="!room:localhost"
+        eventId="$event:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+    rerender(<MessageSourceDialog open roomId={null} eventId={null} onOpenChange={() => {}} />);
+
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
 });

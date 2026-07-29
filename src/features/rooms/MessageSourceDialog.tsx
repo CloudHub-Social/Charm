@@ -33,6 +33,7 @@ export function MessageSourceDialog({
     if (!open || !roomId || !eventId) {
       setSource(null);
       setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
