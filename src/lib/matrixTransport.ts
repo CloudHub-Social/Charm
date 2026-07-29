@@ -262,6 +262,7 @@ async function requestBytes<T>(
   path: string,
   body?: BodyInit,
   contentType?: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() };
   if (contentType) headers["content-type"] = contentType;
@@ -270,6 +271,7 @@ async function requestBytes<T>(
     credentials: "include",
     headers,
     body,
+    signal,
   });
   if (!response.ok) {
     throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
@@ -641,6 +643,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           txn_id: args.txnId as string,
         })}`,
         form,
+        undefined,
+        args.signal as AbortSignal | undefined,
       );
     }
     case "cancel_attachment_upload":

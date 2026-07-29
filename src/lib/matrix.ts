@@ -536,6 +536,16 @@ export function onSasUpdate(
  * `txnId` is caller-supplied (not server-generated) so it can match the ID
  * the frontend already used for its optimistic upload row before this call
  * — `upload:progress` events for this upload carry the same ID back.
+ *
+ * `signal`: web-only. The desktop Tauri command already reacts to
+ * `cancel_attachment_upload` server-side mid-upload (a `tokio::select!`
+ * against a cancellation token), but on web the multipart body is streamed
+ * by the browser's own `fetch` — without aborting that request too, a
+ * dismissed-but-still-uploading large attachment keeps consuming the user's
+ * bandwidth until the browser finishes sending it, even though the
+ * companion server already knows to discard it on arrival. Only attached
+ * when actually running as a web build (`isWebBuild()`) — an `AbortSignal`
+ * isn't a plausible Tauri IPC argument, so it's never sent down that path.
  */
 export function sendAttachment(
   roomId: string,
@@ -543,6 +553,7 @@ export function sendAttachment(
   txnId: string,
   caption?: string,
   stripExifEnabled = true,
+  signal?: AbortSignal,
 ): Promise<void> {
   return invoke("send_attachment", {
     roomId,
@@ -550,6 +561,7 @@ export function sendAttachment(
     txnId,
     caption,
     stripExifEnabled,
+    ...(isWebBuild() ? { signal } : {}),
   });
 }
 

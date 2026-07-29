@@ -4591,6 +4591,7 @@ describe("ChatShell", () => {
         expect.any(String),
         undefined,
         expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4702,6 +4703,7 @@ describe("ChatShell", () => {
         expect.any(String),
         undefined,
         expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4788,6 +4790,7 @@ describe("ChatShell", () => {
         expect.any(String),
         undefined,
         expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4836,8 +4839,28 @@ describe("ChatShell", () => {
         expect.any(String),
         undefined,
         expect.any(Boolean),
+        expect.any(AbortSignal),
       ),
     );
+  });
+
+  it("aborts the in-flight web upload's fetch when dismissed", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "large.png", { type: "image/png" });
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
+    await waitFor(() => expect(sendAttachment).toHaveBeenCalled());
+    const signal = sendAttachment.mock.calls.at(-1)?.[5] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel upload large.png" }));
+
+    expect(signal.aborted).toBe(true);
   });
 
   it("opens a formatted-body link via the system browser instead of navigating the webview", async () => {

@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { stripExifOnUploadAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
 import {
@@ -41,6 +41,18 @@ export function useAttachmentUploads(roomId: string | null) {
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const stripExifOnUpload = useAtomValue(stripExifOnUploadAtom);
   const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
+  // Read by handleAttachFile after its own `await`s to check whether the
+  // room changed out from under it while it was suspended — a plain `roomId`
+  // closure over a stale render wouldn't see a room switch that happened
+  // mid-preflight.
+  const roomIdRef = useRef(roomId);
+  roomIdRef.current = roomId;
+  // Web-only: lets dismissUpload actually abort the in-flight `fetch`
+  // streaming the multipart body, not just notify the server-side
+  // cancellation token — see sendAttachment's `signal` param doc comment.
+  // Desktop needs no equivalent map; its cancellation is entirely
+  // server-side (`cancel_attachment_upload`'s `tokio::select!`).
+  const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
 
   useEffect(() => {
     if (!mediaSendPolishEnabled) return;
@@ -83,8 +95,18 @@ export function useAttachmentUploads(roomId: string | null) {
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    const size = mediaSendPolishEnabled && maxUploadBytes != null ? await fileSize(file) : null;
-    if (mediaSendPolishEnabled && maxUploadBytes != null && size != null && size > maxUploadBytes) {
+    // Fall back to a direct fetch rather than `null` when the mount-time
+    // effect hasn't resolved yet — otherwise the very first attachment
+    // (picked immediately after opening a room, or while the config request
+    // is slow) skips the pre-flight entirely and fails opaquely server-side
+    // instead of showing the friendly limit warning below.
+    const limit = mediaSendPolishEnabled
+      ? (maxUploadBytes ?? (await getMediaConfig().catch(() => null)))
+      : null;
+    if (roomIdRef.current !== roomId) return;
+    const size = limit != null ? await fileSize(file) : null;
+    if (roomIdRef.current !== roomId) return;
+    if (limit != null && size != null && size > limit) {
       setUploads((prev) => [
         ...prev,
         {
@@ -93,13 +115,15 @@ export function useAttachmentUploads(roomId: string | null) {
           sent: 0,
           total: 0,
           failed: true,
-          errorMessage: `Too large — this server's limit is ${formatMebibytes(maxUploadBytes)}`,
+          errorMessage: `Too large — this server's limit is ${formatMebibytes(limit)}`,
         },
       ]);
       return;
     }
 
     setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
+    const abortController = isWebBuild() ? new AbortController() : undefined;
+    if (abortController) uploadAbortControllers.current.set(txnId, abortController);
     try {
       await sendAttachment(
         roomId,
@@ -107,13 +131,20 @@ export function useAttachmentUploads(roomId: string | null) {
         txnId,
         caption,
         mediaSendPolishEnabled ? stripExifOnUpload : false,
+        abortController?.signal,
       );
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
     } catch (err) {
+      // A dismissed-while-uploading row is already gone from `uploads` (see
+      // dismissUpload) — its abort landing here as a rejected fetch isn't a
+      // failure to surface, just this request unwinding.
+      if (abortController?.signal.aborted) return;
       console.error(err);
       setUploads((prev) =>
         prev.map((u) => (u.txnId === txnId ? { ...u, failed: true, errorMessage: undefined } : u)),
       );
+    } finally {
+      uploadAbortControllers.current.delete(txnId);
     }
   }
 
@@ -122,6 +153,7 @@ export function useAttachmentUploads(roomId: string | null) {
       const upload = prev.find((u) => u.txnId === txnId);
       if (upload && !upload.failed) {
         cancelAttachmentUpload(txnId).catch(logAndIgnore);
+        uploadAbortControllers.current.get(txnId)?.abort();
       }
       return prev.filter((u) => u.txnId !== txnId);
     });
