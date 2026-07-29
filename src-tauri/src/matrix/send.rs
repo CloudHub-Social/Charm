@@ -238,11 +238,23 @@ pub async fn forward_message(
 /// `MAX_EDIT_RELATION_PAGES` as a safety cap. Unlike `latest_edit_body`
 /// (which only needs the edited body string for a preview), this returns
 /// the full replacement content so the caller can `apply_replacement` it.
+///
+/// Review fix: returns `Result` rather than swallowing a lookup failure into
+/// `None` — the caller must be able to tell "the network request failed" (a
+/// real error the forward should abort on) apart from "walked every page and
+/// found no same-sender replacement" (a genuine, safe-to-treat-as-no-edit
+/// `Ok(None)`). Collapsing both to `None` previously meant a transient
+/// `/relations` failure looked identical to "there is no edit", so the
+/// forward would silently fall back to `original_message.content` and
+/// re-share content the sender had actually edited away.
 async fn latest_replacement_content(
     room: &Room,
     event_id: &matrix_sdk::ruma::EventId,
     original_sender: &matrix_sdk::ruma::UserId,
-) -> Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation> {
+) -> Result<
+    Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation>,
+    String,
+> {
     use matrix_sdk::room::{IncludeRelations, RelationsOptions};
     use matrix_sdk::ruma::events::relation::RelationType;
     use matrix_sdk::ruma::events::room::message::Relation;
@@ -266,7 +278,7 @@ async fn latest_replacement_content(
                 },
             )
             .await
-            .ok()?;
+            .map_err(|e| e.to_string())?;
 
         // Same defensive re-sort as `latest_edit_body`: nothing guarantees
         // the homeserver actually honored `dir: Backward`, so sort by
@@ -300,16 +312,16 @@ async fn latest_replacement_content(
             .collect();
         candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
         if let Some((_, new_content)) = candidates.into_iter().next() {
-            return Some(new_content);
+            return Ok(Some(new_content));
         }
 
         match relations.next_batch_token {
             Some(next) => from = Some(next),
-            None => return None,
+            None => return Ok(None),
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Core logic behind [`forward_message`].
@@ -354,8 +366,13 @@ pub async fn forward_message_impl(
     // real latest edit behind enough newer relations (reactions, or other
     // members' invalid same-target replacements), silently forwarding
     // pre-edit content the sender specifically edited away.
+    // Propagate a lookup failure as an error (abort the forward) rather than
+    // falling back to `original_message.content` — see
+    // `latest_replacement_content`'s doc comment for why treating "the
+    // request failed" the same as "there is no edit" is unsafe here.
     let latest_edit =
-        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender).await;
+        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender)
+            .await?;
 
     let mut content = original_message.content.clone();
     if let Some(new_content) = latest_edit {

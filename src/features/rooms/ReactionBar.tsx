@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
@@ -45,7 +45,19 @@ export function ReactionBar({
   const messageActionParityEnabled = useFlag("message_action_parity");
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
-  const [modalKey, setModalKey] = useState<string | null>(null);
+  const [modalKey, setModalKeyState] = useState<string | null>(null);
+  // Mirrors `modalKey` for synchronous reads inside `clearDetails` — React
+  // batches the "View all" button's `setModalKey` with the state update
+  // from the Tooltip's own `onOpenChange(false)` (both fire from the same
+  // click), so `clearDetails` reading the `modalKey` *state* would still see
+  // the pre-click value and wrongly clear the cache the modal is about to
+  // read from. The ref is updated in the same tick as the click, before
+  // React's batched re-render.
+  const modalKeyRef = useRef<string | null>(null);
+  function setModalKey(key: string | null) {
+    modalKeyRef.current = key;
+    setModalKeyState(key);
+  }
 
   if (reactions.length === 0) {
     return null;
@@ -76,7 +88,8 @@ export function ReactionBar({
   function clearDetails(reaction: ReactionGroup, cacheKey: string) {
     // Keep the entry around if its modal is open — WhoReactedDialog reads
     // from this same cache and closing the tooltip shouldn't blank it out.
-    if (modalKey === reaction.key) return;
+    // Reads the ref (not the `modalKey` state) — see its declaration above.
+    if (modalKeyRef.current === reaction.key) return;
     setDetailsByKey((prev) => {
       if (!(cacheKey in prev)) return prev;
       const next = { ...prev };

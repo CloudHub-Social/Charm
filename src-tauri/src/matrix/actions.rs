@@ -32,6 +32,56 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
         .ok_or_else(|| format!("room {room_id} not found"))
 }
 
+/// Fetches *every* relation of `relation_type` targeting `event_id`, paging
+/// forward (`next_batch_token`) until the relation stream is exhausted or
+/// `MAX_RELATION_PAGES` is reached — same paginated-walk shape as
+/// `room_admin::latest_edit_body` / `send::latest_replacement_content`, but
+/// those only need the single *latest* matching relation and can return as
+/// soon as they find one; `get_edit_history_impl` and
+/// `get_reaction_details_impl` need the *complete* set (full edit history,
+/// every reactor), so this collects across all pages instead of short-
+/// circuiting. Without this, either caller's `load_or_fetch_event_with_relations`
+/// call only saw the first (most recent) 20 relations, silently truncating
+/// history/reactor lists in rooms with enough relation noise (reactions,
+/// other edits, etc.) ahead of the older entries.
+const MAX_RELATION_PAGES: usize = 10;
+
+async fn paginated_relations(
+    room: &matrix_sdk::Room,
+    event_id: &EventId,
+    relation_type: matrix_sdk::ruma::events::relation::RelationType,
+) -> Result<Vec<matrix_sdk::deserialized_responses::TimelineEvent>, String> {
+    use matrix_sdk::room::{IncludeRelations, RelationsOptions};
+
+    let mut all = Vec::new();
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(relation_type.clone()),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        all.extend(relations.chunk);
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            None => break,
+        }
+    }
+
+    Ok(all)
+}
+
 /// Result of `toggle_reaction`, so the frontend can optimistically flip
 /// local state without waiting for a `timeline:update` round-trip.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -651,10 +701,16 @@ pub async fn get_edit_history_impl(
     let room = get_room(client, room_id)?;
     let parsed_target = EventId::parse(event_id).map_err(|e| e.to_string())?;
 
-    let (original_event, relations) = room
-        .load_or_fetch_event_with_relations(&parsed_target, None, None)
+    let original_event = room
+        .load_or_fetch_event(&parsed_target, None)
         .await
         .map_err(|e| e.to_string())?;
+    let relations = paginated_relations(
+        &room,
+        &parsed_target,
+        matrix_sdk::ruma::events::relation::RelationType::Replacement,
+    )
+    .await?;
 
     let original_deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = original_event
         .kind
@@ -758,10 +814,12 @@ pub async fn get_reaction_details_impl(
     let room = get_room(client, room_id)?;
     let parsed_target = EventId::parse(target_event_id).map_err(|e| e.to_string())?;
 
-    let (_event, relations) = room
-        .load_or_fetch_event_with_relations(&parsed_target, None, None)
-        .await
-        .map_err(|e| e.to_string())?;
+    let relations = paginated_relations(
+        &room,
+        &parsed_target,
+        matrix_sdk::ruma::events::relation::RelationType::Annotation,
+    )
+    .await?;
 
     let mut details = Vec::new();
     for related in &relations {
