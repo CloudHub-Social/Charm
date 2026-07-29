@@ -370,6 +370,10 @@ pub async fn forward_message_impl(
     // Strip any relation (reply/edit) on the forwarded copy — forwarding
     // should send a clean new message, not a relation to the original.
     content.relates_to = None;
+    // Also strip inherited `m.mentions` — a forwarded reply/mention-carrying
+    // message would otherwise silently notify whoever the *original*
+    // sender mentioned, in a room where the forwarder never mentioned them.
+    content.mentions = None;
 
     let parsed_target_room_id = RoomId::parse(target_room_id).map_err(|e| e.to_string())?;
     let target_room = client
@@ -830,6 +834,32 @@ mod tests {
         assert!(
             json.get("m.relates_to").is_none(),
             "forwarded content must not carry the source event's m.relates_to"
+        );
+    }
+
+    #[test]
+    fn forwarded_content_strips_mentions() {
+        // A reply carries `m.mentions` (added by `make_reply_to`'s
+        // `AddMentions::Yes`) pointing at the original sender — forwarding
+        // must not carry that mention along, or a room the forwarder never
+        // mentioned anyone in would silently notify that user.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+        assert!(serde_json::to_value(&content).unwrap()["m.mentions"].is_object());
+
+        content.mentions = None;
+        let json = serde_json::to_value(&content).unwrap();
+        assert!(
+            json.get("m.mentions").is_none(),
+            "forwarded content must not carry the source event's m.mentions"
         );
     }
 
