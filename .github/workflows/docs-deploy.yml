@@ -52,7 +52,7 @@ jobs:
         with:
           # Astro 7 requires Node >=22.12. Match the app workflows' current
           # Node major rather than relying on an unsupported Node 20 runtime.
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
           cache-dependency-path: docs-site/pnpm-lock.yaml
 

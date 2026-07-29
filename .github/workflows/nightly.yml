@@ -93,7 +93,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -190,7 +190,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -412,7 +412,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -602,7 +602,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -873,7 +873,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
@@ -1088,7 +1088,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
