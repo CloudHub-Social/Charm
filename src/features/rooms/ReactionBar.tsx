@@ -154,6 +154,7 @@ export function ReactionBar({
         type="button"
         onClick={() => onToggle(reaction.key)}
         onMouseEnter={() => loadDetails(reaction)}
+        onFocus={() => loadDetails(reaction)}
         disabled={disabled}
         aria-pressed={reaction.reacted_by_me}
         className={cn(

@@ -113,6 +113,24 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("No reactions")).toBeInTheDocument();
   });
 
+  it("loads reaction details when a chip receives keyboard focus", async () => {
+    getReactionDetails.mockResolvedValue([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.focus(screen.getByRole("button", { name: /👍/ }));
+
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledOnce();
+  });
+
   it("lists a small reactor set without a View all action", async () => {
     getReactionDetails.mockResolvedValue([
       { sender: "@alice:example.org", origin_server_ts: 1 },
