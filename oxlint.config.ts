@@ -55,6 +55,15 @@ export default defineConfig({
       },
     },
     {
+      // ChatShell is orchestration only. Keep it below the post-#310
+      // extraction ceiling so viewport, header, or action state cannot
+      // silently accumulate there again.
+      files: ["src/features/rooms/ChatShell.tsx"],
+      rules: {
+        "max-lines": ["error", { max: 1000, skipBlankLines: true, skipComments: true }],
+      },
+    },
+    {
       // The composer autocomplete menu implements the standard ARIA
       // combobox-listbox pattern (role="listbox"/"option") anchored to a
       // text caret inside contenteditable — there's no <select>/<datalist>

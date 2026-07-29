@@ -3,21 +3,15 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
-import { ConfirmWithReasonDialog } from "@/components/ui/confirm-with-reason-dialog";
-import { EditHistoryDialog } from "./EditHistoryDialog";
-import { ForwardMessageDialog } from "./ForwardMessageDialog";
-import { MessageSourceDialog } from "./MessageSourceDialog";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFlag } from "@/featureFlags";
-import { eventPermalink, userIdServerName } from "@/lib/matrixPermalink";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
-import { type MessageActionsHandle } from "./MessageActions";
-import { MessageRow, messageRowKey } from "./MessageRow";
+import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray } from "./UploadTray";
 import {
@@ -37,14 +31,15 @@ import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
-import { formatDateDividerLabel, isDateDividerBoundary } from "./timelineDividers";
 import { useChatTyping } from "./useChatTyping";
-import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
 import { MessagePillProfileDialog, type MessagePillProfile } from "./MessagePillProfileDialog";
 import { useTimelineViewport } from "./useTimelineViewport";
 import { ChatHeader } from "./ChatHeader";
 import { useMessagePinning } from "./useMessagePinning";
+import { useMessageActionController } from "./useMessageActionController";
+import { MessageActionDialogs } from "./MessageActionDialogs";
+import { TimelineMessageRow } from "./TimelineMessageRow";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -210,7 +205,6 @@ export function ChatShell({
 }: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
-  const messageActionParityEnabled = useFlag("message_action_parity");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
@@ -223,11 +217,6 @@ export function ChatShell({
   const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
-  const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
-  const [reportTargetEventId, setReportTargetEventId] = useState<string | null>(null);
-  const [viewSourceTargetEventId, setViewSourceTargetEventId] = useState<string | null>(null);
-  const [editHistoryTargetEventId, setEditHistoryTargetEventId] = useState<string | null>(null);
-  const [forwardTargetEventId, setForwardTargetEventId] = useState<string | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
   // A file picked/dropped/pasted while `media_send_polish` is on is staged
   // here (rather than uploaded immediately) so the user gets a chance to add
@@ -238,28 +227,12 @@ export function ChatShell({
     roomId: string | null;
   } | null>(null);
   const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
-  // On touch, `MessageActions`' own trigger buttons are hover-only and thus
-  // invisible/undiscoverable — a long-press on the bubble itself is what
-  // users actually try. Forwarding the row's touch events to each
-  // `MessageActions` instance via this ref map lets a long-press anywhere
-  // on the row open that message's action menu.
-  const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
     pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;
-  const permalinkViaServer = userIdServerName(currentUserId);
   useEffect(() => {
     setShowMobileFormatting(false);
-    setRedactionTargetEventId(null);
-    // These dialogs' event IDs otherwise survive a room switch and get
-    // combined with the newly selected room.room_id — report/forward/
-    // view-source/edit-history would then target the wrong room, and the
-    // source/history dialogs could briefly show stale data mid-refetch.
-    setReportTargetEventId(null);
-    setViewSourceTargetEventId(null);
-    setEditHistoryTargetEventId(null);
-    setForwardTargetEventId(null);
     if (fileDragLeaveTimerRef.current !== null) {
       clearTimeout(fileDragLeaveTimerRef.current);
       fileDragLeaveTimerRef.current = null;
@@ -365,14 +338,6 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   });
-  // A date divider or the frozen unread divider breaks a consecutive-sender
-  // run, even when the surrounding messages are literally from the same
-  // sender — otherwise the message right after the divider renders without
-  // its own avatar/name (looking like a continuation of the group above the
-  // divider), and the message right before it can lose its timestamp.
-  function isGroupBreakAt(index: number): boolean {
-    return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
-  }
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).
@@ -406,21 +371,9 @@ export function ChatShell({
       setReplyTarget,
       stopTyping,
     });
-  const {
-    handleToggleReaction,
-    handleDelete,
-    handleReport,
-    handleReply,
-    handleEdit,
-    handleResend,
-    handleDiscard,
-    handlePin,
-    handleUnpin,
-    handleBookmark,
-    handleUnbookmark,
-    bookmarkedEventIds,
-  } = useMessageActions({
+  const messageActionController = useMessageActionController({
     roomId: activeRoomId,
+    currentUserId,
     setReplyTarget,
     setEditingEventId,
   });
@@ -692,132 +645,27 @@ export function ChatShell({
             computeItemKey={(_index, message) => messageRowKey(message)}
             itemContent={(index, message) => {
               const i = index - firstItemIndex;
-              const own = message.sender === currentUserId;
-              const prev = messages[i - 1];
-              const next = messages[i + 1];
-              // Own messages are always redactable — don't wait on the async
-              // `canRedactBySender` resolution (which only matters for other
-              // senders' power levels) or Delete flashes hidden-then-shown.
-              const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
               const readers = receiptsByEvent.get(message.event_id) ?? [];
 
               return (
-                // `flex flex-col` (not a plain block `div`): Virtuoso measures
-                // this wrapper's own box to estimate/settle row height, but
-                // `BubbleMessageRow`/`DiscordMessageRow` put their grouping
-                // spacing on the row root as a top *margin* (`mt-3`/`mt-0.5`),
-                // which a plain block parent with no padding/border lets
-                // collapse through its own top edge — Virtuoso would then
-                // under-measure the row by exactly that margin, breaking
-                // bottom-detection and prepend-anchoring math. A flex
-                // container's children never margin-collapse with it (they
-                // participate in the flex formatting context, not the block
-                // one), so this fully contains the row's true rendered height
-                // with no visual change (still a single child either way).
-                <div className="flex flex-col pb-1">
-                  {isDateDividerBoundary(messages, i) && (
-                    <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-                      {formatDateDividerLabel(message.timestamp_ms)}
-                    </div>
-                  )}
-                  {i === unreadStartIdx && (
-                    <div className="my-2 flex items-center gap-2">
-                      <div className="h-px flex-1 bg-destructive-solid" />
-                      <span className="text-[11px] font-semibold text-destructive-solid">
-                        New messages
-                      </span>
-                      <div className="h-px flex-1 bg-destructive-solid" />
-                    </div>
-                  )}
-                  <MessageRow
-                    message={message}
-                    roomId={room.room_id}
-                    currentUserId={currentUserId}
-                    own={own}
-                    sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
-                    sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
-                    canRedact={allowedToRedact}
-                    canPin={canPinMessages}
-                    isPinned={pinnedEventIds.includes(message.event_id)}
-                    readers={readers}
-                    senderNameByUserId={senderNameByUserId}
-                    // Excludes `own` messages: `messageRowKey` (transaction_id ??
-                    // event_id) isn't stable across the local-echo -> ack
-                    // transition for a message *we* sent — `transaction_id()`
-                    // only returns `Some` while an item is still local (see
-                    // `timeline.rs`'s `build_message_summary`), so the row's key
-                    // itself changes once the homeserver ack replaces the local
-                    // echo. That makes the acked row look "unseen" and replay the
-                    // entrance animation a second time. Other senders' messages
-                    // have no local-echo phase to begin with, so this exclusion
-                    // only ever skips the case that would otherwise double-animate.
-                    isNew={!own && newMessageKeys.has(messageRowKey(message))}
-                    getActionsHandle={(key) => actionsRefs.current.get(key)}
-                    registerActionsRef={(key, el) => {
-                      if (el) actionsRefs.current.set(key, el);
-                      else actionsRefs.current.delete(key);
-                    }}
-                    onReply={() => handleReply(message)}
-                    onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-                    onEdit={() => handleEdit(message.event_id)}
-                    onDelete={() => {
-                      if (messageActionParityEnabled) {
-                        setRedactionTargetEventId(message.event_id);
-                      } else {
-                        void handleDelete(message.event_id);
-                      }
-                    }}
-                    onCopy={() => navigator.clipboard?.writeText(message.body)}
-                    onResend={() => {
-                      if (message.transaction_id) void handleResend(message.transaction_id);
-                    }}
-                    onDiscard={() => {
-                      if (message.transaction_id) void handleDiscard(message.transaction_id);
-                    }}
-                    onCopyLink={() => {
-                      if (!navigator.clipboard?.writeText || !permalinkViaServer) return;
-                      navigator.clipboard
-                        .writeText(
-                          eventPermalink(room.room_id, message.event_id, permalinkViaServer),
-                        )
-                        .catch(logAndIgnore);
-                    }}
-                    onPin={() => void handlePin(message.event_id)}
-                    onUnpin={() => void handleUnpin(message.event_id)}
-                    onForward={
-                      messageActionParityEnabled
-                        ? () => setForwardTargetEventId(message.event_id)
-                        : undefined
-                    }
-                    onViewSource={
-                      messageActionParityEnabled
-                        ? () => setViewSourceTargetEventId(message.event_id)
-                        : undefined
-                    }
-                    onReport={
-                      messageActionParityEnabled
-                        ? () => setReportTargetEventId(message.event_id)
-                        : undefined
-                    }
-                    onViewEditHistory={
-                      messageActionParityEnabled
-                        ? () => setEditHistoryTargetEventId(message.event_id)
-                        : undefined
-                    }
-                    onJumpToMessage={handleJumpToMessage}
-                    onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
-                    onRoomPillClick={onNavigateToRoom}
-                    // Bookmarks (Spec 12) have no local per-account store on
-                    // the web build — omitting these entirely (rather than
-                    // wiring them to a no-op) hides the menu item, same
-                    // pattern as `SettingsScreen`'s `webUnsupported` sections.
-                    onBookmark={isWebBuild() ? undefined : () => handleBookmark(message.event_id)}
-                    onUnbookmark={
-                      isWebBuild() ? undefined : () => handleUnbookmark(message.event_id)
-                    }
-                    isBookmarked={bookmarkedEventIds.has(message.event_id)}
-                  />
-                </div>
+                <TimelineMessageRow
+                  index={i}
+                  messages={messages}
+                  message={message}
+                  roomId={room.room_id}
+                  currentUserId={currentUserId}
+                  unreadStartIndex={unreadStartIdx}
+                  canRedact={canRedactBySender[message.sender] ?? false}
+                  canPin={canPinMessages}
+                  isPinned={pinnedEventIds.includes(message.event_id)}
+                  readers={readers}
+                  senderNameByUserId={senderNameByUserId}
+                  newMessageKeys={newMessageKeys}
+                  controller={messageActionController}
+                  onJumpToMessage={handleJumpToMessage}
+                  onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
+                  onRoomPillClick={onNavigateToRoom}
+                />
               );
             }}
           />
@@ -846,63 +694,10 @@ export function ChatShell({
         )}
       </div>
 
-      <ConfirmWithReasonDialog
-        open={redactionTargetEventId !== null}
-        title="Delete message?"
-        description="This removes the message for everyone in the room and cannot be undone."
-        confirmLabel="Delete message"
-        submittingLabel="Deleting…"
-        reasonDescription="The reason is sent to your homeserver and may be visible to other room clients."
-        onOpenChange={(open) => {
-          if (!open) setRedactionTargetEventId(null);
-        }}
-        onConfirm={(reason) =>
-          redactionTargetEventId
-            ? handleDelete(redactionTargetEventId, reason)
-            : Promise.resolve(false)
-        }
-      />
-
-      <ConfirmWithReasonDialog
-        open={reportTargetEventId !== null}
-        title="Report message?"
-        description="This sends a report to your homeserver's moderators for review."
-        confirmLabel="Report"
-        submittingLabel="Reporting…"
-        reasonDescription="The reason is sent to your homeserver's moderators."
-        onOpenChange={(open) => {
-          if (!open) setReportTargetEventId(null);
-        }}
-        onConfirm={(reason) =>
-          reportTargetEventId ? handleReport(reportTargetEventId, reason) : Promise.resolve(false)
-        }
-      />
-
-      <MessageSourceDialog
-        open={viewSourceTargetEventId !== null}
-        roomId={room.room_id}
-        eventId={viewSourceTargetEventId}
-        onOpenChange={(open) => {
-          if (!open) setViewSourceTargetEventId(null);
-        }}
-      />
-
-      <EditHistoryDialog
-        open={editHistoryTargetEventId !== null}
-        roomId={room.room_id}
-        eventId={editHistoryTargetEventId}
-        onOpenChange={(open) => {
-          if (!open) setEditHistoryTargetEventId(null);
-        }}
-      />
-
-      <ForwardMessageDialog
-        open={forwardTargetEventId !== null}
-        sourceRoomId={room.room_id}
-        eventId={forwardTargetEventId}
-        onOpenChange={(open) => {
-          if (!open) setForwardTargetEventId(null);
-        }}
+      <MessageActionDialogs
+        target={messageActionController.visibleDialogTarget}
+        onClose={messageActionController.closeDialog}
+        onConfirm={messageActionController.confirmDialog}
       />
 
       {typingText && (
