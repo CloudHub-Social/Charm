@@ -40,6 +40,7 @@ const ALL_ALLOWED: RoomPermissions = {
   ban: true,
   set_canonical_alias: true,
   set_pinned_events: true,
+  set_space_child: true,
 };
 
 describe("MemberRow", () => {

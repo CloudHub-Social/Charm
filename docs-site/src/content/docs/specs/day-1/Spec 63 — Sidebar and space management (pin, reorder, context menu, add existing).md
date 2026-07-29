@@ -10,7 +10,8 @@ sidebar:
 
 ## Implementation status
 
-**Shipped, except `Settings`.** Pin/unpin, reorder (Move up/down), and a
+**Shipped, except `Settings`** (blocked on Spec 33's space-settings surface,
+tracked there — not a gap in this spec's own scope). Pin/unpin, reorder (Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
@@ -36,13 +37,24 @@ current children to prevent cycles/duplicates.
 UI-parity addition, which doesn't exist yet; the menu simply omits the item
 until it does.
 
-**Known gap:** power-level gating on the new menu actions (per the spec's
-original design note) is not implemented — every joined member sees every
-action regardless of their actual permission in the room, and a send failure
-surfaces only as the underlying IPC error, not a pre-emptive disabled state.
-Reuse Spec 07's existing power-level check pattern (`room_admin.rs`'s
-`RoomPermissions`) when this is picked up; it needs a per-space equivalent
-threaded into `SpaceRail`, which doesn't currently fetch power levels at all.
+**Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
+(Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —
+`user_can_send_state(.., StateEventType::SpaceChild)` — reused by both `Add
+existing…` (checked against the target space itself) and `Mark/Unmark
+suggested`/`Remove from space` (checked against the child's *parent* space,
+since that's whose edge is mutated). `Invite` reuses the existing `invite`
+field. `SpaceRail` fetches each relevant space's `RoomPermissions` lazily via
+`get_room_details` when a context menu opens (not eagerly for every rail
+entry), refetches on every open rather than caching for the component's
+lifetime — dropping the prior value first so a stale permission from an
+earlier open never stays visible mid-refetch — and disables the gated menu
+item until a fresh, permitted result lands — so a member without the
+required power level never sees this action in the rail's context menu.
+`RoomList`'s own hierarchy-row `Remove from space` action (a separate
+surface, gated only behind the `space_rail_management` flag) is
+intentionally *not* covered by this pass — it stays reachable and
+server-validates on click, surfacing a rejection message rather than hiding
+the row. Gating that surface too is left for a follow-up.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy
