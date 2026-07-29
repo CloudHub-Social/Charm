@@ -1942,13 +1942,15 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // `RoomListMessagePreview` isn't wired up for the web build yet (no
-    // feature-flag store here, unlike desktop's `feature_flags::flag`) — off
-    // for now, matching the flag's compiled-in default.
+    // `RoomListMessagePreview`/`RoomListSort` aren't wired up for the web
+    // build yet (no feature-flag store here, unlike desktop's
+    // `feature_flags::flag`) — off for now, matching each flag's compiled-in
+    // default.
     Ok(Json(
         snapshot_rooms(
             &session.client,
             None,
+            false,
             false,
             &session.preview_registered_rooms,
         )

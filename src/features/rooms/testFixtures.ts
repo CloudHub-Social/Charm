@@ -24,6 +24,7 @@ export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSumma
     inviter_user_id: null,
     inviter_display_name: null,
     last_message_preview: null,
+    last_activity_ts: null,
     ...overrides,
   };
 }

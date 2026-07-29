@@ -87,7 +87,7 @@ here.
 | 51 | [App localization](/specs/day-1/spec-51--app-localization-i18n/) | **Planned** | Stretch / lower priority |
 | 52 | [Responsive and mobile-web hardening](/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/) | **Shipped** | [#242](https://github.com/CloudHub-Social/Charm/pull/242), [#245](https://github.com/CloudHub-Social/Charm/pull/245); redesign defaults off |
 | 53 | [Avatars and presence visuals](/specs/day-1/spec-53--avatars-and-presence-visuals/) | **Planned** | No matching merged implementation found |
-| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **In progress** | Flag-gated All / Unread filters and optional ambient unread message counts are implemented; sorting and further row enrichment remain |
+| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **Shipped** | Flag-gated All / Unread filter, last-message preview, sort control (default/activity/A-Z/unread-first), and a typing-in-list indicator; each behind its own default-off flag |
 | 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Planned** | No matching merged implementation found |
 | 56 | [Room invites](/specs/day-1/spec-56--room-invites-surface/) | **Shipped** | [#243](https://github.com/CloudHub-Social/Charm/pull/243), default-off flag |
 | 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | No matching merged implementation found |

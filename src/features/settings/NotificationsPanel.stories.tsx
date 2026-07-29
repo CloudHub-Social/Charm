@@ -26,6 +26,7 @@ const ROOMS: RoomSummary[] = [
     inviter_user_id: null,
     inviter_display_name: null,
     last_message_preview: null,
+    last_activity_ts: null,
   },
   {
     room_id: "!announcements:localhost",
@@ -49,6 +50,7 @@ const ROOMS: RoomSummary[] = [
     inviter_user_id: null,
     inviter_display_name: null,
     last_message_preview: null,
+    last_activity_ts: null,
   },
   {
     room_id: "!watercooler:localhost",
@@ -72,6 +74,7 @@ const ROOMS: RoomSummary[] = [
     inviter_user_id: null,
     inviter_display_name: null,
     last_message_preview: null,
+    last_activity_ts: null,
   },
 ];
 

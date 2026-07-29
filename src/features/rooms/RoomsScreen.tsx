@@ -530,6 +530,7 @@ export function RoomsScreen({
             rooms={roomInvitesEnabled ? rooms : joinedRooms}
             loading={!roomsLoaded}
             activeRoomId={activeRoomId}
+            currentUserId={currentUserId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
             onSelectSearchResult={selectRoomInVisibleMode}

@@ -229,3 +229,40 @@ test("shows the last-message preview with sender label when enabled", async ({ p
   ).toBeVisible();
   await captureSnapshot(page, "room-list-org-message-preview");
 });
+
+test("switching to Unread first reorders the room list and persists after reload", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_sort: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+
+  const roomButtons = () =>
+    page.getByRole("button", { name: new RegExp(`${MAIN_ROOM.name}|${SECOND_ROOM.name}`) });
+  const sortSelect = page.getByLabel("Sort");
+
+  // Default order is alphabetical ("Main Room", "Second Room"); Second Room
+  // carries an unread count from the fixture above.
+  await expect(sortSelect).toHaveValue("default");
+  await expect(roomButtons().nth(0)).toHaveText(new RegExp(MAIN_ROOM.name));
+  await expect(roomButtons().nth(1)).toHaveText(new RegExp(SECOND_ROOM.name));
+
+  await sortSelect.selectOption("unread");
+
+  await expect(roomButtons().nth(0)).toHaveText(new RegExp(SECOND_ROOM.name));
+  await expect(roomButtons().nth(1)).toHaveText(new RegExp(MAIN_ROOM.name));
+  await captureSnapshot(page, "room-list-org-unread-sort");
+
+  await page.reload();
+
+  await expect(page.getByLabel("Sort")).toHaveValue("unread");
+  await expect(roomButtons().nth(0)).toHaveText(new RegExp(SECOND_ROOM.name));
+  await expect(roomButtons().nth(1)).toHaveText(new RegExp(MAIN_ROOM.name));
+});
