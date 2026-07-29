@@ -150,7 +150,7 @@
     {
       "slug": "message-actions",
       "title": "Message actions",
-      "summary": "React, reply, edit, inspect, copy canonical links, and confirm redactions with optional reasons through contextual actions that respect ownership and power levels.",
+      "summary": "React and quick-react, reply, edit, inspect source and edit history, forward, report, copy canonical links, review reactors, and confirm redactions through contextual actions that respect ownership and power levels.",
       "status": "preview",
       "spec": "Specs 03 and 37",
       "specLinks": [
