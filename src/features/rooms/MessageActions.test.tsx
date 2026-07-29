@@ -160,6 +160,19 @@ describe("MessageActions", () => {
     expect(screen.queryByText("Copy link")).not.toBeInTheDocument();
   });
 
+  it("does not persist picker reactions while message-action parity is disabled", async () => {
+    const storageKey = "charm:recentReactions:@me:example.org";
+    localStorage.removeItem(storageKey);
+    mockUseFlag.mockReturnValue(false);
+    const { onReact } = renderActions();
+
+    fireEvent.click(screen.getByRole("button", { name: "React" }));
+    fireEvent.click(await screen.findByRole("button", { name: "React with 👍" }));
+
+    expect(onReact).toHaveBeenCalledWith("👍");
+    expect(localStorage.getItem(storageKey)).toBeNull();
+  });
+
   it("has 44x44px hit targets for the trigger buttons", () => {
     renderActions();
     const moreButton = screen.getByRole("button", { name: "More actions" });

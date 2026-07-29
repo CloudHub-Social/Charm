@@ -175,7 +175,9 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     const { recent, recordReaction } = useRecentReactions(accountId);
 
     function react(emoji: string) {
-      recordReaction(emoji);
+      if (messageActionParityEnabled) {
+        recordReaction(emoji);
+      }
       onReact(emoji);
     }
 
