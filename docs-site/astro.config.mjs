@@ -86,7 +86,10 @@ export default defineConfig({
 				},
 				{
 					label: 'Architecture',
-					items: [{ label: 'Overview', slug: 'architecture/overview' }],
+					items: [
+						{ label: 'Overview', slug: 'architecture/overview' },
+						{ label: 'Async reconciliation', slug: 'architecture/async-reconciliation' },
+					],
 				},
 				{
 					label: 'Features',
