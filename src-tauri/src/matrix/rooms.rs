@@ -606,7 +606,17 @@ pub async fn snapshot_rooms(
                 } else {
                     None
                 };
-                let activity_ts = value.as_ref().and_then(last_activity_ts);
+                // Review fix: this whole branch also runs when only
+                // `include_message_preview` is on, so computing
+                // `activity_ts` unconditionally here leaked activity-sort
+                // metadata into every snapshot regardless of
+                // `include_activity_sort` — the sort slice wasn't
+                // independently killable via its own flag.
+                let activity_ts = if include_activity_sort {
+                    value.as_ref().and_then(last_activity_ts)
+                } else {
+                    None
+                };
                 (preview, activity_ts, Some(room.room_id().to_owned()))
             } else {
                 (None, None, None)
