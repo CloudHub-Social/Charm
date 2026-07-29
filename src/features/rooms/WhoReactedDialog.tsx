@@ -6,6 +6,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { ReactionDetail } from "@bindings/ReactionDetail";
+import { useRef } from "react";
 
 interface WhoReactedDialogProps {
   open: boolean;
@@ -21,11 +22,19 @@ export function WhoReactedDialog({
   details,
   onOpenChange,
 }: WhoReactedDialogProps) {
+  // Radix keeps the dialog content mounted during its exit animation. The
+  // parent clears `reactionKey` as it closes, so retain the last real key
+  // for those final frames instead of briefly rendering "Reacted with ".
+  const lastReactionKeyRef = useRef(reactionKey);
+  if (reactionKey !== null) {
+    lastReactionKeyRef.current = reactionKey;
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Reacted with {reactionKey}</DialogTitle>
+          <DialogTitle>Reacted with {reactionKey ?? lastReactionKeyRef.current}</DialogTitle>
           <DialogDescription>
             {details.length} reaction{details.length === 1 ? "" : "s"}
           </DialogDescription>
