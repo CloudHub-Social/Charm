@@ -547,6 +547,19 @@ export function onSasUpdate(
  * when actually running as a web build (`isWebBuild()`) — an `AbortSignal`
  * isn't a plausible Tauri IPC argument, so it's never sent down that path.
  */
+// A user-initiated cancel is expected UX, not a bug, so it must not count
+// toward `captureOnError` below — but it doesn't reject the same way on
+// both builds: desktop's Rust command rejects with the literal string
+// "upload cancelled" (see cancel_attachment_upload's doc comment), while
+// web's `fetch(..., { signal })` rejects with a DOMException named
+// "AbortError" when the AbortController above fires.
+function isUploadCancellation(error: unknown): boolean {
+  if (error === "upload cancelled") return true;
+  return typeof DOMException !== "undefined" && error instanceof DOMException
+    ? error.name === "AbortError"
+    : false;
+}
+
 export function sendAttachment(
   roomId: string,
   filePath: string | File,
@@ -555,14 +568,18 @@ export function sendAttachment(
   stripExifEnabled = true,
   signal?: AbortSignal,
 ): Promise<void> {
-  return invoke("send_attachment", {
-    roomId,
-    filePath,
-    txnId,
-    caption,
-    stripExifEnabled,
-    ...(isWebBuild() ? { signal } : {}),
-  });
+  return invoke(
+    "send_attachment",
+    {
+      roomId,
+      filePath,
+      txnId,
+      caption,
+      stripExifEnabled,
+      ...(isWebBuild() ? { signal } : {}),
+    },
+    { captureOnError: (error) => !isUploadCancellation(error) },
+  );
 }
 
 /** Cancels an in-flight `sendAttachment` upload keyed by `txnId`. A no-op if

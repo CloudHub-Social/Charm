@@ -598,31 +598,52 @@ pub async fn send_attachment(
             Ok(())
         }
         Err(error) => {
+            // Review fix: a user clicking Cancel mid-upload is expected UX,
+            // not a bug — recording it identically to a genuine upload
+            // failure (Error-level breadcrumb, warn-level log, an
+            // UnknownError span status) made normal cancels indistinguishable
+            // from real failures in Sentry/telemetry.
+            let cancelled = error == "upload cancelled";
             add_attachment_ipc_breadcrumb(
-                sentry::Level::Error,
-                "failed",
+                if cancelled {
+                    sentry::Level::Info
+                } else {
+                    sentry::Level::Error
+                },
+                if cancelled { "cancelled" } else { "failed" },
                 operation_id.as_deref(),
                 breadcrumb_total_bytes,
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
-            tracing::warn!(
-                command = "send_attachment",
-                status = "failed",
-                total_bytes = ?breadcrumb_total_bytes,
-                mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms = tracing_duration_ms,
-                "Attachment IPC failed"
-            );
+            if cancelled {
+                tracing::info!(
+                    command = "send_attachment",
+                    status = "cancelled",
+                    total_bytes = ?breadcrumb_total_bytes,
+                    mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                    duration_ms = tracing_duration_ms,
+                    "Attachment IPC cancelled"
+                );
+            } else {
+                tracing::warn!(
+                    command = "send_attachment",
+                    status = "failed",
+                    total_bytes = ?breadcrumb_total_bytes,
+                    mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                    duration_ms = tracing_duration_ms,
+                    "Attachment IPC failed"
+                );
+            }
             Err(error)
         }
     };
 
     if let Some(transaction) = trace_transaction {
-        transaction.set_status(if outcome.is_ok() {
-            sentry::protocol::SpanStatus::Ok
-        } else {
-            sentry::protocol::SpanStatus::UnknownError
+        transaction.set_status(match &outcome {
+            Ok(_) => sentry::protocol::SpanStatus::Ok,
+            Err(error) if error == "upload cancelled" => sentry::protocol::SpanStatus::Cancelled,
+            Err(_) => sentry::protocol::SpanStatus::UnknownError,
         });
         transaction.finish();
     }
