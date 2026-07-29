@@ -12,6 +12,7 @@ interface WhoReactedDialogProps {
   open: boolean;
   reactionKey: string | null;
   details: ReactionDetail[];
+  loading?: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -20,6 +21,7 @@ export function WhoReactedDialog({
   open,
   reactionKey,
   details,
+  loading = false,
   onOpenChange,
 }: WhoReactedDialogProps) {
   // Radix keeps the dialog content mounted during its exit animation. The
@@ -36,7 +38,9 @@ export function WhoReactedDialog({
         <DialogHeader>
           <DialogTitle>Reacted with {reactionKey ?? lastReactionKeyRef.current}</DialogTitle>
           <DialogDescription>
-            {details.length} reaction{details.length === 1 ? "" : "s"}
+            {loading
+              ? "Loading reactions…"
+              : `${details.length} reaction${details.length === 1 ? "" : "s"}`}
           </DialogDescription>
         </DialogHeader>
         <ul className="flex max-h-80 flex-col gap-1 overflow-auto text-sm">

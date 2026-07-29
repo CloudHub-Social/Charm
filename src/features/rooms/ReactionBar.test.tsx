@@ -182,6 +182,24 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("@user-8:example.org")).toBeInTheDocument();
   });
 
+  it("shows a loading state while the full reactor list refetches", async () => {
+    getReactionDetails.mockReturnValue(new Promise(() => {}));
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+
+    expect(await screen.findByText("Loading reactions…")).toBeInTheDocument();
+    expect(screen.queryByText("0 reactions")).not.toBeInTheDocument();
+  });
+
   it("clears reactor details after the full-list dialog closes", async () => {
     const firstDetails = Array.from({ length: 9 }, (_, index) => ({
       sender: `@first-${index}:example.org`,

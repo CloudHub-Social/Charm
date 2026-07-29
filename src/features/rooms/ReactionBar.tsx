@@ -236,6 +236,7 @@ export function ReactionBar({
         open={modalKey !== null}
         reactionKey={modalKey}
         details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
+        loading={modalReaction !== undefined && detailsByKey[modalReaction.key] === undefined}
         onOpenChange={(open) => !open && closeModal()}
       />
     </TooltipProvider>
