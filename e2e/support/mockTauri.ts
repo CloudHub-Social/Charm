@@ -269,6 +269,7 @@ export function installMockTauri(seed: {
       kick: true,
       ban: true,
       set_canonical_alias: true,
+      set_space_child: true,
     },
     canonical_alias: null,
     alt_aliases: [],

@@ -202,6 +202,13 @@ pub struct RoomPermissions {
     /// `m.room.pinned_events`, same pattern as every other `set_*` field
     /// above.
     pub set_pinned_events: bool,
+    /// Gates `SpaceRail`'s "Add existing…", "Mark/Unmark as suggested", and
+    /// "Remove from space" actions (Spec 63) — power level required to send
+    /// `m.space.child` in *this* room. "Add existing" checks it against the
+    /// target space being added to; "Suggested"/"Remove" check it against
+    /// the child's *parent* space (a second, separately-fetched
+    /// `RoomDetails`), since that's whose `m.space.child` edge is mutated.
+    pub set_space_child: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -301,6 +308,7 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
             .user_can_send_state(own_user_id, StateEventType::RoomCanonicalAlias),
         set_pinned_events: power_levels
             .user_can_send_state(own_user_id, StateEventType::RoomPinnedEvents),
+        set_space_child: power_levels.user_can_send_state(own_user_id, StateEventType::SpaceChild),
     };
 
     let is_encrypted = room
