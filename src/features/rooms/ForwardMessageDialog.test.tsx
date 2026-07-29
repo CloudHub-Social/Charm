@@ -139,4 +139,39 @@ describe("ForwardMessageDialog", () => {
     await screen.findByText("Alpha");
     expect(screen.queryByText("Charlie")).not.toBeInTheDocument();
   });
+
+  it("excludes the source room and joined spaces from forward targets", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!target:localhost",
+        name: "Target",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: false,
+      },
+      {
+        room_id: "!source:localhost",
+        name: "Source",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: false,
+      },
+      {
+        room_id: "!space:localhost",
+        name: "Community",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: true,
+      },
+    ]);
+
+    renderDialog();
+
+    await screen.findByText("Target");
+    expect(screen.queryByText("Source")).not.toBeInTheDocument();
+    expect(screen.queryByText("Community")).not.toBeInTheDocument();
+  });
 });

@@ -44,6 +44,7 @@ export function ReactionBar({
 }: ReactionBarProps) {
   const messageActionParityEnabled = useFlag("message_action_parity");
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
+  const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
   const [modalKey, setModalKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
@@ -80,13 +81,22 @@ export function ReactionBar({
     const generation = (requestGenerationRef.current[key] ?? 0) + 1;
     requestGenerationRef.current[key] = generation;
     inFlightKeysRef.current.add(key);
+    setDetailErrorsByKey((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
         if (requestGenerationRef.current[key] !== generation) return;
         fetchedAtCountRef.current[key] = reaction.count;
         setDetailsByKey((prev) => ({ ...prev, [key]: details }));
       })
-      .catch(() => {})
+      .catch(() => {
+        if (requestGenerationRef.current[key] !== generation) return;
+        setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
+      })
       .finally(() => {
         if (requestGenerationRef.current[key] !== generation) return;
         inFlightKeysRef.current.delete(key);
@@ -101,6 +111,12 @@ export function ReactionBar({
       (requestGenerationRef.current[reaction.key] ?? 0) + 1;
     inFlightKeysRef.current.delete(reaction.key);
     delete fetchedAtCountRef.current[reaction.key];
+    setDetailErrorsByKey((prev) => {
+      if (!(reaction.key in prev)) return prev;
+      const next = { ...prev };
+      delete next[reaction.key];
+      return next;
+    });
     setDetailsByKey((prev) => {
       if (!(reaction.key in prev)) return prev;
       const next = { ...prev };
@@ -155,11 +171,14 @@ export function ReactionBar({
     if (!messageActionParityEnabled || !roomId || !eventId) return chip;
 
     const details = detailsByKey[reaction.key];
+    const detailError = detailErrorsByKey[reaction.key];
     return (
       <Tooltip key={reaction.key} onOpenChange={(open) => !open && clearDetails(reaction)}>
         <TooltipTrigger asChild>{chip}</TooltipTrigger>
         <TooltipContent>
-          {!details ? (
+          {detailError ? (
+            "Could not load reactions."
+          ) : !details ? (
             "Loading…"
           ) : details.length === 0 ? (
             "No reactions"

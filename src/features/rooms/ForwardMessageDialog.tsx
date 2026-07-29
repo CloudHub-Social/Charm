@@ -58,11 +58,13 @@ export function ForwardMessageDialog({
     // returns pending invites (`membership: "invite"`), and forwarding into
     // one would fail with an avoidable IPC error since the account hasn't
     // actually joined it yet.
-    const joinedRooms = rooms.filter((room) => room.membership === "join");
+    const joinedRooms = rooms.filter(
+      (room) => room.membership === "join" && !room.is_space && room.room_id !== sourceRoomId,
+    );
     const needle = filter.trim().toLowerCase();
     if (needle === "") return joinedRooms;
     return joinedRooms.filter((room) => (room.name ?? room.room_id).toLowerCase().includes(needle));
-  }, [rooms, filter]);
+  }, [rooms, filter, sourceRoomId]);
 
   async function handleForward(targetRoomId: string) {
     if (!sourceRoomId || !eventId) return;

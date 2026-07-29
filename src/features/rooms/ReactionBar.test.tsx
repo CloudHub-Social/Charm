@@ -137,8 +137,8 @@ describe("ReactionBar", () => {
     expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
   });
 
-  it("leaves the tooltip in its loading state when detail lookup fails", async () => {
-    getReactionDetails.mockRejectedValue(new Error("offline"));
+  it("surfaces detail lookup failures instead of loading forever", async () => {
+    getReactionDetails.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
     render(
       <ReactionBar
@@ -153,8 +153,16 @@ describe("ReactionBar", () => {
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
 
-    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(await screen.findByText("Could not load reactions.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
     await waitFor(() => expect(getReactionDetails).toHaveBeenCalledOnce());
+
+    fireEvent.blur(chip);
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("No reactions")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
 
   it("deduplicates repeated hover requests before React commits loading state", () => {
