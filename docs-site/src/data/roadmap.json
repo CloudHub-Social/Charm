@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-28T22:10:35.030Z",
+  "generatedAt": "2026-07-28T23:54:05.526Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 35,
@@ -10,13 +10,6 @@
     "planned": 34
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 298,
-      "title": "Spec 63: power-level gating for SpaceRail context menu",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/298",
-      "detail": "Day-1 Spec 63 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 301,
@@ -37,6 +30,13 @@
       "title": "Message action parity: forward, view source, report, edit history, reaction viewer",
       "url": "https://github.com/CloudHub-Social/Charm/pull/300",
       "detail": "Day-1 Spec 37 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 298,
+      "title": "Spec 63: power-level gating for SpaceRail context menu",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/298",
+      "detail": "Day-1 Spec 63 · ready for review"
     },
     {
       "type": "issue",
@@ -1075,7 +1075,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/300",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-18T23:27:19Z"
+          "updatedAt": "2026-07-28T23:42:20Z"
         },
         {
           "number": 282,
@@ -1133,6 +1133,14 @@
       "status": "shipped",
       "pullRequests": [
         {
+          "number": 316,
+          "title": "fix(web-server): unbreak cargo build --workspace after Spec 40 signature changes",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/316",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-28T23:06:08Z"
+        },
+        {
           "number": 291,
           "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/291",
@@ -1175,7 +1183,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/302",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-28T22:07:06Z"
+          "updatedAt": "2026-07-28T23:46:03Z"
         },
         {
           "number": 279,
@@ -1329,7 +1337,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/301",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-28T22:08:22Z"
+          "updatedAt": "2026-07-28T23:53:51Z"
         },
         {
           "number": 283,
@@ -1470,7 +1478,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/298",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-28T22:09:55Z"
+          "updatedAt": "2026-07-28T23:39:36Z"
         },
         {
           "number": 290,
