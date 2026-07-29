@@ -447,6 +447,14 @@ pub struct Session {
     /// open and quietly receiving live updates is active by definition, even
     /// if the user hasn't issued an HTTP request in a while.
     pub ws_connections: std::sync::atomic::AtomicUsize,
+    /// One cancellation token per in-flight `send_attachment` call, keyed by
+    /// the upload's `txn_id` — mirrors desktop's `MatrixState::attachment_cancellations`.
+    /// `routes::cancel_attachment_upload` flips the token; `routes::send_attachment`
+    /// races its upload future against it via `tokio::select!`. Entries are
+    /// removed once the upload settles so this can't grow unbounded across a
+    /// session.
+    pub attachment_cancellations:
+        std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
 /// Bundles `Session`'s "current state, replayed to every new connection"
@@ -548,6 +556,7 @@ impl Session {
                 false,
             )),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
+            attachment_cancellations: std::sync::Mutex::new(HashMap::new()),
             events,
         }
     }

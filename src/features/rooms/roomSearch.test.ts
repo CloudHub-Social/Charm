@@ -24,6 +24,7 @@ function room(overrides: Partial<RoomSummary> & { room_id: string }): RoomSummar
     inviter_user_id: null,
     inviter_display_name: null,
     last_message_preview: null,
+    last_activity_ts: null,
     ...overrides,
   };
 }

@@ -146,6 +146,15 @@ pub struct MatrixState {
     /// swap above: the cache directory doesn't depend on which account is
     /// logged in, and outlives any single `Client`.
     pub(crate) media_cache: tokio::sync::OnceCell<media::MediaCache>,
+    /// One cancellation flag per in-flight `send_attachment` call, keyed by
+    /// the upload's `txn_id`. `send::cancel_attachment_upload` flips the flag;
+    /// `send_attachment`'s upload future races against it via `tokio::select!`
+    /// so a user-initiated cancel actually drops the in-flight upload request
+    /// instead of merely hiding its tray row. Entries are removed by
+    /// `send_attachment` itself once the upload settles (success, failure, or
+    /// cancellation) so this can't grow unbounded across a session.
+    pub(crate) attachment_cancellations:
+        std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
     /// The presence state the *next* `/sync` request should report, kept in
     /// sync with the last successful `set_presence` call. `sync::spawn_sync_loop`
     /// reads this fresh on every iteration (rather than baking a single
@@ -341,6 +350,7 @@ impl Default for MatrixState {
             completing_sso_temp_store_keys: std::sync::Mutex::default(),
             reserved_temp_store_keys: std::sync::Mutex::default(),
             media_cache: tokio::sync::OnceCell::default(),
+            attachment_cancellations: std::sync::Mutex::default(),
             sync_presence: std::sync::Mutex::default(),
             timelines: Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(MAX_LIVE_TIMELINES)

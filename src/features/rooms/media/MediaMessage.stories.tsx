@@ -44,7 +44,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Image: Story = {
   args: {
-    content: { type: "File", filename: "", mime: null, size: null },
+    content: { type: "File", filename: "", mime: null, size: null, caption: null },
     roomId: "",
     eventId: "",
     body: "",
@@ -58,6 +58,7 @@ export const Image: Story = {
       height: 600,
       has_thumbnail: true,
       blurhash: null,
+      caption: null,
     };
     const client = withSeededMedia([
       { roomId: ROOM_ID, eventId: "$story-image", thumbnail: true, url: PLACEHOLDER_IMAGE },
@@ -73,7 +74,7 @@ export const Image: Story = {
 
 export const Video: Story = {
   args: {
-    content: { type: "File", filename: "", mime: null, size: null },
+    content: { type: "File", filename: "", mime: null, size: null, caption: null },
     roomId: "",
     eventId: "",
     body: "",
@@ -87,6 +88,7 @@ export const Video: Story = {
       height: 1080,
       duration_ms: 12_000,
       has_thumbnail: true,
+      caption: null,
     };
     const client = withSeededMedia([
       { roomId: ROOM_ID, eventId: "$story-video", thumbnail: true, url: PLACEHOLDER_IMAGE },
@@ -101,7 +103,7 @@ export const Video: Story = {
 
 export const Audio: Story = {
   args: {
-    content: { type: "File", filename: "", mime: null, size: null },
+    content: { type: "File", filename: "", mime: null, size: null, caption: null },
     roomId: "",
     eventId: "",
     body: "",
@@ -112,6 +114,7 @@ export const Audio: Story = {
       mime: "audio/ogg",
       size: 89_000,
       duration_ms: 8_000,
+      caption: "Voicemail from the standup",
     };
     const client = new QueryClient();
     return (
@@ -129,7 +132,7 @@ export const Audio: Story = {
 
 export const FileAttachment: Story = {
   args: {
-    content: { type: "File", filename: "", mime: null, size: null },
+    content: { type: "File", filename: "", mime: null, size: null, caption: null },
     roomId: "",
     eventId: "",
     body: "",
@@ -140,6 +143,7 @@ export const FileAttachment: Story = {
       filename: "quarterly-report.pdf",
       mime: "application/pdf",
       size: 1_240_000,
+      caption: "Final numbers, please review before Friday",
     };
     const client = new QueryClient();
     return (

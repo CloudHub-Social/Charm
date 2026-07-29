@@ -1,12 +1,14 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, useEffect } from "react";
 import {
+  autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   showUnreadCountsAtom,
+  stripExifOnUploadAtom,
   themeAtom,
 } from "./atoms";
 import { applyAppearanceToDom, resolveEffectiveTheme } from "./dom";
@@ -42,6 +44,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setMessageLayout = useSetAtom(messageLayoutAtom);
   const setJumboEmojiSize = useSetAtom(jumboEmojiSizeAtom);
   const setShowUnreadCounts = useSetAtom(showUnreadCountsAtom);
+  const setAutoplayGifs = useSetAtom(autoplayGifsAtom);
+  const setStripExifOnUpload = useSetAtom(stripExifOnUploadAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +68,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setMessageLayout(state.messageLayout);
       setJumboEmojiSize(state.jumboEmojiSize);
       setShowUnreadCounts(state.showUnreadCounts);
+      setAutoplayGifs(state.autoplayGifs);
+      setStripExifOnUpload(state.stripExifOnUpload);
       applyAppearanceToDom(state);
     }
 
@@ -72,12 +78,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [
+    setAutoplayGifs,
     setDensity,
     setFontSize,
     setJumboEmojiSize,
     setMessageLayout,
     setReducedMotion,
     setShowUnreadCounts,
+    setStripExifOnUpload,
     setTheme,
   ]);
 

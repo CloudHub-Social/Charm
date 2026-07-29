@@ -1,12 +1,14 @@
 import { useAtom } from "jotai";
 import { useCallback } from "react";
 import {
+  autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   showUnreadCountsAtom,
+  stripExifOnUploadAtom,
   themeAtom,
   type AppearanceState,
   type Density,
@@ -39,6 +41,8 @@ export function useAppearance() {
   const [messageLayout, setMessageLayoutAtom] = useAtom(messageLayoutAtom);
   const [jumboEmojiSize, setJumboEmojiSizeAtom] = useAtom(jumboEmojiSizeAtom);
   const [showUnreadCounts, setShowUnreadCountsAtom] = useAtom(showUnreadCountsAtom);
+  const [autoplayGifs, setAutoplayGifsAtom] = useAtom(autoplayGifsAtom);
+  const [stripExifOnUpload, setStripExifOnUploadAtom] = useAtom(stripExifOnUploadAtom);
 
   const commit = useCallback(
     (patch: Partial<AppearanceState>) => {
@@ -50,12 +54,24 @@ export function useAppearance() {
         messageLayout,
         jumboEmojiSize,
         showUnreadCounts,
+        autoplayGifs,
+        stripExifOnUpload,
         ...patch,
       };
       applyAppearanceToDom(next);
       void persistAppearance(next);
     },
-    [density, fontSize, jumboEmojiSize, messageLayout, reducedMotion, showUnreadCounts, theme],
+    [
+      autoplayGifs,
+      density,
+      fontSize,
+      jumboEmojiSize,
+      messageLayout,
+      reducedMotion,
+      showUnreadCounts,
+      stripExifOnUpload,
+      theme,
+    ],
   );
 
   const setTheme = useCallback(
@@ -114,6 +130,22 @@ export function useAppearance() {
     [commit, setShowUnreadCountsAtom],
   );
 
+  const setAutoplayGifs = useCallback(
+    (next: boolean) => {
+      setAutoplayGifsAtom(next);
+      commit({ autoplayGifs: next });
+    },
+    [commit, setAutoplayGifsAtom],
+  );
+
+  const setStripExifOnUpload = useCallback(
+    (next: boolean) => {
+      setStripExifOnUploadAtom(next);
+      commit({ stripExifOnUpload: next });
+    },
+    [commit, setStripExifOnUploadAtom],
+  );
+
   return {
     theme,
     fontSize,
@@ -122,6 +154,8 @@ export function useAppearance() {
     messageLayout,
     jumboEmojiSize,
     showUnreadCounts,
+    autoplayGifs,
+    stripExifOnUpload,
     setTheme,
     setFontSize,
     setDensity,
@@ -129,5 +163,7 @@ export function useAppearance() {
     setMessageLayout,
     setJumboEmojiSize,
     setShowUnreadCounts,
+    setAutoplayGifs,
+    setStripExifOnUpload,
   };
 }

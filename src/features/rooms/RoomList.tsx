@@ -41,12 +41,19 @@ import {
   type RoomListFilter,
 } from "./roomListFilter";
 import {
+  persistRoomListSorts,
+  readRoomListSorts,
+  sortRoomsForDisplay,
+  type RoomListSort,
+} from "./roomListSort";
+import {
   groupRoomsIntoSections,
   planManualReorder,
   targetIndexFromMeasuredHeights,
 } from "./roomSections";
 import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { useRoomListTyping } from "./useRoomListTyping";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomListMode } from "./SpaceRail";
 
@@ -54,6 +61,12 @@ interface RoomListProps {
   rooms: RoomSummary[];
   loading?: boolean;
   activeRoomId: string | null;
+  /** The signed-in user's id, from `RoomsScreen`'s own stable session state
+   * — used for `useRoomListTyping`'s self-filter instead of the `useOwnProfile`
+   * query below, which can still be loading (or fail, e.g. offline) well
+   * after the session itself is known, and would otherwise drop every
+   * other user's typing notice received during that window. */
+  currentUserId: string;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
   /**
@@ -89,6 +102,10 @@ interface RoomListProps {
 }
 
 const noopInviteAction = (): Promise<void> => Promise.resolve();
+// Stable empty-set reference so a flag-off render doesn't hand
+// `renderHierarchy` a fresh `Set` every time (defeats nothing correctness-
+// wise here, but keeping it a constant avoids an unnecessary allocation).
+const EMPTY_TYPING_IDS: Set<string> = new Set();
 
 function unreadBadgeLabel(totalUnread: number, totalHighlight: number): string {
   const rooms = `${totalUnread} unread room${totalUnread === 1 ? "" : "s"}`;
@@ -108,6 +125,7 @@ export function RoomList({
   rooms,
   loading = false,
   activeRoomId,
+  currentUserId,
   onSelectRoom,
   onSelectSpace,
   onSelectSearchResult,
@@ -127,6 +145,7 @@ export function RoomList({
   // search every joined room instead.
   const [searchEverywhere, setSearchEverywhere] = useState(false);
   const [roomListFilters, setRoomListFilters] = useState(readRoomListFilters);
+  const [roomListSorts, setRoomListSorts] = useState(readRoomListSorts);
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
   const [spaceLoading, setSpaceLoading] = useState(false);
   // Kept separate from `joinError`: this is specifically "the hierarchy
@@ -168,12 +187,30 @@ export function RoomList({
   // "Remove from space" on a regular room row is the counterpart to that
   // menu's `Remove` for sub-space rows, so it ships/rolls out together.
   const spaceRailManagementEnabled = useFlag("space_rail_management");
+  const roomListSortFlagEnabled = useFlag("room_list_sort");
+  const roomListTypingFlagEnabled = useFlag("room_list_typing_indicator");
+  // Called unconditionally (rules of hooks) — the `enabled` flag it's given
+  // makes the disabled case a real kill switch (no subscription, no
+  // cross-room typing processing), not just a discarded result; every read
+  // of its return value below is also independently gated on the flag as a
+  // second layer, mirroring `useChatTyping`'s own `detailControlsEnabled`
+  // pattern.
+  const typingRoomIds = useRoomListTyping(currentUserId, roomListTypingFlagEnabled);
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
     ? roomListFilters[mode]
     : "all";
   const unreadOnly = activeFilter === "unread";
+  // A sort preference persisted while on desktop/native can be "activity" —
+  // an option intentionally hidden on web (see the <option> below) since
+  // web RoomSummary.last_activity_ts is always null. Falling back to
+  // "default" here (display-only; the persisted value itself is untouched)
+  // keeps the <select>'s value matching one of its rendered <option>s,
+  // rather than a value with no corresponding option.
+  const rawActiveSort: RoomListSort = roomListSortFlagEnabled ? roomListSorts[mode] : "default";
+  const activeSort: RoomListSort =
+    isWebBuild() && rawActiveSort === "activity" ? "default" : rawActiveSort;
   currentScopeRef.current = { mode, selectedSpaceId };
 
   const invitedRooms = useMemo(() => rooms.filter((room) => room.membership === "invite"), [rooms]);
@@ -282,7 +319,25 @@ export function RoomList({
     () => (unreadOnly ? filterRoomsToUnread(scopedRooms, activeRoomId) : scopedRooms),
     [unreadOnly, scopedRooms, activeRoomId],
   );
-  const sections = useMemo(() => groupRoomsIntoSections(visibleScopedRooms), [visibleScopedRooms]);
+  const sections = useMemo(() => {
+    const grouped = groupRoomsIntoSections(visibleScopedRooms);
+    // Sorted within each section only — never across Favourites/a space
+    // group/plain Rooms/Low priority, so a sort choice can't move a room out
+    // of its existing grouping. A non-"default" sort naturally disables
+    // manual drag-reorder for the affected rows: `renderSectionRooms`'s
+    // `canReorder` already requires this visible order to match
+    // `fullSections`' unsorted one, which a resort deliberately breaks.
+    return {
+      ...grouped,
+      favourites: sortRoomsForDisplay(grouped.favourites, activeSort),
+      spaceGroups: grouped.spaceGroups.map((group) => ({
+        ...group,
+        rooms: sortRoomsForDisplay(group.rooms, activeSort),
+      })),
+      rooms: sortRoomsForDisplay(grouped.rooms, activeSort),
+      lowPriority: sortRoomsForDisplay(grouped.lowPriority, activeSort),
+    };
+  }, [visibleScopedRooms, activeSort]);
   const fullSections = useMemo(() => groupRoomsIntoSections(joinedRooms), [joinedRooms]);
   const fullFavouriteSectionRooms = getFullSectionRooms(
     sections.favourites,
@@ -457,8 +512,14 @@ export function RoomList({
 
   function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
     // Reordering a filtered subset would compute positions against missing
-    // rows and silently corrupt the full section order once "All" is restored.
-    const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
+    // rows and silently corrupt the full section order once "All" is
+    // restored, and reordering under a non-default sort would write a
+    // manual order that the visible (sorted) order doesn't actually reflect
+    // — checking `activeSort` directly rather than inferring it from order
+    // equality, since a non-default sort can coincidentally produce the same
+    // order as default (e.g. A-Z with no manual orders yet).
+    const canReorder =
+      !unreadOnly && activeSort === "default" && hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => {
       // Favourite/low-priority rooms bypass the hierarchy view entirely (see
       // `isHiddenHierarchyRoom`) and render through this same section-rows
@@ -485,6 +546,7 @@ export function RoomList({
           canReorder={canReorder}
           rowHeights={rowHeightsRef.current}
           active={room.room_id === activeRoomId}
+          isTyping={roomListTypingFlagEnabled && typingRoomIds.has(room.room_id)}
           onSelect={() => onSelectRoom(room.room_id)}
           onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
           onRemoveFromSpace={
@@ -516,6 +578,7 @@ export function RoomList({
         key={room.room_id}
         room={room}
         active={room.room_id === activeRoomId}
+        isTyping={roomListTypingFlagEnabled && typingRoomIds.has(room.room_id)}
         // Clearing search state here (inside `handleSelectSearchResult`)
         // rather than relying solely on the mode/selectedSpaceId reset
         // effect below matters because `onSelectSearchResult` can land back
@@ -601,6 +664,14 @@ export function RoomList({
     setRoomListFilters((previous) => {
       const next = { ...previous, [mode]: filter };
       persistRoomListFilters(next);
+      return next;
+    });
+  }
+
+  function selectRoomSort(sort: RoomListSort) {
+    setRoomListSorts((previous) => {
+      const next = { ...previous, [mode]: sort };
+      persistRoomListSorts(next);
       return next;
     });
   }
@@ -719,6 +790,35 @@ export function RoomList({
               </fieldset>
             </div>
           )}
+          {roomListSortFlagEnabled &&
+            mode !== "space" && (
+              // Space mode renders `filteredSpaceHierarchy` via `renderHierarchy`,
+              // which never passes through `sortRoomsForDisplay` — `activeSort`
+              // only affects the grouped Home/DM `sections` below. Showing the
+              // control here would let it appear to apply while silently doing
+              // nothing to the space's room list.
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <label htmlFor="room-list-sort" className="text-xs text-muted-foreground">
+                  Sort
+                </label>
+                <select
+                  id="room-list-sort"
+                  value={activeSort}
+                  onChange={(event) => selectRoomSort(event.target.value as RoomListSort)}
+                  className="rounded-md border border-border bg-muted/40 px-2 py-1 text-xs font-medium text-foreground"
+                >
+                  <option value="default">Default</option>
+                  {/* charm-web-server has no feature-flag store yet, so its
+                      snapshot_rooms callers always pass include_activity_sort
+                      = false — every web RoomSummary.last_activity_ts is
+                      null, which would make this option silently no-op.
+                      Hide it here until the flag is threaded through. */}
+                  {!isWebBuild() && <option value="activity">Activity</option>}
+                  <option value="az">A-Z</option>
+                  <option value="unread">Unread first</option>
+                </select>
+              </div>
+            )}
           <div className="mt-2 flex items-center gap-2">
             <div className="relative min-w-0 flex-1">
               <SearchIcon
@@ -871,6 +971,7 @@ export function RoomList({
                       spaceManagementEnabled: spaceRailManagementEnabled,
                       onRemoved: refetchSpaceHierarchy,
                       onRemoveError: setRemoveError,
+                      typingRoomIds: roomListTypingFlagEnabled ? typingRoomIds : EMPTY_TYPING_IDS,
                     },
                     selectedSpace.room_id,
                   )}
@@ -1012,6 +1113,7 @@ function renderHierarchy(
      * level) — this action isn't power-level-gated in the UI, so a rejection
      * is a normal reachable outcome that needs to be visible. */
     onRemoveError: (message: string) => void;
+    typingRoomIds: Set<string>;
   },
   /** The id of the space each node in `nodes` is a direct child of — root
    * spaces are children of the currently selected space; recursing into a
@@ -1034,6 +1136,7 @@ function renderHierarchy(
         depth={depth}
         active={node.child.room_id === options.activeRoomId}
         pending={options.pendingRoomId === node.child.room_id}
+        isTyping={options.typingRoomIds.has(node.child.room_id)}
         onSelectRoom={options.onSelectRoom}
         onSelectSpace={options.onSelectSpace}
         onJoin={options.onJoin}
@@ -1077,6 +1180,7 @@ interface HierarchyRowProps {
   depth: number;
   active: boolean;
   pending: boolean;
+  isTyping?: boolean;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
@@ -1090,6 +1194,7 @@ function HierarchyRow({
   depth,
   active,
   pending,
+  isTyping = false,
   onSelectRoom,
   onSelectSpace,
   onJoin,
@@ -1122,6 +1227,7 @@ function HierarchyRow({
         <RoomListItem
           room={joinedRoom}
           active={active}
+          isTyping={isTyping}
           onSelect={() => onSelectRoom(joinedRoom.room_id)}
           onToggleFavourite={() =>
             setRoomFavourite(joinedRoom.room_id, !joinedRoom.is_favourite).catch(logAndIgnore)
@@ -1167,6 +1273,7 @@ interface DraggableRoomRowProps {
   /** Measured row heights by room id — see `rowHeightsRef`'s doc comment. */
   rowHeights: Map<string, number>;
   active: boolean;
+  isTyping?: boolean;
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
   onRemoveFromSpace?: () => void;
@@ -1180,6 +1287,7 @@ function DraggableRoomRow({
   canReorder,
   rowHeights,
   active,
+  isTyping = false,
   onSelect,
   onReorder,
   onRemoveFromSpace,
@@ -1274,6 +1382,7 @@ function DraggableRoomRow({
     <RoomListItem
       room={room}
       active={active}
+      isTyping={isTyping}
       onSelect={onSelect}
       onToggleFavourite={() =>
         setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)

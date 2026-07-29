@@ -290,6 +290,11 @@ pub fn router(state: AppState) -> Router {
             )),
         )
         .route(
+            "/api/media/attachments/{txn_id}/cancel",
+            post(cancel_attachment_upload),
+        )
+        .route("/api/media/config", get(get_media_config))
+        .route(
             "/api/profile/avatar",
             put(set_avatar)
                 .delete(remove_avatar)
@@ -1964,13 +1969,15 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // `RoomListMessagePreview` isn't wired up for the web build yet (no
-    // feature-flag store here, unlike desktop's `feature_flags::flag`) — off
-    // for now, matching the flag's compiled-in default.
+    // `RoomListMessagePreview`/`RoomListSort` aren't wired up for the web
+    // build yet (no feature-flag store here, unlike desktop's
+    // `feature_flags::flag`) — off for now, matching each flag's compiled-in
+    // default.
     Ok(Json(
         snapshot_rooms(
             &session.client,
             None,
+            false,
             false,
             &session.preview_registered_rooms,
         )
@@ -3561,6 +3568,27 @@ struct AttachmentQuery {
     txn_id: String,
 }
 
+/// Removes `txn_id`'s entry from `session.attachment_cancellations` on
+/// every exit path out of `send_attachment` (success, an early `?` return,
+/// or a panic unwind) — registering the token as early as possible (so a
+/// cancel during multipart parsing isn't lost) means there are several such
+/// paths, and this guard is simpler than threading manual cleanup through
+/// each one.
+struct AttachmentCancellationGuard {
+    session: Arc<Session>,
+    txn_id: String,
+}
+
+impl Drop for AttachmentCancellationGuard {
+    fn drop(&mut self) {
+        self.session
+            .attachment_cancellations
+            .lock()
+            .expect("attachment_cancellations mutex poisoned")
+            .remove(&self.txn_id);
+    }
+}
+
 async fn send_attachment(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -3582,10 +3610,32 @@ async fn send_attachment(
         .get_room(&parsed_room_id)
         .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
 
+    // Registered as soon as txn_id is known — before the multipart body is
+    // even read — so a cancel that arrives during body parsing or EXIF
+    // re-encoding isn't lost. `cancel_attachment_upload` finding no entry
+    // yet would otherwise report success while this handler proceeds to
+    // `room.send_attachment` anyway. `_cancellation_guard` removes the
+    // registration on *every* exit path (including the early returns below
+    // for a missing field, over-size upload, or bad multipart framing) —
+    // not just the success/upload path — so a request that fails before
+    // reaching the upload doesn't leave an unreachable, never-cancellable
+    // entry in the map.
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .insert(query.txn_id.clone(), cancellation.clone());
+    let _cancellation_guard = AttachmentCancellationGuard {
+        session: session.clone(),
+        txn_id: query.txn_id.clone(),
+    };
+
     let mut filename = None;
     let mut declared_mime: Option<mime::Mime> = None;
     let mut data: Option<Vec<u8>> = None;
     let mut caption = None;
+    let mut strip_exif_enabled = false;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -3616,12 +3666,24 @@ async fn send_attachment(
                         .map_err(|e| ApiError::bad_request(e.to_string()))?,
                 );
             }
+            Some("strip_exif") => {
+                strip_exif_enabled = field
+                    .text()
+                    .await
+                    .map_err(|e| ApiError::bad_request(e.to_string()))?
+                    == "true";
+            }
             _ => {}
         }
     }
     let filename = filename.ok_or_else(|| ApiError::bad_request("missing file field"))?;
     let data = data.ok_or_else(|| ApiError::bad_request("missing file field"))?;
-    let total_bytes = data.len() as u64;
+    // The body may have taken a while to read (a large upload, or an EXIF
+    // re-encode below) — check whether a cancel arrived during that window
+    // before spending more time/bandwidth on the actual Matrix upload.
+    if cancellation.is_cancelled() {
+        return Err(ApiError::bad_request("upload cancelled"));
+    }
 
     // Prefer the part's own `Content-Type` (a `File` object's `.type`,
     // sniffed from its actual bytes/extension by the browser itself — more
@@ -3635,6 +3697,15 @@ async fn send_attachment(
     let mime = declared_mime
         .filter(|m| *m != mime::APPLICATION_OCTET_STREAM && *m != mime::TEXT_PLAIN)
         .unwrap_or_else(|| mime_guess::from_path(&filename).first_or_octet_stream());
+    // Best-effort, mirrors desktop's `send_attachment`: an unstrippable image
+    // (animated GIF/WebP, or one that fails to decode) sends with its
+    // original bytes rather than failing the whole upload.
+    let data = if strip_exif_enabled {
+        charm_lib::matrix::send::strip_exif(&mime, &data).unwrap_or(data)
+    } else {
+        data
+    };
+    let total_bytes = data.len() as u64;
     let info = attachment_info_for(&mime, &data, total_bytes);
 
     let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
@@ -3658,13 +3729,18 @@ async fn send_attachment(
     let send = room
         .send_attachment(filename, &mime, data, config)
         .with_send_progress_observable(progress);
-    let result = send.await;
+    let result = tokio::select! {
+        result = send => result.map_err(|e| e.to_string()),
+        () = cancellation.cancelled() => Err("upload cancelled".to_string()),
+    };
     // The forwarder holds its own clone of `progress`, so it doesn't close
     // on its own when this function's binding is dropped — abort it
     // explicitly once the upload settles, same as desktop's
-    // `send_attachment` does with its own forwarder handle.
+    // `send_attachment` does with its own forwarder handle. (Cancellation
+    // registry cleanup is `_cancellation_guard`'s job now, on every exit
+    // path uniformly.)
     forwarder.abort();
-    result.map_err(|e| ApiError::bad_request(e.to_string()))?;
+    result.map_err(ApiError::bad_request)?;
 
     // A terminal 100% event, in case the observable's last tick didn't land
     // exactly on completion — lets the frontend's progress bar clear
@@ -3681,6 +3757,71 @@ async fn send_attachment(
         ));
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Cancels an in-flight `send_attachment` call for `txn_id`, if one is still
+/// running — the web companion-server counterpart to desktop's
+/// `send::cancel_attachment_upload`. A no-op (not an error) if the upload
+/// already settled or was never started, same rationale as the desktop
+/// command's own doc comment.
+async fn cancel_attachment_upload(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(txn_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    if let Some(token) = session
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .get(&txn_id)
+    {
+        token.cancel();
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod cancel_attachment_upload_origin_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn rejects_a_cross_origin_bodyless_cancel_before_session_lookup() {
+        let response = super::router(AppState::default())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/media/attachments/local-1/cancel")
+                    .header("origin", "https://attacker.example")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+}
+
+/// The homeserver's `m.upload.size` limit, in bytes — the web
+/// companion-server counterpart to desktop's `send::get_media_config`, used
+/// by the frontend to warn pre-flight instead of letting an over-limit
+/// upload fail opaquely against the server.
+async fn get_media_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let upload_size = session
+        .client
+        .load_or_fetch_max_upload_size()
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(i64::from(upload_size) as u64))
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`

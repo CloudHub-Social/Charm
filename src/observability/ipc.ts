@@ -59,9 +59,11 @@ function isUiaChallenge(error: unknown): boolean {
 function shouldCaptureIpcException(
   command: string,
   error: unknown,
-  captureOnError = true,
+  captureOnError: boolean | ((error: unknown) => boolean) = true,
 ): boolean {
-  if (!captureOnError) return false;
+  const shouldCapture =
+    typeof captureOnError === "function" ? captureOnError(error) : captureOnError;
+  if (!shouldCapture) return false;
   if (isUiaChallenge(error)) return false;
   return !BEST_EFFORT_IPC_COMMANDS.has(command);
 }
@@ -132,8 +134,14 @@ export interface InvokeOptions {
    * typing) rather than a bug — capturing those would just add noise to the
    * error stream. UIA challenges and best-effort commands are still
    * filtered out regardless of this flag.
+   *
+   * Pass a predicate instead of a plain boolean for a command whose
+   * failures are a mix of "real bug" and "expected outcome" (e.g.
+   * `send_attachment`, where most rejections are genuine upload failures
+   * worth capturing, but a user-initiated cancel isn't) — it receives the
+   * rejection value and decides per-call.
    */
-  captureOnError?: boolean;
+  captureOnError?: boolean | ((error: unknown) => boolean);
   /**
    * Skip this wrapper's own `tauri.ipc` breadcrumbs. Set to `true` by
    * callers (e.g. `lib/matrix.ts`'s `invokeMatrix`) that add their own,

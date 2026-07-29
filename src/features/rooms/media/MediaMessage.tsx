@@ -1,5 +1,8 @@
+import { useAtomValue } from "jotai";
 import { useState } from "react";
 import { Play } from "lucide-react";
+import { autoplayGifsAtom } from "@/features/appearance/atoms";
+import { useFlag } from "@/featureFlags";
 import type { MediaContent } from "@/lib/matrix";
 import { AudioPlayer } from "./AudioPlayer";
 import { FileChip } from "./FileChip";
@@ -10,55 +13,80 @@ interface MediaMessageProps {
   content: MediaContent;
   roomId: string;
   eventId: string;
-  /** Text-preview fallback (`RoomMessageSummary.body`) — used for alt text. */
+  /** Text-preview fallback (`RoomMessageSummary.body`) — used for alt text
+   * only. The visible caption line comes from `content.caption` instead
+   * (only present when the sender actually set one — see
+   * `MediaContent.Image.caption`'s doc comment), not from `body`, since
+   * `body` is the plain filename for un-captioned uploads. */
   body: string;
 }
 
 /** Renders the correct media viewer for a message's `media` field; text messages (where `media` is `null`) never reach this component. */
 export function MediaMessage({ content, roomId, eventId, body }: MediaMessageProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const autoplayGifs = useAtomValue(autoplayGifsAtom);
 
   if (content.type === "Image") {
     return (
-      <ImageThumbnail
-        alt={body}
-        roomId={roomId}
-        eventId={eventId}
-        width={content.width}
-        height={content.height}
-        lightboxOpen={lightboxOpen}
-        setLightboxOpen={setLightboxOpen}
-      />
+      <div className="flex flex-col gap-1">
+        <ImageThumbnail
+          alt={body}
+          roomId={roomId}
+          eventId={eventId}
+          width={content.width}
+          height={content.height}
+          lightboxOpen={lightboxOpen}
+          setLightboxOpen={setLightboxOpen}
+          animated={mediaSendPolishEnabled && autoplayGifs && content.mime === "image/gif"}
+        />
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+      </div>
     );
   }
 
   if (content.type === "Video") {
     return (
-      <VideoThumbnail
-        alt={body}
-        roomId={roomId}
-        eventId={eventId}
-        width={content.width}
-        height={content.height}
-        lightboxOpen={lightboxOpen}
-        setLightboxOpen={setLightboxOpen}
-      />
+      <div className="flex flex-col gap-1">
+        <VideoThumbnail
+          alt={body}
+          roomId={roomId}
+          eventId={eventId}
+          width={content.width}
+          height={content.height}
+          lightboxOpen={lightboxOpen}
+          setLightboxOpen={setLightboxOpen}
+        />
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+      </div>
     );
   }
 
   if (content.type === "Audio") {
-    return <AudioPlayer roomId={roomId} eventId={eventId} />;
+    return (
+      <div className="flex flex-col gap-1">
+        <AudioPlayer roomId={roomId} eventId={eventId} />
+        {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+      </div>
+    );
   }
 
   return (
-    <FileChip
-      filename={content.filename}
-      mime={content.mime}
-      size={content.size}
-      roomId={roomId}
-      eventId={eventId}
-    />
+    <div className="flex flex-col gap-1">
+      <FileChip
+        filename={content.filename}
+        mime={content.mime}
+        size={content.size}
+        roomId={roomId}
+        eventId={eventId}
+      />
+      {mediaSendPolishEnabled && content.caption && <MediaCaption text={content.caption} />}
+    </div>
   );
+}
+
+function MediaCaption({ text }: { text: string }) {
+  return <p className="w-70 whitespace-pre-wrap break-words text-[13px] text-foreground">{text}</p>;
 }
 
 // Matches the previous fixed `h-40 w-70` placeholder box (280x160) so rooms
@@ -83,6 +111,7 @@ function ImageThumbnail({
   height,
   lightboxOpen,
   setLightboxOpen,
+  animated = false,
 }: {
   alt: string;
   roomId: string;
@@ -91,8 +120,12 @@ function ImageThumbnail({
   height: number | null;
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
+  /** Spec 42: when true (animated GIF + the `autoplayGifs` appearance
+   * setting), fetches the full-resolution animated source instead of the
+   * homeserver's static thumbnail, so the GIF plays inline. */
+  animated?: boolean;
 }) {
-  const { data: thumbSrc } = useMediaSource(roomId, eventId, { thumbnail: true });
+  const { data: thumbSrc } = useMediaSource(roomId, eventId, { thumbnail: !animated });
 
   return (
     <>

@@ -75,7 +75,7 @@ here.
 | 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
-| 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **In progress** | Feature-gated attachment drag-and-drop target implemented; captions, size preflight, cancellation, GIF controls, and EXIF stripping remain |
+| 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
 | 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **Planned** | Restore exists through Spec 25; setup and import/export remain scoped here |
 | 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **Planned** | No matching merged implementation found |
@@ -87,7 +87,7 @@ here.
 | 51 | [App localization](/specs/day-1/spec-51--app-localization-i18n/) | **Planned** | Stretch / lower priority |
 | 52 | [Responsive and mobile-web hardening](/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/) | **Shipped** | [#242](https://github.com/CloudHub-Social/Charm/pull/242), [#245](https://github.com/CloudHub-Social/Charm/pull/245); redesign defaults off |
 | 53 | [Avatars and presence visuals](/specs/day-1/spec-53--avatars-and-presence-visuals/) | **Planned** | No matching merged implementation found |
-| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **In progress** | Flag-gated All / Unread filters and optional ambient unread message counts are implemented; sorting and further row enrichment remain |
+| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **Shipped** | Flag-gated All / Unread filter, last-message preview, sort control (default/activity/A-Z/unread-first), and a typing-in-list indicator; each behind its own default-off flag |
 | 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Planned** | No matching merged implementation found |
 | 56 | [Room invites](/specs/day-1/spec-56--room-invites-surface/) | **Shipped** | [#243](https://github.com/CloudHub-Social/Charm/pull/243), default-off flag |
 | 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | No matching merged implementation found |
