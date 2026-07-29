@@ -75,11 +75,21 @@ async fn paginated_relations(
 
         match relations.next_batch_token {
             Some(next) => from = Some(next),
-            None => break,
+            // Genuinely exhausted — every relation has been collected.
+            None => return Ok(all),
         }
     }
 
-    Ok(all)
+    // Review fix: hit `MAX_RELATION_PAGES` while `next_batch_token` was
+    // still `Some` — there are more relations beyond the cap that this
+    // never fetched. Returning `all` here would present a silently
+    // truncated subset to `EditHistoryDialog`/`WhoReactedDialog` as if it
+    // were the complete edit history / reactor list. Erroring instead lets
+    // the frontend show a real failure rather than confidently wrong data.
+    Err(format!(
+        "relation lookup for {event_id} exceeded the {MAX_RELATION_PAGES}-page limit \
+         without exhausting the relation stream"
+    ))
 }
 
 /// Result of `toggle_reaction`, so the frontend can optimistically flip

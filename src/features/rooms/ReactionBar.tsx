@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
@@ -58,47 +58,64 @@ export function ReactionBar({
     modalKeyRef.current = key;
     setModalKeyState(key);
   }
+  // Records the reaction `count` the cache entry for a given key was last
+  // fetched at, so the modal-open effect below can tell "still fresh" from
+  // "a reaction arrived/left while the modal was open" without folding
+  // count into the cache key itself (see `loadDetails`'s doc comment for
+  // why that was the wrong axis to key on).
+  const fetchedAtCountRef = useRef<Record<string, number>>({});
 
-  if (reactions.length === 0) {
-    return null;
-  }
-
-  // Keyed by `${key}:${count}` — a later `m.reaction`/redaction changing the
-  // count for the same emoji invalidates the cached reactor list. Count
-  // alone can't catch a same-count membership swap (Alice removes 👍, Bob
-  // adds 👍) since `ReactionGroup` carries no version/timestamp to detect
-  // that with — so `clearDetails` below drops the entry as soon as the
-  // hover ends, bounding staleness to "while this hover is still open"
-  // rather than "until the count happens to change".
-  function cacheKeyFor(reaction: ReactionGroup) {
-    return `${reaction.key}:${reaction.count}`;
-  }
-  function loadDetails(reaction: ReactionGroup) {
+  // Cache keyed by the emoji `key` alone — see `clearDetails` for why count
+  // must not be part of the key. `force` bypasses the "already cached"
+  // check for the modal-open / count-changed refetch below, where a stale
+  // cached entry needs replacing rather than being treated as fresh.
+  function loadDetails(reaction: ReactionGroup, options?: { force?: boolean }) {
     if (!messageActionParityEnabled || !roomId || !eventId) return;
-    const cacheKey = cacheKeyFor(reaction);
-    if (detailsByKey[cacheKey] || loadingKey === cacheKey) return;
-    setLoadingKey(cacheKey);
-    getReactionDetails(roomId, eventId, reaction.key)
+    const key = reaction.key;
+    if (!options?.force && (detailsByKey[key] || loadingKey === key)) return;
+    setLoadingKey(key);
+    getReactionDetails(roomId, eventId, key)
       .then((details) => {
-        setDetailsByKey((prev) => ({ ...prev, [cacheKey]: details }));
+        fetchedAtCountRef.current[key] = reaction.count;
+        setDetailsByKey((prev) => ({ ...prev, [key]: details }));
       })
       .catch(() => {})
-      .finally(() => setLoadingKey((prev) => (prev === cacheKey ? null : prev)));
+      .finally(() => setLoadingKey((prev) => (prev === key ? null : prev)));
   }
-  function clearDetails(reaction: ReactionGroup, cacheKey: string) {
+  function clearDetails(reaction: ReactionGroup) {
     // Keep the entry around if its modal is open — WhoReactedDialog reads
     // from this same cache and closing the tooltip shouldn't blank it out.
     // Reads the ref (not the `modalKey` state) — see its declaration above.
     if (modalKeyRef.current === reaction.key) return;
     setDetailsByKey((prev) => {
-      if (!(cacheKey in prev)) return prev;
+      if (!(reaction.key in prev)) return prev;
       const next = { ...prev };
-      delete next[cacheKey];
+      delete next[reaction.key];
       return next;
     });
   }
 
   const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
+
+  // Live-refreshes the modal's reactor list while it's open: a reaction
+  // arriving/leaving mid-view changes `count` without necessarily closing
+  // the modal, and the cache (keyed by emoji alone, not count — see
+  // `loadDetails`) wouldn't otherwise notice the underlying data went
+  // stale. Force-refetches whenever the count drifts from what the cached
+  // entry was actually fetched at.
+  useEffect(() => {
+    if (!modalReaction) return;
+    if (fetchedAtCountRef.current[modalReaction.key] === modalReaction.count) return;
+    loadDetails(modalReaction, { force: true });
+    // loadDetails is stable across renders (recreated each render but with
+    // the same closed-over deps as this effect); including it would just
+    // re-run this effect every render without changing behavior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalReaction?.key, modalReaction?.count]);
+
+  if (reactions.length === 0) {
+    return null;
+  }
 
   const chips = reactions.map((reaction) => {
     const chip = (
@@ -123,13 +140,9 @@ export function ReactionBar({
 
     if (!messageActionParityEnabled || !roomId || !eventId) return chip;
 
-    const cacheKey = cacheKeyFor(reaction);
-    const details = detailsByKey[cacheKey];
+    const details = detailsByKey[reaction.key];
     return (
-      <Tooltip
-        key={reaction.key}
-        onOpenChange={(open) => !open && clearDetails(reaction, cacheKey)}
-      >
+      <Tooltip key={reaction.key} onOpenChange={(open) => !open && clearDetails(reaction)}>
         <TooltipTrigger asChild>{chip}</TooltipTrigger>
         <TooltipContent>
           {!details ? (
@@ -178,7 +191,7 @@ export function ReactionBar({
       <WhoReactedDialog
         open={modalKey !== null}
         reactionKey={modalKey}
-        details={modalReaction ? (detailsByKey[cacheKeyFor(modalReaction)] ?? []) : []}
+        details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
         onOpenChange={(open) => !open && setModalKey(null)}
       />
     </TooltipProvider>

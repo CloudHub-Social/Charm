@@ -317,11 +317,24 @@ async fn latest_replacement_content(
 
         match relations.next_batch_token {
             Some(next) => from = Some(next),
+            // The relation stream is genuinely exhausted (no more pages to
+            // walk) without finding a same-sender replacement — `None` here
+            // is a real answer, not a truncated one.
             None => return Ok(None),
         }
     }
 
-    Ok(None)
+    // Review fix: hit `MAX_EDIT_RELATION_PAGES` while `next_batch_token` was
+    // still `Some` on the last page — there could be more relations beyond
+    // the cap, so "no edit found within the pages we looked at" is not the
+    // same as "there is no edit". Treating this the same as a genuine
+    // `Ok(None)` let `forward_message_impl` silently forward
+    // `original_message.content`, potentially re-sharing text the sender
+    // had actually edited away just past the cap.
+    Err(format!(
+        "edit relation lookup for {event_id} exceeded the {MAX_EDIT_RELATION_PAGES}-page \
+         limit without exhausting the relation stream"
+    ))
 }
 
 /// Core logic behind [`forward_message`].

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +35,16 @@ export function ForwardMessageDialog({
   const [filter, setFilter] = useState("");
   const [submittingRoomId, setSubmittingRoomId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped whenever the dialog closes, reopens, or targets a different
+  // message — same request-sequence pattern the source/history dialogs use.
+  // Without it, a forward still in flight when any of that happens can land
+  // its success/failure state (closing the dialog, showing an error) on a
+  // dialog instance the user has since closed, reopened, or repointed at a
+  // different message.
+  const requestGenerationRef = useRef(0);
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+  }, [open, sourceRoomId, eventId]);
 
   const { data: rooms, isLoading } = useQuery({
     queryKey: ROOMS_QUERY_KEY,
@@ -56,15 +66,20 @@ export function ForwardMessageDialog({
 
   async function handleForward(targetRoomId: string) {
     if (!sourceRoomId || !eventId) return;
+    const generation = requestGenerationRef.current;
     setSubmittingRoomId(targetRoomId);
     setError(null);
     try {
       await forwardMessage(sourceRoomId, eventId, targetRoomId);
+      // The dialog closed/reopened/retargeted while this was in flight —
+      // applying success state now would act on a stale request.
+      if (requestGenerationRef.current !== generation) return;
       setSubmittingRoomId(null);
       setFilter("");
       onOpenChange(false);
       onForwarded?.();
     } catch (err) {
+      if (requestGenerationRef.current !== generation) return;
       setSubmittingRoomId(null);
       setError(err instanceof Error ? err.message : String(err));
     }
