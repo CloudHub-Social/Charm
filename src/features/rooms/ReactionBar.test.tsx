@@ -155,6 +155,66 @@ describe("ReactionBar", () => {
     expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
   });
 
+  it("exposes the reactor overflow as a directly keyboard-focusable action", async () => {
+    getReactionDetails.mockResolvedValue(
+      Array.from({ length: 9 }, (_, index) => ({
+        sender: `@user-${index}:example.org`,
+        origin_server_ts: index,
+      })),
+    );
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    const viewAll = screen.getByRole("button", { name: "View all 9 reactions for 👍" });
+    viewAll.focus();
+    expect(viewAll).toHaveFocus();
+
+    fireEvent.click(viewAll);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(await screen.findByText("@user-8:example.org")).toBeInTheDocument();
+  });
+
+  it("clears reactor details after the full-list dialog closes", async () => {
+    const firstDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@first-${index}:example.org`,
+      origin_server_ts: index,
+    }));
+    const refreshedDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@refreshed-${index}:example.org`,
+      origin_server_ts: index + 10,
+    }));
+    getReactionDetails.mockResolvedValueOnce(firstDetails).mockResolvedValueOnce(refreshedDetails);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+    expect(await screen.findByText("@first-8:example.org")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const chip = screen.getByRole("button", { name: /^👍9$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("@refreshed-0:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces detail lookup failures instead of loading forever", async () => {
     getReactionDetails.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
@@ -247,10 +307,12 @@ describe("ReactionBar", () => {
       />,
     );
 
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍9$/ });
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
-    expect(await screen.findByRole("button", { name: "View all 9" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "View all 9 reactions for 👍" }),
+    ).toBeInTheDocument();
 
     rerender(
       <ReactionBar
@@ -261,6 +323,8 @@ describe("ReactionBar", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "View all 10" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View all 10 reactions for 👍" }),
+    ).toBeInTheDocument();
   });
 });

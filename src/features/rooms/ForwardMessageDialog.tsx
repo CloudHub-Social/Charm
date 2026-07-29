@@ -46,7 +46,13 @@ export function ForwardMessageDialog({
     requestGenerationRef.current += 1;
   }, [open, sourceRoomId, eventId]);
 
-  const { data: rooms, isLoading } = useQuery({
+  const {
+    data: rooms,
+    isLoading,
+    isFetching,
+    isError: roomsFailed,
+    refetch: retryRooms,
+  } = useQuery({
     queryKey: ROOMS_QUERY_KEY,
     queryFn: listRooms,
     enabled: open,
@@ -129,6 +135,22 @@ export function ForwardMessageDialog({
             Could not forward the message: {error}
           </p>
         )}
+        {roomsFailed && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 px-3 py-2">
+            <p role="alert" className="text-sm text-destructive-foreground">
+              Could not load rooms. Check your connection and try again.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isFetching}
+              onClick={() => void retryRooms()}
+            >
+              {isFetching ? "Retrying…" : "Retry"}
+            </Button>
+          </div>
+        )}
         {isLoading && <p className="text-sm text-muted-foreground">Loading rooms…</p>}
         <ul className="flex max-h-80 flex-col gap-1 overflow-auto">
           {filteredRooms.map((room) => (
@@ -155,7 +177,7 @@ export function ForwardMessageDialog({
               </button>
             </li>
           ))}
-          {!isLoading && filteredRooms.length === 0 && (
+          {!isLoading && !roomsFailed && filteredRooms.length === 0 && (
             <li className="px-2 py-1.5 text-sm text-muted-foreground">No rooms match.</li>
           )}
         </ul>

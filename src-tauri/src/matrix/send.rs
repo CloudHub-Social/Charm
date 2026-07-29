@@ -8,7 +8,7 @@ use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, Mentions};
 use matrix_sdk::ruma::html::{HtmlSanitizerMode, RemoveReplyFallback};
 use matrix_sdk::ruma::{OwnedUserId, RoomId, UserId};
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
+use matrix_sdk::send_queue::{LocalEchoContent, RoomSendQueueUpdate};
 use matrix_sdk::TransmissionProgress;
 use matrix_sdk::{Client, Room};
 use serde::{Deserialize, Serialize};
@@ -455,6 +455,44 @@ async fn latest_replacement_content(
     ))
 }
 
+/// Returns the newest queued local replacement for `event_id`, if one has
+/// not reached the homeserver yet. `/relations` cannot see these local
+/// echoes, but the timeline already applies them optimistically; forwarding
+/// must therefore prefer this content or it can re-share text the user just
+/// edited away.
+async fn pending_replacement_content(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+) -> Result<
+    Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation>,
+    String,
+> {
+    use matrix_sdk::ruma::events::room::message::Relation;
+
+    let (local_echoes, _updates) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(local_echoes.into_iter().rev().find_map(|echo| {
+        let LocalEchoContent::Event {
+            serialized_event, ..
+        } = echo.content
+        else {
+            return None;
+        };
+        let Ok(AnyMessageLikeEventContent::RoomMessage(content)) = serialized_event.deserialize()
+        else {
+            return None;
+        };
+        let Some(Relation::Replacement(replacement)) = content.relates_to else {
+            return None;
+        };
+        (replacement.event_id == *event_id).then_some(replacement.new_content)
+    }))
+}
+
 /// Core logic behind [`forward_message`].
 pub async fn forward_message_impl(
     client: &Client,
@@ -501,9 +539,12 @@ pub async fn forward_message_impl(
     // falling back to `original_message.content` — see
     // `latest_replacement_content`'s doc comment for why treating "the
     // request failed" the same as "there is no edit" is unsafe here.
-    let latest_edit =
-        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender)
-            .await?;
+    let pending_edit = pending_replacement_content(&source_room, &parsed_event_id).await?;
+    let latest_edit = if pending_edit.is_some() {
+        pending_edit
+    } else {
+        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender).await?
+    };
 
     let mut content = original_message.content.clone();
     if let Some(new_content) = latest_edit {
@@ -1255,10 +1296,40 @@ mod tests {
 /// currently-correct (locked) behavior.
 #[cfg(test)]
 mod concurrency_tests {
-    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
 
     use super::*;
+
+    #[tokio::test]
+    async fn pending_replacement_is_used_before_server_relations() {
+        let room_id = room_id!("!test:example.org");
+        let event_id = event_id!("$original:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+
+        let edit = RoomMessageEventContent::text_plain("edited locally").make_replacement(
+            matrix_sdk::ruma::events::room::message::ReplacementMetadata::new(
+                event_id.to_owned(),
+                None,
+            ),
+        );
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::RoomMessage(edit))
+            .await
+            .unwrap();
+
+        let pending = pending_replacement_content(&room, event_id)
+            .await
+            .unwrap()
+            .expect("queued edit should be visible before it reaches /relations");
+
+        assert_eq!(pending.msgtype.body(), "edited locally");
+    }
 
     #[tokio::test]
     async fn concurrent_sends_each_capture_a_distinct_transaction_id() {

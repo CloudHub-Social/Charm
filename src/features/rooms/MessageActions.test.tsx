@@ -161,7 +161,7 @@ describe("MessageActions", () => {
   });
 
   it("does not persist picker reactions while message-action parity is disabled", async () => {
-    const storageKey = "charm:recentReactions:@me:example.org";
+    const storageKey = "charm:recentReactions:%40me%3Aexample.org";
     localStorage.removeItem(storageKey);
     mockUseFlag.mockReturnValue(false);
     const { onReact } = renderActions();

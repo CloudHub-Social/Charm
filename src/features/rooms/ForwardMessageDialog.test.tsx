@@ -116,6 +116,31 @@ describe("ForwardMessageDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
   });
 
+  it("shows a room-loading error and retries the query", async () => {
+    listRooms.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+
+    renderDialog();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load rooms. Check your connection and try again.",
+    );
+    expect(screen.queryByText("No rooms match.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
   it("excludes pending invites from the forward targets", async () => {
     listRooms.mockResolvedValue([
       {
