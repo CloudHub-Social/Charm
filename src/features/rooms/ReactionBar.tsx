@@ -44,8 +44,12 @@ export function ReactionBar({
 }: ReactionBarProps) {
   const messageActionParityEnabled = useFlag("message_action_parity");
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
-  const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [modalKey, setModalKeyState] = useState<string | null>(null);
+  // Keep the synchronous request lifecycle in refs and use a per-key
+  // generation to prevent duplicate requests and discard responses invalidated
+  // by tooltip close/refetch.
+  const inFlightKeysRef = useRef(new Set<string>());
+  const requestGenerationRef = useRef<Record<string, number>>({});
   // Mirrors `modalKey` for synchronous reads inside `clearDetails` — React
   // batches the "View all" button's `setModalKey` with the state update
   // from the Tooltip's own `onOpenChange(false)` (both fire from the same
@@ -72,21 +76,31 @@ export function ReactionBar({
   function loadDetails(reaction: ReactionGroup, options?: { force?: boolean }) {
     if (!messageActionParityEnabled || !roomId || !eventId) return;
     const key = reaction.key;
-    if (!options?.force && (detailsByKey[key] || loadingKey === key)) return;
-    setLoadingKey(key);
+    if (!options?.force && (detailsByKey[key] || inFlightKeysRef.current.has(key))) return;
+    const generation = (requestGenerationRef.current[key] ?? 0) + 1;
+    requestGenerationRef.current[key] = generation;
+    inFlightKeysRef.current.add(key);
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
+        if (requestGenerationRef.current[key] !== generation) return;
         fetchedAtCountRef.current[key] = reaction.count;
         setDetailsByKey((prev) => ({ ...prev, [key]: details }));
       })
       .catch(() => {})
-      .finally(() => setLoadingKey((prev) => (prev === key ? null : prev)));
+      .finally(() => {
+        if (requestGenerationRef.current[key] !== generation) return;
+        inFlightKeysRef.current.delete(key);
+      });
   }
   function clearDetails(reaction: ReactionGroup) {
     // Keep the entry around if its modal is open — WhoReactedDialog reads
     // from this same cache and closing the tooltip shouldn't blank it out.
     // Reads the ref (not the `modalKey` state) — see its declaration above.
     if (modalKeyRef.current === reaction.key) return;
+    requestGenerationRef.current[reaction.key] =
+      (requestGenerationRef.current[reaction.key] ?? 0) + 1;
+    inFlightKeysRef.current.delete(reaction.key);
+    delete fetchedAtCountRef.current[reaction.key];
     setDetailsByKey((prev) => {
       if (!(reaction.key in prev)) return prev;
       const next = { ...prev };
