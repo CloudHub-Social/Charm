@@ -23,6 +23,7 @@ const ADMIN_PERMISSIONS: RoomDetails["can"] = {
   ban: true,
   set_canonical_alias: true,
   set_pinned_events: true,
+  set_space_child: true,
 };
 
 export function makeRoomDetails(overrides: Partial<RoomDetails> = {}): RoomDetails {
