@@ -51,11 +51,13 @@ export function ReactionBar({
     return null;
   }
 
-  // Keyed by `${key}:${count}`, not just the emoji key — a later
-  // `m.reaction`/redaction changing the count for the same emoji must
-  // invalidate the cached reactor list (a stale `detailsByKey[key]` would
-  // otherwise never refresh once hovered once), and the count is already
-  // the cheapest available signal that something changed.
+  // Keyed by `${key}:${count}` — a later `m.reaction`/redaction changing the
+  // count for the same emoji invalidates the cached reactor list. Count
+  // alone can't catch a same-count membership swap (Alice removes 👍, Bob
+  // adds 👍) since `ReactionGroup` carries no version/timestamp to detect
+  // that with — so `clearDetails` below drops the entry as soon as the
+  // hover ends, bounding staleness to "while this hover is still open"
+  // rather than "until the count happens to change".
   function cacheKeyFor(reaction: ReactionGroup) {
     return `${reaction.key}:${reaction.count}`;
   }
@@ -70,6 +72,17 @@ export function ReactionBar({
       })
       .catch(() => {})
       .finally(() => setLoadingKey((prev) => (prev === cacheKey ? null : prev)));
+  }
+  function clearDetails(reaction: ReactionGroup, cacheKey: string) {
+    // Keep the entry around if its modal is open — WhoReactedDialog reads
+    // from this same cache and closing the tooltip shouldn't blank it out.
+    if (modalKey === reaction.key) return;
+    setDetailsByKey((prev) => {
+      if (!(cacheKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[cacheKey];
+      return next;
+    });
   }
 
   const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
@@ -97,9 +110,13 @@ export function ReactionBar({
 
     if (!messageActionParityEnabled || !roomId || !eventId) return chip;
 
-    const details = detailsByKey[cacheKeyFor(reaction)];
+    const cacheKey = cacheKeyFor(reaction);
+    const details = detailsByKey[cacheKey];
     return (
-      <Tooltip key={reaction.key}>
+      <Tooltip
+        key={reaction.key}
+        onOpenChange={(open) => !open && clearDetails(reaction, cacheKey)}
+      >
         <TooltipTrigger asChild>{chip}</TooltipTrigger>
         <TooltipContent>
           {!details ? (

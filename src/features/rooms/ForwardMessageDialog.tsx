@@ -70,18 +70,29 @@ export function ForwardMessageDialog({
     }
   }
 
+  // Shared by the Dialog's own onOpenChange(false) (Escape key, overlay
+  // click) and the Cancel button below, which previously called the parent
+  // `onOpenChange` prop directly — bypassing these resets entirely, so
+  // closing via Cancel specifically left stale filter/error/submitting
+  // state for the next open.
+  function close() {
+    setFilter("");
+    setError(null);
+    // Otherwise a forward still in flight when the dialog is closed leaves
+    // every room button disabled (`disabled={submittingRoomId !== null}`)
+    // the next time it's reopened, until that original request happens to
+    // settle.
+    setSubmittingRoomId(null);
+    onOpenChange(false);
+  }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
-          setFilter("");
-          setError(null);
-          // Otherwise a forward still in flight when the dialog is closed
-          // leaves every room button disabled (`disabled={submittingRoomId
-          // !== null}`) the next time it's reopened, until that original
-          // request happens to settle.
-          setSubmittingRoomId(null);
+          close();
+          return;
         }
         onOpenChange(nextOpen);
       }}
@@ -132,7 +143,7 @@ export function ForwardMessageDialog({
           )}
         </ul>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={close}>
             Cancel
           </Button>
         </DialogFooter>

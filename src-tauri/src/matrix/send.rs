@@ -229,6 +229,89 @@ pub async fn forward_message(
     forward_message_impl(&client, &source_room_id, &event_id, &target_room_id).await
 }
 
+/// Same page-limit rationale as `room_admin::latest_edit_body`: a single
+/// relations page only covers the 20 most recent relations, so if enough
+/// newer ones (extra reactions, other members' invalid same-target
+/// replacements) sit in front of the real latest same-sender edit, it could
+/// be missed entirely. Pages forward until a same-sender replacement is
+/// found or the relation stream is exhausted, bounded by
+/// `MAX_EDIT_RELATION_PAGES` as a safety cap. Unlike `latest_edit_body`
+/// (which only needs the edited body string for a preview), this returns
+/// the full replacement content so the caller can `apply_replacement` it.
+async fn latest_replacement_content(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+    original_sender: &matrix_sdk::ruma::UserId,
+) -> Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation> {
+    use matrix_sdk::room::{IncludeRelations, RelationsOptions};
+    use matrix_sdk::ruma::events::relation::RelationType;
+    use matrix_sdk::ruma::events::room::message::Relation;
+    use matrix_sdk::ruma::events::{
+        AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+    };
+
+    const MAX_EDIT_RELATION_PAGES: usize = 10;
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_EDIT_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .ok()?;
+
+        // Same defensive re-sort as `latest_edit_body`: nothing guarantees
+        // the homeserver actually honored `dir: Backward`, so sort by
+        // `origin_server_ts` explicitly rather than trusting response order.
+        let mut candidates: Vec<_> = relations
+            .chunk
+            .iter()
+            .filter_map(|candidate| {
+                let raw_edit = candidate.raw().deserialize().ok()?;
+                let edit = match raw_edit {
+                    AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(edit),
+                    )) => edit,
+                    _ => return None,
+                };
+                if edit.sender != *original_sender {
+                    return None;
+                }
+                let Relation::Replacement(replacement) = edit.content.relates_to.clone()? else {
+                    return None;
+                };
+                // Same defensive re-check as `latest_edit_body`: the
+                // request is scoped to `event_id`, but nothing guarantees a
+                // homeserver/aggregation response actually honors that
+                // scoping.
+                if replacement.event_id != *event_id {
+                    return None;
+                }
+                Some((edit.origin_server_ts, replacement.new_content))
+            })
+            .collect();
+        candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
+        if let Some((_, new_content)) = candidates.into_iter().next() {
+            return Some(new_content);
+        }
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            None => return None,
+        }
+    }
+
+    None
+}
+
 /// Core logic behind [`forward_message`].
 pub async fn forward_message_impl(
     client: &Client,
@@ -242,8 +325,8 @@ pub async fn forward_message_impl(
         .ok_or_else(|| format!("room {source_room_id} not found"))?;
 
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
-    let (source_event, relations) = source_room
-        .load_or_fetch_event_with_relations(&parsed_event_id, None, None)
+    let source_event = source_room
+        .load_or_fetch_event(&parsed_event_id, None)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -264,44 +347,18 @@ pub async fn forward_message_impl(
 
     // Forward whatever is currently shown in the timeline, not the pre-edit
     // original: find the latest same-sender `m.replace` targeting this event
-    // (same sender check as `actions::get_edit_history_impl`/
-    // `room_admin::latest_edit_body` — a different member's replacement is
-    // never a real edit) and apply it if one exists.
-    let mut latest_edit: Option<(
-        matrix_sdk::ruma::MilliSecondsSinceUnixEpoch,
-        matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
-    )> = None;
-    for related in &relations {
-        let Ok(matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
-            matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(edit_msg),
-        )) = related.kind.raw().deserialize()
-        else {
-            continue;
-        };
-        let Some(edit) = edit_msg.as_original() else {
-            continue;
-        };
-        if edit.sender != original_message.sender {
-            continue;
-        }
-        let Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(replacement)) =
-            &edit.content.relates_to
-        else {
-            continue;
-        };
-        if replacement.event_id != parsed_event_id {
-            continue;
-        }
-        if latest_edit
-            .as_ref()
-            .is_none_or(|(ts, _)| edit.origin_server_ts > *ts)
-        {
-            latest_edit = Some((edit.origin_server_ts, replacement.new_content.clone()));
-        }
-    }
+    // and apply it if one exists. Paginated the same way
+    // `room_admin::latest_edit_body` is (see that function's own doc
+    // comment for why a single relations page isn't enough) — a
+    // single-page `load_or_fetch_event_with_relations` call could miss the
+    // real latest edit behind enough newer relations (reactions, or other
+    // members' invalid same-target replacements), silently forwarding
+    // pre-edit content the sender specifically edited away.
+    let latest_edit =
+        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender).await;
 
     let mut content = original_message.content.clone();
-    if let Some((_, new_content)) = latest_edit {
+    if let Some(new_content) = latest_edit {
         content.apply_replacement(new_content);
     }
     // A reply's body/formatted_body carries the quoted rich-reply fallback
