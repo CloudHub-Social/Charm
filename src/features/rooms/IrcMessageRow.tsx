@@ -141,15 +141,17 @@ export function IrcMessageRow({
           </>
         )}
       </div>
-      {!message.redacted && (
+      {(!message.redacted || (!own && onReport)) && (
         <>
-          <ReactionBar
-            reactions={message.reactions}
-            onToggle={onReact}
-            disabled={disableRelationActions || isUndecrypted}
-            roomId={roomId}
-            eventId={message.event_id}
-          />
+          {!message.redacted && (
+            <ReactionBar
+              reactions={message.reactions}
+              onToggle={onReact}
+              disabled={disableRelationActions || isUndecrypted}
+              roomId={roomId}
+              eventId={message.event_id}
+            />
+          )}
           <MessageActions
             ref={(el) => registerActionsRef(rowKey, el)}
             accountId={currentUserId ?? ""}
@@ -177,6 +179,7 @@ export function IrcMessageRow({
             onForward={onForward}
             onViewSource={onViewSource}
             onReport={onReport}
+            isRedacted={message.redacted}
             isEdited={message.edited}
             onViewEditHistory={onViewEditHistory}
           />

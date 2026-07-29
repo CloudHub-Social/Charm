@@ -241,6 +241,19 @@ describe("MessageActions", () => {
     expect(onReport).toHaveBeenCalledOnce();
   });
 
+  it("shows only Report for a redacted remote event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isRedacted: true, onReport });
+
+    openMenu();
+    fireEvent.click(await screen.findByText("Report"));
+
+    expect(onReport).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+    expect(screen.queryByText("Copy")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "React" })).not.toBeInTheDocument();
+  });
+
   it("does not show Resend or Discard for a normal (non-failed) message", async () => {
     renderActions({ isOwn: true, canRedact: true, isError: false });
     openMenu();

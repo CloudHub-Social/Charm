@@ -762,6 +762,7 @@ pub async fn get_edit_history_impl(
     }];
 
     let mut edits: Vec<EditHistoryEntry> = Vec::new();
+    let mut acknowledged_transaction_ids = HashSet::new();
     for related in &relations {
         let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
             related.kind.raw().deserialize();
@@ -790,6 +791,9 @@ pub async fn get_edit_history_impl(
         if replacement.event_id != parsed_target {
             continue;
         }
+        if let Some(transaction_id) = &edit.unsigned.transaction_id {
+            acknowledged_transaction_ids.insert(transaction_id.to_string());
+        }
 
         edits.push(EditHistoryEntry {
             event_id: edit.event_id.to_string(),
@@ -801,13 +805,20 @@ pub async fn get_edit_history_impl(
     }
     edits.sort_by_key(|entry| entry.origin_server_ts);
     entries.extend(edits);
-    entries.extend(pending_edits.into_iter().map(|pending| EditHistoryEntry {
-        event_id: pending.transaction_id,
-        body: pending.new_content.msgtype.body().to_string(),
-        formatted_body: formatted_body_of(&pending.new_content.msgtype),
-        sender: original_message.sender.to_string(),
-        origin_server_ts: pending.origin_server_ts,
-    }));
+    entries.extend(
+        pending_edits
+            .into_iter()
+            .filter(|pending| {
+                !acknowledged_transaction_ids.contains(pending.transaction_id.as_str())
+            })
+            .map(|pending| EditHistoryEntry {
+                event_id: pending.transaction_id,
+                body: pending.new_content.msgtype.body().to_string(),
+                formatted_body: formatted_body_of(&pending.new_content.msgtype),
+                sender: original_message.sender.to_string(),
+                origin_server_ts: pending.origin_server_ts,
+            }),
+    );
 
     Ok(entries)
 }
@@ -1039,6 +1050,13 @@ mod edit_history_tests {
                 .await
                 .unwrap();
         }
+        let acknowledged_transaction_id = super::super::send::pending_replacements(&room, original)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .transaction_id;
 
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path(format!(
@@ -1061,8 +1079,29 @@ mod edit_history_tests {
                 "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
             )))
             .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "chunk": [] })),
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": "$acknowledged-edit:example.org",
+                        "sender": own_user_id,
+                        "origin_server_ts": 1_700_000_000_001u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* first pending edit",
+                            "m.new_content": {
+                                "msgtype": "m.text",
+                                "body": "first pending edit"
+                            },
+                            "m.relates_to": {
+                                "rel_type": "m.replace",
+                                "event_id": original
+                            }
+                        },
+                        "unsigned": {
+                            "transaction_id": acknowledged_transaction_id
+                        }
+                    }]
+                })),
             )
             .mount(server.server())
             .await;
