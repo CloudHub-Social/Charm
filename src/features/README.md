@@ -21,5 +21,12 @@ are local because they don't need to survive a remount or be read by a
 sibling, while `replyTarget`/`editingEventId`/`membersDrawerOpen` are
 atom-families for the reasons above.
 
+Within the room timeline, keep viewport coordination in
+`rooms/useTimelineViewport.ts`: Virtuoso positioning, Saved Messages jump
+recovery, fresh-arrival counting, and the frozen unread boundary share
+room/load transition guards and should evolve as one state machine. Composer,
+header, and message-action state remain separate seams rather than being added
+back to that hook or directly to `ChatShell`.
+
 See https://github.com/CloudHub-Social/Charm/issues/70 for the discussion
 that prompted this note.
