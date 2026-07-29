@@ -99,6 +99,11 @@ export function ForwardMessageDialog({
   // closing via Cancel specifically left stale filter/error/submitting
   // state for the next open.
   function close() {
+    // A queued forward cannot be cancelled through the current Matrix
+    // transport. Keep the dialog visibly in its Forwarding state instead of
+    // letting Escape/overlay/Cancel imply that an already-started send was
+    // cancelled when it can still arrive in the selected room.
+    if (submittingRoomId !== null) return;
     setFilter("");
     setError(null);
     // Otherwise a forward still in flight when the dialog is closed leaves
@@ -182,7 +187,7 @@ export function ForwardMessageDialog({
           )}
         </ul>
         <DialogFooter>
-          <Button variant="outline" onClick={close}>
+          <Button variant="outline" onClick={close} disabled={submittingRoomId !== null}>
             Cancel
           </Button>
         </DialogFooter>

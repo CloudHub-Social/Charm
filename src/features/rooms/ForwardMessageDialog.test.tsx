@@ -16,7 +16,7 @@ vi.mock("@/lib/matrix", async () => {
   };
 });
 
-function renderDialog(onForwarded = vi.fn()) {
+function renderDialog(onForwarded = vi.fn(), onOpenChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -24,7 +24,7 @@ function renderDialog(onForwarded = vi.fn()) {
         open
         sourceRoomId="!source:localhost"
         eventId="$event:localhost"
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         onForwarded={onForwarded}
       />
     </QueryClientProvider>,
@@ -139,6 +139,28 @@ describe("ForwardMessageDialog", () => {
     expect(await screen.findByText("Alpha")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not imply that an in-flight forward can be cancelled", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockReturnValue(new Promise(() => {}));
+    const onOpenChange = vi.fn();
+
+    renderDialog(vi.fn(), onOpenChange);
+    fireEvent.click(await screen.findByText("Alpha"));
+
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Forwarding…")).toBeInTheDocument();
   });
 
   it("excludes pending invites from the forward targets", async () => {

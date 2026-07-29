@@ -46,7 +46,11 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
 /// call only saw the first (most recent) 20 relations, silently truncating
 /// history/reactor lists in rooms with enough relation noise (reactions,
 /// other edits, etc.) ahead of the older entries.
-const MAX_RELATION_PAGES: usize = 10;
+// 100 pages keeps the endpoint bounded against a malicious/non-terminating
+// homeserver while covering up to 2,000 relations — enough for genuinely
+// popular messages without turning the safety cap into an ordinary product
+// limitation at only 200 reactions.
+const MAX_RELATION_PAGES: usize = 100;
 
 async fn paginated_relations(
     room: &matrix_sdk::Room,
