@@ -202,7 +202,15 @@ export function RoomList({
     ? roomListFilters[mode]
     : "all";
   const unreadOnly = activeFilter === "unread";
-  const activeSort: RoomListSort = roomListSortFlagEnabled ? roomListSorts[mode] : "default";
+  // A sort preference persisted while on desktop/native can be "activity" —
+  // an option intentionally hidden on web (see the <option> below) since
+  // web RoomSummary.last_activity_ts is always null. Falling back to
+  // "default" here (display-only; the persisted value itself is untouched)
+  // keeps the <select>'s value matching one of its rendered <option>s,
+  // rather than a value with no corresponding option.
+  const rawActiveSort: RoomListSort = roomListSortFlagEnabled ? roomListSorts[mode] : "default";
+  const activeSort: RoomListSort =
+    isWebBuild() && rawActiveSort === "activity" ? "default" : rawActiveSort;
   currentScopeRef.current = { mode, selectedSpaceId };
 
   const invitedRooms = useMemo(() => rooms.filter((room) => room.membership === "invite"), [rooms]);
