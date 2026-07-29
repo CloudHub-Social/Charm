@@ -4676,7 +4676,7 @@ describe("ChatShell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
-    await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("network error")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss failed upload broken.mp4" }));
 

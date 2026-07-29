@@ -140,8 +140,9 @@ export function useAttachmentUploads(roomId: string | null) {
       // failure to surface, just this request unwinding.
       if (abortController?.signal.aborted) return;
       console.error(err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
       setUploads((prev) =>
-        prev.map((u) => (u.txnId === txnId ? { ...u, failed: true, errorMessage: undefined } : u)),
+        prev.map((u) => (u.txnId === txnId ? { ...u, failed: true, errorMessage } : u)),
       );
     } finally {
       uploadAbortControllers.current.delete(txnId);

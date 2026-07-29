@@ -1649,7 +1649,11 @@ export function ChatShell({
         </div>
       )}
 
-      <UploadTray uploads={uploads} onDismiss={dismissUpload} />
+      <UploadTray
+        uploads={uploads}
+        onDismiss={dismissUpload}
+        cancellationEnabled={mediaSendPolishEnabled}
+      />
 
       {replyTarget && !editingEventId && (
         <div className="px-3 pb-1">

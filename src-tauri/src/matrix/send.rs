@@ -48,11 +48,21 @@ fn apply_exif_orientation(img: image::DynamicImage, orientation: u32) -> image::
 /// can apply the same EXIF stripping the desktop command does — see that
 /// route's doc comment.
 pub fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
-    let format = match (mime.type_().as_str(), mime.subtype().as_str()) {
-        ("image", "jpeg") => image::ImageFormat::Jpeg,
-        ("image", "png") => image::ImageFormat::Png,
-        _ => return None,
-    };
+    // Sniff the actual bytes first, not just the caller-supplied MIME — both
+    // desktop (from a file extension) and web (from a `File`'s reported
+    // type) can hand this a wrong or missing type for a real JPEG/PNG (e.g.
+    // a camera file renamed without an extension, or a browser `File` with a
+    // generic `application/octet-stream`), which would otherwise silently
+    // skip stripping and upload the original GPS/capture EXIF intact. Fall
+    // back to the MIME-derived format only when sniffing can't tell.
+    let format = image::guess_format(data)
+        .ok()
+        .filter(|format| matches!(format, image::ImageFormat::Jpeg | image::ImageFormat::Png))
+        .or_else(|| match (mime.type_().as_str(), mime.subtype().as_str()) {
+            ("image", "jpeg") => Some(image::ImageFormat::Jpeg),
+            ("image", "png") => Some(image::ImageFormat::Png),
+            _ => None,
+        })?;
 
     let orientation = exif::Reader::new()
         .read_from_container(&mut std::io::Cursor::new(data))
@@ -720,6 +730,34 @@ mod tests {
         let mime: mime::Mime = "audio/ogg".parse().unwrap();
         let info = attachment_info_for(&mime, &[], 42);
         assert!(matches!(info, AttachmentInfo::Audio(_)));
+    }
+
+    #[test]
+    fn strip_exif_sniffs_jpeg_bytes_despite_wrong_mime() {
+        // A camera JPEG picked from a source that reports the wrong (or a
+        // generic) MIME type — e.g. a desktop path renamed without `.jpg`,
+        // or a web `File` with `application/octet-stream` — must still get
+        // stripped, since `strip_exif` now sniffs the actual bytes rather
+        // than trusting the caller-supplied MIME alone.
+        let img = image::DynamicImage::new_rgb8(4, 4);
+        let mut jpeg_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut jpeg_bytes),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+
+        let wrong_mime: mime::Mime = "application/octet-stream".parse().unwrap();
+        assert!(strip_exif(&wrong_mime, &jpeg_bytes).is_some());
+    }
+
+    #[test]
+    fn strip_exif_returns_none_for_non_image_bytes_regardless_of_mime() {
+        // A MIME claiming JPEG doesn't make arbitrary bytes decodable —
+        // sniffing finds nothing usable, the MIME fallback's decode then
+        // fails too, and this must stay `None` rather than panicking.
+        let claimed_jpeg_mime: mime::Mime = "image/jpeg".parse().unwrap();
+        assert!(strip_exif(&claimed_jpeg_mime, b"not an image").is_none());
     }
 
     #[test]

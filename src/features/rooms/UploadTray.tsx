@@ -15,10 +15,14 @@ export interface PendingUpload {
 interface UploadTrayProps {
   uploads: PendingUpload[];
   onDismiss: (txnId: string) => void;
+  /** Mid-upload cancellation is one of Spec 42's user-facing behaviors —
+   * keep it behind the same kill switch as the rest of that spec, so a
+   * default-off client still gets the pre-Spec-42 progress-only tray. */
+  cancellationEnabled: boolean;
 }
 
 /** Renders the in-flight/failed attachment uploads below the message list. */
-export function UploadTray({ uploads, onDismiss }: UploadTrayProps) {
+export function UploadTray({ uploads, onDismiss, cancellationEnabled }: UploadTrayProps) {
   if (uploads.length === 0) return null;
 
   return (
@@ -56,14 +60,16 @@ export function UploadTray({ uploads, onDismiss }: UploadTrayProps) {
                   }}
                 />
               </div>
-              <button
-                type="button"
-                aria-label={`Cancel upload ${upload.filename}`}
-                onClick={() => onDismiss(upload.txnId)}
-                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-              >
-                <X size={14} />
-              </button>
+              {cancellationEnabled && (
+                <button
+                  type="button"
+                  aria-label={`Cancel upload ${upload.filename}`}
+                  onClick={() => onDismiss(upload.txnId)}
+                  className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+                >
+                  <X size={14} />
+                </button>
+              )}
             </>
           )}
         </div>
