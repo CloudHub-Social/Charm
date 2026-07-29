@@ -18,6 +18,7 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
 
   render(
     <MessageActions
+      accountId="@me:example.org"
       isOwn={false}
       canRedact={false}
       onReply={onReply}
@@ -280,6 +281,7 @@ describe("MessageActions", () => {
       <div data-testid="row" onTouchStart={outerStartLongPress} onTouchEnd={outerCancelLongPress}>
         <MessageActions
           ref={ref}
+          accountId="@me:example.org"
           isOwn={false}
           canRedact={false}
           onReply={vi.fn()}

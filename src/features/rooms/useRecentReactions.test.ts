@@ -8,23 +8,25 @@ beforeEach(() => {
 
 describe("useRecentReactions", () => {
   it("starts with the default starter set when nothing is stored", () => {
-    const { result } = renderHook(() => useRecentReactions());
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
     expect(result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
   });
 
   it("moves a recorded emoji to the front and persists it", () => {
-    const { result } = renderHook(() => useRecentReactions());
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
 
     act(() => {
       result.current.recordReaction("🔥");
     });
 
     expect(result.current.recent[0]).toBe("🔥");
-    expect(JSON.parse(localStorage.getItem("charm:recentReactions") ?? "[]")[0]).toBe("🔥");
+    expect(
+      JSON.parse(localStorage.getItem("charm:recentReactions:%40alice%3Aexample.org") ?? "[]")[0],
+    ).toBe("🔥");
   });
 
   it("deduplicates a re-recorded emoji instead of adding it twice", () => {
-    const { result } = renderHook(() => useRecentReactions());
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
 
     act(() => {
       result.current.recordReaction("👍");
@@ -35,7 +37,7 @@ describe("useRecentReactions", () => {
   });
 
   it("caps the stored list at 8 entries", () => {
-    const { result } = renderHook(() => useRecentReactions());
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
 
     act(() => {
       for (const emoji of ["a", "b", "c", "d", "e", "f", "g", "h", "i"]) {
@@ -45,5 +47,20 @@ describe("useRecentReactions", () => {
 
     expect(result.current.recent).toHaveLength(8);
     expect(result.current.recent[0]).toBe("i");
+  });
+
+  it("switches accounts without exposing the previous account's recent reactions", () => {
+    const { result, rerender } = renderHook(({ accountId }) => useRecentReactions(accountId), {
+      initialProps: { accountId: "@alice:example.org" },
+    });
+
+    act(() => {
+      result.current.recordReaction("🔥");
+    });
+    expect(result.current.recent[0]).toBe("🔥");
+
+    rerender({ accountId: "@bob:example.org" });
+
+    expect(result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
   });
 });

@@ -133,6 +133,7 @@ export function BubbleMessageRow({
           {!message.redacted && (
             <MessageActions
               ref={(el) => registerActionsRef(rowKey, el)}
+              accountId={currentUserId ?? ""}
               isOwn={own}
               canRedact={canRedact}
               canPin={canPin}

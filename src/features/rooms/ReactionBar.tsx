@@ -177,7 +177,7 @@ export function ReactionBar({
                     setModalKey(reaction.key);
                   }}
                 >
-                  View all {details.length}
+                  View all {reaction.count}
                 </button>
               )}
             </div>

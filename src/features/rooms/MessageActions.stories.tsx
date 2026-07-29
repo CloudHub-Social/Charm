@@ -15,6 +15,7 @@ const noop = () => {};
 
 export const OthersMessageWithoutRedact: Story = {
   args: {
+    accountId: "@storybook:example.org",
     isOwn: false,
     canRedact: false,
     onReply: noop,
@@ -28,6 +29,7 @@ export const OthersMessageWithoutRedact: Story = {
 
 export const OwnMessage: Story = {
   args: {
+    accountId: "@storybook:example.org",
     isOwn: true,
     canRedact: true,
     onReply: noop,
@@ -41,6 +43,7 @@ export const OwnMessage: Story = {
 
 export const OthersMessageModeratorCanRedact: Story = {
   args: {
+    accountId: "@storybook:example.org",
     isOwn: false,
     canRedact: true,
     onReply: noop,

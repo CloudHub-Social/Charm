@@ -33,6 +33,8 @@ import { useRecentReactions } from "./useRecentReactions";
 const LONG_PRESS_MS = 400;
 
 export interface MessageActionsProps {
+  /** Matrix account owning local quick-reaction history. */
+  accountId: string;
   isOwn: boolean;
   canRedact: boolean;
   onReply: () => void;
@@ -137,6 +139,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
   function MessageActions(
     {
       isOwn,
+      accountId,
       canRedact,
       onReply,
       onReact,
@@ -169,7 +172,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const { recent, recordReaction } = useRecentReactions();
+    const { recent, recordReaction } = useRecentReactions(accountId);
 
     function react(emoji: string) {
       recordReaction(emoji);

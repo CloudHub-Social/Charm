@@ -8,6 +8,8 @@
 //! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
 //! `resend_message`/`discard_failed_message`.
 
+use std::collections::HashSet;
+
 use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
@@ -791,12 +793,20 @@ pub async fn get_edit_history_impl(
 
 /// One reactor on a given reaction `key` for a target event — who reacted
 /// and when.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct ReactionDetail {
     pub sender: String,
     #[ts(type = "number")]
     pub origin_server_ts: u64,
+}
+
+fn dedupe_reaction_details_by_sender(details: Vec<ReactionDetail>) -> Vec<ReactionDetail> {
+    let mut seen = HashSet::new();
+    details
+        .into_iter()
+        .filter(|detail| seen.insert(detail.sender.clone()))
+        .collect()
 }
 
 /// Returns every reactor who reacted to `target_event_id` with `key` — the
@@ -859,11 +869,12 @@ pub async fn get_reaction_details_impl(
         });
     }
 
-    Ok(details)
+    Ok(dedupe_reaction_details_by_sender(details))
 }
 
 #[cfg(test)]
 mod relation_shape_tests {
+    use super::{dedupe_reaction_details_by_sender, ReactionDetail};
     use matrix_sdk::ruma::events::reaction::ReactionEventContent;
     use matrix_sdk::ruma::events::relation::Annotation;
     use matrix_sdk::ruma::events::room::message::{
@@ -920,6 +931,38 @@ mod relation_shape_tests {
         assert_eq!(json["m.relates_to"]["rel_type"], "m.annotation");
         assert_eq!(json["m.relates_to"]["event_id"], "$target:example.org");
         assert_eq!(json["m.relates_to"]["key"], "👍");
+    }
+
+    #[test]
+    fn reaction_details_keep_only_one_entry_per_sender() {
+        let details = vec![
+            ReactionDetail {
+                sender: "@alice:example.org".to_string(),
+                origin_server_ts: 1,
+            },
+            ReactionDetail {
+                sender: "@alice:example.org".to_string(),
+                origin_server_ts: 2,
+            },
+            ReactionDetail {
+                sender: "@bob:example.org".to_string(),
+                origin_server_ts: 3,
+            },
+        ];
+
+        assert_eq!(
+            dedupe_reaction_details_by_sender(details),
+            vec![
+                ReactionDetail {
+                    sender: "@alice:example.org".to_string(),
+                    origin_server_ts: 1,
+                },
+                ReactionDetail {
+                    sender: "@bob:example.org".to_string(),
+                    origin_server_ts: 3,
+                },
+            ]
+        );
     }
 
     #[test]

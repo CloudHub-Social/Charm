@@ -111,4 +111,36 @@ describe("ReactionBar", () => {
     fireEvent.mouseEnter(chip);
     expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
+
+  it("uses the live reaction count while cached reactor details refresh", async () => {
+    const details = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@user-${index}:example.org`,
+      origin_server_ts: index,
+    }));
+    getReactionDetails.mockResolvedValueOnce(details).mockReturnValueOnce(new Promise(() => {}));
+    const { rerender } = render(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 9, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    const chip = screen.getByRole("button", { name: /👍/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+    expect(await screen.findByRole("button", { name: "View all 9" })).toBeInTheDocument();
+
+    rerender(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 10, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "View all 10" })).toBeInTheDocument();
+  });
 });
