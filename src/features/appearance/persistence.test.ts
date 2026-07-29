@@ -40,6 +40,8 @@ describe("local mirror", () => {
       messageLayout: "discord",
       jumboEmojiSize: "lg",
       showUnreadCounts: false,
+      autoplayGifs: true,
+      stripExifOnUpload: true,
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -172,6 +174,8 @@ describe("mergeAppearance", () => {
       messageLayout: "irc",
       jumboEmojiSize: "md",
       showUnreadCounts: true,
+      autoplayGifs: false,
+      stripExifOnUpload: false,
     };
     expect(mergeAppearance(full)).toEqual(full);
   });

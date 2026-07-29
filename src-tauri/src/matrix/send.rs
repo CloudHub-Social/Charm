@@ -15,6 +15,124 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use ts_rs::TS;
 
+/// Rotation/flip implied by an EXIF `Orientation` tag (values 2-8; 1 is
+/// already upright and needs no transform). `image`'s decoders don't apply
+/// this automatically, so stripping EXIF (which silently discards the tag)
+/// would otherwise leave portrait photos sideways — this is read from the
+/// original bytes before the strip and baked into the pixels instead.
+fn apply_exif_orientation(img: image::DynamicImage, orientation: u32) -> image::DynamicImage {
+    match orientation {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
+/// Detects an animated PNG (APNG) by scanning the raw chunk stream for an
+/// `acTL` chunk ahead of the first `IDAT` — the same ordering rule
+/// (https://wiki.mozilla.org/APNG_Specification#.60acTL.60:_The_Animation_Control_Chunk)
+/// browsers and the PNG spec itself use to distinguish "a static PNG with an
+/// unrelated `acTL`-shaped byte sequence somewhere after image data" from a
+/// genuine APNG. `image::guess_format`/`ImageFormat::Png` can't tell an APNG
+/// apart from a static one — both are valid PNG containers — so this must be
+/// checked separately before treating a PNG as safe to decode-and-re-encode.
+fn is_animated_png(data: &[u8]) -> bool {
+    const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if data.len() < PNG_SIGNATURE.len() || data[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
+        return false;
+    }
+
+    let mut pos = PNG_SIGNATURE.len();
+    while pos + 8 <= data.len() {
+        let length =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let chunk_type = &data[pos + 4..pos + 8];
+        match chunk_type {
+            b"acTL" => return true,
+            // Per the APNG spec, `acTL` (if present) must precede the first
+            // `IDAT` — reaching `IDAT` first means this is a static PNG, or
+            // at best a malformed APNG that browsers themselves would also
+            // render as static.
+            b"IDAT" => return false,
+            _ => {}
+        }
+        // 4-byte length + 4-byte type + `length` bytes of data + 4-byte CRC.
+        let Some(next) = pos
+            .checked_add(8)
+            .and_then(|p| p.checked_add(length)?.checked_add(4))
+        else {
+            return false;
+        };
+        pos = next;
+    }
+    false
+}
+
+/// Strips EXIF/metadata (GPS location, camera info, capture timestamp, etc.)
+/// from a JPEG or PNG image by decoding and re-encoding it — `image`'s
+/// encoders don't carry the source's metadata segments forward, so a
+/// straightforward round-trip is a real strip, not just a best-effort one.
+/// Bakes in any EXIF `Orientation` first so the re-encoded, metadata-free
+/// image still displays upright. Returns `None` (leaving the original bytes
+/// untouched) for animated GIF/WebP/PNG — re-encoding through
+/// `image::DynamicImage` would collapse them to a single frame, which is
+/// worse than leaving their (comparatively low-signal) metadata in place —
+/// and for anything that fails to decode, so a corrupt-but-otherwise-
+/// uploadable file still sends.
+///
+/// `pub` (not module-private) so `charm-web-server`'s `send_attachment` route
+/// can apply the same EXIF stripping the desktop command does — see that
+/// route's doc comment.
+pub fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
+    // Sniff the actual bytes first, not just the caller-supplied MIME — both
+    // desktop (from a file extension) and web (from a `File`'s reported
+    // type) can hand this a wrong or missing type for a real JPEG/PNG (e.g.
+    // a camera file renamed without an extension, or a browser `File` with a
+    // generic `application/octet-stream`), which would otherwise silently
+    // skip stripping and upload the original GPS/capture EXIF intact. Fall
+    // back to the MIME-derived format only when sniffing can't tell.
+    let format = image::guess_format(data)
+        .ok()
+        .filter(|format| matches!(format, image::ImageFormat::Jpeg | image::ImageFormat::Png))
+        .or_else(|| match (mime.type_().as_str(), mime.subtype().as_str()) {
+            ("image", "jpeg") => Some(image::ImageFormat::Jpeg),
+            ("image", "png") => Some(image::ImageFormat::Png),
+            _ => None,
+        })?;
+
+    // Review fix: an APNG is still a well-formed PNG container, so the
+    // format sniff/MIME check above accepts it — but the decode-and-
+    // re-encode round trip below goes through a single `DynamicImage`,
+    // silently collapsing an animated sticker/screenshot to its first
+    // frame. Bail out the same way animated GIF/WebP already do.
+    if format == image::ImageFormat::Png && is_animated_png(data) {
+        return None;
+    }
+
+    let orientation = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(data))
+        .ok()
+        .and_then(|exif| {
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .cloned()
+        })
+        .and_then(|field| field.value.get_uint(0))
+        .unwrap_or(1);
+
+    let img = image::load_from_memory_with_format(data, format).ok()?;
+    let img = apply_exif_orientation(img, orientation);
+
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), format)
+        .ok()?;
+    Some(out)
+}
+
 use super::MatrixState;
 
 const IPC_OPERATION_ID_HEADER: &str = "x-charm-operation-id";
@@ -263,6 +381,7 @@ pub fn build_message_content(
 /// the send queue is the one behavior not preserved for attachments — a
 /// known, called-out gap rather than a silent one.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // one Tauri IPC command; splitting args into a struct would only move the count, not reduce it
 pub async fn send_attachment(
     app: AppHandle,
     state: State<'_, MatrixState>,
@@ -271,6 +390,7 @@ pub async fn send_attachment(
     file_path: String,
     caption: Option<String>,
     txn_id: String,
+    strip_exif_enabled: bool,
 ) -> Result<(), String> {
     let operation_id = ipc_operation_id(&request);
     // Continues a trace started in the webview (see `observability_trace`'s
@@ -314,6 +434,20 @@ pub async fn send_attachment(
         "Attachment IPC started"
     );
 
+    // Registered before any `.await` so a cancel request that arrives while
+    // this command is still reading the file off disk isn't lost — it just
+    // flips the token, and the `tokio::select!` below observes it as soon as
+    // the upload future actually starts. Removed unconditionally once this
+    // call settles (success, failure, or cancellation) so the map doesn't
+    // grow across a session's uploads.
+    let txn_id_for_cancellation = txn_id.clone();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .insert(txn_id_for_cancellation.clone(), cancellation.clone());
+
     let result = async {
         let client = state.require_client().await?;
 
@@ -346,8 +480,16 @@ pub async fn send_attachment(
         }
 
         let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        let total_bytes = data.len() as u64;
         let mime = mime_guess::from_path(path).first_or_octet_stream();
+        // Best-effort: an unstrippable image (animated GIF/WebP, or one that
+        // fails to decode) sends with its original bytes rather than failing
+        // the whole upload — see `strip_exif`'s doc comment for why.
+        let data = if strip_exif_enabled {
+            strip_exif(&mime, &data).unwrap_or(data)
+        } else {
+            data
+        };
+        let total_bytes = data.len() as u64;
         breadcrumb_total_bytes = Some(total_bytes);
         breadcrumb_mime = Some(mime.clone());
         tracing::info!(
@@ -389,7 +531,16 @@ pub async fn send_attachment(
             .send_attachment(filename, &mime, data, config)
             .with_send_progress_observable(progress.clone());
 
-        let result = send.await;
+        // Races the upload against a user-initiated cancel
+        // (`cancel_attachment_upload` flips `cancellation`). Dropping `send`
+        // (what `select!` does to the losing branch) drops the underlying
+        // `Client::media()` upload request future, which tears down its
+        // in-flight HTTP body stream rather than letting it run to
+        // completion in the background.
+        let result = tokio::select! {
+            result = send => result.map_err(|error| error.to_string()),
+            () = cancellation.cancelled() => Err("upload cancelled".to_string()),
+        };
         // The forwarder task holds its own clone of `progress`'s subscriber, so
         // dropping the local `progress` binding here doesn't close its stream —
         // abort it explicitly (same pattern as `qr_login.rs`) rather than
@@ -414,9 +565,15 @@ pub async fn send_attachment(
             );
         }
 
-        result.map(|_| ()).map_err(|error| error.to_string())
+        result.map(|_| ())
     }
     .await;
+
+    state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .remove(&txn_id_for_cancellation);
 
     let duration_ms = started_at.elapsed().as_millis();
     let tracing_duration_ms = u64::try_from(duration_ms).unwrap_or(u64::MAX);
@@ -441,36 +598,104 @@ pub async fn send_attachment(
             Ok(())
         }
         Err(error) => {
+            // Review fix: a user clicking Cancel mid-upload is expected UX,
+            // not a bug — recording it identically to a genuine upload
+            // failure (Error-level breadcrumb, warn-level log, an
+            // UnknownError span status) made normal cancels indistinguishable
+            // from real failures in Sentry/telemetry.
+            let cancelled = error == "upload cancelled";
             add_attachment_ipc_breadcrumb(
-                sentry::Level::Error,
-                "failed",
+                if cancelled {
+                    sentry::Level::Info
+                } else {
+                    sentry::Level::Error
+                },
+                if cancelled { "cancelled" } else { "failed" },
                 operation_id.as_deref(),
                 breadcrumb_total_bytes,
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
-            tracing::warn!(
-                command = "send_attachment",
-                status = "failed",
-                total_bytes = ?breadcrumb_total_bytes,
-                mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms = tracing_duration_ms,
-                "Attachment IPC failed"
-            );
+            if cancelled {
+                tracing::info!(
+                    command = "send_attachment",
+                    status = "cancelled",
+                    total_bytes = ?breadcrumb_total_bytes,
+                    mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                    duration_ms = tracing_duration_ms,
+                    "Attachment IPC cancelled"
+                );
+            } else {
+                tracing::warn!(
+                    command = "send_attachment",
+                    status = "failed",
+                    total_bytes = ?breadcrumb_total_bytes,
+                    mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                    duration_ms = tracing_duration_ms,
+                    "Attachment IPC failed"
+                );
+            }
             Err(error)
         }
     };
 
     if let Some(transaction) = trace_transaction {
-        transaction.set_status(if outcome.is_ok() {
-            sentry::protocol::SpanStatus::Ok
-        } else {
-            sentry::protocol::SpanStatus::UnknownError
+        transaction.set_status(match &outcome {
+            Ok(_) => sentry::protocol::SpanStatus::Ok,
+            Err(error) if error == "upload cancelled" => sentry::protocol::SpanStatus::Cancelled,
+            Err(_) => sentry::protocol::SpanStatus::UnknownError,
         });
         transaction.finish();
     }
 
     outcome
+}
+
+/// Cancels an in-flight `send_attachment` call for `txn_id`, if one is still
+/// running. A no-op (not an error) if the upload already settled or was never
+/// started — the tray row that triggers this can race the upload's own
+/// completion, and losing that race just means there's nothing left to
+/// cancel.
+#[tauri::command]
+pub async fn cancel_attachment_upload(
+    state: State<'_, MatrixState>,
+    txn_id: String,
+) -> Result<(), String> {
+    if let Some(token) = state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .get(&txn_id)
+    {
+        token.cancel();
+    }
+    Ok(())
+}
+
+/// Fetches (and caches, via matrix-rust-sdk's own `OnceCell`) the
+/// homeserver's `m.upload.size` limit, in bytes, so the frontend can warn
+/// pre-flight instead of letting an over-limit upload fail opaquely against
+/// the server.
+#[tauri::command]
+pub async fn get_media_config(state: State<'_, MatrixState>) -> Result<u64, String> {
+    let client = state.require_client().await?;
+    let upload_size = client
+        .load_or_fetch_max_upload_size()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(i64::from(upload_size) as u64)
+}
+
+/// Byte size of a file on disk, so the frontend can run the same
+/// `size > maxUploadBytes` pre-flight check for a native desktop attachment
+/// (picker/drop payload is a filesystem path string, not a browser `File`
+/// with its own `.size`) as it already does for a web upload.
+#[tauri::command]
+pub async fn get_file_size(file_path: String) -> Result<u64, String> {
+    tokio::fs::metadata(&file_path)
+        .await
+        .map(|metadata| metadata.len())
+        .map_err(|e| e.to_string())
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`
@@ -576,6 +801,84 @@ mod tests {
         let mime: mime::Mime = "audio/ogg".parse().unwrap();
         let info = attachment_info_for(&mime, &[], 42);
         assert!(matches!(info, AttachmentInfo::Audio(_)));
+    }
+
+    #[test]
+    fn strip_exif_sniffs_jpeg_bytes_despite_wrong_mime() {
+        // A camera JPEG picked from a source that reports the wrong (or a
+        // generic) MIME type — e.g. a desktop path renamed without `.jpg`,
+        // or a web `File` with `application/octet-stream` — must still get
+        // stripped, since `strip_exif` now sniffs the actual bytes rather
+        // than trusting the caller-supplied MIME alone.
+        let img = image::DynamicImage::new_rgb8(4, 4);
+        let mut jpeg_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut jpeg_bytes),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+
+        let wrong_mime: mime::Mime = "application/octet-stream".parse().unwrap();
+        assert!(strip_exif(&wrong_mime, &jpeg_bytes).is_some());
+    }
+
+    #[test]
+    fn strip_exif_returns_none_for_non_image_bytes_regardless_of_mime() {
+        // A MIME claiming JPEG doesn't make arbitrary bytes decodable —
+        // sniffing finds nothing usable, the MIME fallback's decode then
+        // fails too, and this must stay `None` rather than panicking.
+        let claimed_jpeg_mime: mime::Mime = "image/jpeg".parse().unwrap();
+        assert!(strip_exif(&claimed_jpeg_mime, b"not an image").is_none());
+    }
+
+    /// Builds a length-prefixed PNG chunk (4-byte length + 4-byte type +
+    /// data + a dummy 4-byte CRC) — `is_animated_png` only walks chunk
+    /// framing, so a real CRC isn't needed for these tests.
+    fn png_chunk(chunk_type: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(chunk_type);
+        chunk.extend_from_slice(data);
+        chunk.extend_from_slice(&[0u8; 4]);
+        chunk
+    }
+
+    #[test]
+    fn is_animated_png_true_when_actl_precedes_idat() {
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"acTL", &[0; 8]));
+        data.extend(png_chunk(b"IDAT", &[]));
+        assert!(is_animated_png(&data));
+    }
+
+    #[test]
+    fn is_animated_png_false_when_idat_precedes_any_actl() {
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"IDAT", &[]));
+        assert!(!is_animated_png(&data));
+    }
+
+    #[test]
+    fn is_animated_png_false_for_non_png_bytes() {
+        assert!(!is_animated_png(b"not a png"));
+    }
+
+    #[test]
+    fn strip_exif_skips_animated_png_despite_matching_format() {
+        // An APNG is still a well-formed PNG container — `guess_format`
+        // alone can't distinguish it from a static one — so without the
+        // `is_animated_png` check this would decode-and-re-encode through a
+        // single `DynamicImage`, silently collapsing an animated
+        // sticker/screenshot to its first frame.
+        let mut data = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        data.extend(png_chunk(b"IHDR", &[0; 13]));
+        data.extend(png_chunk(b"acTL", &[0; 8]));
+        data.extend(png_chunk(b"IDAT", &[]));
+
+        let mime: mime::Mime = "image/png".parse().unwrap();
+        assert!(strip_exif(&mime, &data).is_none());
     }
 
     #[test]

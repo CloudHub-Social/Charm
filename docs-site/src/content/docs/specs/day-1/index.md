@@ -75,7 +75,7 @@ here.
 | 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
-| 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **In progress** | Feature-gated attachment drag-and-drop target implemented; captions, size preflight, cancellation, GIF controls, and EXIF stripping remain |
+| 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
 | 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **Planned** | Restore exists through Spec 25; setup and import/export remain scoped here |
 | 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **Planned** | No matching merged implementation found |

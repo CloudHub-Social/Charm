@@ -262,6 +262,7 @@ async function requestBytes<T>(
   path: string,
   body?: BodyInit,
   contentType?: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() };
   if (contentType) headers["content-type"] = contentType;
@@ -270,6 +271,7 @@ async function requestBytes<T>(
     credentials: "include",
     headers,
     body,
+    signal,
   });
   if (!response.ok) {
     throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
@@ -634,14 +636,24 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       const form = new FormData();
       form.set("file", file);
       if (typeof args.caption === "string") form.set("caption", args.caption);
+      form.set("strip_exif", String(args.stripExifEnabled === true));
       return requestBytes<T>(
         "POST",
         `/api/rooms/${encodeSegment(String(args.roomId))}/attachments${query({
           txn_id: args.txnId as string,
         })}`,
         form,
+        undefined,
+        args.signal as AbortSignal | undefined,
       );
     }
+    case "cancel_attachment_upload":
+      return requestJson<T>(
+        "POST",
+        `/api/media/attachments/${encodeSegment(String(args.txnId))}/cancel`,
+      );
+    case "get_media_config":
+      return requestJson<T>("GET", "/api/media/config");
     case "set_avatar":
     case "set_room_avatar": {
       const file = maybeFile(args.filePath);

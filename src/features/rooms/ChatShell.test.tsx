@@ -71,6 +71,9 @@ const getRoomDetails = vi
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
+const cancelAttachmentUpload = vi.fn().mockResolvedValue(undefined);
+const getMediaConfig = vi.fn().mockResolvedValue(100 * 1024 * 1024);
+const getFileSize = vi.fn().mockResolvedValue(1024);
 const openFileDialog = vi.fn();
 const getRoomMembers = vi.fn().mockResolvedValue([]);
 const listRooms = vi.fn().mockResolvedValue([]);
@@ -208,6 +211,9 @@ vi.mock("@/lib/matrix", () => ({
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
+  cancelAttachmentUpload: (...args: unknown[]) => cancelAttachmentUpload(...args),
+  getMediaConfig: (...args: unknown[]) => getMediaConfig(...args),
+  getFileSize: (...args: unknown[]) => getFileSize(...args),
   getRoomMembers: (...args: unknown[]) => getRoomMembers(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   runCommand: (...args: unknown[]) => runCommand(...args),
@@ -391,6 +397,9 @@ describe("ChatShell", () => {
       idle_timeout_minutes: null,
     });
     sendAttachment.mockReset().mockResolvedValue(undefined);
+    cancelAttachmentUpload.mockReset().mockResolvedValue(undefined);
+    getMediaConfig.mockReset().mockResolvedValue(100 * 1024 * 1024);
+    getFileSize.mockReset().mockResolvedValue(1024);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
     listBookmarks.mockReset().mockResolvedValue([]);
@@ -4575,11 +4584,17 @@ describe("ChatShell", () => {
 
     fireEvent.click(attachButton);
 
+    // media_send_polish stages the file for an optional caption first.
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/cat.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4597,6 +4612,7 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() => expect(screen.getByText("video.mp4")).toBeInTheDocument());
 
@@ -4654,6 +4670,31 @@ describe("ChatShell", () => {
     expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
   });
 
+  it("does not confirm a staged attachment into a newly selected room", async () => {
+    openFileDialog.mockResolvedValue("/Users/me/room-a.png");
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("room-a.png")).toBeInTheDocument();
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
     sendAttachment.mockRejectedValue(new Error("network error"));
     openFileDialog.mockResolvedValue("/Users/me/broken.mp4");
@@ -4661,8 +4702,9 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
-    await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("network error")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss failed upload broken.mp4" }));
 
@@ -4680,11 +4722,16 @@ describe("ChatShell", () => {
       clipboardData: { files: [file] },
     });
 
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/pasted.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4763,11 +4810,15 @@ describe("ChatShell", () => {
     fireEvent.drop(shell, { dataTransfer });
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/drop.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
+        undefined,
       ),
     );
   });
@@ -4808,9 +4859,36 @@ describe("ChatShell", () => {
       dataTransfer: { files: [file] },
     });
 
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
-      expect(sendAttachment).toHaveBeenCalledWith(room.room_id, file, expect.any(String)),
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        file,
+        expect.any(String),
+        undefined,
+        expect.any(Boolean),
+        expect.any(AbortSignal),
+      ),
     );
+  });
+
+  it("aborts the in-flight web upload's fetch when dismissed", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "large.png", { type: "image/png" });
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
+    await waitFor(() => expect(sendAttachment).toHaveBeenCalled());
+    const signal = sendAttachment.mock.calls.at(-1)?.[5] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel upload large.png" }));
+
+    expect(signal.aborted).toBe(true);
   });
 
   it("opens a formatted-body link via the system browser instead of navigating the webview", async () => {

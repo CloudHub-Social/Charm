@@ -536,14 +536,72 @@ export function onSasUpdate(
  * `txnId` is caller-supplied (not server-generated) so it can match the ID
  * the frontend already used for its optimistic upload row before this call
  * — `upload:progress` events for this upload carry the same ID back.
+ *
+ * `signal`: web-only. The desktop Tauri command already reacts to
+ * `cancel_attachment_upload` server-side mid-upload (a `tokio::select!`
+ * against a cancellation token), but on web the multipart body is streamed
+ * by the browser's own `fetch` — without aborting that request too, a
+ * dismissed-but-still-uploading large attachment keeps consuming the user's
+ * bandwidth until the browser finishes sending it, even though the
+ * companion server already knows to discard it on arrival. Only attached
+ * when actually running as a web build (`isWebBuild()`) — an `AbortSignal`
+ * isn't a plausible Tauri IPC argument, so it's never sent down that path.
  */
+// A user-initiated cancel is expected UX, not a bug, so it must not count
+// toward `captureOnError` below — but it doesn't reject the same way on
+// both builds: desktop's Rust command rejects with the literal string
+// "upload cancelled" (see cancel_attachment_upload's doc comment), while
+// web's `fetch(..., { signal })` rejects with a DOMException named
+// "AbortError" when the AbortController above fires.
+function isUploadCancellation(error: unknown): boolean {
+  if (error === "upload cancelled") return true;
+  return typeof DOMException !== "undefined" && error instanceof DOMException
+    ? error.name === "AbortError"
+    : false;
+}
+
 export function sendAttachment(
   roomId: string,
   filePath: string | File,
   txnId: string,
   caption?: string,
+  stripExifEnabled = true,
+  signal?: AbortSignal,
 ): Promise<void> {
-  return invoke("send_attachment", { roomId, filePath, txnId, caption });
+  return invoke(
+    "send_attachment",
+    {
+      roomId,
+      filePath,
+      txnId,
+      caption,
+      stripExifEnabled,
+      ...(isWebBuild() ? { signal } : {}),
+    },
+    { captureOnError: (error) => !isUploadCancellation(error) },
+  );
+}
+
+/** Cancels an in-flight `sendAttachment` upload keyed by `txnId`. A no-op if
+ * the upload already settled — see the Rust command's doc comment. */
+export function cancelAttachmentUpload(txnId: string): Promise<void> {
+  return invoke("cancel_attachment_upload", { txnId });
+}
+
+/** The homeserver's `m.upload.size` limit, in bytes, fetched (and cached
+ * server-side) once per session. Used to warn pre-flight before an
+ * over-limit attachment is picked, rather than letting the send fail
+ * opaquely against the server. */
+export function getMediaConfig(): Promise<number> {
+  return invoke("get_media_config");
+}
+
+/** Byte size of a file on disk — desktop-only (the picker/drop payload for a
+ * native attachment is a filesystem path string, not a browser `File` with
+ * its own `.size`), so the same upload-size pre-flight check web already
+ * gets from `File.size` can run for a native attachment too. */
+export function getFileSize(filePath: string): Promise<number> {
+  return invoke("get_file_size", { filePath });
 }
 
 /**

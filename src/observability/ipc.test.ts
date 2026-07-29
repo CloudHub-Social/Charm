@@ -219,6 +219,22 @@ describe("IPC observability", () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
+  it("supports a captureOnError predicate that decides per-rejection", async () => {
+    const captureOnError = vi.fn((error: unknown) => error !== "expected cancellation");
+
+    vi.mocked(tauriInvoke).mockRejectedValueOnce("expected cancellation");
+    await expect(invoke("some_command", undefined, { captureOnError })).rejects.toBe(
+      "expected cancellation",
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+
+    vi.mocked(tauriInvoke).mockRejectedValueOnce("a real failure");
+    await expect(invoke("some_command", undefined, { captureOnError })).rejects.toBe(
+      "a real failure",
+    );
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
   it("redacts camelCase secret-ish field names, not just exact snake_case keys", () => {
     expect(
       ipcObservabilityTestHooks.summarizeArgs({
