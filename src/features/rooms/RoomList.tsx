@@ -800,7 +800,12 @@ export function RoomList({
                   className="rounded-md border border-border bg-muted/40 px-2 py-1 text-xs font-medium text-foreground"
                 >
                   <option value="default">Default</option>
-                  <option value="activity">Activity</option>
+                  {/* charm-web-server has no feature-flag store yet, so its
+                      snapshot_rooms callers always pass include_activity_sort
+                      = false — every web RoomSummary.last_activity_ts is
+                      null, which would make this option silently no-op.
+                      Hide it here until the flag is threaded through. */}
+                  {!isWebBuild() && <option value="activity">Activity</option>}
                   <option value="az">A-Z</option>
                   <option value="unread">Unread first</option>
                 </select>
