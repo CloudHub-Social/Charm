@@ -83,7 +83,7 @@ success path.
 | Optimistic cache | An older mutation settles after a newer optimistic mutation | `usePrivacySettings.test.tsx` |
 | Rollback | A later failed mutation restores the last persisted snapshot, not an optimistic layer | `usePrivacySettings.test.tsx` |
 | Query confirmation | A canceled or stale fetch resolves after a newer mutation confirms | `usePrivacySettings.test.tsx` |
-| Room event stream | A relevant pinned event changes, redacts, decrypts, or becomes unresolved | `PinnedMessagesPanel.test.tsx` |
+| Room event stream | A relevant pinned event changes, redacts, decrypts, or becomes unresolved | `PinnedMessagesPanel.test.tsx` currently covers initial unresolved and unchanged undecrypted events; transition cases remain required |
 | Duplicate room event | An equivalent timeline update does not refetch | `PinnedMessagesPanel.test.tsx` |
 | Local timer | A fresh presence observation re-anchors even when its elapsed value is numerically identical | `PresenceDot.test.tsx` |
 | Feature gate | Turning privacy controls off removes private presence detail and timer work | `PresenceDot.test.tsx` |
