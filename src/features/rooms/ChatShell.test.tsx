@@ -4670,6 +4670,31 @@ describe("ChatShell", () => {
     expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
   });
 
+  it("does not confirm a staged attachment into a newly selected room", async () => {
+    openFileDialog.mockResolvedValue("/Users/me/room-a.png");
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    expect(await screen.findByText("room-a.png")).toBeInTheDocument();
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
     sendAttachment.mockRejectedValue(new Error("network error"));
     openFileDialog.mockResolvedValue("/Users/me/broken.mp4");

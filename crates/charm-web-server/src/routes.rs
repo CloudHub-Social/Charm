@@ -3665,8 +3665,10 @@ async fn send_attachment(
 async fn cancel_attachment_upload(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(txn_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     if let Some(token) = session
         .attachment_cancellations
@@ -3677,6 +3679,30 @@ async fn cancel_attachment_upload(
         token.cancel();
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod cancel_attachment_upload_origin_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn rejects_a_cross_origin_bodyless_cancel_before_session_lookup() {
+        let response = super::router(AppState::default())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/media/attachments/local-1/cancel")
+                    .header("origin", "https://attacker.example")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
 }
 
 /// The homeserver's `m.upload.size` limit, in bytes — the web

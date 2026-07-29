@@ -277,6 +277,7 @@ export function ChatShell({
   const [pendingAttachment, setPendingAttachment] = useState<{
     file: string | File;
     filename: string;
+    roomId: string | null;
   } | null>(null);
   const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
@@ -287,6 +288,8 @@ export function ChatShell({
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
   const activeRoomId = room?.room_id ?? null;
+  const visiblePendingAttachment =
+    pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;
   const permalinkViaServer = userIdServerName(currentUserId);
   useEffect(() => {
     setShowMobileFormatting(false);
@@ -1120,11 +1123,15 @@ export function ChatShell({
     }
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     setPendingAttachmentCaption("");
-    setPendingAttachment({ file, filename });
+    setPendingAttachment({ file, filename, roomId: activeRoomId });
   }
 
   function handleConfirmPendingAttachment() {
-    if (!pendingAttachment) return;
+    if (!pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
+      setPendingAttachment(null);
+      setPendingAttachmentCaption("");
+      return;
+    }
     const caption = pendingAttachmentCaption.trim();
     handleAttachFile(pendingAttachment.file, caption.length > 0 ? caption : undefined);
     setPendingAttachment(null);
@@ -1609,10 +1616,10 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && pendingAttachment && (
+      {mediaSendPolishEnabled && visiblePendingAttachment && (
         <div className="flex flex-col gap-2 px-4 pb-2">
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
-            <span className="truncate text-foreground">{pendingAttachment.filename}</span>
+            <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>
             <input
               type="text"
               value={pendingAttachmentCaption}
