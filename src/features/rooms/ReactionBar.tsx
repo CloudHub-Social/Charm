@@ -236,7 +236,13 @@ export function ReactionBar({
         open={modalKey !== null}
         reactionKey={modalKey}
         details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
-        loading={modalReaction !== undefined && detailsByKey[modalReaction.key] === undefined}
+        loading={
+          modalReaction !== undefined &&
+          detailsByKey[modalReaction.key] === undefined &&
+          !detailErrorsByKey[modalReaction.key]
+        }
+        error={modalReaction !== undefined && detailErrorsByKey[modalReaction.key]}
+        onRetry={() => modalReaction && loadDetails(modalReaction, { force: true })}
         onOpenChange={(open) => !open && closeModal()}
       />
     </TooltipProvider>

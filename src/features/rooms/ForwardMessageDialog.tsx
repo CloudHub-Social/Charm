@@ -44,6 +44,11 @@ export function ForwardMessageDialog({
   const requestGenerationRef = useRef(0);
   useEffect(() => {
     requestGenerationRef.current += 1;
+    // The parent can close or retarget this dialog without going through
+    // `close()`. Release the request-owned disabled state immediately; the
+    // generation check below keeps the stale promise from affecting the new
+    // dialog target when it eventually settles.
+    setSubmittingRoomId(null);
   }, [open, sourceRoomId, eventId]);
 
   const {

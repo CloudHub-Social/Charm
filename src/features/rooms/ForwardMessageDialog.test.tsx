@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import { ForwardMessageDialog } from "./ForwardMessageDialog";
@@ -161,6 +161,53 @@ describe("ForwardMessageDialog", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByText("Forwarding…")).toBeInTheDocument();
+  });
+
+  it("releases a stale submission when the parent retargets the dialog", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    let resolveForward: ((value: string) => void) | undefined;
+    forwardMessage.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveForward = resolve;
+      }),
+    );
+    const onForwarded = vi.fn();
+    const onOpenChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const dialog = (eventId: string) => (
+      <QueryClientProvider client={client}>
+        <ForwardMessageDialog
+          open
+          sourceRoomId="!source:localhost"
+          eventId={eventId}
+          onOpenChange={onOpenChange}
+          onForwarded={onForwarded}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(dialog("$first:localhost"));
+
+    fireEvent.click(await screen.findByText("Alpha"));
+    expect(screen.getByText("Forwarding…")).toBeInTheDocument();
+
+    view.rerender(dialog("$second:localhost"));
+
+    expect(screen.queryByText("Forwarding…")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Alpha/ })).toBeEnabled();
+
+    await act(async () => {
+      resolveForward?.("txn-1");
+    });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onForwarded).not.toHaveBeenCalled();
   });
 
   it("excludes pending invites from the forward targets", async () => {

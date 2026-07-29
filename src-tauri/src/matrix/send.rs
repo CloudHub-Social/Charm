@@ -455,18 +455,24 @@ async fn latest_replacement_content(
     ))
 }
 
-/// Returns the newest queued local replacement for `event_id`, if one has
-/// not reached the homeserver yet. `/relations` cannot see these local
-/// echoes, but the timeline already applies them optimistically; forwarding
-/// must therefore prefer this content or it can re-share text the user just
-/// edited away.
-async fn pending_replacement_content(
+/// A queued local replacement that has not reached the homeserver yet.
+///
+/// Kept module-visible so edit history and forwarding use the same send-queue
+/// view instead of disagreeing while an edit is pending.
+pub(super) struct PendingReplacement {
+    pub transaction_id: String,
+    pub origin_server_ts: u64,
+    pub new_content:
+        matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
+}
+
+/// Returns queued local replacements for `event_id`, in send-queue order.
+/// `/relations` cannot see these local echoes, but the timeline already
+/// applies them optimistically.
+pub(super) async fn pending_replacements(
     room: &Room,
     event_id: &matrix_sdk::ruma::EventId,
-) -> Result<
-    Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation>,
-    String,
-> {
+) -> Result<Vec<PendingReplacement>, String> {
     use matrix_sdk::ruma::events::room::message::Relation;
 
     let (local_echoes, _updates) = room
@@ -475,22 +481,33 @@ async fn pending_replacement_content(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(local_echoes.into_iter().rev().find_map(|echo| {
-        let LocalEchoContent::Event {
-            serialized_event, ..
-        } = echo.content
-        else {
-            return None;
-        };
-        let Ok(AnyMessageLikeEventContent::RoomMessage(content)) = serialized_event.deserialize()
-        else {
-            return None;
-        };
-        let Some(Relation::Replacement(replacement)) = content.relates_to else {
-            return None;
-        };
-        (replacement.event_id == *event_id).then_some(replacement.new_content)
-    }))
+    Ok(local_echoes
+        .into_iter()
+        .filter_map(|echo| {
+            let transaction_id = echo.transaction_id.to_string();
+            let LocalEchoContent::Event {
+                serialized_event,
+                send_handle,
+                ..
+            } = echo.content
+            else {
+                return None;
+            };
+            let Ok(AnyMessageLikeEventContent::RoomMessage(content)) =
+                serialized_event.deserialize()
+            else {
+                return None;
+            };
+            let Some(Relation::Replacement(replacement)) = content.relates_to else {
+                return None;
+            };
+            (replacement.event_id == *event_id).then(|| PendingReplacement {
+                transaction_id,
+                origin_server_ts: send_handle.created_at.0.into(),
+                new_content: replacement.new_content,
+            })
+        })
+        .collect())
 }
 
 /// Core logic behind [`forward_message`].
@@ -539,7 +556,10 @@ pub async fn forward_message_impl(
     // falling back to `original_message.content` — see
     // `latest_replacement_content`'s doc comment for why treating "the
     // request failed" the same as "there is no edit" is unsafe here.
-    let pending_edit = pending_replacement_content(&source_room, &parsed_event_id).await?;
+    let pending_edit = pending_replacements(&source_room, &parsed_event_id)
+        .await?
+        .pop()
+        .map(|replacement| replacement.new_content);
     let latest_edit = if pending_edit.is_some() {
         pending_edit
     } else {
@@ -1323,12 +1343,13 @@ mod concurrency_tests {
             .await
             .unwrap();
 
-        let pending = pending_replacement_content(&room, event_id)
+        let pending = pending_replacements(&room, event_id)
             .await
             .unwrap()
+            .pop()
             .expect("queued edit should be visible before it reaches /relations");
 
-        assert_eq!(pending.msgtype.body(), "edited locally");
+        assert_eq!(pending.new_content.msgtype.body(), "edited locally");
     }
 
     #[tokio::test]

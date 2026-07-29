@@ -405,7 +405,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               </DropdownMenuItem>
             )}
             {messageActionParityEnabled && !isOwn && onReport && !isError && (
-              <DropdownMenuItem variant="destructive" onSelect={onReport} disabled={isUndecrypted}>
+              <DropdownMenuItem variant="destructive" onSelect={onReport}>
                 <Flag />
                 Report
               </DropdownMenuItem>

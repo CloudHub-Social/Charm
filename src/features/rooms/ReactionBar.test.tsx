@@ -200,6 +200,34 @@ describe("ReactionBar", () => {
     expect(screen.queryByText("0 reactions")).not.toBeInTheDocument();
   });
 
+  it("surfaces a full-list failure and retries the reactor lookup", async () => {
+    const recoveredDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@recovered-${index}:example.org`,
+      origin_server_ts: index,
+    }));
+    getReactionDetails
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(recoveredDetails);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load reactions.");
+    expect(screen.queryByText("Loading reactions…")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("@recovered-8:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
   it("clears reactor details after the full-list dialog closes", async () => {
     const firstDetails = Array.from({ length: 9 }, (_, index) => ({
       sender: `@first-${index}:example.org`,

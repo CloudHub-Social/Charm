@@ -230,6 +230,17 @@ describe("MessageActions", () => {
     expect(onCopy).not.toHaveBeenCalled();
   });
 
+  it("keeps Report available for an undecrypted event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isUndecrypted: true, onReport });
+    openMenu();
+
+    const report = (await screen.findByText("Report")).closest('[role="menuitem"]');
+    expect(report).not.toHaveAttribute("data-disabled");
+    fireEvent.click(report!);
+    expect(onReport).toHaveBeenCalledOnce();
+  });
+
   it("does not show Resend or Discard for a normal (non-failed) message", async () => {
     renderActions({ isOwn: true, canRedact: true, isError: false });
     openMenu();
