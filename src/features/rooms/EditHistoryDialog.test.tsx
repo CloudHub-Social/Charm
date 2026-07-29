@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import { EditHistoryDialog } from "./EditHistoryDialog";
@@ -61,5 +61,82 @@ describe("EditHistoryDialog", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("renders a non-Error rejection without crashing", async () => {
+    getEditHistory.mockRejectedValue("offline");
+
+    render(
+      <EditHistoryDialog
+        open
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("offline");
+  });
+
+  it("ignores a successful request that settles after the dialog closes", async () => {
+    let resolveHistory!: (entries: []) => void;
+    getEditHistory.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    const { rerender } = render(
+      <EditHistoryDialog
+        open
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+
+    rerender(
+      <EditHistoryDialog
+        open={false}
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+    act(() => {
+      resolveHistory([]);
+    });
+
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("ignores a failed request that settles after the dialog closes", async () => {
+    let rejectHistory!: (reason: unknown) => void;
+    getEditHistory.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectHistory = reject;
+      }),
+    );
+    const { rerender } = render(
+      <EditHistoryDialog
+        open
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+
+    rerender(
+      <EditHistoryDialog
+        open={false}
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+    act(() => {
+      rejectHistory(new Error("late failure"));
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

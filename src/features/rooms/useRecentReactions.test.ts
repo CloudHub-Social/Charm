@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRecentReactions } from "./useRecentReactions";
 
 beforeEach(() => {
@@ -10,6 +10,28 @@ describe("useRecentReactions", () => {
   it("starts with the default starter set when nothing is stored", () => {
     const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
     expect(result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
+  });
+
+  it.each(["not-json", "[]", "{}", "[1,2]"])(
+    "falls back safely when stored reactions are unusable: %s",
+    (stored) => {
+      localStorage.setItem("charm:recentReactions:%40alice%3Aexample.org", stored);
+
+      const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
+
+      expect(result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
+    },
+  );
+
+  it("filters non-string entries from an otherwise valid stored list", () => {
+    localStorage.setItem(
+      "charm:recentReactions:%40alice%3Aexample.org",
+      JSON.stringify(["🔥", 1, null, "🎉"]),
+    );
+
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
+
+    expect(result.current.recent).toEqual(["🔥", "🎉"]);
   });
 
   it("moves a recorded emoji to the front and persists it", () => {
@@ -62,5 +84,32 @@ describe("useRecentReactions", () => {
     rerender({ accountId: "@bob:example.org" });
 
     expect(result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
+  });
+
+  it("records against the new account immediately after an account switch", () => {
+    const { result, rerender } = renderHook(({ accountId }) => useRecentReactions(accountId), {
+      initialProps: { accountId: "@alice:example.org" },
+    });
+    act(() => result.current.recordReaction("🔥"));
+
+    rerender({ accountId: "@bob:example.org" });
+    act(() => result.current.recordReaction("🚀"));
+
+    expect(result.current.recent[0]).toBe("🚀");
+    expect(
+      JSON.parse(localStorage.getItem("charm:recentReactions:%40bob%3Aexample.org") ?? "[]"),
+    ).toEqual(["🚀", "👍", "❤️", "😂", "🎉"]);
+  });
+
+  it("keeps the in-memory ordering when localStorage is unavailable", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
+
+    act(() => result.current.recordReaction("🔥"));
+
+    expect(result.current.recent[0]).toBe("🔥");
+    setItem.mockRestore();
   });
 });

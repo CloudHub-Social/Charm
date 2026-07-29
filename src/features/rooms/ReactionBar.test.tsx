@@ -63,6 +63,100 @@ describe("ReactionBar", () => {
     expect(screen.getByRole("button", { name: "Add reaction" })).toBeDisabled();
   });
 
+  it("keeps reaction details disabled when message-action parity is off", () => {
+    mockUseFlag.mockReturnValue(false);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /👍/ }));
+
+    expect(getReactionDetails).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { roomId: undefined, eventId: "$event" },
+    { roomId: "!room:example.org", eventId: undefined },
+  ])("does not fetch details without both Matrix identifiers", ({ roomId, eventId }) => {
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar reactions={reactions} onToggle={vi.fn()} roomId={roomId} eventId={eventId} />,
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /👍/ }));
+
+    expect(getReactionDetails).not.toHaveBeenCalled();
+  });
+
+  it("shows the empty-detail state after a successful lookup", async () => {
+    getReactionDetails.mockResolvedValue([]);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /👍/ });
+
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("No reactions")).toBeInTheDocument();
+  });
+
+  it("lists a small reactor set without a View all action", async () => {
+    getReactionDetails.mockResolvedValue([
+      { sender: "@alice:example.org", origin_server_ts: 1 },
+      { sender: "@bob:example.org", origin_server_ts: 2 },
+    ]);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 2, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /👍/ });
+
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+    expect(screen.getByText("@bob:example.org")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
+  });
+
+  it("leaves the tooltip in its loading state when detail lookup fails", async () => {
+    getReactionDetails.mockRejectedValue(new Error("offline"));
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /👍/ });
+
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    await waitFor(() => expect(getReactionDetails).toHaveBeenCalledOnce());
+  });
+
   it("deduplicates repeated hover requests before React commits loading state", () => {
     getReactionDetails.mockReturnValue(new Promise(() => {}));
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];

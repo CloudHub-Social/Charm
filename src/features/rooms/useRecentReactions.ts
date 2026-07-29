@@ -14,7 +14,8 @@ function readRecent(accountId: string): string[] {
     if (!raw) return STARTER_SET;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return STARTER_SET;
-    return parsed.filter((entry): entry is string => typeof entry === "string");
+    const recent = parsed.filter((entry): entry is string => typeof entry === "string");
+    return recent.length > 0 ? recent : STARTER_SET;
   } catch {
     return STARTER_SET;
   }
