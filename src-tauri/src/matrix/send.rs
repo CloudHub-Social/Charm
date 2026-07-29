@@ -6,6 +6,7 @@ use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, Mentions};
+use matrix_sdk::ruma::html::{HtmlSanitizerMode, RemoveReplyFallback};
 use matrix_sdk::ruma::{OwnedUserId, RoomId, UserId};
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk::TransmissionProgress;
@@ -299,12 +300,18 @@ pub async fn forward_message_impl(
         }
     }
 
-    // Strip any relation (reply/edit) on the forwarded copy — forwarding
-    // should send a clean new message, not a relation to the original.
     let mut content = original_message.content.clone();
     if let Some((_, new_content)) = latest_edit {
         content.apply_replacement(new_content);
     }
+    // A reply's body/formatted_body carries the quoted rich-reply fallback
+    // ("> <@user:server> ..."), which `sanitize` only strips while
+    // `relates_to` still says this is a reply — so this must run before
+    // clearing it below, same ordering `rooms::room_message_preview_from_raw`
+    // uses for the last-message preview.
+    content.sanitize(HtmlSanitizerMode::Compat, RemoveReplyFallback::Yes);
+    // Strip any relation (reply/edit) on the forwarded copy — forwarding
+    // should send a clean new message, not a relation to the original.
     content.relates_to = None;
 
     let parsed_target_room_id = RoomId::parse(target_room_id).map_err(|e| e.to_string())?;
@@ -767,6 +774,38 @@ mod tests {
             json.get("m.relates_to").is_none(),
             "forwarded content must not carry the source event's m.relates_to"
         );
+    }
+
+    #[test]
+    fn forwarded_reply_content_sanitizes_before_clearing_relates_to() {
+        // forward_message_impl calls `sanitize` before clearing `relates_to`
+        // (not after) because `sanitize`'s reply-fallback stripping only
+        // triggers while `relates_to` still says "this is a reply" — see
+        // `rooms::room_message_preview_from_raw`'s identical ordering. This
+        // ruma version's `make_reply_to` doesn't itself prepend a quoted
+        // fallback into `body` (only the `m.in_reply_to` relation — see
+        // `actions::make_reply_to_builds_in_reply_to_relation_and_fallback`),
+        // so there's nothing to strip today, but the ordering is what makes
+        // stripping *possible* if a future ruma version (or a thread
+        // fallback) reintroduces one — get it right regardless.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+
+        content.sanitize(
+            matrix_sdk::ruma::html::HtmlSanitizerMode::Compat,
+            matrix_sdk::ruma::html::RemoveReplyFallback::Yes,
+        );
+        content.relates_to = None;
+
+        assert_eq!(content.body(), "hi back");
     }
 
     #[test]

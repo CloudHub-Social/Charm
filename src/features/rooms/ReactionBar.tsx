@@ -51,16 +51,28 @@ export function ReactionBar({
     return null;
   }
 
-  function loadDetails(key: string) {
-    if (!roomId || !eventId || detailsByKey[key] || loadingKey === key) return;
-    setLoadingKey(key);
-    getReactionDetails(roomId, eventId, key)
+  // Keyed by `${key}:${count}`, not just the emoji key — a later
+  // `m.reaction`/redaction changing the count for the same emoji must
+  // invalidate the cached reactor list (a stale `detailsByKey[key]` would
+  // otherwise never refresh once hovered once), and the count is already
+  // the cheapest available signal that something changed.
+  function cacheKeyFor(reaction: ReactionGroup) {
+    return `${reaction.key}:${reaction.count}`;
+  }
+  function loadDetails(reaction: ReactionGroup) {
+    if (!messageActionParityEnabled || !roomId || !eventId) return;
+    const cacheKey = cacheKeyFor(reaction);
+    if (detailsByKey[cacheKey] || loadingKey === cacheKey) return;
+    setLoadingKey(cacheKey);
+    getReactionDetails(roomId, eventId, reaction.key)
       .then((details) => {
-        setDetailsByKey((prev) => ({ ...prev, [key]: details }));
+        setDetailsByKey((prev) => ({ ...prev, [cacheKey]: details }));
       })
       .catch(() => {})
-      .finally(() => setLoadingKey((prev) => (prev === key ? null : prev)));
+      .finally(() => setLoadingKey((prev) => (prev === cacheKey ? null : prev)));
   }
+
+  const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
 
   const chips = reactions.map((reaction) => {
     const chip = (
@@ -68,7 +80,7 @@ export function ReactionBar({
         key={reaction.key}
         type="button"
         onClick={() => onToggle(reaction.key)}
-        onMouseEnter={() => loadDetails(reaction.key)}
+        onMouseEnter={() => loadDetails(reaction)}
         disabled={disabled}
         aria-pressed={reaction.reacted_by_me}
         className={cn(
@@ -85,7 +97,7 @@ export function ReactionBar({
 
     if (!messageActionParityEnabled || !roomId || !eventId) return chip;
 
-    const details = detailsByKey[reaction.key];
+    const details = detailsByKey[cacheKeyFor(reaction)];
     return (
       <Tooltip key={reaction.key}>
         <TooltipTrigger asChild>{chip}</TooltipTrigger>
@@ -136,7 +148,7 @@ export function ReactionBar({
       <WhoReactedDialog
         open={modalKey !== null}
         reactionKey={modalKey}
-        details={modalKey ? (detailsByKey[modalKey] ?? []) : []}
+        details={modalReaction ? (detailsByKey[cacheKeyFor(modalReaction)] ?? []) : []}
         onOpenChange={(open) => !open && setModalKey(null)}
       />
     </TooltipProvider>

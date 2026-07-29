@@ -77,6 +77,11 @@ export function ForwardMessageDialog({
         if (!nextOpen) {
           setFilter("");
           setError(null);
+          // Otherwise a forward still in flight when the dialog is closed
+          // leaves every room button disabled (`disabled={submittingRoomId
+          // !== null}`) the next time it's reopened, until that original
+          // request happens to settle.
+          setSubmittingRoomId(null);
         }
         onOpenChange(nextOpen);
       }}
