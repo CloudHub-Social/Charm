@@ -543,6 +543,7 @@ impl PendingAuthStore {
                 return Err(error);
             }
         };
+        let requires_token = submit_url.is_some();
         let restored = self
             .restore_password_reset(
                 attempt_id.clone(),
@@ -563,7 +564,7 @@ impl PendingAuthStore {
         }
         Ok(PasswordResetChallenge {
             attempt_id,
-            requires_token: response.submit_url.is_some(),
+            requires_token,
         })
     }
 
