@@ -74,6 +74,7 @@ use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
 const PREAUTH_COOKIE: &str = "charm_preauth";
+const DISCOVERY_COOKIE: &str = "charm_auth_discovery";
 
 /// Sanity cap on an avatar upload — well over any real profile picture, but
 /// (unlike attachments) an avatar has no legitimate reason to approach
@@ -1658,8 +1659,26 @@ fn preauth_cookie(owner: String) -> Cookie<'static> {
         .build()
 }
 
+fn discovery_cookie(owner: String) -> Cookie<'static> {
+    let secure = std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() != Ok("1");
+    Cookie::build((DISCOVERY_COOKIE, owner))
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .max_age(time::Duration::minutes(5))
+        .build()
+}
+
 fn clear_preauth_cookie() -> Cookie<'static> {
     Cookie::build(PREAUTH_COOKIE)
+        .path("/")
+        .max_age(time::Duration::ZERO)
+        .build()
+}
+
+fn clear_discovery_cookie() -> Cookie<'static> {
+    Cookie::build(DISCOVERY_COOKIE)
         .path("/")
         .max_age(time::Duration::ZERO)
         .build()
@@ -1886,16 +1905,14 @@ async fn get_login_flows(
     Json(request): Json<HomeserverRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
-        owner
+    let owner = if let Some(previous) = jar.get(DISCOVERY_COOKIE) {
+        previous.value().to_owned()
     } else {
         new_preauth_owner()
     };
     crate::pending_auth::get_login_flows(&request.homeserver_url)
         .await
-        .map(|flows| (jar.add(preauth_cookie(owner)), Json(flows)))
+        .map(|flows| (jar.add(discovery_cookie(owner)), Json(flows)))
         .map_err(ApiError::bad_request)
 }
 
@@ -1911,7 +1928,10 @@ async fn login_with_token(
     Json(request): Json<TokenLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    let owner = require_preauth_owner(&jar)?;
+    let owner = jar
+        .get(DISCOVERY_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
     state.pending_auth.cancel_owner(&owner).await;
     let (completed, attempt_id) = state
         .pending_auth
@@ -1933,6 +1953,7 @@ async fn login_with_token(
     }
     Ok((
         jar.remove(clear_preauth_cookie())
+            .remove(clear_discovery_cookie())
             .add(session_cookie(token)),
         Json(response),
     ))

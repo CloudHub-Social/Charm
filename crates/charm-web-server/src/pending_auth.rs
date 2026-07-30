@@ -609,7 +609,10 @@ impl PendingAuthStore {
         token: Option<String>,
         new_password: String,
     ) -> Result<(), String> {
-        let cancellation = self.owned_cancellation(owner, attempt_id).await?;
+        let cancellation = self
+            .owned_cancellation(owner, attempt_id)
+            .await
+            .map_err(|_| "password reset attempt expired or was cancelled".to_string())?;
         let mut guard = self.password_resets.lock().await;
         let Some(current) = guard.get(attempt_id) else {
             return Err("password reset attempt expired or was cancelled".to_string());
