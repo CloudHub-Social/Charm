@@ -18,9 +18,8 @@ companion and present in the repository lockfile, but making it a direct desktop
 dependency still requires the repository's explicit dependency approval before the
 indexing PR changes `src-tauri/Cargo.toml`.
 
-**Workstream:** one PR / one agent, likely split into a Rust-side indexing phase and
-a frontend search-UI phase if the indexing approach turns out nontrivial — see
-Trade-offs.
+**Workstream:** two ordered PRs: Rust/shared indexing and lifecycle first, then the
+frontend search UI and result navigation — see Trade-offs.
 
 ## Problem & why now
 
@@ -137,6 +136,13 @@ connection: the SDK owns that schema and migration lifecycle.
   is out of scope until an encrypted, session-bound backup design exists.
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
   threads. Sync/timeline delivery must not wait on SQLite I/O.
+- Persist a Charm-owned indexing journal/checkpoint before acknowledging a sync
+  position as searchable. Startup replays incomplete journal entries and
+  reconciles the index against decrypted events in the SDK store before serving
+  queries; this includes redactions and edit provenance. An index file existing is
+  never sufficient evidence that backfill/reconciliation completed. Tests stop the
+  process between SDK persistence and search commit and verify restart removes
+  redacted plaintext and fills missing events.
 
 ### Search UI
 
@@ -158,11 +164,14 @@ New Tauri/web-server command:
 
 `search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
 
-The user query is literal text, not raw FTS5 syntax. The backend applies Unicode
-normalization and tokenizes both indexed content and queries with the maintained
-Lindera segmenter before safely quoting each token for FTS5. This is the selected
-CJK-capable strategy (subject to the repository's explicit dependency approval);
-do not fall back to `unicode61` for unsegmented Chinese/Japanese content.
+The user query is literal text, not raw FTS5 syntax. The backend stores the
+unmodified display text separately from the token/search representation and uses a
+maintained Lindera-backed custom FTS tokenizer that preserves byte offsets into
+that original text. Snippets and match ranges are produced from the original
+column using those offsets; pre-segmented or normalized text is never returned to
+the UI. This is the selected CJK-capable strategy (subject to the repository's
+explicit dependency approval); do not fall back to `unicode61` for unsegmented
+Chinese/Japanese content.
 unmatched quotes and FTS operators are searched as text. Empty-token queries are
 rejected with a typed invalid-query error. Requests are capped server-side at 512
 UTF-8 bytes and `limit` is clamped to 1–100.
@@ -191,6 +200,11 @@ without the user knowing which is which.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off.
+- The companion evaluates that flag in trusted server configuration and binds the
+  resulting value to the authenticated web session. Browser OFREP/local-storage
+  state may hide UI but cannot enable indexing or search routes. Disabled and
+  enabled companion sessions are covered separately, including a forged client
+  request while the server-side value is false.
 - New IPC and authenticated web-companion command surface as above, with generated
   bindings via ts-rs per existing convention.
 - No changes to existing commands.
