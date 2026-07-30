@@ -96,9 +96,13 @@ connection: the SDK owns that schema and migration lifecycle.
   searchable version.
 - Track replacement provenance separately from the visible FTS row: original
   content plus every valid edit's event ID, `origin_server_ts`, and optional
-  searchable body/msgtype. Determine the latest non-redacted replacement with the
-  same timestamp ordering and deterministic event-ID tie-break used by the
-  timeline, never local arrival order. Redacting the original writes a persistent
+  searchable body/msgtype. The `matrix-sdk-ui` timeline's already-collapsed
+  visible event is authoritative; search must not independently select a
+  replacement with a tie-break the renderer does not use. When raw backfill
+  contains multiple edits at the same timestamp and no authoritative collapsed
+  projection is available, defer that original event until timeline
+  reconciliation resolves it rather than choosing by local arrival or event ID.
+  Redacting the original writes a persistent
   tombstone, deletes the visible row, and purges every original/edit plaintext body
   in provenance; later edits and replay must remain suppressed by that tombstone.
   Redacting an edit removes that candidate and atomically recomputes the row from
@@ -253,8 +257,9 @@ without the user knowing which is which.
 
 - Rust unit tests: index insert/query/redact/edit-replace correctness against a
   fixture set of events, including multi-room, multi-sender, text-to-non-text
-  replacements, out-of-order edits, equal-timestamp event-ID tie-breaks, and
-  redaction restoring the preceding searchable version.
+  replacements, out-of-order edits, equal-timestamp edits deferred until an
+  authoritative collapsed projection is available, and redaction restoring the
+  preceding renderer-selected searchable version.
 - Rust unit tests: account A cannot open, query, or consume a cursor from account
   B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
   matrix-sdk files.
