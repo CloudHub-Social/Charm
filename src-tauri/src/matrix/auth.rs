@@ -8,6 +8,7 @@ use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, AuthType, Dummy, LoginTermsParams, Terms, UiaaInfo,
 };
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::Client;
@@ -764,7 +765,7 @@ pub async fn begin_registration(
         Err(error) => {
             let Some(uiaa) = error.as_uiaa_response().cloned() else {
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
-                return Err("registration request failed".to_string());
+                return Err(safe_registration_error(&error));
             };
             let step = match registration_challenge(&attempt_id, &client, &uiaa) {
                 Ok(step) => step,
@@ -790,7 +791,7 @@ pub async fn begin_registration(
                 .replace((attempt_id.clone(), cancellation));
             reservation.defuse();
             if let Some(previous) = previous {
-                let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+                discard_pending_registration(&app, previous);
             }
             if let Some((_, previous_cancellation)) = previous_cancellation {
                 previous_cancellation.cancel();
@@ -835,7 +836,7 @@ pub async fn continue_registration(
         drop(pending_guard);
         cancellation.cancel();
         clear_registration_cancellation(&state, &attempt_id);
-        let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+        discard_pending_registration(&app, expired);
         return Err("registration attempt expired; start again".to_string());
     }
 
@@ -849,7 +850,7 @@ pub async fn continue_registration(
     let registration_result = tokio::select! {
         result = async { pending.client.matrix_auth().register(request).await } => result,
         () = cancellation.cancelled() => {
-            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
         }
@@ -877,7 +878,7 @@ pub async fn continue_registration(
                 ) {
                     Ok(step) => step,
                     Err(error) => {
-                        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+                        discard_pending_registration(&app, pending);
                         clear_registration_cancellation(&state, &attempt_id);
                         return Err(error);
                     }
@@ -931,7 +932,7 @@ pub async fn cancel_registration(
     }
     let pending = guard.take().expect("pending attempt checked above");
     drop(guard);
-    let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+    discard_pending_registration(&app, pending);
     Ok(())
 }
 
@@ -1073,7 +1074,7 @@ pub(crate) async fn cancel_pending_registration_for_superseding_auth(
         cancellation.cancel();
     }
     if let Some(pending) = state.pending_registration.lock().await.take() {
-        let _ = persistence::discard_temp_login_store(app, &pending.store_key);
+        discard_pending_registration(app, pending);
     }
 }
 
@@ -1116,9 +1117,29 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
         };
         drop(guard);
         if let Some(expired) = expired {
-            let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+            discard_pending_registration(&app, expired);
         }
     });
+}
+
+fn discard_pending_registration(app: &AppHandle, pending: PendingRegistration) {
+    let store_key = pending.store_key.clone();
+    drop(pending);
+    let _ = persistence::discard_temp_login_store(app, &store_key);
+}
+
+fn safe_registration_error(error: &matrix_sdk::Error) -> String {
+    match error.client_api_error_kind() {
+        Some(ErrorKind::UserInUse) => "That username is already in use.".to_string(),
+        Some(ErrorKind::InvalidUsername) => "That username is not valid.".to_string(),
+        Some(ErrorKind::LimitExceeded(_)) => {
+            "Too many registration attempts. Wait and try again.".to_string()
+        }
+        Some(ErrorKind::UserLimitExceeded(_)) | Some(ErrorKind::ResourceLimitExceeded(_)) => {
+            "This homeserver is not accepting additional registrations.".to_string()
+        }
+        _ => "Registration was rejected. Check the username and password requirements.".to_string(),
+    }
 }
 
 fn registration_request(

@@ -29,7 +29,7 @@ const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso"
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
 const discoverHomeserver = vi.fn().mockReturnValue(new Promise(() => {}));
-const featureFlags = vi.hoisted(() => ({ registrationEnabled: false }));
+const featureFlags = vi.hoisted(() => ({ registrationEnabled: false, initialized: true }));
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: () => getCurrent(),
@@ -56,6 +56,7 @@ vi.mock("@/lib/matrix", () => ({
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => key === "registration_and_recovery" && featureFlags.registrationEnabled,
+  useFeatureFlagsInitialized: () => featureFlags.initialized,
 }));
 
 vi.mock("./QrLoginScreen", () => ({
@@ -104,6 +105,7 @@ describe("LoginScreen SSO callback handling", () => {
     });
     loginWithToken.mockReset();
     featureFlags.registrationEnabled = false;
+    featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
     cancelSsoLogin.mockClear().mockResolvedValue(undefined);
@@ -436,5 +438,30 @@ describe("LoginScreen login choices", () => {
 
     expect(loginWithToken).toHaveBeenCalledWith("https://cloudhub.social", "one-time-secret");
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("falls back to generic SSO when login-flow discovery fails", async () => {
+    getLoginFlows.mockRejectedValue(new Error("unavailable"));
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
+  });
+
+  it("leaves token mode when the homeserver changes", async () => {
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use a login token" }));
+    fireEvent.change(screen.getByLabelText("Login token"), {
+      target: { value: "one-time-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("Homeserver"), {
+      target: { value: "https://other.example" },
+    });
+
+    expect(screen.queryByLabelText("Login token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Username")).toBeVisible();
   });
 });

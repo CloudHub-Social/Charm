@@ -31,9 +31,15 @@ hostile, and every write-capable control must remain absent.
   Treat that as summary-only: it is not sufficient for timeline history.
 - When history is offered, acquire an ephemeral guest access token through
   `POST /register?kind=guest` and use the guest-authorized room-preview endpoints.
-  Bind that token to one preview session, keep it out of the normal account list
-  and durable account store, and discard its client, caches, and credentials when
-  the preview closes or transitions to sign-in.
+  Bind that token to one preview session and keep it out of the normal account list
+  and durable account store. On close or transition, call logout/token revocation
+  where supported before discarding the client, caches, and credentials; record
+  failed cleanup and require a bounded server-side expiry policy rather than
+  describing local deletion as revocation.
+- Preview clients are a distinct backend capability with a read-only allowlist.
+  Every generic join, send, react, upload, account, moderation, or state-write
+  command rejects preview-session credentials even if the homeserver would permit
+  guest participation.
 
 ## Non-goals
 
@@ -52,7 +58,10 @@ hostile, and every write-capable control must remain absent.
    account's client, caches, media credentials, or telemetry identity.
 3. Threat-model hostile event/media rendering and cross-account cache leakage.
 4. Specify the exact preview-to-login handoff and cleanup behavior.
-5. Add a matching default-off Rust/TypeScript feature flag when implementation
+5. Define token revocation, failure handling, and maximum server-side lifetime.
+6. Test the backend read-only boundary through direct IPC/HTTP calls, not only
+   hidden controls.
+7. Add a matching default-off Rust/TypeScript feature flag when implementation
    begins.
 
 ## Protocol references
