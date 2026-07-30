@@ -215,7 +215,7 @@
     {
       "slug": "space-hierarchy-reorganization",
       "title": "Space hierarchy reorganization",
-      "summary": "Create spaces beneath an existing parent and reorganize the hierarchy while preserving valid Matrix parent relationships.",
+      "summary": "Create and reorganize nested spaces, then open each space in the shared settings shell while preserving valid Matrix parent relationships.",
       "status": "preview",
       "spec": "Spec 33",
       "specLinks": [

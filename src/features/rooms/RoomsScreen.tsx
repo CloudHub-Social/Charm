@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
@@ -102,6 +102,7 @@ export function RoomsScreen({
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [createSpaceParentId, setCreateSpaceParentId] = useState<string | null>(null);
+  const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
   // edit a space's children — `RoomList`'s own hierarchy view is a
   // point-in-time `/hierarchy` snapshot Matrix sync doesn't keep current, so
@@ -525,6 +526,9 @@ export function RoomsScreen({
               setCreateSpaceParentId(spaceId);
               setCreateJoinDialogOpen(true);
             }}
+            onOpenSettings={(spaceId) =>
+              setRoomSettingsTarget({ roomId: spaceId, section: "general", kind: "space" })
+            }
             onSpaceChildrenChanged={() => setHierarchyRefreshToken((token) => token + 1)}
           />
         }

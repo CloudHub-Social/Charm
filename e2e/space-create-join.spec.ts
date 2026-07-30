@@ -121,6 +121,41 @@ test("drags one space beneath another and refreshes the rail hierarchy", async (
   await captureSnapshot(page, "space-hierarchy-drag-to-nest");
 });
 
+test("opens a space in the shared settings shell", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { space_hierarchy_reorganization: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: {
+      room_id: "!community:e2e",
+      name: "Community",
+      unread_count: 0,
+      is_space: true,
+    },
+    roomDetails: {
+      room_id: "!community:e2e",
+      name: "Community",
+    },
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Community", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Space settings" })).toBeVisible();
+  await expect(page.getByLabel("Space name")).toHaveValue("Community");
+  await expect(page.getByText("Encryption")).toHaveCount(0);
+  await captureSnapshot(page, "space-settings-general");
+});
+
 test("joins a space by address and switches into it", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,

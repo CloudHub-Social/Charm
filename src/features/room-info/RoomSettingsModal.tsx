@@ -42,6 +42,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
   const layout = useAdaptiveLayout();
   const isMobile = layout === "mobile";
   const roomAliasManagementEnabled = useFlag("room_alias_management");
+  const targetLabel = target?.kind === "space" ? "space" : "room";
 
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -53,14 +54,16 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
             "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]",
         )}
       >
-        <DialogTitle className="sr-only">Room settings</DialogTitle>
+        <DialogTitle className="sr-only">
+          {targetLabel === "space" ? "Space settings" : "Room settings"}
+        </DialogTitle>
 
         {isLoading && (
           <div className="flex items-center justify-between p-4">
             <p className="text-sm text-muted-foreground">Loading…</p>
             <button
               type="button"
-              aria-label="Close room settings"
+              aria-label={`Close ${targetLabel} settings`}
               onClick={() => setTarget(null)}
               className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
@@ -71,10 +74,10 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
 
         {isError && (
           <div className="flex items-center justify-between p-4">
-            <p className="text-sm text-destructive">Couldn't load room settings.</p>
+            <p className="text-sm text-destructive">Couldn't load {targetLabel} settings.</p>
             <button
               type="button"
-              aria-label="Close room settings"
+              aria-label={`Close ${targetLabel} settings`}
               onClick={() => setTarget(null)}
               className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
@@ -89,7 +92,11 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
               orientation={isMobile ? "horizontal" : "vertical"}
               value={target.section}
               onValueChange={(value) =>
-                setTarget({ roomId: target.roomId, section: value as RoomSettingsSection })
+                setTarget({
+                  roomId: target.roomId,
+                  section: value as RoomSettingsSection,
+                  kind: target.kind,
+                })
               }
               className={cn("min-h-0 flex-1", isMobile ? "flex-col" : "flex-row")}
             >
@@ -108,7 +115,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                   </span>
                   <button
                     type="button"
-                    aria-label="Close room settings"
+                    aria-label={`Close ${targetLabel} settings`}
                     onClick={() => setTarget(null)}
                     className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   >
@@ -143,7 +150,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                     Permissions would fetch the full member roster before
                     the user ever asks for it. */}
                 <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
-                  <RoomSettingsForm details={details} />
+                  <RoomSettingsForm details={details} isSpace={target.kind === "space"} />
                 </TabsContent>
                 <TabsContent value="members">
                   <MemberList details={details} currentUserId={currentUserId} />

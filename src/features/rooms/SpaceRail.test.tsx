@@ -464,6 +464,16 @@ describe("SpaceRail", () => {
     expect(onCreateUnderSpace).toHaveBeenCalledWith("!space:localhost");
   });
 
+  it("opens the shared settings shell for a space", () => {
+    const onOpenSettings = vi.fn();
+    renderRail({ onOpenSettings });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+
+    expect(onOpenSettings).toHaveBeenCalledWith("!space:localhost");
+  });
+
   it("drags a top-level space onto another space to make it the canonical parent", async () => {
     const onSpaceChildrenChanged = vi.fn();
     renderRail({

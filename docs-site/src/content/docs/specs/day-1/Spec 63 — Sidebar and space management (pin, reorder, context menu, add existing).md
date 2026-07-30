@@ -10,8 +10,7 @@ sidebar:
 
 ## Implementation status
 
-**Shipped, except `Settings`** (blocked on Spec 33's space-settings surface,
-tracked there — not a gap in this spec's own scope). Pin/unpin, reorder (Move up/down), and a
+**Implementation complete; closure is paired with Spec 33.** Pin/unpin, reorder (Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
@@ -33,9 +32,10 @@ confirmation dialog first; Add Existing is a searchable picker over already-
 joined rooms/spaces, excluding the target space, its ancestors, and its
 current children to prevent cycles/duplicates.
 
-`Settings` is not built — it depends on Spec 33's "space settings surface"
-UI-parity addition, which doesn't exist yet; the menu simply omits the item
-until it does.
+`Settings` is now exposed from the rail behind Spec 33's hierarchy flag and
+opens the selected space in the existing room-settings shell. Spec 63 remains
+`in-progress` until the stacked Spec 33 settings work, including child
+management, is complete and both specs can be closed together.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —
@@ -50,11 +50,9 @@ lifetime — dropping the prior value first so a stale permission from an
 earlier open never stays visible mid-refetch — and disables the gated menu
 item until a fresh, permitted result lands — so a member without the
 required power level never sees this action in the rail's context menu.
-`RoomList`'s own hierarchy-row `Remove from space` action (a separate
-surface, gated only behind the `space_rail_management` flag) is
-intentionally *not* covered by this pass — it stays reachable and
-server-validates on click, surfacing a rejection message rather than hiding
-the row. Gating that surface too is left for a follow-up.
+`RoomList`'s own hierarchy-row `Remove from space` action (a separate surface)
+now has the same fresh parent-space permission gate in its focused follow-up
+PR; it remains disabled while permissions load or when the lookup fails.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy

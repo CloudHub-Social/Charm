@@ -9,6 +9,9 @@ export type RoomSettingsSection = "general" | "members" | "permissions";
 export interface RoomSettingsTarget {
   roomId: string;
   section: RoomSettingsSection;
+  /** Lets the shared room-settings shell use space-specific labels and
+   * omit room-only controls without needing a second settings modal. */
+  kind?: "room" | "space";
 }
 
 /**

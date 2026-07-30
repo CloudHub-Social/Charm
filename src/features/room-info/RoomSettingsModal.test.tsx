@@ -57,7 +57,11 @@ vi.mock("@/lib/matrix", () => ({
 }));
 
 function renderModal(
-  target: { roomId: string; section: "general" | "members" | "permissions" } | null,
+  target: {
+    roomId: string;
+    section: "general" | "members" | "permissions";
+    kind?: "room" | "space";
+  } | null,
 ) {
   const store = createStore();
   store.set(roomSettingsAtom, target);
@@ -127,6 +131,18 @@ describe("RoomSettingsModal", () => {
     expect(screen.getByRole("tab", { name: "General" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Members" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Permissions", selected: true })).toBeInTheDocument();
+  });
+
+  it("reuses the shell with space labels and without the room-only encryption control", async () => {
+    const details = makeRoomDetails({ name: "Community" });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general", kind: "space" });
+
+    expect(await screen.findByRole("dialog", { name: "Space settings" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Space name")).toHaveValue("Community");
+    expect(screen.queryByText("Encryption")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close space settings" })).toBeInTheDocument();
   });
 
   it("does not fetch the member list until the Members tab is opened", async () => {
