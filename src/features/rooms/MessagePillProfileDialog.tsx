@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useFlag } from "@/featureFlags";
-import { getMutualRooms, getUserProfile } from "@/lib/matrix";
+import { getMutualRooms, getUserProfile, onRoomDetailsUpdate } from "@/lib/matrix";
 import { usePresence } from "@/features/presence/usePresence";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
@@ -34,6 +35,19 @@ export function MessagePillProfileDialog({
   onClose: () => void;
 }) {
   const userId = profile?.userId ?? "";
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!detailed || !roomId || !userId) return undefined;
+    const unlisten = onRoomDetailsUpdate((details) => {
+      if (details.room_id !== roomId) return;
+      void queryClient.invalidateQueries({
+        queryKey: ["user-profile", accountId ?? null, userId, roomId],
+      });
+    });
+    return () => {
+      unlisten.then((stop) => stop()).catch(() => {});
+    };
+  }, [accountId, detailed, queryClient, roomId, userId]);
   const presenceDetailsEnabled = useFlag("presence_privacy_controls");
   const livePresence = usePresence(detailed && userId !== "" ? userId : null);
   const profileQuery = useQuery({
@@ -88,9 +102,7 @@ export function MessagePillProfileDialog({
             {detailed && presence && (
               <p className="text-sm text-muted-foreground">
                 {presence.presence === "unavailable" ? "away" : presence.presence}
-                {presenceDetailsEnabled && presence.status_msg
-                  ? ` · ${presence.status_msg}`
-                  : ""}
+                {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
               </p>
             )}
             {detailed && mutualRoomsQuery.isError && (
@@ -108,7 +120,7 @@ export function MessagePillProfileDialog({
                     key={room.room_id}
                     type="button"
                     variant="ghost"
-                    className="h-auto justify-start px-2 py-1.5"
+                    className="h-auto min-h-11 justify-start px-2 py-1.5"
                     disabled={!onNavigateToRoom}
                     onClick={() => {
                       onNavigateToRoom?.(room.room_id);

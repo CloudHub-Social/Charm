@@ -1,15 +1,22 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { featureFlagTestHooks } from "@/featureFlags";
 import { getMutualRooms, getUserProfile } from "@/lib/matrix";
 import { MessagePillProfileDialog } from "./MessagePillProfileDialog";
 
-const mocks = vi.hoisted(() => ({ livePresence: null as null | Record<string, unknown> }));
+const mocks = vi.hoisted(() => ({
+  livePresence: null as null | Record<string, unknown>,
+  roomDetailsCallback: undefined as undefined | ((details: { room_id: string }) => void),
+}));
 
 vi.mock("@/lib/matrix", () => ({
   getUserProfile: vi.fn(),
   getMutualRooms: vi.fn(),
+  onRoomDetailsUpdate: vi.fn((callback: (details: { room_id: string }) => void) => {
+    mocks.roomDetailsCallback = callback;
+    return Promise.resolve(() => {});
+  }),
 }));
 vi.mock("@/features/presence/usePresence", () => ({
   usePresence: () => mocks.livePresence,
@@ -37,6 +44,7 @@ describe("MessagePillProfileDialog", () => {
     featureFlagTestHooks.reset();
     featureFlagTestHooks.setCache({ presence_privacy_controls: true });
     mocks.livePresence = null;
+    mocks.roomDetailsCallback = undefined;
     vi.mocked(getUserProfile).mockReset();
     vi.mocked(getMutualRooms).mockReset();
   });
@@ -117,5 +125,38 @@ describe("MessagePillProfileDialog", () => {
     expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent(
       "Mutual rooms could not be loaded.",
     );
+  });
+
+  it("refreshes an open room profile after a membership-state update", async () => {
+    vi.mocked(getUserProfile)
+      .mockResolvedValueOnce({
+        user_id: "@alice:example.org",
+        display_name: "Alice",
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: "Alice Here",
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: null,
+      })
+      .mockResolvedValueOnce({
+        user_id: "@alice:example.org",
+        display_name: "Alice",
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: "Alice Updated",
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: null,
+      });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({ detailed: true, roomId: "!current:example.org" });
+    expect(await screen.findByRole("heading", { name: "Alice Here" })).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.roomDetailsCallback?.({ room_id: "!current:example.org" });
+    });
+
+    expect(await screen.findByRole("heading", { name: "Alice Updated" })).toBeInTheDocument();
   });
 });

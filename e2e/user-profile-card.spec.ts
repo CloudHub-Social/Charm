@@ -11,7 +11,9 @@ test("opens a message sender profile and navigates through a mutual room", async
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
-        state: { overrides: { user_profile_cards: true } },
+        state: {
+          overrides: { user_profile_cards: true, presence_privacy_controls: true },
+        },
         updatedAt: Date.now(),
       }),
     );
