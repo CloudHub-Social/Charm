@@ -222,16 +222,24 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleRegistrationStep(initialStep: RegistrationStep) {
     let step = initialStep;
-    for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
-      registrationAttemptRef.current = step.attempt_id;
-      if (step.next_stage !== "m.login.dummy") break;
-      if (automaticStages >= 8) {
-        throw new Error("Homeserver repeated an automatic registration stage; start again.");
+    try {
+      for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+        registrationAttemptRef.current = step.attempt_id;
+        if (step.next_stage !== "m.login.dummy") break;
+        if (automaticStages >= 8) {
+          throw new Error("Homeserver repeated an automatic registration stage; start again.");
+        }
+        // UIA stages are ordered and stateful, so each automatic dummy response
+        // must use the challenge returned by the previous request.
+        // oxlint-disable-next-line no-await-in-loop
+        step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
-      // UIA stages are ordered and stateful, so each automatic dummy response
-      // must use the challenge returned by the previous request.
-      // oxlint-disable-next-line no-await-in-loop
-      step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
+    } catch (error) {
+      const attemptId = registrationAttemptRef.current;
+      registrationAttemptRef.current = null;
+      setRegistrationStep(undefined);
+      if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
+      throw error;
     }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
