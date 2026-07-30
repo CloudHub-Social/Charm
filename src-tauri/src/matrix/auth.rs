@@ -904,11 +904,15 @@ pub async fn begin_registration(
                 uiaa,
                 created_at: started_at,
             };
-            let previous = state.pending_registration.lock().await.replace(pending);
+            restore_pending_registration_if_current(
+                &app,
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await?;
             reservation.defuse();
-            if let Some(previous) = previous {
-                discard_pending_registration(&app, previous);
-            }
             Ok(step)
         }
     }
@@ -1318,14 +1322,17 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
         let state = app.state::<MatrixState>();
-        if let Some(cancellation) = state
-            .pending_registration_cancel
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            .filter(|(current_id, _)| current_id == &attempt_id)
-            .map(|(_, cancellation)| cancellation.clone())
-        {
+        let cancellation = {
+            let guard = state
+                .pending_registration_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            guard
+                .as_ref()
+                .filter(|(current_id, _)| current_id == &attempt_id)
+                .map(|(_, cancellation)| cancellation.clone())
+        };
+        if let Some(cancellation) = cancellation {
             cancellation.cancel();
             clear_registration_cancellation(&state, &attempt_id);
         }
@@ -1598,7 +1605,6 @@ pub async fn start_sso_login(
         ensure_registration_feature_enabled(&app)?;
     }
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
-    let _restore_store_guard = restore_store_lock().lock().await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
