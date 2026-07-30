@@ -43,10 +43,10 @@ two-device mobile leg (R2 in the spec).
 | Platform | (1) getUserMedia grant | (2) RTCPeerConnection + media | (3) getDisplayMedia | Verdict |
 |---|---|---|---|---|
 | macOS | **PASS** | **PASS** | **PASS** | **GO** |
-| iOS | **BLOCKED** (Simulator has no camera; no physical device this session) - config gaps fixed 2026-07-13, still unverified on hardware | UNVERIFIED-LIVE | EXPECTED-GAP (ReplayKit-only, not exposed to WKWebView) | **CONDITIONAL** (fix landed, needs physical device) |
+| iOS | **HARDWARE-BLOCKED** (Simulator has no camera; no physical device available) — config gaps fixed 2026-07-13, still unverified on hardware | **HARDWARE-BLOCKED** | EXPECTED-GAP (ReplayKit-only, not exposed to WKWebView) | **CONDITIONAL** (fix landed, needs physical device) |
 | Windows | **PASS** | **PASS** | **PASS** | **GO** |
-| Linux | NOT RUN - no GUI display this session; fix landed 2026-07-13, still unverified | NOT RUN | NOT RUN | **CONDITIONAL** (fix landed, needs display environment) |
-| Android | **FAIL as tested** (fix landed 2026-07-13, not yet re-verified) | UNTESTED (never reached — depends on (1)) | **EXPECTED-GAP, confirmed** — `getDisplayMedia` not present on WebView at all | **CONDITIONAL** — fix merged, needs device re-run |
+| Linux | **HARDWARE-BLOCKED** — no GUI-capable Linux environment; fix landed 2026-07-13, still unverified | **HARDWARE-BLOCKED** | **HARDWARE-BLOCKED** | **CONDITIONAL** (fix landed, needs display environment) |
+| Android | **HISTORICAL FAIL (pre-fix); post-fix HARDWARE-BLOCKED** — manifest fix landed 2026-07-13, no device/emulator re-run available | **HARDWARE-BLOCKED** (the pre-fix run never reached this step) | **EXPECTED-GAP, confirmed** — `getDisplayMedia` not present on WebView at all | **CONDITIONAL** — fix merged, needs device/emulator re-run |
 
 ### macOS — detail
 
@@ -404,39 +404,40 @@ IPC commands).
       strong signal).
 - [ ] Final GO/CONDITIONAL/NO-GO verdicts once iOS/Linux/Android land.
 
-**Updated bottom line (2026-07-07):** 3 of 5 platforms now have real,
-CI/hardware-confirmed verdicts:
+**Current bottom line:** macOS and Windows retain their confirmed evidence. The
+remaining live results are hardware-blocked, not failed:
 - **macOS — GO.** No workaround needed.
 - **Windows — GO.** No workaround needed (R1 resolved: WRY surfaces WebView2's
   permission flow without custom code).
-- **Android — NO-GO as shipped, CONDITIONAL for Phase 4.** R1 resolved the other
-  way: a `WebChromeClient.onPermissionRequest` handler is required and doesn't
-  exist yet. This is a scoped, known engineering task, not an architectural
-  dead end.
-- **iOS — pending** a physical device (Simulator can't test camera grant).
-- **Linux — not attempted** (no display environment available this session; no
-  fake-device shortcut exists for WebKitGTK the way Chromium/WebView2 has one).
+- **Android — CONDITIONAL, post-fix verification hardware-blocked.** The historical
+  pre-fix run hung, but source review established that wry already supplied the
+  `WebChromeClient.onPermissionRequest` flow; PR #229 added the missing manifest
+  permissions. No post-fix verdict may be inferred without a device/emulator run.
+- **iOS — hardware-blocked** pending a physical device (Simulator cannot test the
+  camera grant).
+- **Linux — hardware-blocked** pending a GUI-capable environment; headless build
+  evidence is not a live WebKitGTK permission/media result.
 
-The spike has done its job for the three platforms it could reach: it turned
+The spike has done its job for the platforms it could reach: it turned
 "we don't know if this works" into either a clean GO or a specific, bounded
 Phase 4 work item — which is exactly what a gating investigation is supposed to
 produce.
 
 ## Phase 4 handoff spec: Android `onPermissionRequest` fix
 
-**Status: implemented, PR merged-pending review — [PR #229](https://github.com/CloudHub-Social/Charm/pull/229) (2026-07-13).**
+**Status: implemented and merged — [PR #229](https://github.com/CloudHub-Social/Charm/pull/229) (2026-07-13); live re-verification is hardware-blocked.**
 See the corrected-root-cause note in the Android detail section above: the fix
 that landed is a manifest-only change (`CAMERA`/`RECORD_AUDIO`/
 `MODIFY_AUDIO_SETTINGS` permissions), not new Kotlin `WebChromeClient` code,
 because wry already implements the grant/deny callback. Device/emulator
 verification is still outstanding. The rest of this section is kept as
-originally written for context on what was investigated before implementing.
+originally written for historical context only; it is superseded and must not be
+used as an instruction to add a second `WebChromeClient`.
 
-This is no longer investigation work — the
-finding above is confirmed (getUserMedia hangs indefinitely on Android because
-no `WebChromeClient.onPermissionRequest` handler exists). This section is a
-self-contained implementation spec a new agent/session can pick up directly,
-without re-reading the rest of this findings doc.
+The pre-fix `getUserMedia` hang remains valid historical evidence. Its original
+root-cause attribution below is not: pinned wry source confirmed that the handler
+already existed, while the Android manifest permissions did not. Closure resumes
+only when a device/emulator can re-run Buttons A/B against the merged manifest fix.
 
 **Environment constraint driving this handoff:** the session doing this
 implementation work may not have an Android SDK/emulator or device available
@@ -450,7 +451,7 @@ Android's own 10-iteration CI run were done in this spike. Flag in the PR
 description that manual/CI verification is a follow-up, not a blocker for
 merging the code.
 
-### Problem (recap, confirmed via CI 2026-07-07)
+### Historical problem recap (superseded by the corrected root cause above)
 
 `android.permission.CAMERA` / `android.permission.RECORD_AUDIO` are already
 declared in `AndroidManifest.xml` (OS-level runtime permission), but that's
