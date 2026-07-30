@@ -2,6 +2,7 @@
 //! and session restore. QR login is its own module (`qr_login`) — its
 //! multi-stage device-code flow doesn't fit this file's shape.
 
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::{
     change_password, register, request_password_change_token_via_email,
@@ -1290,6 +1291,7 @@ async fn complete_password_change(
     pending
         .client
         .send(request)
+        .with_request_config(RequestConfig::new().skip_auth())
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
