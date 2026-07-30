@@ -61,7 +61,7 @@ homeservers. The parity audit (2026-07-13) found:
   never exposes the Matrix client, access token, store key, or raw server response
   to TypeScript.
 - Return a discriminated `RegistrationStep` DTO containing an opaque Charm attempt
-  ID, the homeserver UIA session ID, completed stage names, viable ordered flows,
+  ID, completed stage names, viable ordered flows,
   sanitized stage parameters, and exactly one of `challenge` or `complete`.
   Passwords and CAPTCHA/email tokens are request-only fields and must not be
   persisted, logged, added to breadcrumbs, or echoed in errors.
@@ -96,12 +96,18 @@ homeservers. The parity audit (2026-07-13) found:
 - "Forgot password?" entry on the login screen → email-identity token flow →
   set new password. `request_password_reset` generates and retains a random
   `client_secret`, sends `/account/password/email/requestToken`, and returns an
-  opaque reset attempt plus `sid`/sanitized submission mode.
+  opaque reset attempt plus a sanitized submission mode; the homeserver `sid`
+  remains bound to backend pending state.
   `confirm_password_reset` submits or observes validation and completes
   `/account/password` with the email identity auth data. Neither command requires
   an authenticated Matrix session.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
+- Login discovery must distinguish classic Matrix authentication from delegated
+  OIDC/MAS authentication. For delegated authentication, open the sanitized
+  authorization-server account-management/recovery URL or report recovery as
+  unsupported; never send the legacy `/account/password` flow to a delegated
+  homeserver.
 
 ### Per-provider SSO
 
@@ -162,10 +168,12 @@ instead of adding a second HTTP stack.
 - `start_sso_login(homeserver, idp_id?) -> redirect_url`
 - `login_with_token(homeserver, token) -> LoginResponse`
 
-All user-facing entry points use a matching Rust and TypeScript
-`registration_and_recovery` feature flag defaulting to `false`. The backend
-commands remain fully validated even when the UI flag is disabled; flags are
-rollout controls, not authorization boundaries.
+New UIA stages, recovery, provider selection, and standalone token-login entry
+points use a matching Rust and TypeScript `registration_and_recovery` feature flag
+defaulting to `false`. The existing legacy dummy registration and generic SSO
+actions remain available while the flag is off, so a dark launch cannot regress
+baseline authentication. Backend commands remain fully validated even when the UI
+flag is disabled; flags are rollout controls, not authorization boundaries.
 
 ## Testing strategy
 
