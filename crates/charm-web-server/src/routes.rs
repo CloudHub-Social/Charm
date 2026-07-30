@@ -1586,7 +1586,6 @@ async fn register(
     jar: CookieJar,
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_registration_and_recovery(&state)?;
     cancel_browser_preauth(&state, &jar).await;
     let homeserver_url = request.homeserver_url.clone();
     let (response, session, initial_response) =
@@ -1654,10 +1653,13 @@ async fn begin_registration(
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
-    }
-    let owner = new_preauth_owner();
+    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        let owner = previous.value().to_owned();
+        state.pending_auth.cancel_owner(&owner).await;
+        owner
+    } else {
+        new_preauth_owner()
+    };
     match state
         .pending_auth
         .begin_registration(owner.clone(), request, state.persistence.is_some())
@@ -1764,10 +1766,13 @@ async fn request_password_reset(
     Json(request): Json<PasswordResetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
-    }
-    let owner = new_preauth_owner();
+    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        let owner = previous.value().to_owned();
+        state.pending_auth.cancel_owner(&owner).await;
+        owner
+    } else {
+        new_preauth_owner()
+    };
     let challenge = state
         .pending_auth
         .request_password_reset(owner.clone(), request.homeserver_url, request.email)

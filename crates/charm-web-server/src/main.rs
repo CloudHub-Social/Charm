@@ -56,8 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         persistence: persistence.clone(),
-        registration_and_recovery_enabled:
-            std::env::var("CHARM_WEB_REGISTRATION_AND_RECOVERY").as_deref() == Ok("1"),
+        registration_and_recovery_enabled: std::env::var("CHARM_WEB_REGISTRATION_AND_RECOVERY")
+            .as_deref()
+            == Ok("1"),
         ..AppState::default()
     };
 

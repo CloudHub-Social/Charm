@@ -29,6 +29,7 @@ use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +37,10 @@ use crate::session::{CryptoStoreHandle, Session};
 
 const ATTEMPT_TTL: Duration = Duration::from_secs(20 * 60);
 const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
+const MAIL_QUOTA_WINDOW: Duration = Duration::from_secs(10 * 60);
+const MAX_MAILS_PER_SOURCE: usize = 5;
+const MAX_MAILS_PER_ADDRESS: usize = 3;
+const REGISTRATION_EMAIL_RESEND_DELAY: Duration = Duration::from_secs(30);
 
 type AuthenticatedClient = (
     LoginResponse,
@@ -48,7 +53,16 @@ struct RegistrationEmail {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    normalized_email: String,
+    send_attempt: u32,
+    retry_not_before: Instant,
     submitted: bool,
+}
+
+#[derive(Default)]
+struct MailQuota {
+    by_source: HashMap<String, Vec<Instant>>,
+    by_address: HashMap<String, Vec<Instant>>,
 }
 
 struct PendingRegistration {
@@ -79,6 +93,8 @@ pub struct PendingAuthStore {
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     password_resets: Arc<Mutex<HashMap<String, PendingPasswordReset>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
+    mail_quota: Arc<Mutex<MailQuota>>,
+    mail_quota_salt: Arc<String>,
     capacity: Arc<Semaphore>,
 }
 
@@ -88,6 +104,8 @@ impl Default for PendingAuthStore {
             registrations: Arc::default(),
             password_resets: Arc::default(),
             cancellations: Arc::default(),
+            mail_quota: Arc::default(),
+            mail_quota_salt: Arc::new(opaque_id()),
             capacity: Arc::new(Semaphore::new(MAX_PENDING_AUTH_ATTEMPTS)),
         }
     }
@@ -122,10 +140,10 @@ impl PendingAuthStore {
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations.lock().await.insert(
-            attempt_id.clone(),
-            (owner.clone(), cancellation.clone()),
-        );
+        self.cancellations
+            .lock()
+            .await
+            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
         self.spawn_expiry(attempt_id.clone());
         let homeserver_url = request.homeserver_url.clone();
         let build_result = tokio::select! {
@@ -188,9 +206,8 @@ impl PendingAuthStore {
                         return Err(error);
                     }
                 };
-                self.registrations.lock().await.insert(
-                    attempt_id.clone(),
-                    PendingRegistration {
+                let restored = self
+                    .restore_registration(PendingRegistration {
                         _capacity: capacity,
                         owner,
                         client,
@@ -200,8 +217,11 @@ impl PendingAuthStore {
                         uiaa,
                         email: None,
                         created_at,
-                    },
-                );
+                    })
+                    .await;
+                if !restored {
+                    return Err("registration attempt expired or was cancelled".to_string());
+                }
                 Ok(BeginRegistrationResult::Challenge(step))
             }
         }
@@ -221,14 +241,45 @@ impl PendingAuthStore {
             return Err("registration attempt expired; start again".to_string());
         }
         if next_registration_stage(&pending.uiaa)? != AuthType::EmailIdentity.as_str() {
-            self.restore_registration(pending).await;
+            let _ = self.restore_registration(pending).await;
             return Err("registration email is not the current authentication stage".to_string());
         }
-        let client_secret = ClientSecret::new();
+        let normalized_email = email.trim().to_lowercase();
+        if normalized_email.is_empty() {
+            let _ = self.restore_registration(pending).await;
+            return Err("enter an email address".to_string());
+        }
+        let (client_secret, send_attempt) = if let Some(validation) = &pending.email {
+            if validation.normalized_email != normalized_email {
+                let _ = self.restore_registration(pending).await;
+                return Err(
+                    "cancel this registration and start again to use a different email address"
+                        .to_string(),
+                );
+            }
+            if validation.send_attempt >= MAX_MAILS_PER_ADDRESS as u32 {
+                let _ = self.restore_registration(pending).await;
+                return Err("registration email resend limit reached; start again".to_string());
+            }
+            if Instant::now() < validation.retry_not_before {
+                let _ = self.restore_registration(pending).await;
+                return Err("wait before requesting another registration email".to_string());
+            }
+            (
+                validation.client_secret.clone(),
+                validation.send_attempt + 1,
+            )
+        } else {
+            (ClientSecret::new(), 1)
+        };
+        if let Err(error) = self.check_mail_quota(owner, &normalized_email).await {
+            let _ = self.restore_registration(pending).await;
+            return Err(error);
+        }
         let request = request_registration_token_via_email::v3::Request::new(
             client_secret.clone(),
-            email,
-            UInt::new_saturating(1),
+            normalized_email.clone(),
+            UInt::new_saturating(send_attempt.into()),
         );
         let response = tokio::select! {
             result = pending.client.send(request) => result,
@@ -245,7 +296,7 @@ impl PendingAuthStore {
                 return Err("registration cancelled".to_string());
             }
             Err(_) => {
-                self.restore_registration(pending).await;
+                let _ = self.restore_registration(pending).await;
                 return Err("could not send registration verification email".to_string());
             }
         };
@@ -256,7 +307,7 @@ impl PendingAuthStore {
         ) {
             Ok(url) => url,
             Err(error) => {
-                self.restore_registration(pending).await;
+                let _ = self.restore_registration(pending).await;
                 return Err(error);
             }
         };
@@ -265,6 +316,9 @@ impl PendingAuthStore {
             client_secret,
             sid: response.sid,
             submit_url,
+            normalized_email,
+            send_attempt,
+            retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
             submitted: false,
         });
         if cancellation.is_cancelled() {
@@ -272,7 +326,7 @@ impl PendingAuthStore {
                 .await;
             return Err("registration cancelled".to_string());
         }
-        self.restore_registration(pending).await;
+        let _ = self.restore_registration(pending).await;
         Ok(RegistrationEmailChallenge { requires_token })
     }
 
@@ -305,7 +359,7 @@ impl PendingAuthStore {
         let auth = match auth {
             Ok(auth) => auth,
             Err(error) => {
-                self.restore_registration(pending).await;
+                let _ = self.restore_registration(pending).await;
                 return Err(error);
             }
         };
@@ -365,10 +419,10 @@ impl PendingAuthStore {
                             return Err(challenge_error);
                         }
                     };
-                    self.restore_registration(pending).await;
+                    let _ = self.restore_registration(pending).await;
                     Ok(ContinueRegistrationResult::Challenge(step))
                 } else if registration_error_allows_retry(&error) {
-                    self.restore_registration(pending).await;
+                    let _ = self.restore_registration(pending).await;
                     Err("registration request failed; retry this stage".to_string())
                 } else {
                     self.finish_cancelled_registration(attempt_id, pending)
@@ -398,13 +452,14 @@ impl PendingAuthStore {
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
         let capacity = self.reserve_capacity()?;
+        let normalized_email = self.check_mail_quota(&owner, &email).await?;
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations.lock().await.insert(
-            attempt_id.clone(),
-            (owner.clone(), cancellation.clone()),
-        );
+        self.cancellations
+            .lock()
+            .await
+            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
             result = Client::builder()
@@ -437,7 +492,7 @@ impl PendingAuthStore {
         let client_secret = ClientSecret::new();
         let request = request_password_change_token_via_email::v3::Request::new(
             client_secret.clone(),
-            email,
+            normalized_email,
             UInt::new_saturating(1),
         );
         let response_result = tokio::select! {
@@ -464,19 +519,24 @@ impl PendingAuthStore {
                 return Err(error);
             }
         };
-        self.password_resets.lock().await.insert(
-            attempt_id.clone(),
-            PendingPasswordReset {
-                _capacity: capacity,
-                owner,
-                client,
-                client_secret,
-                sid: response.sid,
-                submit_url,
-                submitted: false,
-                created_at,
-            },
-        );
+        let restored = self
+            .restore_password_reset(
+                attempt_id.clone(),
+                PendingPasswordReset {
+                    _capacity: capacity,
+                    owner,
+                    client,
+                    client_secret,
+                    sid: response.sid,
+                    submit_url,
+                    submitted: false,
+                    created_at,
+                },
+            )
+            .await;
+        if !restored {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
         Ok(PasswordResetChallenge {
             attempt_id,
             requires_token: response.submit_url.is_some(),
@@ -552,7 +612,7 @@ impl PendingAuthStore {
         })
     }
 
-    async fn restore_registration(&self, pending: PendingRegistration) {
+    async fn restore_registration(&self, pending: PendingRegistration) -> bool {
         let cancellations = self.cancellations.lock().await;
         if cancellations
             .get(&pending.attempt_id)
@@ -567,9 +627,70 @@ impl PendingAuthStore {
                 .lock()
                 .await
                 .insert(pending.attempt_id.clone(), pending);
+            true
         } else {
             crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+            false
         }
+    }
+
+    async fn restore_password_reset(
+        &self,
+        attempt_id: String,
+        pending: PendingPasswordReset,
+    ) -> bool {
+        let cancellations = self.cancellations.lock().await;
+        if cancellations
+            .get(&attempt_id)
+            .is_some_and(|(_, token)| !token.is_cancelled())
+        {
+            self.password_resets
+                .lock()
+                .await
+                .insert(attempt_id, pending);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn check_mail_quota(&self, owner: &str, email: &str) -> Result<String, String> {
+        let normalized = email.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("enter an email address".to_string());
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(self.mail_quota_salt.as_bytes());
+        hasher.update(normalized.as_bytes());
+        let address_key = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let cutoff = Instant::now() - MAIL_QUOTA_WINDOW;
+        let now = Instant::now();
+        let mut quota = self.mail_quota.lock().await;
+        {
+            let source = quota.by_source.entry(owner.to_owned()).or_default();
+            source.retain(|at| *at >= cutoff);
+            if source.len() >= MAX_MAILS_PER_SOURCE {
+                return Err("too many verification emails; try again later".to_string());
+            }
+        }
+        {
+            let address = quota.by_address.entry(address_key.clone()).or_default();
+            address.retain(|at| *at >= cutoff);
+            if address.len() >= MAX_MAILS_PER_ADDRESS {
+                return Err("too many verification emails; try again later".to_string());
+            }
+        }
+        quota
+            .by_source
+            .entry(owner.to_owned())
+            .or_default()
+            .push(now);
+        quota.by_address.entry(address_key).or_default().push(now);
+        Ok(normalized)
     }
 
     async fn owned_cancellation(
@@ -801,7 +922,9 @@ fn registration_challenge(
         Some(session) => registration_fallback_url(client, &next_stage, session)?,
         None if matches!(
             next_stage.as_str(),
-            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+            stage if stage == AuthType::Terms.as_str()
+                || stage == AuthType::Dummy.as_str()
+                || stage == AuthType::EmailIdentity.as_str()
         ) =>
         {
             String::new()
