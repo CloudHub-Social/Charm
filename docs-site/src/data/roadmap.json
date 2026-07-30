@@ -1,50 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-28T23:54:05.526Z",
+  "generatedAt": "2026-07-30T03:19:28.412Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 35,
-    "follow-up": 7,
+    "shipped": 38,
+    "follow-up": 4,
     "in-progress": 0,
     "planned": 34
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 301,
-      "title": "feat(rooms): complete Spec 54 — room-list sort and typing indicator",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/301",
-      "detail": "Day-1 Spec 54 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 302,
-      "title": "feat(media): finish Spec 42 media send polish",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/302",
-      "detail": "Day-1 Spec 42 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 300,
-      "title": "Message action parity: forward, view source, report, edit history, reaction viewer",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/300",
-      "detail": "Day-1 Spec 37 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 298,
-      "title": "Spec 63: power-level gating for SpaceRail context menu",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/298",
-      "detail": "Day-1 Spec 63 · ready for review"
-    },
-    {
-      "type": "issue",
-      "number": 296,
-      "title": "User Feedback: Recovery key entry crashes application",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/296",
-      "detail": "bug · Sentry"
-    },
     {
       "type": "issue",
       "number": 48,
@@ -137,8 +102,8 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 8,
-        "follow-up": 5,
+        "shipped": 11,
+        "follow-up": 2,
         "in-progress": 0,
         "planned": 23
       }
@@ -1067,15 +1032,15 @@
       "number": 37,
       "title": "Message action parity",
       "route": "/specs/day-1/spec-37--message-action-parity/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 300,
           "title": "Message action parity: forward, view source, report, edit history, reaction viewer",
           "url": "https://github.com/CloudHub-Social/Charm/pull/300",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-28T23:42:20Z"
+          "updatedAt": "2026-07-30T03:11:29Z"
         },
         {
           "number": 282,
@@ -1175,15 +1140,15 @@
       "number": 42,
       "title": "Media send polish",
       "route": "/specs/day-1/spec-42--media-send-polish/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 302,
           "title": "feat(media): finish Spec 42 media send polish",
           "url": "https://github.com/CloudHub-Social/Charm/pull/302",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-28T23:46:03Z"
+          "updatedAt": "2026-07-29T21:42:12Z"
         },
         {
           "number": 279,
@@ -1329,15 +1294,15 @@
       "number": 54,
       "title": "Room-list row enrichment, filtering and sorting",
       "route": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 301,
           "title": "feat(rooms): complete Spec 54 — room-list sort and typing indicator",
           "url": "https://github.com/CloudHub-Social/Charm/pull/301",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-28T23:53:51Z"
+          "updatedAt": "2026-07-29T20:48:00Z"
         },
         {
           "number": 283,
@@ -1476,9 +1441,9 @@
           "number": 298,
           "title": "Spec 63: power-level gating for SpaceRail context menu",
           "url": "https://github.com/CloudHub-Social/Charm/pull/298",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-28T23:39:36Z"
+          "updatedAt": "2026-07-29T00:10:05Z"
         },
         {
           "number": 290,
