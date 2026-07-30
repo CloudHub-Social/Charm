@@ -120,7 +120,15 @@ async fn timeline_and_room_list_carry_a_members_set_display_name_and_avatar() {
     // spec adds is exercised by the unit tests in `mod.rs`; this just proves
     // the plumbing is wired against a real synced client.
     let room_summaries =
-        snapshot_rooms(&observer, None, false, false, &std::sync::Mutex::default()).await;
+        snapshot_rooms(
+            &observer,
+            None,
+            false,
+            false,
+            false,
+            &std::sync::Mutex::default(),
+        )
+        .await;
     assert!(
         room_summaries.iter().any(|room| room.room_id == room_id),
         "room list should include the shared room"

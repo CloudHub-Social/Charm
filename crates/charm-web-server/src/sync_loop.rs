@@ -316,6 +316,7 @@ pub fn spawn(
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
     snapshots: crate::session::SyncSnapshots,
+    include_canonical_space_hierarchy: bool,
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
@@ -357,6 +358,7 @@ pub fn spawn(
             &events,
             last_snapshot,
             &snapshots.preview_registered_rooms,
+            include_canonical_space_hierarchy,
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
@@ -402,6 +404,7 @@ pub fn spawn(
                         &events,
                         last_snapshot,
                         &snapshots.preview_registered_rooms,
+                        include_canonical_space_hierarchy,
                     )
                     .await;
                     emit_room_updates(&client, &events, &response, &snapshots).await;
@@ -470,6 +473,7 @@ async fn emit_room_list_and_badge(
     preview_registered_rooms: &std::sync::Mutex<
         std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
     >,
+    include_canonical_space_hierarchy: bool,
 ) {
     // No media cache in this crate yet (matches sub-PR A's `snapshot_rooms`
     // calls in `routes.rs`) — room avatars carry their bare `mxc://` url but
@@ -479,7 +483,15 @@ async fn emit_room_list_and_badge(
     // build yet (no feature-flag store here, unlike desktop's
     // `feature_flags::flag`).
     let snapshot =
-        rooms::snapshot_rooms(client, None, false, false, preview_registered_rooms).await;
+        rooms::snapshot_rooms(
+            client,
+            None,
+            false,
+            false,
+            include_canonical_space_hierarchy,
+            preview_registered_rooms,
+        )
+        .await;
     let badge = shell::compute_badge_state(&snapshot);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));

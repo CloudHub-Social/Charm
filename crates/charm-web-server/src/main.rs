@@ -85,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 persist,
                 initial_response,
                 session.sync_snapshots(),
+                state.space_hierarchy_reorganization,
             );
             *session
                 .sync_handle

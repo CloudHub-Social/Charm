@@ -1522,6 +1522,7 @@ async fn finish_login(
         persist,
         initial_response,
         stored.sync_snapshots(),
+        state.space_hierarchy_reorganization,
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -1947,6 +1948,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         persist,
         initial_response,
         session.sync_snapshots(),
+        state.space_hierarchy_reorganization,
     );
     *session
         .sync_handle
@@ -1987,6 +1989,7 @@ async fn list_rooms(
             None,
             false,
             false,
+            state.space_hierarchy_reorganization,
             &session.preview_registered_rooms,
         )
         .await,

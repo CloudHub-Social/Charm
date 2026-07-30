@@ -38,6 +38,7 @@ import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   getRoomDetails,
+  listRooms,
   removeSpaceChild,
   setSpaceParent,
   setSpaceChildSuggested,
@@ -115,7 +116,6 @@ export function SpaceRail({
   const [canonicalParentOverrides, setCanonicalParentOverrides] = useState<
     Record<string, string | null>
   >({});
-  const canonicalParentOverrideStartedAt = useRef<Record<string, number>>({});
   useEffect(() => {
     setCanonicalParentOverrides((current) => {
       let changed = false;
@@ -124,48 +124,14 @@ export function SpaceRail({
         const room = rooms.find((candidate) => candidate.room_id === spaceId);
         if (!room) continue;
         const observedParent = room.parent_space_ids[0] ?? null;
-        if (observedParent === expectedParent && room.parent_space_ids.length <= 1) {
+        if (observedParent === expectedParent) {
           delete next[spaceId];
-          delete canonicalParentOverrideStartedAt.current[spaceId];
-          changed = true;
-        } else if (
-          Date.now() - (canonicalParentOverrideStartedAt.current[spaceId] ?? 0) >=
-          15_000
-        ) {
-          delete next[spaceId];
-          delete canonicalParentOverrideStartedAt.current[spaceId];
           changed = true;
         }
       }
       return changed ? next : current;
     });
   }, [rooms]);
-  useEffect(() => {
-    const deadlines = Object.keys(canonicalParentOverrides)
-      .map(
-        (spaceId) =>
-          (canonicalParentOverrideStartedAt.current[spaceId] ?? Date.now()) + 15_000,
-      )
-      .filter((deadline) => Number.isFinite(deadline));
-    if (deadlines.length === 0) return undefined;
-    const delay = Math.max(0, Math.min(...deadlines) - Date.now());
-    const timeout = window.setTimeout(() => {
-      const now = Date.now();
-      setCanonicalParentOverrides((current) => {
-        const next = { ...current };
-        let changed = false;
-        for (const spaceId of Object.keys(current)) {
-          if (now - (canonicalParentOverrideStartedAt.current[spaceId] ?? 0) >= 15_000) {
-            delete next[spaceId];
-            delete canonicalParentOverrideStartedAt.current[spaceId];
-            changed = true;
-          }
-        }
-        return changed ? next : current;
-      });
-    }, delay);
-    return () => window.clearTimeout(timeout);
-  }, [canonicalParentOverrides]);
   const [moveTarget, setMoveTarget] = useState<{
     spaceId: string;
     name: string;
@@ -175,6 +141,8 @@ export function SpaceRail({
   const railScrollRef = useRef<HTMLDivElement | null>(null);
   const dragScrollDirectionRef = useRef(0);
   const dragScrollFrameRef = useRef<number | null>(null);
+  const dragPermissionRequestsRef = useRef(new Set<string>());
+  const recomputeDropRef = useRef<(() => void) | null>(null);
   const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopDragScroll = useCallback(() => {
     dragScrollDirectionRef.current = 0;
@@ -190,6 +158,7 @@ export function SpaceRail({
       return;
     }
     railScrollRef.current?.scrollBy({ top: direction * 8 });
+    recomputeDropRef.current?.();
     dragScrollFrameRef.current = requestAnimationFrame(continueDragScroll);
   }, []);
   useEffect(() => {
@@ -216,7 +185,7 @@ export function SpaceRail({
   // menu. Each call bumps the room's generation and only applies its own
   // response if it's still the latest generation by the time it resolves.
   const permissionsRequestGeneration = useRef<Map<string, number>>(new Map());
-  function ensurePermissionsLoaded(roomId: string) {
+  const ensurePermissionsLoaded = useCallback((roomId: string) => {
     const generation = (permissionsRequestGeneration.current.get(roomId) ?? 0) + 1;
     permissionsRequestGeneration.current.set(roomId, generation);
     // Drop any previously fetched value for this room before the new
@@ -240,7 +209,7 @@ export function SpaceRail({
           return rest;
         });
       });
-  }
+  }, []);
   function reportActionError(err: unknown) {
     setActionError(err instanceof Error ? err.message : String(err));
     if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
@@ -261,8 +230,14 @@ export function SpaceRail({
         : (source?.parent_space_ids.length ?? 0) > 0;
       const insideRail = railRef.current?.contains(element) ?? false;
       const resolvedTarget = insideRail ? targetId : null;
+      if (resolvedTarget && !dragPermissionRequestsRef.current.has(resolvedTarget)) {
+        dragPermissionRequestsRef.current.add(resolvedTarget);
+        ensurePermissionsLoaded(resolvedTarget);
+      }
       const invalid =
         resolvedTarget === sourceId ||
+        permissionsById[sourceId]?.set_space_parent !== true ||
+        (resolvedTarget !== null && permissionsById[resolvedTarget]?.set_space_child !== true) ||
         (resolvedTarget !== null &&
           collectDescendantSpaceIds(sourceId, rooms, canonicalParentOverrides).has(
             resolvedTarget,
@@ -286,8 +261,34 @@ export function SpaceRail({
       spaceDropRef.current = nextDrop;
       setSpaceDrop(nextDrop);
     },
-    [canonicalParentOverrides, continueDragScroll, rooms, stopDragScroll],
+    [
+      canonicalParentOverrides,
+      continueDragScroll,
+      ensurePermissionsLoaded,
+      permissionsById,
+      rooms,
+      stopDragScroll,
+    ],
   );
+  const lastDragPointerRef = useRef<{ sourceId: string; clientX: number; clientY: number } | null>(
+    null,
+  );
+  const updateSpaceDropFromPointer = useCallback(
+    (sourceId: string, clientX: number, clientY: number) => {
+      lastDragPointerRef.current = { sourceId, clientX, clientY };
+      updateSpaceDrop(sourceId, clientX, clientY);
+    },
+    [updateSpaceDrop],
+  );
+  useEffect(() => {
+    recomputeDropRef.current = () => {
+      const pointer = lastDragPointerRef.current;
+      if (pointer) updateSpaceDrop(pointer.sourceId, pointer.clientX, pointer.clientY);
+    };
+    return () => {
+      recomputeDropRef.current = null;
+    };
+  }, [updateSpaceDrop]);
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
       if (spaceParentMutationPending) return;
@@ -298,10 +299,19 @@ export function SpaceRail({
       setSpaceParentMutationPending(true);
       setSpaceParent(sourceId, targetId ?? undefined)
         .then(() => {
-          canonicalParentOverrideStartedAt.current[sourceId] = Date.now();
           setCanonicalParentOverrides((current) => ({ ...current, [sourceId]: targetId }));
         })
-        .catch(reportActionError)
+        .catch(async (error) => {
+          reportActionError(error);
+          const refreshed = await listRooms().catch(() => null);
+          const observed = refreshed?.find((room) => room.room_id === sourceId);
+          if (observed) {
+            setCanonicalParentOverrides((current) => ({
+              ...current,
+              [sourceId]: observed.parent_space_ids[0] ?? null,
+            }));
+          }
+        })
         .finally(() => {
           setSpaceParentMutationPending(false);
           // The two Matrix state writes are not atomic. Always refetch after
@@ -317,6 +327,8 @@ export function SpaceRail({
       stopDragScroll();
       const drop = spaceDropRef.current;
       spaceDropRef.current = null;
+      lastDragPointerRef.current = null;
+      dragPermissionRequestsRef.current.clear();
       setSpaceDrop(null);
       if (!drop || drop.sourceId !== sourceId || drop.invalid) return;
       const source = rooms.find((room) => room.room_id === sourceId);
@@ -505,7 +517,11 @@ export function SpaceRail({
           unread={counts.unread}
           highlight={counts.highlight}
           onClick={() => onSelectSpace(space.room_id)}
-          dragEnabled={hierarchyReorganizationEnabled && !spaceParentMutationPending}
+          dragEnabled={
+            hierarchyReorganizationEnabled &&
+            !spaceParentMutationPending &&
+            ownPermissions?.set_space_parent === true
+          }
           dropState={
             spaceDrop?.targetId === space.room_id
               ? spaceDrop.invalid
@@ -515,7 +531,13 @@ export function SpaceRail({
                 ? "source"
                 : "idle"
           }
-          onDragMove={updateSpaceDrop}
+          onDragPrepare={() => {
+            if (!hierarchyReorganizationEnabled) return;
+            dragPermissionRequestsRef.current.clear();
+            dragPermissionRequestsRef.current.add(space.room_id);
+            ensurePermissionsLoaded(space.room_id);
+          }}
+          onDragMove={updateSpaceDropFromPointer}
           onDragEnd={finishSpaceDrop}
         />
       </div>
@@ -599,15 +621,20 @@ export function SpaceRail({
               )}
               {hierarchyReorganizationEnabled && (
                 <ContextMenuItem
-                  disabled={spaceParentMutationPending}
-                  onSelect={() => setMoveTarget({ spaceId: space.room_id, name: label, parentId })}
+                  disabled={spaceParentMutationPending || ownPermissions?.set_space_parent !== true}
+                  onSelect={() => {
+                    for (const candidate of rooms) {
+                      if (candidate.is_space) ensurePermissionsLoaded(candidate.room_id);
+                    }
+                    setMoveTarget({ spaceId: space.room_id, name: label, parentId });
+                  }}
                 >
                   Move to space…
                 </ContextMenuItem>
               )}
               {hierarchyReorganizationEnabled && parentId && (
                 <ContextMenuItem
-                  disabled={spaceParentMutationPending}
+                  disabled={spaceParentMutationPending || ownPermissions?.set_space_parent !== true}
                   onSelect={() => mutateSpaceParent(space.room_id, null)}
                 >
                   Move to top level
@@ -809,12 +836,17 @@ export function SpaceRail({
                   (room) =>
                     room.is_space &&
                     room.room_id !== moveTarget.spaceId &&
-                    !collectDescendantSpaceIds(moveTarget.spaceId, rooms).has(room.room_id),
+                    !collectDescendantSpaceIds(
+                      moveTarget.spaceId,
+                      rooms,
+                      canonicalParentOverrides,
+                    ).has(room.room_id),
                 )
                 .map((room) => (
                   <button
                     key={room.room_id}
                     type="button"
+                    disabled={permissionsById[room.room_id]?.set_space_child !== true}
                     className="min-h-11 rounded-md px-3 text-left text-sm hover:bg-accent"
                     onClick={() => {
                       mutateSpaceParent(moveTarget.spaceId, room.room_id);
@@ -901,6 +933,7 @@ interface SpaceButtonProps {
   onClick: () => void;
   dragEnabled: boolean;
   dropState: "idle" | "source" | "valid" | "invalid";
+  onDragPrepare: () => void;
   onDragMove: (spaceId: string, clientX: number, clientY: number) => void;
   onDragEnd: (spaceId: string) => void;
 }
@@ -913,6 +946,7 @@ function SpaceButton({
   onClick,
   dragEnabled,
   dropState,
+  onDragPrepare,
   onDragMove,
   onDragEnd,
 }: SpaceButtonProps) {
@@ -946,6 +980,7 @@ function SpaceButton({
           data-space-drop-id={space.room_id}
           aria-label={accessibleLabel}
           aria-current={active ? "page" : undefined}
+          onPointerEnter={onDragPrepare}
           data-drop-invalid={dropState === "invalid" ? "true" : undefined}
           onClick={() => {
             if (!draggedRef.current) onClick();
