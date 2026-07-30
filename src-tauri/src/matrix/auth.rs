@@ -815,12 +815,14 @@ pub async fn begin_registration(
         }
         Err(error) => {
             let Some(uiaa) = error.as_uiaa_response().cloned() else {
+                drop(client);
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
                 return Err(safe_registration_error(&error));
             };
             let step = match registration_challenge(&attempt_id, &client, &uiaa) {
                 Ok(step) => step,
                 Err(error) => {
+                    drop(client);
                     let _ = persistence::discard_temp_login_store(&app, &store_key);
                     return Err(error);
                 }
@@ -1963,7 +1965,9 @@ fn registration_challenge(
         Some(session) => registration_fallback_url(client, &next_stage, session)?,
         None if matches!(
             next_stage.as_str(),
-            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+            stage if stage == AuthType::Terms.as_str()
+                || stage == AuthType::Dummy.as_str()
+                || stage == AuthType::EmailIdentity.as_str()
         ) =>
         {
             String::new()

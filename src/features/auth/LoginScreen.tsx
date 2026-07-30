@@ -154,6 +154,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
+  const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
 
@@ -161,6 +162,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     () => () => {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
+      registrationEmailOperationRef.current += 1;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
       const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
@@ -275,14 +277,21 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleRequestRegistrationEmail() {
     const attemptId = registrationAttemptRef.current;
     if (!attemptId || !registrationEmail) return;
+    const operation = ++registrationEmailOperationRef.current;
     setPending(true);
     setError(null);
     try {
-      setRegistrationEmailChallenge(await requestRegistrationEmail(attemptId, registrationEmail));
+      const challenge = await requestRegistrationEmail(attemptId, registrationEmail);
+      if (
+        registrationEmailOperationRef.current === operation &&
+        registrationAttemptRef.current === attemptId
+      ) {
+        setRegistrationEmailChallenge(challenge);
+      }
     } catch (err) {
-      setError(String(err));
+      if (registrationEmailOperationRef.current === operation) setError(String(err));
     } finally {
-      setPending(false);
+      if (registrationEmailOperationRef.current === operation) setPending(false);
     }
   }
 
@@ -303,10 +312,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   function handleCancelRegistration() {
     const attemptId = registrationAttemptRef.current;
     registrationAttemptRef.current = null;
+    registrationEmailOperationRef.current += 1;
     setRegistrationStep(undefined);
     setRegistrationEmailChallenge(undefined);
     setRegistrationEmail("");
     setRegistrationEmailToken("");
+    setPending(false);
     setError(null);
     if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
   }
