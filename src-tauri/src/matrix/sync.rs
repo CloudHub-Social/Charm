@@ -72,6 +72,12 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
     });
+    let include_canonical_space_hierarchy = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::SpaceHierarchyReorganization,
+        )
+    });
     // Self-contained, *downsampled* Sentry transaction (see
     // `observability_trace::traced_infallible_sampled`'s doc comment) — this
     // call was the single largest measured contributor to login/steady-state
@@ -92,6 +98,7 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
             media_cache,
             include_message_preview,
             include_activity_sort,
+            include_canonical_space_hierarchy,
             &state.preview_registered_rooms,
         ),
     )

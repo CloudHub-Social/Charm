@@ -478,8 +478,12 @@ describe("SpaceRail", () => {
     mockPointerCapture(alpha);
     mockElementFromPoint(beta);
 
+    fireEvent.pointerEnter(alpha);
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!alpha:localhost"));
     fireEvent.pointerDown(alpha, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
     fireEvent.pointerMove(alpha, { pointerId: 1, clientX: 10, clientY: 30, buttons: 1 });
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!beta:localhost"));
+    fireEvent.pointerMove(alpha, { pointerId: 1, clientX: 10, clientY: 31, buttons: 1 });
     fireEvent.pointerUp(alpha, { pointerId: 1, clientX: 10, clientY: 30 });
 
     await waitFor(() =>
@@ -497,8 +501,11 @@ describe("SpaceRail", () => {
     });
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Alpha" }));
+    await waitFor(() => expectMenuItemEnabled("Move to space…"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to space…" }));
-    fireEvent.click(screen.getByRole("button", { name: "Beta" }));
+    const beta = screen.getByRole("button", { name: "Beta" });
+    await waitFor(() => expect(beta).toBeEnabled());
+    fireEvent.click(beta);
 
     await waitFor(() =>
       expect(setSpaceParent).toHaveBeenCalledWith("!alpha:localhost", "!beta:localhost"),
@@ -545,8 +552,12 @@ describe("SpaceRail", () => {
     mockPointerCapture(team);
     mockElementFromPoint(product);
 
+    fireEvent.pointerEnter(team);
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
     fireEvent.pointerDown(team, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
     fireEvent.pointerMove(team, { pointerId: 1, clientX: 10, clientY: 30, buttons: 1 });
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!child-space:localhost"));
+    fireEvent.pointerMove(team, { pointerId: 1, clientX: 10, clientY: 31, buttons: 1 });
     expect(product).toHaveAttribute("data-drop-invalid", "true");
     fireEvent.pointerUp(team, { pointerId: 1, clientX: 10, clientY: 30 });
 
@@ -563,6 +574,8 @@ describe("SpaceRail", () => {
     document.body.append(outside);
     mockElementFromPoint(outside);
 
+    fireEvent.pointerEnter(product);
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!child-space:localhost"));
     fireEvent.pointerDown(product, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
     fireEvent.pointerMove(product, { pointerId: 1, clientX: 100, clientY: 100, buttons: 1 });
     fireEvent.pointerUp(product, { pointerId: 1, clientX: 100, clientY: 100 });

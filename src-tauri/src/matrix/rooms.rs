@@ -557,12 +557,17 @@ pub async fn snapshot_rooms(
     media_cache: Option<&media::MediaCache>,
     include_message_preview: bool,
     include_activity_sort: bool,
+    include_canonical_space_hierarchy: bool,
     preview_registered_rooms: &std::sync::Mutex<
         std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
     >,
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
-    let canonical_space_parents = canonical_space_parent_ids(client, &parents).await;
+    let canonical_space_parents = if include_canonical_space_hierarchy {
+        canonical_space_parent_ids(client, &parents).await
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let rooms: Vec<Room> = client
         .joined_rooms()
@@ -686,16 +691,13 @@ pub async fn snapshot_rooms(
                     is_low_priority,
                     manual_order,
                     is_space,
-                    parent_space_ids: if is_space {
-                        let mut confirmed = parents.get(&room_id).cloned().unwrap_or_default();
-                        if let Some(canonical) = canonical_space_parents
+                    parent_space_ids: if is_space && include_canonical_space_hierarchy {
+                        canonical_space_parents
                             .get(&room_id)
-                            .and_then(|parents| parents.first())
-                        {
-                            confirmed.retain(|parent| parent != canonical);
-                            confirmed.insert(0, canonical.clone());
-                        }
-                        confirmed
+                            .cloned()
+                            .unwrap_or_default()
+                    } else if is_space {
+                        parents.get(&room_id).cloned().unwrap_or_default()
                     } else {
                         parents.get(&room_id).cloned().unwrap_or_default()
                     },
@@ -806,11 +808,18 @@ pub async fn list_rooms(
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
     });
+    let include_canonical_space_hierarchy = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::SpaceHierarchyReorganization,
+        )
+    });
     Ok(snapshot_rooms(
         &client,
         media_cache,
         include_message_preview,
         include_activity_sort,
+        include_canonical_space_hierarchy,
         &state.preview_registered_rooms,
     )
     .await)

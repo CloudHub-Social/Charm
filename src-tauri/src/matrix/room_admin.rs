@@ -209,6 +209,8 @@ pub struct RoomPermissions {
     /// the child's *parent* space (a second, separately-fetched
     /// `RoomDetails`), since that's whose `m.space.child` edge is mutated.
     pub set_space_child: bool,
+    /// Gates reparenting a space by sending `m.space.parent` in this room.
+    pub set_space_parent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -309,6 +311,8 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         set_pinned_events: power_levels
             .user_can_send_state(own_user_id, StateEventType::RoomPinnedEvents),
         set_space_child: power_levels.user_can_send_state(own_user_id, StateEventType::SpaceChild),
+        set_space_parent: power_levels
+            .user_can_send_state(own_user_id, StateEventType::SpaceParent),
     };
 
     let is_encrypted = room
