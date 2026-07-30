@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LoginScreen } from "./LoginScreen";
-import type { LoginResponse } from "@/lib/matrix";
+import type { LoginResponse, PasswordResetChallenge } from "@/lib/matrix";
 
 let getCurrentUrls: string[] | null = null;
 let openUrlCallback: ((urls: string[]) => void) | undefined;
@@ -33,7 +33,7 @@ const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso"
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
 const discoverHomeserver = vi.fn().mockReturnValue(new Promise(() => {}));
-const featureFlags = vi.hoisted(() => ({ registrationEnabled: false }));
+const featureFlags = vi.hoisted(() => ({ registrationEnabled: false, initialized: true }));
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: () => getCurrent(),
@@ -64,6 +64,7 @@ vi.mock("@/lib/matrix", () => ({
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => key === "registration_and_recovery" && featureFlags.registrationEnabled,
+  useFeatureFlagsInitialized: () => featureFlags.initialized,
 }));
 
 vi.mock("./QrLoginScreen", () => ({
@@ -113,6 +114,7 @@ describe("LoginScreen SSO callback handling", () => {
     });
     loginWithToken.mockReset();
     featureFlags.registrationEnabled = false;
+    featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
     cancelSsoLogin.mockClear().mockResolvedValue(undefined);
@@ -500,6 +502,31 @@ describe("LoginScreen login choices", () => {
     expect(screen.queryByRole("button", { name: "Continue with Company SSO" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sign in with QR code" })).toBeNull();
   });
+
+  it("falls back to generic SSO when login-flow discovery fails", async () => {
+    getLoginFlows.mockRejectedValue(new Error("unavailable"));
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
+  });
+
+  it("leaves token mode when the homeserver changes", async () => {
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use a login token" }));
+    fireEvent.change(screen.getByLabelText("Login token"), {
+      target: { value: "one-time-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("Homeserver"), {
+      target: { value: "https://other.example" },
+    });
+
+    expect(screen.queryByLabelText("Login token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Username")).toBeVisible();
+  });
 });
 
 describe("LoginScreen password recovery", () => {
@@ -531,7 +558,11 @@ describe("LoginScreen password recovery", () => {
     confirmPasswordReset.mockResolvedValue(undefined);
     render(<LoginScreen onSignedIn={vi.fn()} />);
 
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "old password" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    expect(screen.queryByDisplayValue("old password")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Email"), {
       target: { value: "alice@example.org" },
     });
@@ -558,6 +589,46 @@ describe("LoginScreen password recovery", () => {
       "new correct horse",
     );
     expect(screen.getByText("Password updated")).toBeVisible();
+  });
+
+  it("does not reveal that a homeserver rejected the recovery request", async () => {
+    requestPasswordReset.mockRejectedValue(new Error("unknown email"));
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "missing@example.org" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Send recovery email" }).click();
+    });
+
+    expect(screen.getByText("Open the link in your email, then return here.")).toBeVisible();
+    expect(screen.queryByText(/could not be started/i)).not.toBeInTheDocument();
+  });
+
+  it("can close recovery while its request is still pending", async () => {
+    let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
+    requestPasswordReset.mockReturnValue(
+      new Promise<PasswordResetChallenge>((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+
+    await act(async () => {
+      resolveRequest?.({ attempt_id: "late-attempt", requires_token: false });
+      await Promise.resolve();
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledWith("late-attempt");
   });
 
   it("cancels a direct-token recovery attempt without exposing its backend session", async () => {

@@ -12,6 +12,7 @@ use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, AuthType, Dummy, EmailIdentity, LoginTermsParams, Terms, ThirdpartyIdCredentials,
     UiaaInfo,
 };
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
@@ -94,6 +95,7 @@ struct PendingRegistrationEmail {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
+    homeserver: url::Url,
     submitted: bool,
 }
 
@@ -801,7 +803,7 @@ pub async fn begin_registration(
         Err(error) => {
             let Some(uiaa) = error.as_uiaa_response().cloned() else {
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
-                return Err("registration request failed".to_string());
+                return Err(safe_registration_error(&error));
             };
             let step = match registration_challenge(&attempt_id, &client, &uiaa) {
                 Ok(step) => step,
@@ -828,7 +830,7 @@ pub async fn begin_registration(
                 .replace((attempt_id.clone(), cancellation));
             reservation.defuse();
             if let Some(previous) = previous {
-                let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+                discard_pending_registration(&app, previous);
             }
             if let Some((_, previous_cancellation)) = previous_cancellation {
                 previous_cancellation.cancel();
@@ -900,14 +902,24 @@ pub async fn request_registration_email(
     let response = match response {
         Ok(response) => response,
         Err(_) => {
-            if cancellation.is_cancelled() {
-                let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
-                clear_registration_cancellation(&state, &attempt_id);
-                return Err("registration cancelled".to_string());
+            match restore_registration_after_email_request(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    return Err("could not send registration verification email".to_string());
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    return Err("registration cancelled".to_string());
+                }
             }
-            state.pending_registration.lock().await.replace(pending);
-            reservation.defuse();
-            return Err("could not send registration verification email".to_string());
         }
     };
     if cancellation.is_cancelled() {
@@ -922,9 +934,24 @@ pub async fn request_registration_email(
     ) {
         Ok(url) => url,
         Err(error) => {
-            state.pending_registration.lock().await.replace(pending);
-            reservation.defuse();
-            return Err(error);
+            match restore_registration_after_email_request(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    return Err(error);
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    return Err("registration cancelled".to_string());
+                }
+            }
         }
     };
     let requires_token = submit_url.is_some();
@@ -932,11 +959,47 @@ pub async fn request_registration_email(
         client_secret,
         sid: response.sid,
         submit_url,
+        homeserver: pending.client.homeserver(),
         submitted: false,
     });
-    state.pending_registration.lock().await.replace(pending);
+    if let Err(pending) =
+        restore_registration_after_email_request(&state, &attempt_id, &cancellation, pending).await
+    {
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
     reservation.defuse();
     Ok(RegistrationEmailChallenge { requires_token })
+}
+
+async fn restore_registration_after_email_request(
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingRegistration,
+) -> Result<(), PendingRegistration> {
+    if cancellation.is_cancelled() || !registration_cancellation_is_current(state, attempt_id) {
+        return Err(pending);
+    }
+    let mut guard = state.pending_registration.lock().await;
+    if guard.is_some()
+        || cancellation.is_cancelled()
+        || !registration_cancellation_is_current(state, attempt_id)
+    {
+        return Err(pending);
+    }
+    *guard = Some(pending);
+    Ok(())
+}
+
+fn registration_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
+    state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
 }
 
 /// Continues exactly the active registration attempt and Matrix UIA session.
@@ -973,7 +1036,7 @@ pub async fn continue_registration(
         drop(pending_guard);
         cancellation.cancel();
         clear_registration_cancellation(&state, &attempt_id);
-        let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+        discard_pending_registration(&app, expired);
         return Err("registration attempt expired; start again".to_string());
     }
 
@@ -1007,7 +1070,7 @@ pub async fn continue_registration(
     let registration_result = tokio::select! {
         result = async { pending.client.matrix_auth().register(request).await } => result,
         () = cancellation.cancelled() => {
-            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
         }
@@ -1041,7 +1104,7 @@ pub async fn continue_registration(
                 ) {
                     Ok(step) => step,
                     Err(error) => {
-                        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+                        discard_pending_registration(&app, pending);
                         clear_registration_cancellation(&state, &attempt_id);
                         return Err(error);
                     }
@@ -1095,7 +1158,7 @@ pub async fn cancel_registration(
     }
     let pending = guard.take().expect("pending attempt checked above");
     drop(guard);
-    let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+    discard_pending_registration(&app, pending);
     Ok(())
 }
 
@@ -1247,8 +1310,8 @@ fn sanitize_email_submit_url(
     let parsed = homeserver
         .join(submit_url)
         .map_err(|_| format!("this homeserver returned an unsupported {flow} flow"))?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.origin() != homeserver.origin()
+    if !(matches!(parsed.scheme(), "https")
+        || parsed.scheme() == "http" && parsed.origin() == homeserver.origin())
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
@@ -1261,15 +1324,14 @@ fn sanitize_email_submit_url(
 
 async fn submit_email_validation(
     submit_url: &url::Url,
+    homeserver: &url::Url,
     sid: &matrix_sdk::ruma::OwnedSessionId,
     client_secret: &matrix_sdk::ruma::OwnedClientSecret,
     token: &str,
     flow: &str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    let client = email_validation_submission_client(submit_url, homeserver)
+        .await
         .map_err(|_| format!("could not confirm {flow} email"))?;
     let response = client
         .post(submit_url.clone())
@@ -1298,6 +1360,7 @@ async fn complete_password_reset(
             .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
         submit_email_validation(
             submit_url,
+            &pending.client.homeserver(),
             &pending.sid,
             &pending.client_secret,
             token,
@@ -1321,6 +1384,78 @@ async fn complete_password_reset(
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
+}
+
+async fn email_validation_submission_client(
+    submit_url: &url::Url,
+    homeserver: &url::Url,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15));
+
+    // A Matrix homeserver may delegate email validation to an identity
+    // service on another HTTPS origin. Resolve that host once, reject every
+    // non-public answer, and pin the approved addresses into reqwest so a
+    // second DNS lookup cannot rebind the submission to a local service.
+    if submit_url.origin() != homeserver.origin() {
+        let host = submit_url
+            .host_str()
+            .ok_or_else(|| "could not confirm password reset".to_string())?;
+        let port = submit_url
+            .port_or_known_default()
+            .ok_or_else(|| "could not confirm password reset".to_string())?;
+        let addresses = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| "could not confirm password reset".to_string())?
+            .collect::<Vec<_>>();
+        if addresses.is_empty()
+            || addresses
+                .iter()
+                .any(|address| !is_public_network_ip(address.ip()))
+        {
+            return Err("could not confirm password reset".to_string());
+        }
+        builder = builder.resolve_to_addrs(host, &addresses);
+    }
+
+    builder
+        .build()
+        .map_err(|_| "could not confirm password reset".to_string())
+}
+
+fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_network_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
+        }
+    }
 }
 
 fn spawn_password_reset_expiry(app: AppHandle, attempt_id: String) {
@@ -1505,7 +1640,7 @@ pub(crate) async fn cancel_pending_registration_for_superseding_auth(
         cancellation.cancel();
     }
     if let Some(pending) = state.pending_registration.lock().await.take() {
-        let _ = persistence::discard_temp_login_store(app, &pending.store_key);
+        discard_pending_registration(app, pending);
     }
 }
 
@@ -1548,9 +1683,29 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
         };
         drop(guard);
         if let Some(expired) = expired {
-            let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+            discard_pending_registration(&app, expired);
         }
     });
+}
+
+fn discard_pending_registration(app: &AppHandle, pending: PendingRegistration) {
+    let store_key = pending.store_key.clone();
+    drop(pending);
+    let _ = persistence::discard_temp_login_store(app, &store_key);
+}
+
+fn safe_registration_error(error: &matrix_sdk::Error) -> String {
+    match error.client_api_error_kind() {
+        Some(ErrorKind::UserInUse) => "That username is already in use.".to_string(),
+        Some(ErrorKind::InvalidUsername) => "That username is not valid.".to_string(),
+        Some(ErrorKind::LimitExceeded(_)) => {
+            "Too many registration attempts. Wait and try again.".to_string()
+        }
+        Some(ErrorKind::UserLimitExceeded(_)) | Some(ErrorKind::ResourceLimitExceeded(_)) => {
+            "This homeserver is not accepting additional registrations.".to_string()
+        }
+        _ => "Registration was rejected. Check the username and password requirements.".to_string(),
+    }
 }
 
 fn registration_request(
@@ -1631,6 +1786,7 @@ async fn registration_auth_data(
                         })?;
                     submit_email_validation(
                         submit_url,
+                        &validation.homeserver,
                         &validation.sid,
                         &validation.client_secret,
                         token,
@@ -1929,10 +2085,11 @@ mod registration_uia_tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::{
-        complete_password_reset, identity_provider_is_advertised, next_registration_stage,
-        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
-        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
-        PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
+        complete_password_reset, identity_provider_is_advertised, is_public_network_ip,
+        next_registration_stage, registration_auth_data, registration_fallback_url,
+        sanitize_password_reset_submit_url, sanitized_registration_policies, summarize_login_flows,
+        PasswordResetChallenge, PendingPasswordReset, PendingRegistrationEmail,
+        RegistrationAuthResponse,
     };
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
@@ -2027,6 +2184,7 @@ mod registration_uia_tests {
                 url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
                     .expect("submission URL"),
             ),
+            homeserver: server.uri().parse().expect("homeserver URL"),
             submitted: false,
         };
 
@@ -2139,7 +2297,7 @@ mod registration_uia_tests {
     }
 
     #[test]
-    fn accepts_only_same_origin_password_reset_submission_urls() {
+    fn accepts_https_password_reset_submission_urls() {
         let homeserver = url::Url::parse("https://matrix.example/base/").expect("valid URL");
 
         assert_eq!(
@@ -2152,15 +2310,47 @@ mod registration_uia_tests {
             .as_str(),
             "https://matrix.example/_matrix/client/v3/validate/email/submitToken"
         );
+        assert_eq!(
+            sanitize_password_reset_submit_url(
+                &homeserver,
+                Some("https://identity.example/validate/email/submitToken")
+            )
+            .expect("delegated HTTPS URL")
+            .expect("submission URL")
+            .host_str(),
+            Some("identity.example")
+        );
         assert!(
             sanitize_password_reset_submit_url(&homeserver, Some("http://127.0.0.1/internal"))
                 .is_err()
         );
-        assert!(sanitize_password_reset_submit_url(
-            &homeserver,
-            Some("https://matrix.example.evil.test/submit")
-        )
-        .is_err());
+    }
+
+    #[test]
+    fn rejects_non_public_password_reset_submission_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "192.168.1.2",
+            "198.51.100.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                !is_public_network_ip(address.parse().expect("valid IP")),
+                "{address} must not be treated as public"
+            );
+        }
+        assert!(is_public_network_ip(
+            "1.1.1.1".parse().expect("valid public IP")
+        ));
+        assert!(is_public_network_ip(
+            "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
     }
 
     #[test]

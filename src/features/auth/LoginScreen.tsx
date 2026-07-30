@@ -27,7 +27,7 @@ import {
   type RegistrationEmailChallenge,
   type RegistrationStep,
 } from "@/lib/matrix";
-import { useFlag } from "@/featureFlags";
+import { useFeatureFlagsInitialized, useFlag } from "@/featureFlags";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -68,6 +68,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [registrationEmailChallenge, setRegistrationEmailChallenge] =
     useState<RegistrationEmailChallenge>();
   const [loginFlows, setLoginFlows] = useState<LoginFlowSummary>();
+  const [loginFlowsFailed, setLoginFlowsFailed] = useState(false);
   const [showTokenLogin, setShowTokenLogin] = useState(false);
   const [loginToken, setLoginToken] = useState("");
   const [showPasswordReset, setShowPasswordReset] = useState(false);
@@ -88,10 +89,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery");
+  const featureFlagsInitialized = useFeatureFlagsInitialized();
   const showAlternativeSignInOptions =
     showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
   const showGenericSso =
     !registrationUiaEnabled ||
+    loginFlowsFailed ||
     (loginFlows?.sso === true && loginFlows.identity_providers.length === 0);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
@@ -99,20 +102,36 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   useEffect(() => {
     if (!registrationUiaEnabled || mode !== "sign-in" || discovery.state !== "resolved") {
       setLoginFlows(undefined);
+      setLoginFlowsFailed(false);
       return undefined;
     }
     let current = true;
+    setLoginFlows(undefined);
+    setLoginFlowsFailed(false);
     getLoginFlows(discovery.homeserverUrl)
       .then((flows) => {
-        if (current) setLoginFlows(flows);
+        if (current) {
+          setLoginFlows(flows);
+          setLoginFlowsFailed(false);
+        }
       })
       .catch(() => {
-        if (current) setLoginFlows(undefined);
+        if (current) {
+          setLoginFlows(undefined);
+          setLoginFlowsFailed(true);
+        }
       });
     return () => {
       current = false;
     };
   }, [discovery, mode, registrationUiaEnabled]);
+
+  useEffect(() => {
+    if (!registrationUiaEnabled || loginFlows?.token !== true) {
+      setShowTokenLogin(false);
+      setLoginToken("");
+    }
+  }, [loginFlows, registrationUiaEnabled]);
 
   // Guards against acting on the same charm://sso-callback URL twice (the
   // deep-link plugin can, in principle, deliver it more than once) and
@@ -121,6 +140,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const ssoInProgressRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
   const passwordResetAttemptRef = useRef<string | null>(null);
+  const passwordResetOperationRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -129,6 +149,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
       const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
+      passwordResetOperationRef.current += 1;
       if (resetAttemptId) cancelPasswordReset(resetAttemptId).catch(logAndIgnore);
     },
     [],
@@ -181,6 +202,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (mode === "register" && !featureFlagsInitialized) return;
     setPending(true);
     setError(null);
     try {
@@ -312,25 +334,38 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleRequestPasswordReset(e: React.FormEvent) {
     e.preventDefault();
+    const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
+    let challenge: PasswordResetChallenge;
     try {
-      const challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
-      passwordResetAttemptRef.current = challenge.attempt_id;
-      setPasswordResetChallenge(challenge);
+      challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
     } catch {
-      setError(
-        "Password reset could not be started. Check the homeserver and email, then try again.",
-      );
+      // Do not disclose whether the homeserver rejected an unknown email.
+      // The synthetic attempt advances through the same UI and only fails at
+      // confirmation, after the user would need access to the mailbox.
+      challenge = {
+        attempt_id: `unavailable-${crypto.randomUUID()}`,
+        requires_token: false,
+      };
     } finally {
-      setPending(false);
+      if (passwordResetOperationRef.current === operation) setPending(false);
     }
+    if (passwordResetOperationRef.current !== operation) {
+      if (!challenge.attempt_id.startsWith("unavailable-")) {
+        cancelPasswordReset(challenge.attempt_id).catch(logAndIgnore);
+      }
+      return;
+    }
+    passwordResetAttemptRef.current = challenge.attempt_id;
+    setPasswordResetChallenge(challenge);
   }
 
   async function handleConfirmPasswordReset(e: React.FormEvent) {
     e.preventDefault();
     const attemptId = passwordResetAttemptRef.current;
     if (!attemptId) return;
+    const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
     try {
@@ -339,20 +374,25 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         passwordResetChallenge?.requires_token ? recoveryToken : undefined,
         newPassword,
       );
+      if (passwordResetOperationRef.current !== operation) return;
       passwordResetAttemptRef.current = null;
       setRecoveryToken("");
       setNewPassword("");
+      setPassword("");
       setPasswordResetComplete(true);
     } catch {
-      setError(
-        "Password reset could not be confirmed. Verify the email step and new password, then try again.",
-      );
+      if (passwordResetOperationRef.current === operation) {
+        setError(
+          "Password reset could not be confirmed. Verify the email step and new password, then try again.",
+        );
+      }
     } finally {
-      setPending(false);
+      if (passwordResetOperationRef.current === operation) setPending(false);
     }
   }
 
   function closePasswordReset() {
+    passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
     if (attemptId) cancelPasswordReset(attemptId).catch(logAndIgnore);
@@ -362,6 +402,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setRecoveryEmail("");
     setRecoveryToken("");
     setNewPassword("");
+    setPending(false);
     setError(null);
   }
 
@@ -427,12 +468,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={pending}
-                  onClick={closePasswordReset}
-                >
+                <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
               </form>
@@ -472,12 +508,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {pending && <Loader2 className="animate-spin" />}
                   Send recovery email
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={pending}
-                  onClick={closePasswordReset}
-                >
+                <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
               </form>
@@ -538,12 +569,18 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       )}
                       <Button
                         type="button"
-                        disabled={pending}
+                        disabled={pending || registrationStep.policies.length === 0}
                         onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
                       >
                         {pending && <Loader2 className="animate-spin" />}
                         Accept and continue
                       </Button>
+                      {registrationStep.policies.length === 0 && (
+                        <p role="alert" className="text-xs text-destructive">
+                          This homeserver did not provide terms that Charm can display. Cancel and
+                          use the homeserver's registration page.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -656,12 +693,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     )}
 
                   {error && <p className="text-xs text-destructive">{error}</p>}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={pending}
-                    onClick={handleCancelRegistration}
-                  >
+                  <Button type="button" variant="ghost" onClick={handleCancelRegistration}>
                     Cancel account creation
                   </Button>
                 </div>
@@ -732,7 +764,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   )}
                   {error && <p className="text-xs text-destructive">{error}</p>}
 
-                  <Button type="submit" disabled={pending || ssoPending} className="w-full">
+                  <Button
+                    type="submit"
+                    disabled={
+                      pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
+                    }
+                    className="w-full"
+                  >
                     {pending && <Loader2 className="animate-spin" />}
                     {pending
                       ? mode === "sign-in"
@@ -753,6 +791,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       variant="link"
                       disabled={pending || ssoPending}
                       onClick={() => {
+                        setPassword("");
                         setShowPasswordReset(true);
                         setError(null);
                       }}

@@ -454,13 +454,16 @@ impl PendingAuthStore {
     }
 
     async fn restore_registration(&self, pending: PendingRegistration) {
-        if self
-            .cancellations
-            .lock()
-            .await
+        let cancellations = self.cancellations.lock().await;
+        if cancellations
             .get(&pending.attempt_id)
             .is_some_and(|(_, token)| !token.is_cancelled())
         {
+            // Keep the cancellation entry locked through publication. A
+            // concurrent cancel must therefore happen entirely before this
+            // check (and we clean up) or after the insert (and it removes
+            // the restored payload); it cannot miss an in-flight payload
+            // and then have that payload reappear behind it.
             self.registrations
                 .lock()
                 .await
@@ -769,8 +772,8 @@ fn sanitize_submit_url(
     let parsed = homeserver
         .join(submit_url)
         .map_err(|_| format!("this homeserver returned an unsupported {flow} flow"))?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.origin() != homeserver.origin()
+    if !(matches!(parsed.scheme(), "https")
+        || parsed.scheme() == "http" && parsed.origin() == homeserver.origin())
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
@@ -788,10 +791,8 @@ async fn submit_email(
     token: &str,
     flow: &str,
 ) -> Result<(), String> {
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(15))
-        .build()
+    let response = email_submission_client(submit_url)
+        .await
         .map_err(|_| format!("could not confirm {flow} email"))?
         .post(submit_url.clone())
         .json(&serde_json::json!({
@@ -806,6 +807,71 @@ async fn submit_email(
         return Err(format!("could not confirm {flow} email"));
     }
     Ok(())
+}
+
+async fn email_submission_client(submit_url: &reqwest::Url) -> Result<reqwest::Client, String> {
+    let host = submit_url
+        .host_str()
+        .ok_or_else(|| "email submission URL has no host".to_string())?;
+    let port = submit_url
+        .port_or_known_default()
+        .ok_or_else(|| "email submission URL has no port".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "could not resolve email submission host".to_string())?
+        .collect::<Vec<_>>();
+    if addresses.is_empty()
+        || (!cfg!(test)
+            && addresses
+                .iter()
+                .any(|address| !is_public_network_ip(address.ip())))
+    {
+        return Err("email submission host is not public".to_string());
+    }
+
+    reqwest::Client::builder()
+        // Resolve exactly once, validate every answer, then pin those
+        // addresses so a controlled hostname cannot rebind between this
+        // check and reqwest's connection.
+        .resolve_to_addrs(host, &addresses)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|_| "could not build email submission client".to_string())
+}
+
+fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_network_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
+        }
+    }
 }
 
 async fn complete_password_reset(
@@ -874,7 +940,9 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_submit_url, PendingAuthStore, MAX_PENDING_AUTH_ATTEMPTS};
+    use super::{
+        is_public_network_ip, sanitize_submit_url, PendingAuthStore, MAX_PENDING_AUTH_ATTEMPTS,
+    };
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -923,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn email_submission_urls_stay_on_the_homeserver_origin() {
+    fn email_submission_urls_require_https_or_same_origin_http() {
         let homeserver =
             reqwest::Url::parse("https://matrix.example/base/").expect("homeserver URL");
         assert_eq!(
@@ -943,11 +1011,40 @@ mod tests {
             "registration"
         )
         .is_err());
-        assert!(sanitize_submit_url(
-            &homeserver,
-            Some("https://matrix.example.evil.test/submit"),
-            "registration",
-        )
-        .is_err());
+        assert_eq!(
+            sanitize_submit_url(
+                &homeserver,
+                Some("https://identity.example/submit"),
+                "registration",
+            )
+            .expect("delegated HTTPS URL")
+            .expect("submission URL")
+            .host_str(),
+            Some("identity.example")
+        );
+    }
+
+    #[test]
+    fn email_submission_rejects_non_public_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "192.168.1.2",
+            "198.51.100.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                !is_public_network_ip(address.parse().expect("valid IP")),
+                "{address} must not be treated as public"
+            );
+        }
+        assert!(is_public_network_ip(
+            "1.1.1.1".parse().expect("valid public IP")
+        ));
     }
 }

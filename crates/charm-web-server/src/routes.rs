@@ -1504,7 +1504,16 @@ async fn finish_login(
             .await
         {
             Ok(()) => {
-                initial_save_succeeded = true;
+                let marker_result = stored.persisted_crypto.as_ref().map_or(Ok(()), |crypto| {
+                    crate::crypto_store::mark_store_committed(&crypto.store_key)
+                });
+                if let Err(error) = marker_result {
+                    tracing::error!(
+                        "session persisted but crypto store could not be marked committed: {error}"
+                    );
+                } else {
+                    initial_save_succeeded = true;
+                }
                 if let Err(error) = persistence
                     .snapshot_crypto_store(&token, matrix_session, crypto)
                     .await

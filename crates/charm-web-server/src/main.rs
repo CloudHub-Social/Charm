@@ -60,6 +60,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(persistence) = &persistence {
+        match charm_web_server::crypto_store::sweep_orphan_pending_auth_stores() {
+            Ok(removed) if removed > 0 => {
+                tracing::info!("removed {removed} orphaned pre-auth crypto store(s)")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!("failed to sweep orphaned pre-auth crypto stores: {error}")
+            }
+        }
         let restored = persistence
             .restore_all(charm_web_server::session::session_revocation_grace())
             .await;
