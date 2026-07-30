@@ -236,11 +236,14 @@ scoped by this spike's findings.
 
 ## Risks & open questions
 
-- **R1 — native permission hooks differ by platform.** The spike established that
-  WRY already handles WebView2 and Android's `onPermissionRequest`; Android needed
-  manifest declarations rather than a second handler. WebKitGTK still requires
-  Charm's signal hook. Preserve these platform-specific findings rather than
-  generalizing one platform's workaround to another.
+- **R1 — native permission hooks differ by platform.** The Windows fake-UI run
+  proved WebView2 media capture once Chromium's permission surface was
+  auto-satisfied; it did **not** prove the real `CoreWebView2.PermissionRequested`
+  click path on unpatched WRY, which remains a required hardware verification.
+  Android's `onPermissionRequest` path needed manifest declarations rather than a
+  second handler. WebKitGTK still requires Charm's signal hook. Preserve these
+  platform-specific findings rather than generalizing one platform's workaround to
+  another.
 - **R2 — mobile loopback is meaningless.** Single-device loopback doesn't exercise a
   real camera path the same way; the two-device leg is mandatory for iOS/Android and
   needs a minimal signalling shim.
