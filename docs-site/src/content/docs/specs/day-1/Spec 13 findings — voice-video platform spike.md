@@ -243,12 +243,15 @@ public/spike-webrtc.html Buttons A/B to confirm the fix works end-to-end.
 
 ### Android — detail (real capability result via headless CI, 2026-07-07)
 
-Wiring landed: `android.permission.CAMERA` / `android.permission.RECORD_AUDIO` in
-`AndroidManifest.xml`, plus non-required camera `<uses-feature>` entries. Per
-Android docs this OS-level permission is necessary but **not sufficient** — the
-`WebView`'s `WebChromeClient` must separately override `onPermissionRequest` and
-call `PermissionRequest.grant(...)` for in-page media access; whether Tauri's
-default Android shell does this was the open question (R1).
+:::caution[Historical root-cause attribution corrected]
+The 2026-07-07 run below is valid pre-fix capability evidence, but its original
+explanation was wrong. The tested repository manifest did **not** yet declare
+`CAMERA`/`RECORD_AUDIO`, while pinned wry already supplied
+`RustWebChromeClient.onPermissionRequest` and the runtime-permission launcher.
+PR #229 subsequently added the missing manifest declarations without custom
+Kotlin. The log remains a historical pre-fix result; only a device/emulator
+re-run can establish the post-fix verdict.
+:::
 
 **Getting a real answer took nine CI iterations** — genuinely worth naming since
 it's most of why Android took so long: five distinct build bugs (openssl-sys
@@ -281,15 +284,11 @@ A: requesting getUserMedia({audio:true,video:true})...
 
 - **(1) getUserMedia grant — FAIL (hangs, not rejects).** The call fires and
   then never resolves or rejects — no error surfaces even in our own harness's
-  `try/catch`. Unlike Windows, there's no `--use-fake-ui-for-media-stream`
-  equivalent for the Android emulator's camera permission — and since nothing in
-  Tauri's default Android shell implements `WebChromeClient.onPermissionRequest`
-  to call `grant()`, the in-webview media-permission negotiation never resolves
-  at all. The `adb shell pm grant ... android.permission.CAMERA` step only
-  satisfies the OS-level runtime permission Android itself requires — it does
-  nothing for the separate WebView-level permission callback. **This is exactly
-  the R1 risk the spec named up front, now confirmed with real evidence instead
-  of a guess.**
+  `try/catch`. The historical run established the hang, but not its originally
+  claimed cause. Source review later confirmed the WebView callback already
+  existed and the repository manifest declarations were missing. Treat this as
+  pre-fix evidence only; do not infer the current result without the
+  hardware-blocked re-run.
 - **(2) RTCPeerConnection + media — untested.** Never reached; the harness's `B`
   button requires a local stream from `A`, which never completed.
 - **(3) getDisplayMedia — EXPECTED-GAP, confirmed.** `getDisplayMedia available:
