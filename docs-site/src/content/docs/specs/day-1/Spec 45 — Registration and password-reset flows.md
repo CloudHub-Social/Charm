@@ -6,9 +6,10 @@ created: 2026-07-13
 status: draft
 ---
 
-**Workstream:** one PR / one agent (registration is the bulk; reset + SSO polish
-can split out). Extends Spec 12 (first-run onboarding). **Highest-impact onboarding
-gap in the audit.**
+**Workstream:** three implementation PRs after this decision-ready spec update:
+(1) registration UIA, (2) recovery + provider-aware SSO/token login, and
+(3) real-homeserver verification and evidence. Extends Spec 12 (first-run
+onboarding). **Highest-impact onboarding gap in the audit.**
 
 ## Problem & why now
 
@@ -34,94 +35,187 @@ homeservers. The parity audit (2026-07-13) found:
 4. **No standalone token login** (minor). Charm 1.0 has
    `pages/auth/login/TokenLogin.tsx`; Charm 2.0 handles `loginToken` only inside the
    SSO callback (`src-tauri/src/matrix/auth.rs`), not as a standalone entry.
-5. **Guest access / peek** (owner-added 2026-07-13, **very low priority, UI-only**).
-   Absent in both clients today; owner wants a guest/peek path but scoped minimally:
-   let a user browse/peek a room without a real account, and **disable every action
-   that requires a real Matrix account** (send, react, join, upload, settings, etc.
-   — render them absent/disabled, not failing). Effectively a read-only preview
-   surface, not a full guest-account (`m.login.guest`) session unless trivial. Lowest
-   priority item in this spec — do last or split into a follow-up.
 
 ## Non-goals
 
-- Not guest access (absent in both — not a regression).
+- Not guest access or room peeking. That read-only, session-boundary-heavy surface
+  is now [day-2 Spec 14](/specs/day-2/spec-14--guest-room-previews/) rather than a
+  contradictory low-priority item inside this daily-driver authentication spec.
 - Not multi-account (day-2 Spec 09).
 - Not a visual redesign of the login screen — this adds the missing flows within
   the existing onboarding surface (Spec 12).
+- Not phone/MSISDN registration in this stage. Preserve unknown stages in the
+  typed response and offer the homeserver fallback flow rather than pretending an
+  unsupported stage completed.
 
 ## High-level design
 
 ### Registration UIA
 
-- Drive the `/register` UIA loop: call register, inspect the `flows`/`stages` the
-  server returns, and present the right stage UI in sequence:
+- Replace the current one-shot `register` call with a typed two-command lifecycle:
+  `begin_registration(request)` creates the temporary encrypted account store and
+  makes the first `/register` request; `continue_registration(attempt_id, auth)`
+  submits one stage response against the same homeserver UIA session. The attempt
+  is owned by the active app/web session, expires on cancellation or timeout, and
+  never exposes the Matrix client, access token, store key, or raw server response
+  to TypeScript.
+- Return a discriminated `RegistrationStep` DTO containing an opaque Charm attempt
+  ID, the homeserver UIA session ID, completed stage names, viable ordered flows,
+  sanitized stage parameters, and exactly one of `challenge` or `complete`.
+  Passwords and CAPTCHA/email tokens are request-only fields and must not be
+  persisted, logged, added to breadcrumbs, or echoed in errors.
+- Select a viable server-advertised flow rather than assuming a single global stage
+  order. Preserve `completed` across requests and present the next incomplete stage
+  from the selected flow:
   - **Terms** (`m.login.terms`): show the policy links, require acceptance.
-  - **reCAPTCHA** (`m.login.recaptcha`): render the captcha challenge (this needs a
-    webview-embeddable captcha — confirm the mechanism; reCAPTCHA in a Tauri webview
-    has CSP/domain considerations, flag as a risk to validate early).
+  - **CAPTCHA** (`m.login.recaptcha`): prefer the homeserver's UIA fallback page in
+    the system browser or a tightly origin-checked popup/webview. An embedded
+    surface can use the Matrix fallback completion callback; after a system-browser
+    flow the user returns to Charm and Charm resubmits the existing session ID to
+    observe completion. Do not inject a third-party CAPTCHA script into Charm's
+    main application origin.
   - **Email** (`m.login.email.identity`): request token, prompt for the emailed
-    code / poll for verification, continue.
+    code when `submit_url` is present, or poll/continue when the homeserver handles
+    validation. Generate a random `client_secret` per attempt and retain it only in
+    the Rust/server-side pending-attempt state.
   - **Dummy** (`m.login.dummy`): auto-complete.
-- Reuse Spec 20's structured UIA error type (`UiaCommandError`) — this is exactly
-  the UIA-stage-vs-other-error distinction it was built for.
+- Reuse Spec 20's structured UIA distinction, but do not force registration into
+  the settings-only `UiaCommandError` retry shape: registration needs to return
+  multiple viable flows, stage parameters, and a continuing attempt.
+- Unknown or currently unsupported stages are not fatal to discovery. Return their
+  type and a safe homeserver fallback URL when available; otherwise explain that
+  this homeserver's registration requirements are unsupported.
 - On success, land in the same post-login/onboarding state as a normal login.
+- Cancellation, app exit, superseding login/registration, and timeout must release
+  the pending client and clean its temporary store using Spec 15's existing
+  reservation/sweep rules.
 
 ### Password reset
 
 - "Forgot password?" entry on the login screen → email-identity token flow →
-  set new password. Mirrors Charm 1.0's `reset-password` pages. Needs the
-  homeserver's password-reset (`/account/password` + `/account/3pid/email/requestToken`)
-  endpoints via IPC.
+  set new password. `request_password_reset` generates and retains a random
+  `client_secret`, sends `/account/password/email/requestToken`, and returns an
+  opaque reset attempt plus `sid`/sanitized submission mode.
+  `confirm_password_reset` submits or observes validation and completes
+  `/account/password` with the email identity auth data. Neither command requires
+  an authenticated Matrix session.
+- Rate limits and deliberately ambiguous homeserver responses must remain generic
+  in the UI so Charm does not become an account-enumeration oracle.
 
 ### Per-provider SSO
 
-- Read the server's identity-provider list (already available from the login flows
-  response) and render one button per provider with its name/icon, each initiating
-  SSO for that specific provider — instead of the single generic button.
+- Add unauthenticated login-flow discovery and expose sanitized identity-provider
+  entries (`id`, `name`, optional `brand`, and a resolved/safe icon URL). Render one
+  button per provider and initiate `/login/sso/redirect/{idpId}` for that specific
+  provider. Keep the generic SSO action only when the homeserver advertises SSO
+  without an identity-provider list.
+- Extend the existing desktop pending-SSO state and callback-state validation; the
+  selected provider ID is untrusted input and must be chosen from the just-discovered
+  response before it is included in a redirect URL.
 
 ### Standalone token login (minor)
 
-- Expose the existing `loginToken` handling as a standalone entry (paste/deep-link a
-  login token) in addition to the SSO-callback path.
+- Reuse the existing `m.login.token` completion path as a standalone entry
+  (paste/deep-link a login token) only when login-flow discovery advertises
+  `m.login.token`. Treat the token like a password: request-only, never logged,
+  persisted, or included in telemetry.
+
+### Platform boundary
+
+| Surface | Desktop/mobile Tauri | Web companion |
+|---|---|---|
+| Registration UIA | Rust owns pending client + temp store | Companion session owns pending client + temp store |
+| CAPTCHA/unknown fallback | System browser or origin-checked webview callback | Companion-owned redirect/callback route |
+| Password reset | Rust request/confirm commands | Same-origin companion request/confirm routes |
+| Provider SSO | Existing deep-link callback, extended with `idp_id` | Requires the server-owned redirect/callback design deferred by Spec 16 |
+| Token login | Rust pending-login completion | Companion-owned pending-login completion |
+
+Registration and recovery must ship on both transports. Provider SSO/token login
+may land desktop-first, but Spec 45 cannot be marked shipped until the web
+companion boundary is implemented or the remaining web gap is split into an
+explicit follow-up spec rather than silently inheriting Spec 16's password-only
+limitation.
 
 ## Data flow
 
-New/extended IPC: a registration command that returns the UIA state and accepts
-stage responses (or a stateful register-session command), a password-reset
-request/confirm pair, and exposure of the provider list to render per-provider
-buttons. Most ride matrix-rust-sdk's auth APIs — confirm its registration-UIA and
-password-reset surface before designing the command shape.
+The Tauri and companion implementations expose the same TypeScript DTOs while each
+owns its pending Matrix clients and secrets on its trusted side of the transport.
+Every continuation is keyed by an opaque, session-bound Charm attempt ID. UIA
+session IDs, email `sid`s, and provider IDs are data, not authority: the backend
+must bind them to the pending attempt rather than accepting arbitrary combinations
+from the frontend.
+
+matrix-sdk 0.18 already exposes the raw registration/UIA response used by Charm's
+dummy-only flow. Prefer its typed requests where available; use Ruma request types
+through `client.send` for missing password-reset or login-flow discovery helpers
+instead of adding a second HTTP stack.
 
 ## API/contract changes
 
-- Registration UIA command(s) returning stage state (reuse `UiaCommandError`
-  patterns from Spec 20).
-- `request_password_reset(email)` / `confirm_password_reset(token, new_password)`.
-- Provider list surfaced to the login screen.
-- Standalone token-login entry.
+- `begin_registration(request) -> RegistrationStep`
+- `continue_registration(attempt_id, response) -> RegistrationStep`
+- `cancel_registration(attempt_id) -> ()`
+- `request_password_reset(homeserver, email) -> PasswordResetChallenge`
+- `confirm_password_reset(attempt_id, token?, new_password) -> ()`
+- `get_login_flows(homeserver) -> LoginFlowSummary`
+- `start_sso_login(homeserver, idp_id?) -> redirect_url`
+- `login_with_token(homeserver, token) -> LoginResponse`
+
+All user-facing entry points use a matching Rust and TypeScript
+`registration_and_recovery` feature flag defaulting to `false`. The backend
+commands remain fully validated even when the UI flag is disabled; flags are
+rollout controls, not authorization boundaries.
 
 ## Testing strategy
 
-- Rust: registration against a dev Synapse configured to require terms + dummy
-  (and, where feasible, email) completes end-to-end; password reset round-trips;
-  provider list parses.
-- Frontend: each UIA stage renders and advances; reset flow renders request +
-  confirm; multiple providers render multiple buttons; single provider still works.
-- Manual: **register a brand-new account on matrix.org** (or another server
-  requiring reCAPTCHA + terms) — this is the acceptance test that proves the gap is
-  actually closed, since it's the case that fails today.
+- Rust/companion repository tests: flow selection, session threading, terms/dummy/
+  email/CAPTCHA continuation, unknown fallback, cancellation/timeout cleanup,
+  superseding attempts, reset request/confirm, provider parsing, provider allowlist,
+  token secrecy, and cross-account isolation.
+- Frontend: each stage renders and advances; reset renders request + confirm;
+  multiple providers render multiple buttons; generic SSO remains for a providerless
+  response; unsupported stages and rate limits render safe actionable errors.
+- Playwright: registration terms → CAPTCHA fallback → completion, password reset,
+  provider selection, standalone token login, cancellation, and reload/supersession.
+- Real Synapse: separate integration profiles requiring terms + dummy, email, and a
+  mocked/test CAPTCHA fallback. Exercise both Tauri and companion transports.
+- Live evidence: register a brand-new account on matrix.org (or another target
+  server requiring comparable UIA), then verify login, onboarding, restart/session
+  restore, and logout. Repository tests and local Synapse evidence must not be
+  presented as this live result.
 
 ## Trade-offs
 
-- **reCAPTCHA in a webview is the real risk** — validate embeddability (CSP,
-  allowed domains, callback) early; if a specific server's captcha can't be
-  embedded, at minimum fail with a clear message rather than a silent registration
-  failure. Flag before committing to the full flow.
-- **Split reset/SSO out if registration UIA grows**: registration is the bulk and
-  the priority; password-reset and per-provider SSO are independent and can be a
-  second PR if needed.
+- **Fallback browser vs embedded CAPTCHA:** a homeserver fallback page avoids
+  loading third-party active content into Charm's application origin, at the cost
+  of a context switch and platform callback work. Security and interoperability
+  win over a bespoke embedded CAPTCHA.
+- **Stateful backend attempts:** pending clients and secrets require cleanup and
+  replay protection, but keep credentials out of the compromised-frontend threat
+  boundary and reuse Spec 15's store lifecycle.
+- **Three PRs instead of one:** registration UIA is independently reviewable;
+  recovery/SSO can reuse the resulting attempt patterns; live verification cannot
+  be confused with mocked repository coverage.
 
 ## What I'd revisit as this grows
 
 - Phone (`msisdn`) registration/verification stage if any target homeserver
   requires it (email is the common case; add msisdn only if needed).
+- OAuth-native account creation as Charm adopts the Matrix 2.0 authentication API.
+
+## Delivery slices
+
+1. **Registration UIA:** shared DTOs, Tauri + companion begin/continue/cancel,
+   terms/dummy/email/CAPTCHA fallback UI, cleanup, feature flag, tests, changeset,
+   and gallery evidence.
+2. **Recovery and login choices:** password reset, login-flow/IdP discovery,
+   provider-aware SSO, standalone token login, and both transport boundaries.
+3. **Real-homeserver evidence:** target Synapse profiles, desktop/web journeys,
+   matrix.org/comparable live verification, and final spec/roadmap reconciliation.
+
+## Protocol references
+
+- [Matrix Client-Server API: account registration](https://spec.matrix.org/latest/client-server-api/#account-registration)
+- [Matrix Client-Server API: User-Interactive Authentication](https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api)
+- [Matrix Client-Server API: password management](https://spec.matrix.org/latest/client-server-api/#password-management)
+- [Matrix Client-Server API: SSO client login](https://spec.matrix.org/latest/client-server-api/#sso-client-loginauthentication)

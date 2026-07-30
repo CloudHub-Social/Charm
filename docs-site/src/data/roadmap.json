@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T03:19:28.412Z",
+  "generatedAt": "2026-07-30T14:04:15.725Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
     "follow-up": 4,
     "in-progress": 0,
-    "planned": 34
+    "planned": 35
   },
   "attention": [
     {
@@ -125,13 +125,14 @@
         "day-2-10",
         "day-2-11",
         "day-2-12",
-        "day-2-13"
+        "day-2-13",
+        "day-2-14"
       ],
       "counts": {
         "shipped": 2,
         "follow-up": 0,
         "in-progress": 0,
-        "planned": 11
+        "planned": 12
       }
     }
   ],
@@ -1600,6 +1601,16 @@
       "number": 13,
       "title": "Scheduled and delayed send",
       "route": "/specs/day-2/spec-13--scheduled-and-delayed-send/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-14",
+      "tier": "day-2",
+      "number": 14,
+      "title": "Guest room previews",
+      "route": "/specs/day-2/spec-14--guest-room-previews/",
       "status": "planned",
       "pullRequests": [],
       "issues": []
