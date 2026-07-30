@@ -135,7 +135,10 @@ homeservers. The parity audit (2026-07-13) found:
   - **Email** (`m.login.email.identity`): request token, prompt for the emailed
     code when `submit_url` is present, or poll/continue when the homeserver handles
     validation. Generate a random `client_secret` per attempt and retain it only in
-    the Rust/server-side pending-attempt state.
+    the Rust/server-side pending-attempt state. Bind the first normalized address
+    to the attempt, cap resends, enforce per-source and keyed-hash-per-address
+    quotas, and honor the homeserver's retry interval; changing the address starts
+    a new admitted attempt rather than reusing the existing mail capability.
   - **Dummy** (`m.login.dummy`): auto-complete.
 - Reuse Spec 20's structured UIA distinction, but do not force registration into
   the settings-only `UiaCommandError` retry shape: registration needs to return
@@ -164,6 +167,10 @@ homeservers. The parity audit (2026-07-13) found:
   `confirm_password_reset` submits or observes validation and completes
   `/account/password` with the email identity auth data. Neither command requires
   an authenticated Matrix session.
+- Reset attempts have an opaque cancellation command, a hard expiry that starts
+  before discovery, per-session supersession, and a process-wide active-attempt
+  cap. Cancellation, expiry, or abandonment releases the client secret, SID, and
+  Matrix client; tests cover abandoned and quota-permitted attempt accumulation.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
@@ -175,6 +182,9 @@ homeservers. The parity audit (2026-07-13) found:
   authorization-server account-management/recovery URL or report recovery as
   unsupported; never send the legacy `/account/password` flow to a delegated
   homeserver.
+- For non-delegated homeservers, show the legacy password-reset action only when
+  the current `LoginFlowSummary` advertises `m.login.password`. SSO-only and
+  token-only homeservers report password recovery as unsupported.
 
 ### Per-provider SSO
 

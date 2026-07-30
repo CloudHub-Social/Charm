@@ -921,7 +921,7 @@ pub async fn request_registration_email(
         drop(guard);
         cancellation.cancel();
         clear_registration_cancellation(&state, &attempt_id);
-        let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+        discard_pending_registration(&app, expired);
         return Err("registration attempt expired; start again".to_string());
     }
     if next_registration_stage(&current.uiaa)? != AuthType::EmailIdentity.as_str() {
@@ -943,7 +943,7 @@ pub async fn request_registration_email(
     let response = tokio::select! {
         result = pending.client.send(request) => result,
         () = cancellation.cancelled() => {
-            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
         }
@@ -972,7 +972,7 @@ pub async fn request_registration_email(
         }
     };
     if cancellation.is_cancelled() {
-        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        discard_pending_registration(&app, pending);
         clear_registration_cancellation(&state, &attempt_id);
         return Err("registration cancelled".to_string());
     }
@@ -1106,7 +1106,7 @@ pub async fn continue_registration(
             pending.email_validation.as_mut(),
         ) => result,
         () = cancellation.cancelled() => {
-            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
         }
