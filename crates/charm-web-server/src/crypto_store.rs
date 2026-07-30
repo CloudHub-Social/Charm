@@ -26,6 +26,7 @@
 
 use rand::distr::Alphanumeric;
 use rand::RngExt;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 const PENDING_AUTH_MARKER: &str = ".charm-pending-auth";
@@ -104,7 +105,9 @@ pub fn mark_store_committed(store_key: &str) -> Result<(), String> {
 /// successful persisted-session save. Called before startup restore; no
 /// pending auth attempt survives a process restart, while committed stores
 /// have had their marker removed and are left untouched.
-pub fn sweep_orphan_pending_auth_stores() -> Result<usize, String> {
+pub fn sweep_orphan_pending_auth_stores(
+    persisted_store_keys: &HashSet<String>,
+) -> Result<usize, String> {
     let base =
         std::env::var(crate::persistence::DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
     let crypto_root = PathBuf::from(base).join("crypto");
@@ -116,10 +119,12 @@ pub fn sweep_orphan_pending_auth_stores() -> Result<usize, String> {
     let mut removed = 0;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
+        let store_key = entry.file_name().to_string_lossy().into_owned();
+        if persisted_store_keys.contains(&store_key)
+            || !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
             || !entry.path().join(PENDING_AUTH_MARKER).is_file()
         {
             continue;
@@ -204,11 +209,21 @@ mod tests {
 
         let orphan = create_store_dir("orphanstorekey").unwrap();
         let committed = create_store_dir("committedstorekey").unwrap();
+        let crash_after_save = create_store_dir("savedbutmarkedstorekey").unwrap();
         mark_store_committed("committedstorekey").unwrap();
 
-        assert_eq!(sweep_orphan_pending_auth_stores().unwrap(), 1);
+        assert_eq!(
+            sweep_orphan_pending_auth_stores(&HashSet::from([
+                "committedstorekey".to_string(),
+                "savedbutmarkedstorekey".to_string(),
+            ]))
+            .unwrap(),
+            1
+        );
         assert!(!orphan.exists());
         assert!(committed.exists());
+        assert!(crash_after_save.exists());
+        assert!(crash_after_save.join(PENDING_AUTH_MARKER).is_file());
         std::env::remove_var(crate::persistence::DATA_DIR_ENV);
     }
 

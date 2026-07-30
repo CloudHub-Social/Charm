@@ -63,7 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(persistence) = &persistence {
-        match charm_web_server::crypto_store::sweep_orphan_pending_auth_stores() {
+        let persisted_store_keys = persistence.persisted_crypto_store_keys().await;
+        match charm_web_server::crypto_store::sweep_orphan_pending_auth_stores(
+            &persisted_store_keys,
+        ) {
             Ok(removed) if removed > 0 => {
                 tracing::info!("removed {removed} orphaned pre-auth crypto store(s)")
             }

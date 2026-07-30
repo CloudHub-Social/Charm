@@ -1657,6 +1657,17 @@ impl PersistenceStore {
         }
         restored
     }
+
+    /// Crypto stores referenced by durable session records must never be
+    /// reclaimed as abandoned pre-auth stores, even if the process crashed
+    /// after saving the session but before removing its pending marker.
+    pub async fn persisted_crypto_store_keys(&self) -> std::collections::HashSet<String> {
+        self.read_all()
+            .await
+            .into_iter()
+            .filter_map(|entry| entry.crypto_store_key)
+            .collect()
+    }
 }
 
 fn snapshot_source_is_not_ready(error: &str) -> bool {

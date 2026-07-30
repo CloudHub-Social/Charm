@@ -40,6 +40,7 @@ const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
 const MAIL_QUOTA_WINDOW: Duration = Duration::from_secs(10 * 60);
 const MAX_MAILS_PER_SOURCE: usize = 5;
 const MAX_MAILS_PER_ADDRESS: usize = 3;
+const MAX_MAIL_QUOTA_KEYS: usize = 4096;
 const REGISTRATION_EMAIL_RESEND_DELAY: Duration = Duration::from_secs(30);
 
 type AuthenticatedClient = (
@@ -148,7 +149,7 @@ impl PendingAuthStore {
         self.spawn_expiry(attempt_id.clone());
         let result =
             login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await;
-        self.cancellations.lock().await.remove(&attempt_id);
+        self.finish_attempt(&attempt_id).await;
         result
     }
 
@@ -177,7 +178,7 @@ impl PendingAuthStore {
         let (client, crypto) = match build_result {
             Ok(result) => result,
             Err(error) => {
-                self.cancellations.lock().await.remove(&attempt_id);
+                self.finish_attempt(&attempt_id).await;
                 return Err(error);
             }
         };
@@ -208,7 +209,7 @@ impl PendingAuthStore {
                     crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
                     return Err("registration attempt expired or was cancelled".to_string());
                 }
-                self.cancellations.lock().await.remove(&attempt_id);
+                self.finish_attempt(&attempt_id).await;
                 Ok(BeginRegistrationResult::Complete(Box::new(authenticated(
                     completed,
                     homeserver_url,
@@ -216,14 +217,14 @@ impl PendingAuthStore {
             }
             Err(error) => {
                 let Some(uiaa) = error.as_uiaa_response().cloned() else {
-                    self.cancellations.lock().await.remove(&attempt_id);
+                    self.finish_attempt(&attempt_id).await;
                     crate::auth::cleanup_failed_crypto_store(&crypto);
                     return Err("registration request failed".to_string());
                 };
                 let step = match registration_challenge(&attempt_id, &client, &uiaa) {
                     Ok(step) => step,
                     Err(error) => {
-                        self.cancellations.lock().await.remove(&attempt_id);
+                        self.finish_attempt(&attempt_id).await;
                         crate::auth::cleanup_failed_crypto_store(&crypto);
                         return Err(error);
                     }
@@ -407,16 +408,16 @@ impl PendingAuthStore {
                     ) => completed,
                     () = cancellation.cancelled() => {
                         crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
-                        self.cancellations.lock().await.remove(attempt_id);
+                        self.finish_attempt(attempt_id).await;
                         return Err("registration cancelled".to_string());
                     }
                 }?;
                 if cancellation.is_cancelled() {
                     crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
-                    self.cancellations.lock().await.remove(attempt_id);
+                    self.finish_attempt(attempt_id).await;
                     return Err("registration cancelled".to_string());
                 }
-                self.cancellations.lock().await.remove(attempt_id);
+                self.finish_attempt(attempt_id).await;
                 Ok(ContinueRegistrationResult::Complete(Box::new(
                     authenticated(completed, homeserver_url),
                 )))
@@ -495,7 +496,7 @@ impl PendingAuthStore {
         let client = match client_result {
             Ok(client) => client,
             Err(_) => {
-                self.cancellations.lock().await.remove(&attempt_id);
+                self.finish_attempt(&attempt_id).await;
                 return Err("could not start password reset".to_string());
             }
         };
@@ -507,7 +508,7 @@ impl PendingAuthStore {
             }
         };
         if delegated {
-            self.cancellations.lock().await.remove(&attempt_id);
+            self.finish_attempt(&attempt_id).await;
             return Err(
                 "password recovery is managed by this homeserver's identity provider".to_string(),
             );
@@ -527,7 +528,7 @@ impl PendingAuthStore {
         let response = match response_result {
             Ok(response) => response,
             Err(_) => {
-                self.cancellations.lock().await.remove(&attempt_id);
+                self.finish_attempt(&attempt_id).await;
                 return Err("could not start password reset".to_string());
             }
         };
@@ -538,7 +539,7 @@ impl PendingAuthStore {
         ) {
             Ok(url) => url,
             Err(error) => {
-                self.cancellations.lock().await.remove(&attempt_id);
+                self.finish_attempt(&attempt_id).await;
                 return Err(error);
             }
         };
@@ -596,10 +597,10 @@ impl PendingAuthStore {
                 .restore_password_reset(attempt_id.to_owned(), pending)
                 .await
             {
-                self.cancellations.lock().await.remove(attempt_id);
+                self.finish_attempt(attempt_id).await;
             }
         } else {
-            self.cancellations.lock().await.remove(attempt_id);
+            self.finish_attempt(attempt_id).await;
         }
         result
     }
@@ -692,16 +693,28 @@ impl PendingAuthStore {
         let cutoff = Instant::now() - MAIL_QUOTA_WINDOW;
         let now = Instant::now();
         let mut quota = self.mail_quota.lock().await;
+        quota.by_source.retain(|_, attempts| {
+            attempts.retain(|at| *at >= cutoff);
+            !attempts.is_empty()
+        });
+        quota.by_address.retain(|_, attempts| {
+            attempts.retain(|at| *at >= cutoff);
+            !attempts.is_empty()
+        });
+        if (!quota.by_source.contains_key(owner) && quota.by_source.len() >= MAX_MAIL_QUOTA_KEYS)
+            || (!quota.by_address.contains_key(&address_key)
+                && quota.by_address.len() >= MAX_MAIL_QUOTA_KEYS)
+        {
+            return Err("too many verification emails; try again later".to_string());
+        }
         {
             let source = quota.by_source.entry(owner.to_owned()).or_default();
-            source.retain(|at| *at >= cutoff);
             if source.len() >= MAX_MAILS_PER_SOURCE {
                 return Err("too many verification emails; try again later".to_string());
             }
         }
         {
             let address = quota.by_address.entry(address_key.clone()).or_default();
-            address.retain(|at| *at >= cutoff);
             if address.len() >= MAX_MAILS_PER_ADDRESS {
                 return Err("too many verification emails; try again later".to_string());
             }
@@ -735,6 +748,10 @@ impl PendingAuthStore {
         }
     }
 
+    async fn finish_attempt(&self, attempt_id: &str) {
+        self.cancel_token(attempt_id).await;
+    }
+
     async fn finish_cancelled_registration(&self, attempt_id: &str, pending: PendingRegistration) {
         self.cancel_token(attempt_id).await;
         crate::auth::cleanup_failed_crypto_store(&pending.crypto);
@@ -743,7 +760,19 @@ impl PendingAuthStore {
     fn spawn_expiry(&self, attempt_id: String) {
         let store = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(ATTEMPT_TTL).await;
+            let Some(cancellation) = store
+                .cancellations
+                .lock()
+                .await
+                .get(&attempt_id)
+                .map(|(_, token)| token.clone())
+            else {
+                return;
+            };
+            tokio::select! {
+                () = tokio::time::sleep(ATTEMPT_TTL) => {}
+                () = cancellation.cancelled() => return,
+            }
             store.cancel_token(&attempt_id).await;
             if let Some(pending) = store.registrations.lock().await.remove(&attempt_id) {
                 crate::auth::cleanup_failed_crypto_store(&pending.crypto);
