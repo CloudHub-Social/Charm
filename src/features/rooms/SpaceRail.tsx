@@ -109,6 +109,28 @@ export function SpaceRail({
   } | null>(null);
   const spaceDropRef = useRef<typeof spaceDrop>(null);
   const [spaceParentMutationPending, setSpaceParentMutationPending] = useState(false);
+  // Holds the canonical placement selected through Charm until the next
+  // sync snapshot observes it. This prevents a stale in-memory room list
+  // from snapping the rail back immediately after a successful write.
+  const [canonicalParentOverrides, setCanonicalParentOverrides] = useState<
+    Record<string, string | null>
+  >({});
+  useEffect(() => {
+    setCanonicalParentOverrides((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [spaceId, expectedParent] of Object.entries(current)) {
+        const room = rooms.find((candidate) => candidate.room_id === spaceId);
+        if (!room) continue;
+        const observedParent = room.parent_space_ids[0] ?? null;
+        if (observedParent === expectedParent && room.parent_space_ids.length <= 1) {
+          delete next[spaceId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [rooms]);
   const [moveTarget, setMoveTarget] = useState<{
     spaceId: string;
     name: string;
@@ -207,6 +229,9 @@ export function SpaceRail({
       // promote that noncanonical relationship to Charm's canonical parent.
       setSpaceParentMutationPending(true);
       setSpaceParent(sourceId, targetId ?? undefined)
+        .then(() => {
+          setCanonicalParentOverrides((current) => ({ ...current, [sourceId]: targetId }));
+        })
         .catch(reportActionError)
         .finally(() => {
           setSpaceParentMutationPending(false);
@@ -216,7 +241,7 @@ export function SpaceRail({
           onSpaceChildrenChanged?.();
         });
     },
-    [onSpaceChildrenChanged, rooms, spaceParentMutationPending],
+    [onSpaceChildrenChanged, spaceParentMutationPending],
   );
   const finishSpaceDrop = useCallback(
     (sourceId: string) => {
@@ -238,7 +263,17 @@ export function SpaceRail({
       const children = new Map<string, RoomSummary[]>();
       const parents = new Map<string, string[]>();
       for (const space of spaces) {
-        for (const parentId of space.parent_space_ids) {
+        const hasOverride = Object.prototype.hasOwnProperty.call(
+          canonicalParentOverrides,
+          space.room_id,
+        );
+        const overriddenParent = canonicalParentOverrides[space.room_id];
+        const parentIds = hasOverride
+          ? overriddenParent
+            ? [overriddenParent]
+            : []
+          : space.parent_space_ids;
+        for (const parentId of parentIds) {
           parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
           if (knownSpaceIds.has(parentId)) {
             const list = children.get(parentId) ?? [];
@@ -247,9 +282,7 @@ export function SpaceRail({
           }
         }
       }
-      const rootSpaces = spaces.filter((space) =>
-        space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
-      );
+      const rootSpaces = spaces.filter((space) => !parents.has(space.room_id));
       const reachableSpaceIds = new Set<string>();
       const stack = [...rootSpaces];
       while (stack.length > 0) {
@@ -265,7 +298,7 @@ export function SpaceRail({
         parentSpaceIdsByChild: parents,
         directRooms: rooms.filter((room) => room.is_direct),
       };
-    }, [rooms]);
+    }, [canonicalParentOverrides, rooms]);
   // Behind the `space_rail_management` flag: with it off, every top-level
   // space stays pinned in its natural (room-list) order, matching this
   // component's pre-Spec-63 behavior exactly — `prefs` never influences
@@ -493,9 +526,7 @@ export function SpaceRail({
               {hierarchyReorganizationEnabled && (
                 <ContextMenuItem
                   disabled={spaceParentMutationPending}
-                  onSelect={() =>
-                    setMoveTarget({ spaceId: space.room_id, name: label, parentId })
-                  }
+                  onSelect={() => setMoveTarget({ spaceId: space.room_id, name: label, parentId })}
                 >
                   Move to space…
                 </ContextMenuItem>

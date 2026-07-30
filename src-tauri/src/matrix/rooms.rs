@@ -390,6 +390,51 @@ pub(crate) async fn parent_space_ids(
     parents
 }
 
+/// Returns the canonical parent relationships advertised by joined spaces
+/// themselves. The rail uses this narrower view for space nesting: Charm
+/// preserves unrelated noncanonical Matrix relationships during reparenting,
+/// but they must not create additional visual placements.
+async fn canonical_space_parent_ids(
+    client: &Client,
+    confirmed_parents: &std::collections::HashMap<String, Vec<String>>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    use matrix_sdk::ruma::events::space::parent::SpaceParentEventContent;
+
+    let mut canonical = std::collections::HashMap::new();
+    for room in client.joined_space_rooms() {
+        let room_id = room.room_id().to_string();
+        let Ok(parent_events) = room
+            .get_state_events_static::<SpaceParentEventContent>()
+            .await
+        else {
+            continue;
+        };
+        for raw_event in parent_events {
+            let Ok(event) = raw_event.deserialize() else {
+                continue;
+            };
+            let is_canonical = matches!(
+                &event,
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(original)
+                ) if original.content.canonical && !original.content.via.is_empty()
+            );
+            let parent_id = event.state_key().to_string();
+            if is_canonical
+                && confirmed_parents
+                    .get(&room_id)
+                    .is_some_and(|parents| parents.contains(&parent_id))
+            {
+                canonical
+                    .entry(room_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(parent_id);
+            }
+        }
+    }
+    canonical
+}
+
 /// Sort key for the room list: section (Favourite -> Rooms -> Low priority),
 /// then `manual_order` ascending (`None` last), then alphabetical by
 /// display name — see Spec 06 "Ordering strategy". Computed once here so
@@ -517,6 +562,7 @@ pub async fn snapshot_rooms(
     >,
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
+    let canonical_space_parents = canonical_space_parent_ids(client, &parents).await;
 
     let rooms: Vec<Room> = client
         .joined_rooms()
@@ -639,7 +685,14 @@ pub async fn snapshot_rooms(
                     is_low_priority,
                     manual_order,
                     is_space,
-                    parent_space_ids: parents.get(&room_id).cloned().unwrap_or_default(),
+                    parent_space_ids: if is_space {
+                        canonical_space_parents
+                            .get(&room_id)
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        parents.get(&room_id).cloned().unwrap_or_default()
+                    },
                     is_direct,
                     has_unread: has_unread_flag,
                     avatar_url: identity.avatar_url,

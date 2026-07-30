@@ -631,6 +631,9 @@ async fn can_send_state(room: &Room, event_type: StateEventType) -> Result<bool,
 
 fn require_space(client: &Client, room_id: &str) -> Result<Room, String> {
     let room = require_room(client, room_id)?;
+    if room.state() != matrix_sdk::RoomState::Joined {
+        return Err(format!("{room_id} is not joined"));
+    }
     if !room.is_space() {
         return Err(format!("{room_id} is not a space"));
     }
