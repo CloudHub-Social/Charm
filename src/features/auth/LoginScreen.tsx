@@ -341,13 +341,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
     } catch {
-      // Do not disclose whether the homeserver rejected an unknown email.
-      // The synthetic attempt advances through the same UI and only fails at
-      // confirmation, after the user would need access to the mailbox.
-      challenge = {
-        attempt_id: `unavailable-${crypto.randomUUID()}`,
-        requires_token: false,
-      };
+      // The backend deliberately maps homeserver responses to a single
+      // account-independent error. Preserve that privacy boundary while
+      // still surfacing connection/configuration failures as actionable.
+      if (passwordResetOperationRef.current === operation) {
+        setError(
+          "Could not start password reset. Check your connection and homeserver settings, then try again.",
+        );
+      }
+      return;
     } finally {
       if (passwordResetOperationRef.current === operation) setPending(false);
     }

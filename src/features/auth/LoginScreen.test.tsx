@@ -586,10 +586,10 @@ describe("LoginScreen password recovery", () => {
 
     expect(
       screen.getByText(
-        "Follow the instructions in your email. If it includes a token, enter it below.",
+        "Could not start password reset. Check your connection and homeserver settings, then try again.",
       ),
     ).toBeVisible();
-    expect(screen.queryByText(/could not be started/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/unknown email/i)).not.toBeInTheDocument();
   });
 
   it("can close recovery while its request is still pending", async () => {

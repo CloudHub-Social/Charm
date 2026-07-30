@@ -1072,6 +1072,8 @@ pub async fn request_password_reset(
     email: String,
 ) -> Result<PasswordResetChallenge, String> {
     ensure_registration_feature_enabled(&app)?;
+    let started_at = std::time::Instant::now();
+    let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
     state.pending_password_reset.lock().await.take();
     let attempt_id = generate_attempt_id();
     let cancellation = tokio_util::sync::CancellationToken::new();
@@ -1089,6 +1091,9 @@ pub async fn request_password_reset(
             .build() => result.map_err(|_| "could not start password reset".to_string()),
         () = cancellation.cancelled() => {
             Err("password reset attempt was superseded".to_string())
+        },
+        () = tokio::time::sleep_until(deadline) => {
+            Err("password reset attempt expired; start again".to_string())
         }
     }?;
     let client_secret = ClientSecret::new();
@@ -1102,6 +1107,9 @@ pub async fn request_password_reset(
             .map_err(|_| "could not start password reset".to_string()),
         () = cancellation.cancelled() => {
             Err("password reset attempt was superseded".to_string())
+        },
+        () = tokio::time::sleep_until(deadline) => {
+            Err("password reset attempt expired; start again".to_string())
         }
     }?;
     if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
@@ -1116,7 +1124,7 @@ pub async fn request_password_reset(
         submit_url,
         token_submitted: false,
         attempt_id: attempt_id.clone(),
-        created_at: std::time::Instant::now(),
+        created_at: started_at,
     };
     let mut pending_guard = state.pending_password_reset.lock().await;
     if cancellation.is_cancelled()
@@ -1127,7 +1135,7 @@ pub async fn request_password_reset(
     }
     pending_guard.replace(pending);
     drop(pending_guard);
-    spawn_password_reset_expiry(app, attempt_id.clone());
+    spawn_password_reset_expiry(app, attempt_id.clone(), started_at);
     Ok(PasswordResetChallenge {
         attempt_id,
         requires_token: response.submit_url.is_some(),
@@ -1186,11 +1194,10 @@ pub async fn confirm_password_reset(
 
 #[tauri::command]
 pub async fn cancel_password_reset(
-    app: AppHandle,
+    _app: AppHandle,
     state: State<'_, MatrixState>,
     attempt_id: Option<String>,
 ) -> Result<(), String> {
-    ensure_registration_feature_enabled(&app)?;
     let mut guard = state.pending_password_reset.lock().await;
     let target_id = attempt_id
         .or_else(|| guard.as_ref().map(|pending| pending.attempt_id.clone()))
@@ -1293,6 +1300,7 @@ async fn password_reset_submission_client(
     homeserver: &url::Url,
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15));
 
@@ -1369,9 +1377,12 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-fn spawn_password_reset_expiry(app: AppHandle, attempt_id: String) {
+fn spawn_password_reset_expiry(app: AppHandle, attempt_id: String, started_at: std::time::Instant) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(PASSWORD_RESET_ATTEMPT_TTL).await;
+        tokio::time::sleep_until(tokio::time::Instant::from_std(
+            started_at + PASSWORD_RESET_ATTEMPT_TTL,
+        ))
+        .await;
         let state = app.state::<MatrixState>();
         let mut guard = state.pending_password_reset.lock().await;
         if guard
