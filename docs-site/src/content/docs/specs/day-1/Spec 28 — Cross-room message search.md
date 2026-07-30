@@ -3,8 +3,20 @@ title: Charm 2.0 Spec — Cross-room message search
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The storage and API architecture is now decision-ready. Charm will use a dedicated
+per-account SQLite FTS5 database owned by Charm, not tables or connections owned by
+matrix-sdk. The first code slice is indexing and lifecycle only; the global and
+current-room search UI follows after the index contract is stable.
+
+Implementation has not started in this PR. `rusqlite` is already used by the web
+companion and present in the repository lockfile, but making it a direct desktop
+dependency still requires the repository's explicit dependency approval before the
+indexing PR changes `src-tauri/Cargo.toml`.
 
 **Workstream:** one PR / one agent, likely split into a Rust-side indexing phase and
 a frontend search-UI phase if the indexing approach turns out nontrivial — see
@@ -44,15 +56,20 @@ search will silently not work in any encrypted room, which is most rooms.
 
 ### Indexing
 
-Build a local full-text index in Rust, populated as events are decrypted and
-inserted into the timeline store (`matrix-sdk-sqlite` already backs Spec 15's
-per-account store — confirm whether SQLite FTS5 can piggyback on that same
-connection/schema, or whether a dedicated index database is cleaner given FTS5
-virtual tables have different lifecycle/vacuum characteristics than the SDK's own
-tables).
+Build a local full-text index in Rust, populated only after an event is available
+to Charm as decrypted timeline content. Each account gets a dedicated
+`message-search.sqlite3` database in that account's Charm-owned data directory.
+Never open matrix-sdk's database directly, add tables to its schema, or share its
+connection: the SDK owns that schema and migration lifecycle.
 
 - Index fields: room ID, event ID, sender, plain-text body (HTML-stripped from
   `formatted_body` where present), origin timestamp.
+- Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
+  undecryptable placeholders, media filenames/captions, reactions, state events, or
+  untrusted raw HTML.
+- Use one content row per `(room_id, event_id)`. A latest edit atomically replaces
+  the searchable body and timestamp metadata for its target event; a redaction
+  deletes the target row. Replaying sync/timeline data is idempotent.
 - Backfill: on first login (or first login after this feature ships for existing
   users), index whatever history is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
@@ -60,6 +77,26 @@ tables).
 - Redaction/edit handling: a redacted event's indexed text must be removed/blanked
   on redaction; an edited event's index entry must be replaced with the latest
   content, not append a duplicate.
+
+### Ownership, privacy, and lifecycle
+
+- The index handle belongs to the authenticated account session. Desktop and web
+  use the same core index abstraction but resolve their account roots through their
+  existing, separate persistence layers.
+- Derive the index directory from the existing opaque per-account store key; never
+  put an MXID, homeserver, access token, or raw account identifier in a filename.
+- Create the directory and database with owner-only permissions where the platform
+  supports Unix modes. The database contains decrypted message text, so the privacy
+  model and docs must state that local search expands the plaintext-at-rest surface
+  beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
+  initial boundary; SQLCipher is not silently implied.
+- Close the connection before account removal and delete the account's index as
+  part of the same explicit remove-account lifecycle. Logging out without removing
+  the account preserves the index for that retained account. A failed/corrupt
+  migration quarantines and rebuilds only Charm's search database, never an SDK
+  store.
+- Run schema creation, writes, rebuilds, and queries off the async runtime's worker
+  threads. Sync/timeline delivery must not wait on SQLite I/O.
 
 ### Search UI
 
@@ -77,9 +114,17 @@ tables).
 
 ## Data flow
 
-New Tauri/web-server IPC command, e.g. `search_messages(query, room_id?, limit,
-offset) -> SearchResult[]`, backed by the Rust FTS index. No new Matrix protocol
-traffic for local-index hits. If a homeserver-side fallback is desired for rooms
+New Tauri/web-server command:
+
+`search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
+
+The cursor is opaque and binds to the normalized query, optional room scope, and
+account. A cursor must be rejected if reused with a different query, room, or
+account. Results contain event ID, room ID, sender, origin timestamp, a plain-text
+snippet with match ranges, and the next cursor; they never contain FTS-generated
+HTML markup.
+
+No new Matrix protocol traffic occurs for local-index hits. If a homeserver-side fallback is desired for rooms
 the local index hasn't caught up on yet (freshly joined room, unencrypted room with
 old history not yet synced), that's an explicit "search on server too" opt-in
 button, not automatic — avoid silently mixing local (private, but possibly
@@ -88,16 +133,23 @@ without the user knowing which is which.
 
 ## API/contract changes
 
-- New Rust module for the index (e.g. `crates/charm-core/src/search/` or similar —
-  confirm actual crate layout before implementing).
-- New IPC command surface as above, generated bindings via ts-rs per existing
-  convention.
+- New shared Rust search module with a small storage trait and a SQLite FTS5
+  implementation. Desktop and web session layers own account-specific handles;
+  neither transport owns indexing semantics.
+- New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
+  catalogs. Opening, backfilling, writing, and querying the index are all disabled
+  when the flag is off.
+- New IPC and authenticated web-companion command surface as above, with generated
+  bindings via ts-rs per existing convention.
 - No changes to existing commands.
 
 ## Testing strategy
 
 - Rust unit tests: index insert/query/redact/edit-replace correctness against a
   fixture set of events, including multi-room and multi-sender fixtures.
+- Rust unit tests: account A cannot open, query, or consume a cursor from account
+  B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
+  matrix-sdk files.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
   indexed; confirm a never-decrypted (e.g. undecryptable/UTD) event is not indexed
   with garbage ciphertext.
@@ -106,21 +158,26 @@ without the user knowing which is which.
 - Manual: verify search survives app restart (index persisted, not rebuilt from
   scratch each launch) and verify redacting a message removes it from subsequent
   search results.
+- Real Synapse: send and edit an encrypted text event from another client, wait for
+  decryption, then verify replacement and redaction in desktop and web-companion
+  results. Record this separately from repository tests.
 
 ## Trade-offs
 
-- **SQLite FTS5 vs a dedicated search library (e.g. Tantivy)**: FTS5 is simpler to
-  wire into an already-SQLite-based storage layer and sufficient for personal-scale
-  chat history; a dedicated engine is more powerful but adds a new dependency and
-  index-format surface for marginal benefit at this scale. Default to FTS5 unless
-  a spike shows it can't handle realistic history volumes acceptably.
+- **SQLite FTS5 vs a dedicated search library (e.g. Tantivy)**: decided in favor
+  of FTS5. It is sufficient for personal-scale chat history, already supported by
+  Charm's web-server SQLite stack, and avoids a second index format.
+- **SDK database vs a dedicated database**: decided in favor of a dedicated
+  Charm-owned database. This keeps SDK schema migrations, backup/restore, and
+  corruption recovery outside the feature's blast radius at the cost of one extra
+  per-account file and an explicit plaintext-at-rest disclosure.
 - **Local index vs relying on homeserver `/search`**: local index is strictly
   necessary for encrypted rooms (the majority case) and is the only path to parity
   with Charm 1.0's actual behavior; a server-only implementation would look "done"
   but silently fail for most real usage.
-- **Splitting into indexing PR + UI PR**: recommended if the FTS5-vs-store-schema
-  question above turns out to need real design work; otherwise one PR is fine for a
-  scope this size.
+- **Splitting into indexing PR + UI PR**: decided. PR 1 owns schema, account
+  lifecycle, indexing/rebuild, flags, typed command, and desktop/web tests. PR 2
+  owns global/current-room UI, snippets, and result navigation.
 
 ## UI-parity note (from the 2026-07-13 UI deep-dive)
 
