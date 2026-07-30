@@ -110,6 +110,12 @@ homeservers. The parity audit (2026-07-13) found:
 - Cancellation, app exit, superseding login/registration, and timeout must release
   the pending client and clean its temporary store using Spec 15's existing
   reservation/sweep rules.
+- The companion admits at most one unauthenticated registration attempt per
+  pre-auth browser session, enforces a process-wide cap before allocating a
+  client/store, and applies per-source quotas. The hard expiry starts before
+  client discovery and the first `/register` request, so a slow hostile
+  homeserver cannot occupy every permit outside the cancellation lifecycle.
+  Rejected and expired attempts leave no client, passphrase, or store directory.
 
 ### Password reset
 
@@ -123,6 +129,10 @@ homeservers. The parity audit (2026-07-13) found:
   an authenticated Matrix session.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
+- The companion applies per-source and keyed-hash-per-address reset-mail quotas,
+  caps resends for an attempt, and honors upstream retry intervals before sending
+  another homeserver request. Raw email addresses never become quota-map keys,
+  logs, metrics, or telemetry.
 - Login discovery must distinguish classic Matrix authentication from delegated
   OIDC/MAS authentication. For delegated authentication, open the sanitized
   authorization-server account-management/recovery URL or report recovery as
@@ -143,9 +153,13 @@ homeservers. The parity audit (2026-07-13) found:
 ### Standalone token login (minor)
 
 - Reuse the existing `m.login.token` completion path as a standalone entry
-  (paste/deep-link a login token) only when login-flow discovery advertises
-  `m.login.token`. Treat the token like a password: request-only, never logged,
-  persisted, or included in telemetry.
+  only when login-flow discovery advertises `m.login.token`. A paste entered
+  directly into an already-open Charm form is explicit user intent. A deep-link
+  token must additionally match a pending homeserver-specific Charm attempt and
+  random state nonce, or present an explicit account-switch confirmation before
+  exchange; never accept an unsolicited token-bearing link as an immediate login.
+  Treat the token like a password: request-only, never logged, persisted, or
+  included in telemetry.
 
 ### Platform boundary
 
@@ -186,7 +200,9 @@ instead of adding a second HTTP stack.
 - `confirm_password_reset(attempt_id, token?, new_password) -> ()`
 - `get_login_flows(homeserver) -> LoginFlowSummary`
 - `start_sso_login(homeserver, idp_id?) -> redirect_url`
-- `login_with_token(homeserver, token) -> LoginResponse`
+- `begin_token_login(homeserver) -> { attempt_id, state }`
+- `login_with_token(attempt_id, token, state?) -> LoginResponse` (the state is
+  required for deep-link completion; direct paste uses the already-open attempt)
 
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
