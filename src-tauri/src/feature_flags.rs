@@ -144,6 +144,9 @@ define_feature_flag_keys!(
         /// Spec 54 room-list typing indicator: a per-row badge showing when
         /// someone is currently typing in that room.
         RoomListTypingIndicator,
+        /// Spec 45 registration UIA, password recovery, provider-aware SSO,
+        /// and standalone token login.
+        RegistrationAndRecovery,
     }
 );
 
@@ -169,6 +172,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::Bookmarks => false,
             FeatureFlagKey::RoomListSort => false,
             FeatureFlagKey::RoomListTypingIndicator => false,
+            FeatureFlagKey::RegistrationAndRecovery => false,
         }
     }
 
@@ -227,6 +231,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => {
                 "Show a typing badge on room-list rows for rooms with someone currently typing."
             }
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login."
+            }
         }
     }
 
@@ -257,6 +264,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => {
                 "Spec 54 (room-list enrichment and filtering)"
             }
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Spec 45 (registration and password-reset flows)"
+            }
         }
     }
 
@@ -281,6 +291,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::Bookmarks => "bookmarks",
             FeatureFlagKey::RoomListSort => "room_list_sort",
             FeatureFlagKey::RoomListTypingIndicator => "room_list_typing_indicator",
+            FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
         }
     }
 }

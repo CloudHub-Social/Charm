@@ -100,5 +100,11 @@
     "default": false,
     "description": "Show a typing badge on room-list rows for rooms with someone currently typing.",
     "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "registration_and_recovery",
+    "default": false,
+    "description": "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login.",
+    "owner": "Spec 45 (registration and password-reset flows)"
   }
 ]

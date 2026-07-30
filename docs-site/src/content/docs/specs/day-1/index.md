@@ -78,7 +78,7 @@ here.
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
 | 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **Planned** | Restore exists through Spec 25; setup and import/export remain scoped here |
-| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **Planned** | No matching merged implementation found |
+| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **In progress** | Decision-ready scope plus typed Tauri registration-UIA begin/continue/cancel core; web/UI, recovery/SSO/token login, and live verification remain |
 | 46 | [Notification granularity and email pushers](/specs/day-1/spec-46--notification-rule-granularity-and-email-pushers/) | **Planned** | No matching merged implementation found |
 | 47 | [Appearance and display parity](/specs/day-1/spec-47--appearance-and-display-parity/) | **Planned** | No matching merged implementation found |
 | 48 | [Desktop shell controls](/specs/day-1/spec-48--desktop-shell-and-settings-controls/) | **Planned** | No matching merged implementation found |

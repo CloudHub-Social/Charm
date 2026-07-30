@@ -3,8 +3,26 @@ title: Charm 2.0 Spec — Registration and password-reset flows
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The first registration-UIA core slice is implemented for the Tauri transport
+behind the default-off `registration_and_recovery` flag. It adds typed
+`begin_registration`, `continue_registration`, and `cancel_registration`
+commands; keeps the pending Matrix client, password, attempt lifetime, and
+encrypted temporary-store key in Rust; selects the shortest incomplete
+homeserver-advertised flow; supports direct terms/dummy completion; and exposes a
+homeserver fallback URL for CAPTCHA, email, and unknown stages. The continuation
+validates both the opaque Charm attempt ID and the next advertised stage, while
+policy links are restricted to HTTP(S).
+
+This does not yet make registration user-facing or complete Spec 45. The web
+companion attempt boundary, fallback-stage UI, email request-token path,
+recovery/SSO/token-login slice, and real-homeserver verification remain open.
+Repository tests for DTO mapping and stage/session validation are not
+live-homeserver evidence.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and

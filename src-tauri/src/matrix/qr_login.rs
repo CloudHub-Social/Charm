@@ -81,6 +81,11 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     // tasks running concurrently, one of which would hold a stale
     // pending_qr_check_code no longer reachable from the frontend.
     cancel_qr_login(app.clone(), app.state::<MatrixState>()).await?;
+    super::auth::cancel_pending_registration_for_superseding_auth(
+        &app,
+        &app.state::<MatrixState>(),
+    )
+    .await;
 
     // The account isn't known until the OAuth device-code dance completes —
     // open a temp store now and relocate it once the MXID is known.

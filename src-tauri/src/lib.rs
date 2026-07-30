@@ -1348,6 +1348,9 @@ pub fn run() {
                 if let Some(pending) = matrix_state.pending_sso.lock().await.as_ref() {
                     protected_temp_keys.insert(pending.store_key.clone());
                 }
+                if let Some(pending) = matrix_state.pending_registration.lock().await.as_ref() {
+                    protected_temp_keys.insert(pending.store_key.clone());
+                }
                 if let Some(key) = matrix_state
                     .pending_qr_temp_store_key
                     .lock()
@@ -1435,6 +1438,9 @@ pub fn run() {
             forward_sentry_envelope,
             matrix::auth::login,
             matrix::auth::register,
+            matrix::auth::begin_registration,
+            matrix::auth::continue_registration,
+            matrix::auth::cancel_registration,
             matrix::auth::discover_homeserver,
             matrix::auth::start_sso_login,
             matrix::auth::complete_sso_login,

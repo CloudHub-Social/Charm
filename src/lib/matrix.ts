@@ -35,6 +35,10 @@ import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
+import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
+import type { RegistrationFlow } from "@bindings/RegistrationFlow";
+import type { RegistrationPolicy } from "@bindings/RegistrationPolicy";
+import type { RegistrationStep } from "@bindings/RegistrationStep";
 import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
@@ -162,6 +166,10 @@ export type {
   ReceiptUpdate,
   RecoveryStatusSummary,
   RegisterRequest,
+  RegistrationAuthResponse,
+  RegistrationFlow,
+  RegistrationPolicy,
+  RegistrationStep,
   ReplyRef,
   RoomDetails,
   RoomMemberSummary,
@@ -196,6 +204,21 @@ export function login(request: LoginRequest): Promise<LoginResponse> {
 
 export function register(request: RegisterRequest): Promise<LoginResponse> {
   return invoke("register", { request }, { captureOnError: false });
+}
+
+export function beginRegistration(request: RegisterRequest): Promise<RegistrationStep> {
+  return invoke("begin_registration", { request }, { captureOnError: false });
+}
+
+export function continueRegistration(
+  attemptId: string,
+  response: RegistrationAuthResponse,
+): Promise<RegistrationStep> {
+  return invoke("continue_registration", { attemptId, response }, { captureOnError: false });
+}
+
+export function cancelRegistration(attemptId: string): Promise<void> {
+  return invoke("cancel_registration", { attemptId }, { captureOnError: false });
 }
 
 // captureOnError: false — this fires on every keystroke via
