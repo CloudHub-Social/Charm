@@ -19,6 +19,7 @@ const ADMIN_PERMISSIONS: RoomPermissions = {
   set_canonical_alias: true,
   set_pinned_events: true,
   set_space_child: true,
+  set_space_parent: true,
 };
 
 const READ_ONLY_PERMISSIONS: RoomPermissions = {
@@ -35,6 +36,7 @@ const READ_ONLY_PERMISSIONS: RoomPermissions = {
   set_canonical_alias: false,
   set_pinned_events: false,
   set_space_child: false,
+  set_space_parent: false,
 };
 
 const MEMBER: RoomMemberSummary = {
