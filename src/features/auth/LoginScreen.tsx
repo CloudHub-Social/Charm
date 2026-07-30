@@ -299,6 +299,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmail("");
+      setRegistrationEmailToken("");
       if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
       throw error;
     }
