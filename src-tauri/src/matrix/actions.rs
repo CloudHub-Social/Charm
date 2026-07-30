@@ -723,12 +723,6 @@ pub async fn get_edit_history_impl(
         .load_or_fetch_event(&parsed_target, None)
         .await
         .map_err(|e| e.to_string())?;
-    let relations = paginated_relations(
-        &room,
-        &parsed_target,
-        matrix_sdk::ruma::events::relation::RelationType::Replacement,
-    )
-    .await?;
 
     let original_deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = original_event
         .kind
@@ -752,6 +746,16 @@ pub async fn get_edit_history_impl(
         // be a valid edit of another member's message.
         Vec::new()
     };
+    // Snapshot the send queue before fetching server relations. If an edit is
+    // acknowledged while the relations request is in flight, it is then
+    // represented by at least one of the two snapshots rather than falling
+    // through the acknowledgement boundary between them.
+    let relations = paginated_relations(
+        &room,
+        &parsed_target,
+        matrix_sdk::ruma::events::relation::RelationType::Replacement,
+    )
+    .await?;
 
     let mut entries = vec![EditHistoryEntry {
         event_id: original_message.event_id.to_string(),
