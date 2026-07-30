@@ -74,6 +74,7 @@ pub struct RegisterRequest {
 }
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
@@ -1124,7 +1125,6 @@ pub async fn login_with_token(
     token: String,
 ) -> Result<LoginResponse, String> {
     ensure_registration_feature_enabled(&app)?;
-    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     if let Some(pending) = state.pending_sso.lock().await.take() {
         let store_key = pending.store_key.clone();
@@ -1134,21 +1134,33 @@ pub async fn login_with_token(
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = match build_client(&app, &homeserver_url, &store_key).await {
-        Ok(client) => client,
-        Err(error) => {
+    let client = match tokio::time::timeout(
+        AUTH_NETWORK_TIMEOUT,
+        build_client(&app, &homeserver_url, &store_key),
+    )
+    .await
+    {
+        Ok(Ok(client)) => client,
+        Err(_) => {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("token login setup timed out".to_string());
+        }
+        Ok(Err(error)) => {
             let _ = persistence::discard_temp_login_store(&app, &store_key);
             return Err(error);
         }
     };
-    let flows = match client.matrix_auth().get_login_types().await {
-        Ok(flows) => flows,
-        Err(_) => {
-            drop(client);
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return Err("could not verify token login support".to_string());
-        }
-    };
+    let flows =
+        match tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().get_login_types())
+            .await
+        {
+            Ok(Ok(flows)) => flows,
+            Ok(Err(_)) | Err(_) => {
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("could not verify token login support".to_string());
+            }
+        };
     if !flows
         .flows
         .iter()
@@ -1159,19 +1171,24 @@ pub async fn login_with_token(
         return Err("this homeserver does not advertise token login".to_string());
     }
 
-    if client
-        .matrix_auth()
-        .login_token(&token)
-        .initial_device_display_name("Charm")
-        .send()
-        .await
-        .is_err()
-    {
+    if !matches!(
+        tokio::time::timeout(
+            AUTH_NETWORK_TIMEOUT,
+            client
+                .matrix_auth()
+                .login_token(&token)
+                .initial_device_display_name("Charm")
+                .send(),
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
     reservation.defuse();
+    let _restore_store_guard = restore_store_lock().lock().await;
     let cleanup_key = store_key.clone();
     match finish_registration(app.clone(), &state, client, store_key, None, None).await {
         Ok(session) => Ok(session),
@@ -1200,7 +1217,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
                     .extend(sso.identity_providers.into_iter().map(|provider| {
                         LoginIdentityProvider {
                             id: provider.id,
-                            name: provider.name,
+                            name: sanitized_provider_name(&provider.name),
                             brand: provider.brand.map(|brand| brand.as_str().to_owned()),
                         }
                     }));
@@ -1209,6 +1226,29 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
         }
     }
     summary
+}
+
+fn sanitized_provider_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    *character as u32,
+                    0x061c
+                        | 0x200e
+                        | 0x200f
+                        | 0x202a..=0x202e
+                        | 0x2066..=0x2069
+                )
+        })
+        .take(80)
+        .collect::<String>();
+    if sanitized.trim().is_empty() {
+        "Single sign-on".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn identity_provider_is_advertised(flows: &[LoginType], idp_id: &str) -> bool {
@@ -1730,8 +1770,8 @@ mod registration_uia_tests {
 
     use super::{
         identity_provider_is_advertised, next_registration_stage, registration_auth_data,
-        registration_fallback_url, sanitized_registration_policies, summarize_login_flows,
-        RegistrationAuthResponse,
+        registration_fallback_url, sanitized_provider_name, sanitized_registration_policies,
+        summarize_login_flows, RegistrationAuthResponse,
     };
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
@@ -1881,6 +1921,15 @@ mod registration_uia_tests {
             summary.identity_providers[0].brand.as_deref(),
             Some("github")
         );
+    }
+
+    #[test]
+    fn sanitizes_untrusted_identity_provider_labels() {
+        let name = format!("Secure\u{202e}evil{}", "x".repeat(100));
+        let sanitized = sanitized_provider_name(&name);
+        assert!(!sanitized.contains('\u{202e}'));
+        assert_eq!(sanitized.chars().count(), 80);
+        assert_eq!(sanitized_provider_name("\u{200f}\n"), "Single sign-on");
     }
 
     #[test]
