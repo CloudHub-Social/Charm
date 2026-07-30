@@ -149,6 +149,13 @@ homeservers. The parity audit (2026-07-13) found:
   client discovery and the first `/register` request, so a slow hostile
   homeserver cannot occupy every permit outside the cancellation lifecycle.
   Rejected and expired attempts leave no client, passphrase, or store directory.
+- Before the web companion allocates a client or sends any unauthenticated auth
+  request, validate the caller-supplied homeserver as an HTTPS public-network
+  target. Resolve once and pin all addresses, reject loopback/link-local/private
+  and special-purpose ranges, disable implicit proxying, and reapply the same
+  scheme/host/DNS/address policy to every `.well-known` or HTTP redirect. Tests
+  cover redirect-to-private and DNS-rebinding attempts. An explicit deployment
+  allowlist may narrow this policy further.
 
 ### Password reset
 
@@ -157,6 +164,11 @@ homeservers. The parity audit (2026-07-13) found:
   `client_secret`, sends `/account/password/email/requestToken`, and returns an
   opaque reset attempt plus a sanitized submission mode; the homeserver `sid`
   remains bound to backend pending state.
+  `resend_password_reset(attempt_id)` reuses that pending client secret and
+  address, increments Matrix `send_attempt`, replaces the SID only after a
+  successful response, and enforces the attempt's retry deadline and resend cap.
+  Starting a new `request_password_reset` remains a superseding new attempt,
+  not the resend mechanism.
   `confirm_password_reset` submits or observes validation and completes
   `/account/password` with the email identity auth data. Neither command requires
   an authenticated Matrix session.
@@ -238,6 +250,7 @@ instead of adding a second HTTP stack.
 - `continue_registration(attempt_id, response) -> RegistrationStep`
 - `cancel_registration(attempt_id) -> ()`
 - `request_password_reset(homeserver, email) -> PasswordResetChallenge`
+- `resend_password_reset(attempt_id) -> PasswordResetChallenge`
 - `confirm_password_reset(attempt_id, token?, new_password) -> ()`
 - `cancel_password_reset(attempt_id) -> ()`
 - `get_login_flows(homeserver) -> LoginFlowSummary`
