@@ -1133,6 +1133,26 @@ pub(crate) async fn cancel_pending_registration_for_superseding_auth(
     }
 }
 
+/// Best-effort synchronous cleanup for Tauri's synchronous `RunEvent::Exit`
+/// callback. Cancelling first lets an in-flight continuation perform its own
+/// cleanup; an idle attempt can be taken immediately without starting or
+/// blocking an async runtime from inside the event loop.
+pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &MatrixState) {
+    if let Some((_, cancellation)) = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        cancellation.cancel();
+    }
+    if let Ok(mut pending) = state.pending_registration.try_lock() {
+        if let Some(pending) = pending.take() {
+            discard_pending_registration(app, pending);
+        }
+    }
+}
+
 fn clear_registration_cancellation(state: &MatrixState, attempt_id: &str) {
     let mut guard = state
         .pending_registration_cancel
