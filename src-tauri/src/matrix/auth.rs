@@ -2,6 +2,7 @@
 //! and session restore. QR login is its own module (`qr_login`) — its
 //! multi-stage device-code flow doesn't fit this file's shape.
 
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::{
     change_password, register, request_password_change_token_via_email,
@@ -705,7 +706,7 @@ pub async fn register(
     let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
-    finish_registration(app, &state, client, temp_key, None).await
+    finish_registration(app, &state, client, temp_key, None, None).await
 }
 
 async fn finish_registration(
@@ -713,6 +714,7 @@ async fn finish_registration(
     state: &MatrixState,
     client: Client,
     temp_key: String,
+    attempt_id: Option<&str>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<LoginResponse, String> {
     let session = client
@@ -803,7 +805,42 @@ async fn finish_registration(
         device_id: session.meta.device_id.to_string(),
     };
 
-    *state.client.lock().await = Some(client.clone());
+    let mut client_slot = state.client.lock().await;
+    if let Some(cancellation) = cancellation {
+        let completion_won = {
+            let mut cancellation_slot = state
+                .pending_registration_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let is_current = cancellation_slot
+                .as_ref()
+                .is_some_and(|(current_id, current)| {
+                    attempt_id.is_some_and(|attempt_id| current_id == attempt_id)
+                        && !current.is_cancelled()
+                        && !cancellation.is_cancelled()
+                });
+            if is_current {
+                cancellation_slot.take();
+            }
+            is_current
+        };
+        if !completion_won {
+            drop(client_slot);
+            let _ = persistence::clear_session(&account_key);
+            let _ = persistence::clear_oauth_session(&account_key);
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
+            return Err("registration cancelled".to_string());
+        }
+        // This is the completion/cancellation linearization point. A cancel
+        // that acquired the slot first wins above; after this removal the
+        // authenticated client is committed while its slot remains locked,
+        // so completion wins.
+    }
+    *client_slot = Some(client.clone());
+    drop(client_slot);
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
@@ -865,8 +902,15 @@ pub async fn begin_registration(
     match registration_result {
         Ok(_) => {
             let cleanup_key = store_key.clone();
-            match finish_registration(app.clone(), &state, client, store_key, Some(&cancellation))
-                .await
+            match finish_registration(
+                app.clone(),
+                &state,
+                client,
+                store_key,
+                Some(&attempt_id),
+                Some(&cancellation),
+            )
+            .await
             {
                 Ok(session) => {
                     clear_registration_cancellation(&state, &attempt_id);
@@ -1291,6 +1335,7 @@ pub async fn continue_registration(
                 &state,
                 pending.client,
                 pending.store_key,
+                Some(&attempt_id),
                 Some(&cancellation),
             )
             .await
@@ -1672,6 +1717,7 @@ async fn complete_password_change(
     pending
         .client
         .send(request)
+        .with_request_config(RequestConfig::new().skip_auth())
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
