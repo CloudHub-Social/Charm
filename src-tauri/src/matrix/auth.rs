@@ -4,6 +4,7 @@
 
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::register;
+use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, AuthType, Dummy, LoginTermsParams, Terms, UiaaInfo,
 };
@@ -122,6 +123,23 @@ pub enum RegistrationAuthResponse {
     AcceptTerms,
     CompleteDummy,
     AcknowledgeFallback { stage: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct LoginIdentityProvider {
+    pub id: String,
+    pub name: String,
+    pub brand: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct LoginFlowSummary {
+    pub password: bool,
+    pub token: bool,
+    pub sso: bool,
+    pub identity_providers: Vec<LoginIdentityProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -917,6 +935,119 @@ pub async fn cancel_registration(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn get_login_flows(
+    app: AppHandle,
+    homeserver_url: String,
+) -> Result<LoginFlowSummary, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let client = Client::builder()
+        .server_name_or_homeserver_url(&homeserver_url)
+        .build()
+        .await
+        .map_err(|_| "could not discover login options for this homeserver".to_string())?;
+    let response = client
+        .matrix_auth()
+        .get_login_types()
+        .await
+        .map_err(|_| "could not discover login options for this homeserver".to_string())?;
+    Ok(summarize_login_flows(response.flows))
+}
+
+#[tauri::command]
+pub async fn login_with_token(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    homeserver_url: String,
+    token: String,
+) -> Result<LoginResponse, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let _restore_store_guard = restore_store_lock().lock().await;
+    cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    if let Some(pending) = state.pending_sso.lock().await.take() {
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+    }
+
+    let store_key = persistence::temp_store_key();
+    let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
+    let client = build_client(&app, &homeserver_url, &store_key).await?;
+    let flows = match client.matrix_auth().get_login_types().await {
+        Ok(flows) => flows,
+        Err(_) => {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("could not verify token login support".to_string());
+        }
+    };
+    if !flows
+        .flows
+        .iter()
+        .any(|flow| matches!(flow, LoginType::Token(_)))
+    {
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+        return Err("this homeserver does not advertise token login".to_string());
+    }
+
+    if client
+        .matrix_auth()
+        .login_token(&token)
+        .initial_device_display_name("Charm")
+        .send()
+        .await
+        .is_err()
+    {
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+        return Err("token login failed".to_string());
+    }
+    reservation.defuse();
+    let cleanup_key = store_key.clone();
+    match finish_registration(app.clone(), &state, client, store_key).await {
+        Ok(session) => Ok(session),
+        Err(error) => {
+            let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
+            Err(error)
+        }
+    }
+}
+
+fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
+    let mut summary = LoginFlowSummary {
+        password: false,
+        token: false,
+        sso: false,
+        identity_providers: Vec::new(),
+    };
+    for flow in flows {
+        match flow {
+            LoginType::Password(_) => summary.password = true,
+            LoginType::Token(_) => summary.token = true,
+            LoginType::Sso(sso) => {
+                summary.sso = true;
+                summary
+                    .identity_providers
+                    .extend(sso.identity_providers.into_iter().map(|provider| {
+                        LoginIdentityProvider {
+                            id: provider.id,
+                            name: provider.name,
+                            brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                        }
+                    }));
+            }
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn identity_provider_is_advertised(flows: &[LoginType], idp_id: &str) -> bool {
+    flows.iter().any(|flow| {
+        matches!(
+            flow,
+            LoginType::Sso(sso)
+                if sso.identity_providers.iter().any(|provider| provider.id == idp_id)
+        )
+    })
+}
+
 fn ensure_registration_feature_enabled(app: &AppHandle) -> Result<(), String> {
     let enabled = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(
@@ -1204,7 +1335,11 @@ pub async fn start_sso_login(
     app: AppHandle,
     state: State<'_, MatrixState>,
     homeserver_url: String,
+    idp_id: Option<String>,
 ) -> Result<String, String> {
+    if idp_id.is_some() {
+        ensure_registration_feature_enabled(&app)?;
+    }
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
@@ -1218,7 +1353,27 @@ pub async fn start_sso_login(
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
     let client = build_client(&app, &homeserver_url, &store_key).await?;
     let attempt_state = generate_sso_state();
-    let sso_url = get_sso_login_url(&client, &attempt_state).await?;
+    if let Some(idp_id) = idp_id.as_deref() {
+        let flows = match client.matrix_auth().get_login_types().await {
+            Ok(flows) => flows,
+            Err(_) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("could not verify this identity provider".to_string());
+            }
+        };
+        if !identity_provider_is_advertised(&flows.flows, idp_id) {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("this identity provider is not advertised by the homeserver".to_string());
+        }
+    }
+    let sso_url =
+        match get_sso_login_url_with_provider(&client, &attempt_state, idp_id.as_deref()).await {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err(error);
+            }
+        };
 
     // Publish to `pending_sso` *before* defusing the reservation, not after
     // (Codex review on #288, P2): defusing first would leave a gap between
@@ -1268,10 +1423,18 @@ pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> 
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/`, same rationale as [`super::resolve_alias`].
 pub async fn get_sso_login_url(client: &Client, attempt_state: &str) -> Result<String, String> {
+    get_sso_login_url_with_provider(client, attempt_state, None).await
+}
+
+async fn get_sso_login_url_with_provider(
+    client: &Client,
+    attempt_state: &str,
+    idp_id: Option<&str>,
+) -> Result<String, String> {
     let redirect_url = format!("{SSO_REDIRECT_BASE_URL}?state={attempt_state}");
     client
         .matrix_auth()
-        .get_sso_login_url(&redirect_url, None)
+        .get_sso_login_url(&redirect_url, idp_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1290,16 +1453,22 @@ fn extract_sso_callback_state(callback_url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod registration_uia_tests {
+    use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
     use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, UiaaInfo};
     use serde_json::json;
 
     use super::{
-        next_registration_stage, registration_auth_data, registration_fallback_url,
-        sanitized_registration_policies, RegistrationAuthResponse,
+        identity_provider_is_advertised, next_registration_stage, registration_auth_data,
+        registration_fallback_url, sanitized_registration_policies, summarize_login_flows,
+        RegistrationAuthResponse,
     };
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
         serde_json::from_value(value).expect("valid UIA fixture")
+    }
+
+    fn login_flows(value: serde_json::Value) -> Vec<LoginType> {
+        serde_json::from_value(value).expect("valid login-flow fixture")
     }
 
     #[test]
@@ -1392,6 +1561,43 @@ mod registration_uia_tests {
             url,
             "https://example.org/matrix/_matrix/client/v3/auth/m.login.recaptcha/fallback/web?session=session+value"
         );
+    }
+
+    #[test]
+    fn summarizes_login_types_and_provider_metadata() {
+        let flows = login_flows(json!([
+            {"type": "m.login.password"},
+            {"type": "m.login.token", "get_login_token": false},
+            {
+                "type": "m.login.sso",
+                "identity_providers": [
+                    {"id": "oidc-github", "name": "GitHub", "brand": "github"},
+                    {"id": "company", "name": "Company SSO"}
+                ]
+            }
+        ]));
+
+        let summary = summarize_login_flows(flows);
+        assert!(summary.password);
+        assert!(summary.token);
+        assert!(summary.sso);
+        assert_eq!(summary.identity_providers.len(), 2);
+        assert_eq!(summary.identity_providers[0].id, "oidc-github");
+        assert_eq!(
+            summary.identity_providers[0].brand.as_deref(),
+            Some("github")
+        );
+    }
+
+    #[test]
+    fn accepts_only_a_freshly_advertised_identity_provider() {
+        let flows = login_flows(json!([{
+            "type": "m.login.sso",
+            "identity_providers": [{"id": "company", "name": "Company SSO"}]
+        }]));
+
+        assert!(identity_provider_is_advertised(&flows, "company"));
+        assert!(!identity_provider_is_advertised(&flows, "forged"));
     }
 }
 

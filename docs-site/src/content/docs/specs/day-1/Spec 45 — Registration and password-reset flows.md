@@ -26,6 +26,15 @@ email request-token path, recovery/SSO/token-login slice, and real-homeserver
 verification remain open. Repository and Playwright tests for DTO mapping,
 stage/session validation, and UI navigation are not live-homeserver evidence.
 
+The login-choice slice now also discovers advertised password, token, and SSO
+flows; renders one action per advertised identity provider; revalidates a
+selected provider against a fresh homeserver response before building its SSO
+redirect; and supports one-time token login only when the server advertises it.
+Token values remain request-only and the desktop flow uses the same encrypted
+temporary-store relocation as password and SSO login. Provider icon resolution,
+password reset, the web companion equivalents, and live verification remain
+open.
+
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
 (3) real-homeserver verification and evidence. Extends Spec 12 (first-run
