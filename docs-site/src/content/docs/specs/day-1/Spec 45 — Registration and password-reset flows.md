@@ -22,8 +22,9 @@ continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
 This does not yet complete Spec 45. The web companion attempt boundary, direct
-email request-token path, recovery/SSO/token-login slice, and real-homeserver
-verification remain open. Repository and Playwright tests for DTO mapping,
+email request-token path, password-recovery slice, provider icon resolution,
+and real-homeserver verification remain open. Provider-aware SSO and one-time
+token login are implemented in the slice below. Repository and Playwright tests for DTO mapping,
 stage/session validation, and UI navigation are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
