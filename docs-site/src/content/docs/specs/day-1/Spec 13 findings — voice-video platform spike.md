@@ -44,7 +44,7 @@ two-device mobile leg (R2 in the spec).
 |---|---|---|---|---|
 | macOS | **PASS** | **PASS** | **PASS** | **GO** |
 | iOS | **HARDWARE-BLOCKED** (Simulator has no camera; no physical device available) — config gaps fixed 2026-07-13, still unverified on hardware | **HARDWARE-BLOCKED** | EXPECTED-GAP (ReplayKit-only, not exposed to WKWebView) | **CONDITIONAL** (fix landed, needs physical device) |
-| Windows | **PASS** | **PASS** | **PASS** | **GO** |
+| Windows | **PASS (fake-device/fake-UI CI)**; real permission click path **HARDWARE-BLOCKED** | **PASS (CI)** | **PASS (CI)** | **CONDITIONAL** — confirmed media path, real `PermissionRequested` click-through still required |
 | Linux | **HARDWARE-BLOCKED** — no GUI-capable Linux environment; fix landed 2026-07-13, still unverified | **HARDWARE-BLOCKED** | **HARDWARE-BLOCKED** | **CONDITIONAL** (fix landed, needs display environment) |
 | Android | **HISTORICAL FAIL (pre-fix); post-fix HARDWARE-BLOCKED** — manifest fix landed 2026-07-13, no device/emulator re-run available | **HARDWARE-BLOCKED** (the pre-fix run never reached this step) | **EXPECTED-GAP, confirmed** — `getDisplayMedia` not present on WebView at all | **CONDITIONAL** — fix merged, needs device/emulator re-run |
 
@@ -337,10 +337,10 @@ IPC commands).
 
 ## Scoped gaps list (Phase 4 work items)
 
-1. ~~**Windows:** determine whether WRY/Tauri v2 surfaces WebView2's
-   `PermissionRequested` automatically~~ — **Resolved 2026-07-07: yes**, all
-   three capabilities passed via CI with no custom handler. Remaining item is
-   just a real human click-through to remove the fake-UI caveat noted above.
+1. **Windows:** the fake-device/fake-UI CI run confirmed media, peer connection,
+   and screen capture, but did not exercise WebView2's real
+   `CoreWebView2.PermissionRequested` click path. R1 remains open and
+   hardware-blocked until a human run verifies that path on Windows.
 2. **Linux:** same shape of item for WebKitGTK's `permission-request` signal —
    still fully open, no fake-device/fake-UI equivalent exists for WebKitGTK the
    way it does for Chromium/WebView2.
@@ -399,7 +399,8 @@ IPC commands).
 - [ ] Windows: a real human click-through on unpatched WRY is still required to
       verify the `CoreWebView2.PermissionRequested` prompt path that the fake-UI
       CI run bypassed. This missing result is hardware-blocked, not failed.
-- [ ] Final GO/CONDITIONAL/NO-GO verdicts once iOS/Linux/Android land.
+- [ ] Final GO/CONDITIONAL/NO-GO verdicts once Windows click-through and the
+      iOS/Linux/Android hardware-blocked runs land.
 
 **Current bottom line:** macOS and Windows retain their confirmed evidence. The
 remaining live results are hardware-blocked, not failed:
@@ -448,8 +449,9 @@ only when a device/emulator can re-run Buttons A/B against the merged manifest f
       surviving hook or a documented, tested reapplication step.
 - [ ] Follow-up verification (separate session, when emulator/device access
       exists): re-run `public/spike-webrtc.html` Buttons A and B on Android and
-      confirm (1) resolves PASS instead of hanging, updating the matrix in this
-      findings doc from NO-GO to GO/CONDITIONAL as appropriate.
+      record the actual PASS or FAIL result. Update the matrix from its current
+      post-fix HARDWARE-BLOCKED/CONDITIONAL state to GO, CONDITIONAL, or NO-GO
+      according to that evidence; do not assume the manifest fix passes.
 
 Android `getDisplayMedia` remains an expected platform gap because Android
 WebView does not expose it. Call UI, MatrixRTC work, and iOS/Linux verification
@@ -470,8 +472,9 @@ environment access this session doesn't have either:
 - **Webview version inventory:** macOS's real WKWebView/Safari version still
   not captured (UA string is generic); Windows and Android are already
   captured.
-- **Windows:** optional real human click-through to remove the fake-UI CI
-  caveat — low priority, CI result already treated as strong signal.
+- **Windows:** required real human click-through to verify the
+  `CoreWebView2.PermissionRequested` path bypassed by fake-UI CI. The existing
+  CI evidence remains valid, but this gap blocks Spec 13 closure.
 
 None of these four require re-running the Android fix above — they're
 independent per-platform gaps a future session with the right hardware access

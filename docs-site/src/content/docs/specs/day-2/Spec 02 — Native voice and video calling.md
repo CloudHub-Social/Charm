@@ -16,9 +16,10 @@ Charm 1.0's calling is a third-party iframe embed (Element Call or similar),
 historically its most bug-churned area (19 of the last 100 commits touched calling,
 per the parity gap analysis) — flaky call setup, embed-boundary state bugs, and a
 poor native-app feel. Charm 2.0's Spec 13 (voice-video platform spike) landed
-code-level media-permission plumbing for all five target platforms, with macOS and
-Windows confirmed on real hardware and Android, iOS, and Linux still awaiting
-recorded runtime verification. It is explicitly scoped as a **spike only** — no
+code-level media-permission plumbing for all five target platforms, with macOS
+confirmed on real hardware and Windows confirmed only through fake-device/fake-UI
+CI; Windows' real `CoreWebView2.PermissionRequested` click path and Android, iOS,
+and Linux runtime verification remain hardware-blocked. It is explicitly scoped as a **spike only** — no
 actual calling UI or signaling exists. This spec applies the already-decided widget
 architecture to the first real calling implementation.
 
