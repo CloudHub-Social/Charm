@@ -20,7 +20,7 @@ interface AddExistingToSpaceDialogProps {
   onAdded?: (childRoomId: string) => void;
   /** Called after the Matrix write settles, including ambiguous transport
    * failures where the homeserver may already have committed the edge. */
-  onSettled?: () => void;
+  onSettled?: (outcome: "success" | "failure", spaceId: string) => void;
 }
 
 /** Spec 63's "Add Existing" flow: file an already-joined room or space under
@@ -85,10 +85,12 @@ export function AddExistingToSpaceDialog({
   async function handleAdd(childRoomId: string) {
     if (!spaceId) return;
     const requestSpaceId = spaceId;
+    let outcome: "success" | "failure" = "failure";
     setError(null);
     setPendingId(childRoomId);
     try {
       await addExistingSpaceChild(requestSpaceId, childRoomId);
+      outcome = "success";
       // The dialog may have been re-targeted at a different space while this
       // request was in flight (only possible now that dismissal is blocked
       // while pending, but the parent could still swap `spaceId` directly) —
@@ -100,7 +102,7 @@ export function AddExistingToSpaceDialog({
       if (latestSpaceIdRef.current !== requestSpaceId) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      onSettled?.();
+      onSettled?.(outcome, requestSpaceId);
       if (latestSpaceIdRef.current === requestSpaceId) setPendingId(null);
     }
   }

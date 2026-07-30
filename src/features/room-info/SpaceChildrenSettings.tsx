@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
   listManageableSpaceChildren,
+  onRoomDetailsUpdate,
   removeSpaceChild,
   type RoomSummary,
   type SpaceChild,
@@ -49,6 +50,20 @@ export function SpaceChildrenSettings({
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: queryKey(spaceId) });
   }
+
+  useEffect(() => {
+    // Sync emits this for joined-room state changes, including
+    // m.space.child. That is the authoritative point to replace optimistic
+    // additions with the server-confirmed hierarchy snapshot.
+    const unlisten = onRoomDetailsUpdate((details) => {
+      if (details.room_id === spaceId) {
+        void queryClient.invalidateQueries({ queryKey: queryKey(spaceId) });
+      }
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, [queryClient, spaceId]);
 
   async function remove(child: SpaceChild) {
     setError(null);
@@ -143,9 +158,12 @@ export function SpaceChildrenSettings({
             },
           ]);
         }}
-        onSettled={() => {
-          void refresh();
-          onChanged?.();
+        onSettled={(outcome, targetSpaceId) => {
+          if (targetSpaceId !== spaceId) return;
+          // Preserve a successful optimistic add until sync confirms it.
+          // Failures are ambiguous writes, so reconcile those immediately.
+          if (outcome === "failure") void refresh();
+          else onChanged?.();
         }}
       />
     </div>

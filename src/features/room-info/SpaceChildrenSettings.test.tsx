@@ -8,11 +8,16 @@ import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
 const listManageableSpaceChildren = vi.fn();
 const removeSpaceChild = vi.fn();
 const addExistingSpaceChild = vi.fn();
+let roomDetailsUpdate: ((details: { room_id: string }) => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
   listManageableSpaceChildren: (...args: unknown[]) => listManageableSpaceChildren(...args),
   removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
+  onRoomDetailsUpdate: (callback: (details: { room_id: string }) => void) => {
+    roomDetailsUpdate = callback;
+    return Promise.resolve(() => {});
+  },
 }));
 
 const child = {
@@ -44,6 +49,7 @@ describe("SpaceChildrenSettings", () => {
     listManageableSpaceChildren.mockReset().mockResolvedValue([child]);
     removeSpaceChild.mockReset().mockResolvedValue(undefined);
     addExistingSpaceChild.mockReset().mockResolvedValue(undefined);
+    roomDetailsUpdate = undefined;
   });
 
   it("lists published children and refreshes after removing one", async () => {
@@ -99,5 +105,10 @@ describe("SpaceChildrenSettings", () => {
     await waitFor(() =>
       expect(addExistingSpaceChild).toHaveBeenCalledWith("!space:example.org", "!safe:example.org"),
     );
+    expect(await screen.findByText("Safe room")).toBeInTheDocument();
+    expect(listManageableSpaceChildren).toHaveBeenCalledOnce();
+
+    roomDetailsUpdate?.({ room_id: "!space:example.org" });
+    await waitFor(() => expect(listManageableSpaceChildren).toHaveBeenCalledTimes(2));
   });
 });
