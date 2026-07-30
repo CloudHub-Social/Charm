@@ -122,6 +122,9 @@ export function BubbleMessageRow({
             <button
               type="button"
               className="w-fit text-sm font-semibold text-secondary-foreground hover:underline"
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onTouchCancel={(event) => event.stopPropagation()}
               onClick={() =>
                 onSenderClick(message.sender, message.sender_display_name ?? message.sender)
               }

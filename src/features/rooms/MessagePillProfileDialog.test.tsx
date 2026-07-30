@@ -8,6 +8,7 @@ import { MessagePillProfileDialog } from "./MessagePillProfileDialog";
 const mocks = vi.hoisted(() => ({
   livePresence: null as null | Record<string, unknown>,
   roomDetailsCallback: undefined as undefined | ((details: { room_id: string }) => void),
+  roomListCallback: undefined as undefined | (() => void),
 }));
 
 vi.mock("@/lib/matrix", () => ({
@@ -15,6 +16,10 @@ vi.mock("@/lib/matrix", () => ({
   getMutualRooms: vi.fn(),
   onRoomDetailsUpdate: vi.fn((callback: (details: { room_id: string }) => void) => {
     mocks.roomDetailsCallback = callback;
+    return Promise.resolve(() => {});
+  }),
+  onRoomListUpdate: vi.fn((callback: () => void) => {
+    mocks.roomListCallback = callback;
     return Promise.resolve(() => {});
   }),
 }));
@@ -45,6 +50,7 @@ describe("MessagePillProfileDialog", () => {
     featureFlagTestHooks.setCache({ presence_privacy_controls: true });
     mocks.livePresence = null;
     mocks.roomDetailsCallback = undefined;
+    mocks.roomListCallback = undefined;
     vi.mocked(getUserProfile).mockReset();
     vi.mocked(getMutualRooms).mockReset();
   });

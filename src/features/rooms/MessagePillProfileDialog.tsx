@@ -10,7 +10,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useFlag } from "@/featureFlags";
-import { getMutualRooms, getUserProfile, onRoomDetailsUpdate } from "@/lib/matrix";
+import {
+  getMutualRooms,
+  getUserProfile,
+  onRoomDetailsUpdate,
+  onRoomListUpdate,
+} from "@/lib/matrix";
 import { usePresence } from "@/features/presence/usePresence";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
@@ -52,6 +57,17 @@ export function MessagePillProfileDialog({
       unlisten.then((stop) => stop()).catch(() => {});
     };
   }, [accountId, detailed, queryClient, roomId, userId]);
+  useEffect(() => {
+    if (!detailed || !userId) return undefined;
+    const unlisten = onRoomListUpdate(() => {
+      void queryClient.invalidateQueries({
+        queryKey: ["mutual-rooms", accountId ?? null, userId],
+      });
+    });
+    return () => {
+      unlisten.then((stop) => stop()).catch(() => {});
+    };
+  }, [accountId, detailed, queryClient, userId]);
   const presenceDetailsEnabled = useFlag("presence_privacy_controls");
   const livePresence = usePresence(detailed && userId !== "" ? userId : null);
   const profileQuery = useQuery({
@@ -70,6 +86,10 @@ export function MessagePillProfileDialog({
     resolvedProfile?.room_display_name ?? resolvedProfile?.display_name ?? profile?.label ?? null;
   const avatarUrl = resolvedProfile?.room_avatar_url ?? resolvedProfile?.avatar_url ?? null;
   const avatarPath = resolvedProfile?.room_avatar_path ?? resolvedProfile?.avatar_path ?? null;
+  const roomIdentityDiffers =
+    resolvedProfile?.room_display_name !== resolvedProfile?.display_name ||
+    resolvedProfile?.room_avatar_url !== resolvedProfile?.avatar_url ||
+    resolvedProfile?.room_avatar_path !== resolvedProfile?.avatar_path;
 
   return (
     <Dialog open={profile !== null} onOpenChange={(open) => !open && onClose()}>
@@ -87,14 +107,20 @@ export function MessagePillProfileDialog({
             </Avatar>
             <DialogTitle>{displayName}</DialogTitle>
             <DialogDescription>{profile.userId}</DialogDescription>
-            {detailed &&
-              resolvedProfile?.room_display_name &&
-              resolvedProfile.display_name &&
-              resolvedProfile.room_display_name !== resolvedProfile.display_name && (
-                <p className="text-sm text-muted-foreground">
-                  Global profile: {resolvedProfile.display_name}
-                </p>
-              )}
+            {detailed && resolvedProfile && roomIdentityDiffers && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Avatar size="sm">
+                  <AvatarImage
+                    src={resolveAvatar(resolvedProfile.avatar_path, resolvedProfile.avatar_url)}
+                    alt=""
+                  />
+                  <AvatarFallback style={{ background: avatarColor(profile.userId) }}>
+                    {initials(profile.userId, resolvedProfile.display_name)}
+                  </AvatarFallback>
+                </Avatar>
+                <span>Global profile: {resolvedProfile.display_name ?? profile.userId}</span>
+              </div>
+            )}
             {detailed && profileQuery.isPending && (
               <p className="text-sm text-muted-foreground">Loading profile…</p>
             )}
