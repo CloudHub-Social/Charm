@@ -114,6 +114,11 @@ pub(crate) struct AuthMailQuota {
     upstream_retry_until: Option<std::time::Instant>,
 }
 
+struct AuthMailQuotaReservation {
+    address_digest: String,
+    at: std::time::Instant,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct RegistrationFlow {
@@ -1168,7 +1173,7 @@ pub async fn request_password_reset(
             Err("password reset attempt expired; start again".to_string())
         }
     }?;
-    check_auth_mail_quota(&state, &delivery_email).await?;
+    let quota_reservation = check_auth_mail_quota(&state, &delivery_email).await?;
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
@@ -1201,6 +1206,9 @@ pub async fn request_password_reset(
             }
         }
         Err(error) => {
+            if error.client_api_error_kind().is_none() {
+                refund_auth_mail_quota(&state, quota_reservation).await;
+            }
             retain_password_reset_retry_after(&state, &error).await;
             // Matrix deliberately permits homeservers to reject an unknown
             // address here. Retain a synthetic pending validation session so
@@ -1237,7 +1245,10 @@ pub async fn request_password_reset(
     })
 }
 
-async fn check_auth_mail_quota(state: &MatrixState, address: &str) -> Result<(), String> {
+async fn check_auth_mail_quota(
+    state: &MatrixState,
+    address: &str,
+) -> Result<AuthMailQuotaReservation, String> {
     let now = std::time::Instant::now();
     let cutoff = now.checked_sub(AUTH_MAIL_QUOTA_WINDOW);
     let mut hasher = AUTH_MAIL_ADDRESS_HASHER
@@ -1269,8 +1280,34 @@ async fn check_auth_mail_quota(state: &MatrixState, address: &str) -> Result<(),
         return Err("too many recovery emails; try again later".to_string());
     }
     quota.all.push(now);
-    quota.by_address.entry(digest).or_default().push(now);
-    Ok(())
+    quota
+        .by_address
+        .entry(digest.clone())
+        .or_default()
+        .push(now);
+    Ok(AuthMailQuotaReservation {
+        address_digest: digest,
+        at: now,
+    })
+}
+
+async fn refund_auth_mail_quota(state: &MatrixState, reservation: AuthMailQuotaReservation) {
+    let mut quota = state.auth_mail_quota.lock().await;
+    if let Some(index) = quota.all.iter().rposition(|at| *at == reservation.at) {
+        quota.all.remove(index);
+    }
+    let remove_address =
+        if let Some(attempts) = quota.by_address.get_mut(&reservation.address_digest) {
+            if let Some(index) = attempts.iter().rposition(|at| *at == reservation.at) {
+                attempts.remove(index);
+            }
+            attempts.is_empty()
+        } else {
+            false
+        };
+    if remove_address {
+        quota.by_address.remove(&reservation.address_digest);
+    }
 }
 
 fn synthetic_password_reset_challenge(
@@ -2365,10 +2402,11 @@ mod registration_uia_tests {
 
     use super::{
         check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
-        is_public_network_ip, next_registration_stage, registration_auth_data,
-        registration_fallback_url, sanitize_password_reset_submit_url, sanitized_provider_name,
-        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
-        PendingPasswordReset, RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
+        is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
+        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
+        sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
+        PasswordResetChallenge, PendingPasswordReset, RegistrationAuthResponse,
+        AUTH_MAILS_PER_ADDRESS,
     };
     use crate::matrix::MatrixState;
 
@@ -2662,6 +2700,21 @@ mod registration_uia_tests {
                 .is_err(),
             "normalized address quota must not reset with a new attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn password_reset_mail_quota_refunds_unsent_requests() {
+        let state = MatrixState::default();
+        let reservation = check_auth_mail_quota(&state, "alice@example.org")
+            .await
+            .expect("initial reservation");
+        refund_auth_mail_quota(&state, reservation).await;
+
+        for _ in 0..AUTH_MAILS_PER_ADDRESS {
+            check_auth_mail_quota(&state, "alice@example.org")
+                .await
+                .expect("refunded reservation must not consume capacity");
+        }
     }
 
     #[tokio::test]
