@@ -246,8 +246,12 @@ export function confirmPasswordReset(
   );
 }
 
-export function cancelPasswordReset(attemptId: string): Promise<void> {
-  return invoke("cancel_password_reset", { attemptId }, { captureOnError: false });
+export function cancelPasswordReset(attemptId?: string): Promise<void> {
+  return invoke(
+    "cancel_password_reset",
+    { attemptId: attemptId ?? null },
+    { captureOnError: false },
+  );
 }
 
 export function getLoginFlows(homeserverUrl: string): Promise<LoginFlowSummary> {

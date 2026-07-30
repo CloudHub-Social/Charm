@@ -363,7 +363,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
-    if (attemptId) cancelPasswordReset(attemptId).catch(logAndIgnore);
+    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);

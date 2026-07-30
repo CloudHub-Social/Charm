@@ -1129,10 +1129,23 @@ pub async fn confirm_password_reset(
 pub async fn cancel_password_reset(
     app: AppHandle,
     state: State<'_, MatrixState>,
-    attempt_id: String,
+    attempt_id: Option<String>,
 ) -> Result<(), String> {
     ensure_registration_feature_enabled(&app)?;
     let mut guard = state.pending_password_reset.lock().await;
+    let target_id = attempt_id
+        .or_else(|| guard.as_ref().map(|pending| pending.attempt_id.clone()))
+        .or_else(|| {
+            state
+                .pending_password_reset_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|(attempt_id, _)| attempt_id.clone())
+        });
+    let Some(attempt_id) = target_id else {
+        return Ok(());
+    };
     if guard
         .as_ref()
         .is_some_and(|pending| pending.attempt_id == attempt_id)
