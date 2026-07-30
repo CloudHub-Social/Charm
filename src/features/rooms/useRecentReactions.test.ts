@@ -58,6 +58,30 @@ describe("useRecentReactions", () => {
     expect(result.current.recent[0]).toBe("👍");
   });
 
+  it("updates other mounted hook instances for the same account", () => {
+    const first = renderHook(() => useRecentReactions("@alice:example.org"));
+    const second = renderHook(() => useRecentReactions("@alice:example.org"));
+
+    act(() => {
+      first.result.current.recordReaction("🔥");
+    });
+
+    expect(first.result.current.recent[0]).toBe("🔥");
+    expect(second.result.current.recent[0]).toBe("🔥");
+  });
+
+  it("does not publish recent reactions to a different account", () => {
+    const alice = renderHook(() => useRecentReactions("@alice:example.org"));
+    const bob = renderHook(() => useRecentReactions("@bob:example.org"));
+
+    act(() => {
+      alice.result.current.recordReaction("🔥");
+    });
+
+    expect(alice.result.current.recent[0]).toBe("🔥");
+    expect(bob.result.current.recent).toEqual(["👍", "❤️", "😂", "🎉"]);
+  });
+
   it("caps the stored list at 8 entries", () => {
     const { result } = renderHook(() => useRecentReactions("@alice:example.org"));
 
@@ -110,6 +134,19 @@ describe("useRecentReactions", () => {
     act(() => result.current.recordReaction("🔥"));
 
     expect(result.current.recent[0]).toBe("🔥");
+    setItem.mockRestore();
+  });
+
+  it("still updates same-account instances when localStorage is unavailable", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    const first = renderHook(() => useRecentReactions("@alice:example.org"));
+    const second = renderHook(() => useRecentReactions("@alice:example.org"));
+
+    act(() => first.result.current.recordReaction("🔥"));
+
+    expect(second.result.current.recent[0]).toBe("🔥");
     setItem.mockRestore();
   });
 });

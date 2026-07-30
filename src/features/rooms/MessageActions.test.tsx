@@ -161,7 +161,7 @@ describe("MessageActions", () => {
   });
 
   it("does not persist picker reactions while message-action parity is disabled", async () => {
-    const storageKey = "charm:recentReactions:@me:example.org";
+    const storageKey = "charm:recentReactions:%40me%3Aexample.org";
     localStorage.removeItem(storageKey);
     mockUseFlag.mockReturnValue(false);
     const { onReact } = renderActions();
@@ -228,6 +228,30 @@ describe("MessageActions", () => {
     fireEvent.click(await screen.findByText("Copy"));
 
     expect(onCopy).not.toHaveBeenCalled();
+  });
+
+  it("keeps Report available for an undecrypted event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isUndecrypted: true, onReport });
+    openMenu();
+
+    const report = (await screen.findByText("Report")).closest('[role="menuitem"]');
+    expect(report).not.toHaveAttribute("data-disabled");
+    fireEvent.click(report!);
+    expect(onReport).toHaveBeenCalledOnce();
+  });
+
+  it("shows only Report for a redacted remote event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isRedacted: true, onReport });
+
+    openMenu();
+    fireEvent.click(await screen.findByText("Report"));
+
+    expect(onReport).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+    expect(screen.queryByText("Copy")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "React" })).not.toBeInTheDocument();
   });
 
   it("does not show Resend or Discard for a normal (non-failed) message", async () => {

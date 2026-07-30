@@ -46,7 +46,11 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
 /// call only saw the first (most recent) 20 relations, silently truncating
 /// history/reactor lists in rooms with enough relation noise (reactions,
 /// other edits, etc.) ahead of the older entries.
-const MAX_RELATION_PAGES: usize = 10;
+// 100 pages keeps the endpoint bounded against a malicious/non-terminating
+// homeserver while covering up to 2,000 relations — enough for genuinely
+// popular messages without turning the safety cap into an ordinary product
+// limitation at only 200 reactions.
+const MAX_RELATION_PAGES: usize = 100;
 
 async fn paginated_relations(
     room: &matrix_sdk::Room,
@@ -692,8 +696,10 @@ pub struct EditHistoryEntry {
 }
 
 /// Returns the full edit history of `event_id` in `room_id`: the original
-/// event first, followed by each `m.replace` in chronological order. Walks
-/// relations the same way `toggle_reaction_impl` walks reactions.
+/// event first, followed by each `m.replace` in chronological order,
+/// including the current user's queued local replacements that are not yet
+/// visible through `/relations`. Walks relations the same way
+/// `toggle_reaction_impl` walks reactions.
 #[tauri::command]
 pub async fn get_edit_history(
     state: State<'_, MatrixState>,
@@ -738,6 +744,14 @@ pub async fn get_edit_history_impl(
     let original_message = msg
         .as_original()
         .ok_or_else(|| "target event has already been redacted".to_string())?;
+    let pending_edits = if client.user_id() == Some(original_message.sender.as_ref()) {
+        super::send::pending_replacements(&room, &parsed_target).await?
+    } else {
+        // A replacement is only valid when its sender matches the original
+        // event. Every local echo belongs to the current account, so none can
+        // be a valid edit of another member's message.
+        Vec::new()
+    };
 
     let mut entries = vec![EditHistoryEntry {
         event_id: original_message.event_id.to_string(),
@@ -748,6 +762,7 @@ pub async fn get_edit_history_impl(
     }];
 
     let mut edits: Vec<EditHistoryEntry> = Vec::new();
+    let mut acknowledged_transaction_ids = HashSet::new();
     for related in &relations {
         let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
             related.kind.raw().deserialize();
@@ -776,6 +791,9 @@ pub async fn get_edit_history_impl(
         if replacement.event_id != parsed_target {
             continue;
         }
+        if let Some(transaction_id) = &edit.unsigned.transaction_id {
+            acknowledged_transaction_ids.insert(transaction_id.to_string());
+        }
 
         edits.push(EditHistoryEntry {
             event_id: edit.event_id.to_string(),
@@ -787,6 +805,20 @@ pub async fn get_edit_history_impl(
     }
     edits.sort_by_key(|entry| entry.origin_server_ts);
     entries.extend(edits);
+    entries.extend(
+        pending_edits
+            .into_iter()
+            .filter(|pending| {
+                !acknowledged_transaction_ids.contains(pending.transaction_id.as_str())
+            })
+            .map(|pending| EditHistoryEntry {
+                event_id: pending.transaction_id,
+                body: pending.new_content.msgtype.body().to_string(),
+                formatted_body: formatted_body_of(&pending.new_content.msgtype),
+                sender: original_message.sender.to_string(),
+                origin_server_ts: pending.origin_server_ts,
+            }),
+    );
 
     Ok(entries)
 }
@@ -981,6 +1013,116 @@ mod relation_shape_tests {
         let content = RoomMessageEventContent::text_plain("edited").make_replacement(metadata);
         let json = to_value(&content).unwrap();
         assert_eq!(json["m.relates_to"]["event_id"], "$original:example.org");
+    }
+}
+
+#[cfg(test)]
+mod edit_history_tests {
+    use matrix_sdk::ruma::events::room::message::{ReplacementMetadata, RoomMessageEventContent};
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn edit_history_includes_queued_local_replacements_in_order() {
+        let room_id = room_id!("!test:example.org");
+        let original = event_id!("$original:example.org");
+        let unrelated = event_id!("$unrelated:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let own_user_id = client.user_id().unwrap().to_owned();
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+
+        for (target, body) in [
+            (original, "first pending edit"),
+            (unrelated, "other message's edit"),
+            (original, "second pending edit"),
+        ] {
+            let edit = RoomMessageEventContent::text_plain(body)
+                .make_replacement(ReplacementMetadata::new(target.to_owned(), None));
+            room.send_queue()
+                .send(AnyMessageLikeEventContent::RoomMessage(edit))
+                .await
+                .unwrap();
+        }
+        let acknowledged_transaction_id = super::super::send::pending_replacements(&room, original)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .transaction_id;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": own_user_id,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": "$acknowledged-edit:example.org",
+                        "sender": own_user_id,
+                        "origin_server_ts": 1_700_000_000_001u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* first pending edit",
+                            "m.new_content": {
+                                "msgtype": "m.text",
+                                "body": "first pending edit"
+                            },
+                            "m.relates_to": {
+                                "rel_type": "m.replace",
+                                "event_id": original
+                            }
+                        },
+                        "unsigned": {
+                            "transaction_id": acknowledged_transaction_id
+                        }
+                    }]
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let history = get_edit_history_impl(&client, room_id.as_str(), original.as_str())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["original body", "first pending edit", "second pending edit"]
+        );
+        assert!(
+            history[1..]
+                .iter()
+                .all(|entry| entry.sender == own_user_id.as_str()),
+            "queued edits must only be attributed to the logged-in original sender"
+        );
     }
 }
 

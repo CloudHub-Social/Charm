@@ -106,6 +106,8 @@ export interface MessageActionsProps {
   onViewSource?: () => void;
   /** Reports this message to the homeserver's moderators, via `ConfirmWithReasonDialog`. */
   onReport?: () => void;
+  /** A server-backed event whose content has been redacted. Only Report remains meaningful. */
+  isRedacted?: boolean;
   /** Whether this message has been edited — gates the "Edit history" entry. */
   isEdited?: boolean;
   /** Opens this message's edit history in `EditHistoryDialog`. Only rendered when `isEdited` is set. */
@@ -163,6 +165,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onForward,
       onViewSource,
       onReport,
+      isRedacted = false,
       isEdited = false,
       onViewEditHistory,
     },
@@ -233,6 +236,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
         }}
       >
         {messageActionParityEnabled &&
+          !isRedacted &&
           !disableRelationActions &&
           !isUndecrypted &&
           recent.slice(0, 4).map((emoji) => (
@@ -246,16 +250,18 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               {emoji}
             </button>
           ))}
-        <EmojiPicker onSelect={react}>
-          <button
-            type="button"
-            aria-label="React"
-            disabled={disableRelationActions || isUndecrypted}
-            className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          >
-            <SmilePlus size={16} />
-          </button>
-        </EmojiPicker>
+        {!isRedacted && (
+          <EmojiPicker onSelect={react}>
+            <button
+              type="button"
+              aria-label="React"
+              disabled={disableRelationActions || isUndecrypted}
+              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+            >
+              <SmilePlus size={16} />
+            </button>
+          </EmojiPicker>
+        )}
 
         <DropdownMenu
           open={menuOpen}
@@ -301,116 +307,114 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onReply} disabled={disableRelationActions || isUndecrypted}>
-              <Reply />
-              Reply
-            </DropdownMenuItem>
-            {isOwn && (
-              <DropdownMenuItem
-                onSelect={onEdit}
-                disabled={disableRelationActions || isUndecrypted}
-              >
-                <Pencil />
-                Edit
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onSelect={onCopy} disabled={isUndecrypted}>
-              <Copy />
-              Copy
-            </DropdownMenuItem>
-            {messageActionParityEnabled && (
-              <DropdownMenuItem
-                onSelect={onCopyLink}
-                disabled={disableRelationActions || isUndecrypted}
-              >
-                <Link2 />
-                Copy link
-              </DropdownMenuItem>
-            )}
-            {messageActionParityEnabled && onForward && !isError && (
-              <DropdownMenuItem
-                onSelect={onForward}
-                disabled={disableRelationActions || isUndecrypted}
-              >
-                <Forward />
-                Forward
-              </DropdownMenuItem>
-            )}
-            {messageActionParityEnabled && onViewSource && (
-              <DropdownMenuItem onSelect={onViewSource} disabled={disableRelationActions}>
-                <FileJson />
-                View source
-              </DropdownMenuItem>
-            )}
-            {messageActionParityEnabled && isEdited && onViewEditHistory && (
-              <DropdownMenuItem onSelect={onViewEditHistory}>
-                <History />
-                Edit history
-              </DropdownMenuItem>
-            )}
-            {canPin && !isError && (isPinned ? onUnpin : onPin) && (
-              <DropdownMenuItem
-                onSelect={isPinned ? onUnpin : onPin}
-                // Review fix: `unpin_event` only needs the event ID — it
-                // doesn't touch message content — so an already-pinned but
-                // currently-undecrypted event (e.g. after a key gap or
-                // restore) must still be unpinnable. Gating Unpin on
-                // `isUndecrypted` the same way Pin/reply/react/edit are
-                // would leave it stuck pinned forever with no other way to
-                // remove it, since this is the only unpin affordance Spec
-                // day-2/04 defines.
-                disabled={disableRelationActions || (isUndecrypted && !isPinned)}
-              >
-                {isPinned ? <PinOff /> : <Pin />}
-                {isPinned ? "Unpin" : "Pin"}
-              </DropdownMenuItem>
-            )}
-            {bookmarksEnabled &&
-              // Review fix: `disableRelationActions` already identifies a
-              // pending/failed local echo, whose `event_id` is a
-              // transaction id rather than a real Matrix event id — a
-              // bookmark saved against that id would either fail server-side
-              // or, worse, silently point at nothing once the real event id
-              // is assigned. Gate on the same flag other relation-dependent
-              // actions (reply/edit) already use, not just `isUndecrypted`.
-              (isBookmarked && onUnbookmark ? (
+            {!isRedacted && (
+              <>
                 <DropdownMenuItem
-                  onSelect={onUnbookmark}
+                  onSelect={onReply}
                   disabled={disableRelationActions || isUndecrypted}
                 >
-                  <BookmarkX />
-                  Remove bookmark
+                  <Reply />
+                  Reply
                 </DropdownMenuItem>
-              ) : (
-                onBookmark && (
+                {isOwn && (
                   <DropdownMenuItem
-                    onSelect={onBookmark}
+                    onSelect={onEdit}
                     disabled={disableRelationActions || isUndecrypted}
                   >
-                    <Bookmark />
-                    Bookmark
+                    <Pencil />
+                    Edit
                   </DropdownMenuItem>
-                )
-              ))}
-            {messageActionParityEnabled && isError && onResend && (
-              <DropdownMenuItem onSelect={onResend}>
-                <RotateCw />
-                Resend
-              </DropdownMenuItem>
-            )}
-            {messageActionParityEnabled && isError && onDiscard && (
-              <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
-                <X />
-                Discard
-              </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={onCopy} disabled={isUndecrypted}>
+                  <Copy />
+                  Copy
+                </DropdownMenuItem>
+                {messageActionParityEnabled && (
+                  <DropdownMenuItem
+                    onSelect={onCopyLink}
+                    disabled={disableRelationActions || isUndecrypted}
+                  >
+                    <Link2 />
+                    Copy link
+                  </DropdownMenuItem>
+                )}
+                {messageActionParityEnabled && onForward && !isError && (
+                  <DropdownMenuItem
+                    onSelect={onForward}
+                    disabled={disableRelationActions || isUndecrypted}
+                  >
+                    <Forward />
+                    Forward
+                  </DropdownMenuItem>
+                )}
+                {messageActionParityEnabled && onViewSource && (
+                  <DropdownMenuItem onSelect={onViewSource} disabled={disableRelationActions}>
+                    <FileJson />
+                    View source
+                  </DropdownMenuItem>
+                )}
+                {messageActionParityEnabled && isEdited && onViewEditHistory && (
+                  <DropdownMenuItem onSelect={onViewEditHistory}>
+                    <History />
+                    Edit history
+                  </DropdownMenuItem>
+                )}
+                {canPin && !isError && (isPinned ? onUnpin : onPin) && (
+                  <DropdownMenuItem
+                    onSelect={isPinned ? onUnpin : onPin}
+                    // Unpin only needs the event ID, so it remains available
+                    // through a decryption gap. Pin still needs the message's
+                    // normal server-backed relation state.
+                    disabled={disableRelationActions || (isUndecrypted && !isPinned)}
+                  >
+                    {isPinned ? <PinOff /> : <Pin />}
+                    {isPinned ? "Unpin" : "Pin"}
+                  </DropdownMenuItem>
+                )}
+                {bookmarksEnabled &&
+                  // Pending/failed local echoes use transaction IDs rather
+                  // than stable event IDs, so relation-dependent bookmarks
+                  // stay disabled until acknowledgement.
+                  (isBookmarked && onUnbookmark ? (
+                    <DropdownMenuItem
+                      onSelect={onUnbookmark}
+                      disabled={disableRelationActions || isUndecrypted}
+                    >
+                      <BookmarkX />
+                      Remove bookmark
+                    </DropdownMenuItem>
+                  ) : (
+                    onBookmark && (
+                      <DropdownMenuItem
+                        onSelect={onBookmark}
+                        disabled={disableRelationActions || isUndecrypted}
+                      >
+                        <Bookmark />
+                        Bookmark
+                      </DropdownMenuItem>
+                    )
+                  ))}
+                {messageActionParityEnabled && isError && onResend && (
+                  <DropdownMenuItem onSelect={onResend}>
+                    <RotateCw />
+                    Resend
+                  </DropdownMenuItem>
+                )}
+                {messageActionParityEnabled && isError && onDiscard && (
+                  <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
+                    <X />
+                    Discard
+                  </DropdownMenuItem>
+                )}
+              </>
             )}
             {messageActionParityEnabled && !isOwn && onReport && !isError && (
-              <DropdownMenuItem variant="destructive" onSelect={onReport} disabled={isUndecrypted}>
+              <DropdownMenuItem variant="destructive" onSelect={onReport}>
                 <Flag />
                 Report
               </DropdownMenuItem>
             )}
-            {canRedact && !isError && (
+            {!isRedacted && canRedact && !isError && (
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={onDelete}

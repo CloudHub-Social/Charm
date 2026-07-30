@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
@@ -44,6 +44,7 @@ export function ReactionBar({
 }: ReactionBarProps) {
   const messageActionParityEnabled = useFlag("message_action_parity");
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
+  const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
   const [modalKey, setModalKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
@@ -80,33 +81,55 @@ export function ReactionBar({
     const generation = (requestGenerationRef.current[key] ?? 0) + 1;
     requestGenerationRef.current[key] = generation;
     inFlightKeysRef.current.add(key);
+    setDetailErrorsByKey((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
         if (requestGenerationRef.current[key] !== generation) return;
         fetchedAtCountRef.current[key] = reaction.count;
         setDetailsByKey((prev) => ({ ...prev, [key]: details }));
       })
-      .catch(() => {})
+      .catch(() => {
+        if (requestGenerationRef.current[key] !== generation) return;
+        setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
+      })
       .finally(() => {
         if (requestGenerationRef.current[key] !== generation) return;
         inFlightKeysRef.current.delete(key);
       });
   }
-  function clearDetails(reaction: ReactionGroup) {
+  function clearDetails(key: string) {
     // Keep the entry around if its modal is open — WhoReactedDialog reads
     // from this same cache and closing the tooltip shouldn't blank it out.
     // Reads the ref (not the `modalKey` state) — see its declaration above.
-    if (modalKeyRef.current === reaction.key) return;
-    requestGenerationRef.current[reaction.key] =
-      (requestGenerationRef.current[reaction.key] ?? 0) + 1;
-    inFlightKeysRef.current.delete(reaction.key);
-    delete fetchedAtCountRef.current[reaction.key];
-    setDetailsByKey((prev) => {
-      if (!(reaction.key in prev)) return prev;
+    if (modalKeyRef.current === key) return;
+    requestGenerationRef.current[key] = (requestGenerationRef.current[key] ?? 0) + 1;
+    inFlightKeysRef.current.delete(key);
+    delete fetchedAtCountRef.current[key];
+    setDetailErrorsByKey((prev) => {
+      if (!(key in prev)) return prev;
       const next = { ...prev };
-      delete next[reaction.key];
+      delete next[key];
       return next;
     });
+    setDetailsByKey((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function closeModal() {
+    const key = modalKeyRef.current;
+    // Clear the ref first so clearDetails performs the invalidation it
+    // intentionally deferred while the modal was using this cache entry.
+    setModalKey(null);
+    if (key) clearDetails(key);
   }
 
   const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
@@ -137,7 +160,10 @@ export function ReactionBar({
         key={reaction.key}
         type="button"
         onClick={() => onToggle(reaction.key)}
+        // Radix opens the tooltip for either input path; load for both so
+        // keyboard and assistive-technology users receive the same details.
         onMouseEnter={() => loadDetails(reaction)}
+        onFocus={() => loadDetails(reaction)}
         disabled={disabled}
         aria-pressed={reaction.reacted_by_me}
         className={cn(
@@ -155,35 +181,39 @@ export function ReactionBar({
     if (!messageActionParityEnabled || !roomId || !eventId) return chip;
 
     const details = detailsByKey[reaction.key];
+    const detailError = detailErrorsByKey[reaction.key];
     return (
-      <Tooltip key={reaction.key} onOpenChange={(open) => !open && clearDetails(reaction)}>
-        <TooltipTrigger asChild>{chip}</TooltipTrigger>
-        <TooltipContent>
-          {!details ? (
-            "Loading…"
-          ) : details.length === 0 ? (
-            "No reactions"
-          ) : (
-            <div className="flex flex-col gap-0.5">
-              {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
-                <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
-              ))}
-              {details.length > TOOLTIP_NAME_LIMIT && (
-                <button
-                  type="button"
-                  className="text-left underline"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setModalKey(reaction.key);
-                  }}
-                >
-                  View all {reaction.count}
-                </button>
-              )}
-            </div>
-          )}
-        </TooltipContent>
-      </Tooltip>
+      <Fragment key={reaction.key}>
+        <Tooltip onOpenChange={(open) => !open && clearDetails(reaction.key)}>
+          <TooltipTrigger asChild>{chip}</TooltipTrigger>
+          <TooltipContent>
+            {detailError ? (
+              "Could not load reactions."
+            ) : !details ? (
+              "Loading…"
+            ) : details.length === 0 ? (
+              "No reactions"
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
+                  <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
+                ))}
+              </div>
+            )}
+          </TooltipContent>
+        </Tooltip>
+        {reaction.count > TOOLTIP_NAME_LIMIT && (
+          <button
+            type="button"
+            aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
+            disabled={disabled}
+            className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+            onClick={() => setModalKey(reaction.key)}
+          >
+            View all {reaction.count}
+          </button>
+        )}
+      </Fragment>
     );
   });
 
@@ -206,7 +236,14 @@ export function ReactionBar({
         open={modalKey !== null}
         reactionKey={modalKey}
         details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
-        onOpenChange={(open) => !open && setModalKey(null)}
+        loading={
+          modalReaction !== undefined &&
+          detailsByKey[modalReaction.key] === undefined &&
+          !detailErrorsByKey[modalReaction.key]
+        }
+        error={modalReaction !== undefined && detailErrorsByKey[modalReaction.key]}
+        onRetry={() => modalReaction && loadDetails(modalReaction, { force: true })}
+        onOpenChange={(open) => !open && closeModal()}
       />
     </TooltipProvider>
   );

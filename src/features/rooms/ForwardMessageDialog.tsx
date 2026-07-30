@@ -44,9 +44,20 @@ export function ForwardMessageDialog({
   const requestGenerationRef = useRef(0);
   useEffect(() => {
     requestGenerationRef.current += 1;
+    // The parent can close or retarget this dialog without going through
+    // `close()`. Release the request-owned disabled state immediately; the
+    // generation check below keeps the stale promise from affecting the new
+    // dialog target when it eventually settles.
+    setSubmittingRoomId(null);
   }, [open, sourceRoomId, eventId]);
 
-  const { data: rooms, isLoading } = useQuery({
+  const {
+    data: rooms,
+    isLoading,
+    isFetching,
+    isError: roomsFailed,
+    refetch: retryRooms,
+  } = useQuery({
     queryKey: ROOMS_QUERY_KEY,
     queryFn: listRooms,
     enabled: open,
@@ -58,11 +69,13 @@ export function ForwardMessageDialog({
     // returns pending invites (`membership: "invite"`), and forwarding into
     // one would fail with an avoidable IPC error since the account hasn't
     // actually joined it yet.
-    const joinedRooms = rooms.filter((room) => room.membership === "join");
+    const joinedRooms = rooms.filter(
+      (room) => room.membership === "join" && !room.is_space && room.room_id !== sourceRoomId,
+    );
     const needle = filter.trim().toLowerCase();
     if (needle === "") return joinedRooms;
     return joinedRooms.filter((room) => (room.name ?? room.room_id).toLowerCase().includes(needle));
-  }, [rooms, filter]);
+  }, [rooms, filter, sourceRoomId]);
 
   async function handleForward(targetRoomId: string) {
     if (!sourceRoomId || !eventId) return;
@@ -91,6 +104,11 @@ export function ForwardMessageDialog({
   // closing via Cancel specifically left stale filter/error/submitting
   // state for the next open.
   function close() {
+    // A queued forward cannot be cancelled through the current Matrix
+    // transport. Keep the dialog visibly in its Forwarding state instead of
+    // letting Escape/overlay/Cancel imply that an already-started send was
+    // cancelled when it can still arrive in the selected room.
+    if (submittingRoomId !== null) return;
     setFilter("");
     setError(null);
     // Otherwise a forward still in flight when the dialog is closed leaves
@@ -127,6 +145,22 @@ export function ForwardMessageDialog({
             Could not forward the message: {error}
           </p>
         )}
+        {roomsFailed && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 px-3 py-2">
+            <p role="alert" className="text-sm text-destructive-foreground">
+              Could not load rooms. Check your connection and try again.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isFetching}
+              onClick={() => void retryRooms()}
+            >
+              {isFetching ? "Retrying…" : "Retry"}
+            </Button>
+          </div>
+        )}
         {isLoading && <p className="text-sm text-muted-foreground">Loading rooms…</p>}
         <ul className="flex max-h-80 flex-col gap-1 overflow-auto">
           {filteredRooms.map((room) => (
@@ -153,12 +187,12 @@ export function ForwardMessageDialog({
               </button>
             </li>
           ))}
-          {!isLoading && filteredRooms.length === 0 && (
+          {!isLoading && !roomsFailed && filteredRooms.length === 0 && (
             <li className="px-2 py-1.5 text-sm text-muted-foreground">No rooms match.</li>
           )}
         </ul>
         <DialogFooter>
-          <Button variant="outline" onClick={close}>
+          <Button variant="outline" onClick={close} disabled={submittingRoomId !== null}>
             Cancel
           </Button>
         </DialogFooter>

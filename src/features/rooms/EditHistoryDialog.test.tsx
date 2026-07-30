@@ -139,4 +139,21 @@ describe("EditHistoryDialog", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("clears loading when an in-flight target is invalidated", () => {
+    getEditHistory.mockReturnValue(new Promise(() => {}));
+    const { rerender } = render(
+      <EditHistoryDialog
+        open
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+    rerender(<EditHistoryDialog open roomId={null} eventId={null} onOpenChange={() => {}} />);
+
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
 });

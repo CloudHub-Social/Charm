@@ -113,6 +113,24 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("No reactions")).toBeInTheDocument();
   });
 
+  it("loads reaction details when a chip receives keyboard focus", async () => {
+    getReactionDetails.mockResolvedValue([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.focus(screen.getByRole("button", { name: /👍/ }));
+
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledOnce();
+  });
+
   it("lists a small reactor set without a View all action", async () => {
     getReactionDetails.mockResolvedValue([
       { sender: "@alice:example.org", origin_server_ts: 1 },
@@ -137,8 +155,114 @@ describe("ReactionBar", () => {
     expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
   });
 
-  it("leaves the tooltip in its loading state when detail lookup fails", async () => {
-    getReactionDetails.mockRejectedValue(new Error("offline"));
+  it("exposes the reactor overflow as a directly keyboard-focusable action", async () => {
+    getReactionDetails.mockResolvedValue(
+      Array.from({ length: 9 }, (_, index) => ({
+        sender: `@user-${index}:example.org`,
+        origin_server_ts: index,
+      })),
+    );
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    const viewAll = screen.getByRole("button", { name: "View all 9 reactions for 👍" });
+    viewAll.focus();
+    expect(viewAll).toHaveFocus();
+
+    fireEvent.click(viewAll);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(await screen.findByText("@user-8:example.org")).toBeInTheDocument();
+  });
+
+  it("shows a loading state while the full reactor list refetches", async () => {
+    getReactionDetails.mockReturnValue(new Promise(() => {}));
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+
+    expect(await screen.findByText("Loading reactions…")).toBeInTheDocument();
+    expect(screen.queryByText("0 reactions")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a full-list failure and retries the reactor lookup", async () => {
+    const recoveredDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@recovered-${index}:example.org`,
+      origin_server_ts: index,
+    }));
+    getReactionDetails
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(recoveredDetails);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load reactions.");
+    expect(screen.queryByText("Loading reactions…")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("@recovered-8:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears reactor details after the full-list dialog closes", async () => {
+    const firstDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@first-${index}:example.org`,
+      origin_server_ts: index,
+    }));
+    const refreshedDetails = Array.from({ length: 9 }, (_, index) => ({
+      sender: `@refreshed-${index}:example.org`,
+      origin_server_ts: index + 10,
+    }));
+    getReactionDetails.mockResolvedValueOnce(firstDetails).mockResolvedValueOnce(refreshedDetails);
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];
+    render(
+      <ReactionBar
+        reactions={reactions}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 9 reactions for 👍" }));
+    expect(await screen.findByText("@first-8:example.org")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const chip = screen.getByRole("button", { name: /^👍9$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("@refreshed-0:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces detail lookup failures instead of loading forever", async () => {
+    getReactionDetails.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
     render(
       <ReactionBar
@@ -153,8 +277,16 @@ describe("ReactionBar", () => {
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
 
-    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(await screen.findByText("Could not load reactions.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
     await waitFor(() => expect(getReactionDetails).toHaveBeenCalledOnce());
+
+    fireEvent.blur(chip);
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+
+    expect(await screen.findByText("No reactions")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
 
   it("deduplicates repeated hover requests before React commits loading state", () => {
@@ -221,10 +353,12 @@ describe("ReactionBar", () => {
       />,
     );
 
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍9$/ });
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
-    expect(await screen.findByRole("button", { name: "View all 9" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "View all 9 reactions for 👍" }),
+    ).toBeInTheDocument();
 
     rerender(
       <ReactionBar
@@ -235,6 +369,8 @@ describe("ReactionBar", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "View all 10" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View all 10 reactions for 👍" }),
+    ).toBeInTheDocument();
   });
 });

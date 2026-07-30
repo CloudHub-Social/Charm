@@ -137,7 +137,7 @@ export function DiscordMessageRow({
               )}
             />
           )}
-          {!message.redacted && (
+          {(!message.redacted || (!own && onReport)) && (
             <MessageActions
               ref={(el) => registerActionsRef(rowKey, el)}
               accountId={currentUserId ?? ""}
@@ -165,6 +165,7 @@ export function DiscordMessageRow({
               onForward={onForward}
               onViewSource={onViewSource}
               onReport={onReport}
+              isRedacted={message.redacted}
               isEdited={message.edited}
               onViewEditHistory={onViewEditHistory}
             />
