@@ -665,9 +665,10 @@ pub(crate) async fn build_persisted_client_with_store_passphrase(
 /// builds a throwaway in-memory one (no local store) purely to run discovery.
 #[tauri::command]
 pub async fn discover_homeserver(input: String) -> Result<DiscoverHomeserverResponse, String> {
-    Ok(DiscoverHomeserverResponse {
-        homeserver_url: discover(&input).await?,
-    })
+    let homeserver_url = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, discover(&input))
+        .await
+        .map_err(|_| "homeserver discovery timed out".to_string())??;
+    Ok(DiscoverHomeserverResponse { homeserver_url })
 }
 
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
@@ -1646,16 +1647,20 @@ pub async fn get_login_flows(
     homeserver_url: String,
 ) -> Result<LoginFlowSummary, String> {
     ensure_registration_feature_enabled(&app)?;
-    let client = Client::builder()
-        .server_name_or_homeserver_url(&homeserver_url)
-        .build()
-        .await
-        .map_err(|_| "could not discover login options for this homeserver".to_string())?;
-    let response = client
-        .matrix_auth()
-        .get_login_types()
-        .await
-        .map_err(|_| "could not discover login options for this homeserver".to_string())?;
+    let response = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, async {
+        let client = Client::builder()
+            .server_name_or_homeserver_url(&homeserver_url)
+            .build()
+            .await
+            .map_err(|_| "could not discover login options for this homeserver".to_string())?;
+        client
+            .matrix_auth()
+            .get_login_types()
+            .await
+            .map_err(|_| "could not discover login options for this homeserver".to_string())
+    })
+    .await
+    .map_err(|_| "login option discovery timed out".to_string())??;
     Ok(summarize_login_flows(response.flows))
 }
 
