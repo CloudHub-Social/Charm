@@ -308,8 +308,14 @@ export function ChatShell({
     const scroller = noticeOnlyScrollerRef.current;
     if (messages.length === 0 && hasVisibleNotices && scroller && noticeOnlyPinnedRef.current) {
       scroller.scrollTop = scroller.scrollHeight;
+      handleAtBottomStateChange(true);
     }
-  }, [hasVisibleNotices, messages.length, noticeBuckets.trailing.length]);
+  }, [
+    handleAtBottomStateChange,
+    hasVisibleNotices,
+    messages.length,
+    noticeBuckets.trailing.length,
+  ]);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of
@@ -366,6 +372,17 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   });
+  const previousTimelineStateEventsEnabledRef = useRef(timelineStateEventsEnabled);
+  useEffect(() => {
+    const wasEnabled = previousTimelineStateEventsEnabledRef.current;
+    previousTimelineStateEventsEnabledRef.current = timelineStateEventsEnabled;
+    if (!wasEnabled && timelineStateEventsEnabled && room) {
+      void resetToLive();
+    }
+    // resetToLive closes over the current room visit generation; the flag
+    // transition and room id are the only activation inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.room_id, timelineStateEventsEnabled]);
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).
@@ -636,8 +653,10 @@ export function ChatShell({
             className="flex-1 overflow-y-auto p-4"
             onScroll={(event) => {
               const scroller = event.currentTarget;
-              noticeOnlyPinnedRef.current =
+              const pinned =
                 scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+              noticeOnlyPinnedRef.current = pinned;
+              handleAtBottomStateChange(pinned);
             }}
           >
             <TimelineNoticeList notices={noticeBuckets.trailing} irc={messageLayout === "irc"} />
