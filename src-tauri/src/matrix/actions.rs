@@ -841,7 +841,7 @@ fn dedupe_reaction_details_by_sender(mut details: Vec<ReactionDetail>) -> Vec<Re
     // A fast un-react/re-react can leave an older acknowledged relation and a
     // newer queued local echo for the same sender in these combined snapshots.
     // Keep the newest effective reaction and present reactors newest-first.
-    details.sort_by(|left, right| right.origin_server_ts.cmp(&left.origin_server_ts));
+    details.sort_by_key(|detail| std::cmp::Reverse(detail.origin_server_ts));
     let mut seen = HashSet::new();
     details
         .into_iter()
