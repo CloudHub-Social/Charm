@@ -72,7 +72,13 @@ connection: the SDK owns that schema and migration lifecycle.
   either matches or plain snippets. Cross-spec tests must cover Spec 58 spoilers.
 - Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
   undecryptable placeholders, media filenames/captions, reactions, state events, or
-  untrusted raw HTML.
+  untrusted raw HTML. Index only acknowledged remote events with a server event ID;
+  pending, failed, retried, and discarded local echoes are excluded, avoiding
+  transaction-ID rows that can survive alongside an acknowledged echo.
+- An unable-to-decrypt placeholder is not marked permanently handled. When the
+  timeline re-emits that event ID after decryption succeeds, insert or update the
+  decrypted row. Reconciliation on startup must make the same transition if the
+  key arrived before restart.
 - Use one visible content row per `(room_id, original_event_id)`. An `m.replace`
   may update that row only after the same validity checks used by the timeline:
   the replacement sender must match the original event sender, its target must
@@ -200,11 +206,13 @@ without the user knowing which is which.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off.
-- The companion evaluates that flag in trusted server configuration and binds the
-  resulting value to the authenticated web session. Browser OFREP/local-storage
-  state may hide UI but cannot enable indexing or search routes. Disabled and
-  enabled companion sessions are covered separately, including a forged client
-  request while the server-side value is false.
+- The companion evaluates that flag in trusted server configuration on every
+  indexing/search request (or through a bounded cache with explicit configuration
+  invalidation), rather than binding a `true` value for the lifetime of a
+  sliding-expiry session. Browser OFREP/local-storage state may hide UI but cannot
+  enable indexing or search routes. Disabled and enabled companion sessions are
+  covered separately, including a forged client request while the server-side
+  value is false and a kill-switch transition during an active session.
 - New IPC and authenticated web-companion command surface as above, with generated
   bindings via ts-rs per existing convention.
 - No changes to existing commands.
