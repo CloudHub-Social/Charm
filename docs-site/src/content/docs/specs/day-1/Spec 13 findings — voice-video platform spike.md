@@ -396,16 +396,18 @@ IPC commands).
 - [ ] Webview version inventory: macOS still needs a real version (UA was
       generic); Windows done (`Edg/149.0.0.0`); Android done
       (`Chrome/101.0.4951.61`, Android 13 emulator image).
-- [ ] Optional: a real human click-through on Windows to remove the fake-UI
-      caveat noted in the Windows section (low priority — CI result is already
-      strong signal).
+- [ ] Windows: a real human click-through on unpatched WRY is still required to
+      verify the `CoreWebView2.PermissionRequested` prompt path that the fake-UI
+      CI run bypassed. This missing result is hardware-blocked, not failed.
 - [ ] Final GO/CONDITIONAL/NO-GO verdicts once iOS/Linux/Android land.
 
 **Current bottom line:** macOS and Windows retain their confirmed evidence. The
 remaining live results are hardware-blocked, not failed:
 - **macOS — GO.** No workaround needed.
-- **Windows — GO.** No workaround needed (R1 resolved: WRY surfaces WebView2's
-  permission flow without custom code).
+- **Windows — GO for the confirmed fake-device media path.** The recorded CI
+  evidence remains valid, but R1 is not fully resolved: the real
+  `CoreWebView2.PermissionRequested` click path remains a required,
+  hardware-blocked verification before Spec 13 closure.
 - **Android — CONDITIONAL, post-fix verification hardware-blocked.** The historical
   pre-fix run hung, but source review established that wry already supplied the
   `WebChromeClient.onPermissionRequest` flow; PR #229 added the missing manifest
