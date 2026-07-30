@@ -13,10 +13,17 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 
-const featureFlagMocks = vi.hoisted(() => ({ roomAliasManagement: false }));
+const featureFlagMocks = vi.hoisted(() => ({
+  roomAliasManagement: false,
+  spaceHierarchy: true,
+}));
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) =>
-    key === "room_alias_management" ? featureFlagMocks.roomAliasManagement : false,
+    key === "room_alias_management"
+      ? featureFlagMocks.roomAliasManagement
+      : key === "space_hierarchy_reorganization"
+        ? featureFlagMocks.spaceHierarchy
+        : false,
 }));
 
 const getRoomDetails = vi.fn();
@@ -81,6 +88,7 @@ function renderModal(
 describe("RoomSettingsModal", () => {
   beforeEach(() => {
     featureFlagMocks.roomAliasManagement = false;
+    featureFlagMocks.spaceHierarchy = true;
   });
 
   it("falls back to the room id (not the canonical alias) for an unnamed room when room_alias_management is off", async () => {
@@ -143,6 +151,32 @@ describe("RoomSettingsModal", () => {
     expect(await screen.findByLabelText("Space name")).toHaveValue("Community");
     expect(screen.queryByText("Encryption")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close space settings" })).toBeInTheDocument();
+  });
+
+  it("closes an open space modal when the hierarchy kill switch turns off", async () => {
+    const details = makeRoomDetails({ name: "Community" });
+    getRoomDetails.mockResolvedValue(details);
+    const rendered = renderModal({
+      roomId: details.room_id,
+      section: "general",
+      kind: "space",
+    });
+
+    expect(await screen.findByRole("dialog", { name: "Space settings" })).toBeInTheDocument();
+
+    featureFlagMocks.spaceHierarchy = false;
+    rendered.rerender(
+      <AppProviders client={new QueryClient()} store={rendered.store}>
+        <TooltipProvider>
+          <RoomSettingsModal currentUserId="@evie:localhost" />
+        </TooltipProvider>
+      </AppProviders>,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Space settings" })).not.toBeInTheDocument(),
+    );
+    expect(rendered.store.get(roomSettingsAtom)).toBeNull();
   });
 
   it("does not fetch the member list until the Members tab is opened", async () => {
