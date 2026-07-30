@@ -60,6 +60,15 @@ test("a typing indicator appears when another user is typing and disappears when
   page,
 }) => {
   const room = { room_id: "!e2e-typing:localhost", name: "Typing E2E Room", unread_count: 0 };
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_typing_indicator: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
@@ -77,6 +86,8 @@ test("a typing indicator appears when another user is typing and disappears when
   );
 
   await expect(page.getByText(`${OTHER_USER} is typing…`)).toBeVisible();
+  const roomButton = page.getByRole("button", { name: room.name });
+  await expect(roomButton.getByText("Typing…", { exact: true })).toBeVisible();
   await captureSnapshot(page, "receipts-typing-indicator-visible");
 
   await page.evaluate(
@@ -87,6 +98,7 @@ test("a typing indicator appears when another user is typing and disappears when
   );
 
   await expect(page.getByText(`${OTHER_USER} is typing…`)).toHaveCount(0);
+  await expect(roomButton.getByText("Typing…", { exact: true })).toHaveCount(0);
   await captureSnapshot(page, "receipts-typing-indicator-cleared");
 });
 

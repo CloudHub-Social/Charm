@@ -3,9 +3,7 @@
   "excludedFlags": [
     "canary",
     "message_pinning",
-    "presence_privacy_controls",
-    "room_list_sort",
-    "room_list_typing_indicator"
+    "presence_privacy_controls"
   ],
   "features": [
     {
@@ -174,7 +172,7 @@
     {
       "slug": "media-attachments",
       "title": "Media and attachments",
-      "summary": "Preview images, open a lightbox, track uploads, download Matrix attachments, and progressively enable a stable full-chat file-drop target.",
+      "summary": "Preview images, open a lightbox, download Matrix attachments, and send polished uploads with captions, size preflight, cancellation, GIF controls, EXIF stripping, and a stable full-chat drop target.",
       "status": "preview",
       "spec": "Specs 02 and 42",
       "specLinks": [
@@ -252,6 +250,46 @@
         "name": "room-list-org-message-preview",
         "alt": "Charm room list row showing a sender-labeled last-message preview",
         "caption": "The E2E fixture verifies the preview line renders the sender label and message text."
+      }
+    },
+    {
+      "slug": "room-list-sorting",
+      "title": "Room-list sorting",
+      "summary": "Reorder rooms by default hierarchy, name, recent activity, or unread priority and persist the selected mode.",
+      "status": "preview",
+      "spec": "Spec 54",
+      "specLinks": [
+        {
+          "label": "Spec 54",
+          "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
+        }
+      ],
+      "flag": "room_list_sort",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "room-list-org-unread-sort",
+        "alt": "Charm room list sorted with unread conversations first",
+        "caption": "The E2E fixture selects Unread first, verifies the reordered list, and confirms the preference persists."
+      }
+    },
+    {
+      "slug": "room-list-typing-indicator",
+      "title": "Room-list typing indicator",
+      "summary": "Surface live typing activity directly in each room row so active conversations are visible before opening them.",
+      "status": "preview",
+      "spec": "Spec 54",
+      "specLinks": [
+        {
+          "label": "Spec 54",
+          "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
+        }
+      ],
+      "flag": "room_list_typing_indicator",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "receipts-typing-indicator-visible",
+        "alt": "Charm room list and timeline showing another Matrix user typing",
+        "caption": "The E2E fixture emits a live typing update and verifies both the room-row preview and in-room indicator."
       }
     },
     {
