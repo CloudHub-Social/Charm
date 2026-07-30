@@ -89,6 +89,7 @@ const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::fro
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const AUTH_MAILS_PER_ADDRESS: usize = 3;
 const AUTH_MAILS_PER_PROCESS: usize = 12;
+const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
@@ -965,11 +966,15 @@ pub async fn begin_registration(
                 email_retry_not_before: None,
                 created_at: started_at,
             };
-            let previous = state.pending_registration.lock().await.replace(pending);
+            restore_pending_registration_if_current(
+                &app,
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await?;
             reservation.defuse();
-            if let Some(previous) = previous {
-                discard_pending_registration(&app, previous);
-            }
             Ok(step)
         }
     }
@@ -1502,7 +1507,6 @@ pub async fn request_password_reset(
 ) -> Result<PasswordResetChallenge, String> {
     ensure_registration_feature_enabled(&app)?;
     let delivery_email = email.trim().to_owned();
-    check_auth_mail_quota(&state, &delivery_email).await?;
     let started_at = std::time::Instant::now();
     let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
     state.pending_password_reset.lock().await.take();
@@ -1527,6 +1531,7 @@ pub async fn request_password_reset(
             Err("password reset attempt expired; start again".to_string())
         }
     }?;
+    check_auth_mail_quota(&state, &delivery_email).await?;
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
@@ -1544,28 +1549,32 @@ pub async fn request_password_reset(
             return Err("password reset attempt expired; start again".to_string());
         }
     };
-    let response = match response {
-        Ok(response) => response,
+    let (sid, submit_url, requires_token) = match response {
+        Ok(response) => {
+            let submit_url = sanitize_password_reset_submit_url(
+                &client.homeserver(),
+                response.submit_url.as_deref(),
+            )?;
+            let requires_token = submit_url.is_some();
+            (response.sid, submit_url, requires_token)
+        }
         Err(_) => {
             // Matrix deliberately permits homeservers to reject an unknown
-            // address here. Advancing to the same pre-verification UI state
-            // keeps that rejection indistinguishable from a sent email.
-            clear_password_reset_cancellation(&state, &attempt_id);
-            return Ok(PasswordResetChallenge {
-                attempt_id,
-                requires_token: false,
-            });
+            // address here. Retain a synthetic pending validation session so
+            // confirmation also behaves like a real but unverified attempt;
+            // otherwise the missing pending entry becomes an account oracle.
+            let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
+                .map_err(|_| "could not start password reset".to_string())?;
+            (sid, None, false)
         }
     };
     if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
         return Err("password reset attempt was superseded".to_string());
     }
-    let submit_url =
-        sanitize_password_reset_submit_url(&client.homeserver(), response.submit_url.as_deref())?;
     let pending = PendingPasswordReset {
         client,
         client_secret,
-        sid: response.sid,
+        sid,
         submit_url,
         token_submitted: false,
         attempt_id: attempt_id.clone(),
@@ -1583,7 +1592,7 @@ pub async fn request_password_reset(
     spawn_password_reset_expiry(app, attempt_id.clone(), started_at);
     Ok(PasswordResetChallenge {
         attempt_id,
-        requires_token: response.submit_url.is_some(),
+        requires_token,
     })
 }
 
@@ -1960,7 +1969,6 @@ pub async fn login_with_token(
     token: String,
 ) -> Result<LoginResponse, String> {
     ensure_registration_feature_enabled(&app)?;
-    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     if let Some(pending) = state.pending_sso.lock().await.take() {
         let store_key = pending.store_key.clone();
@@ -1970,21 +1978,33 @@ pub async fn login_with_token(
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = match build_client(&app, &homeserver_url, &store_key).await {
-        Ok(client) => client,
-        Err(error) => {
+    let client = match tokio::time::timeout(
+        AUTH_NETWORK_TIMEOUT,
+        build_client(&app, &homeserver_url, &store_key),
+    )
+    .await
+    {
+        Ok(Ok(client)) => client,
+        Err(_) => {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("token login setup timed out".to_string());
+        }
+        Ok(Err(error)) => {
             let _ = persistence::discard_temp_login_store(&app, &store_key);
             return Err(error);
         }
     };
-    let flows = match client.matrix_auth().get_login_types().await {
-        Ok(flows) => flows,
-        Err(_) => {
-            drop(client);
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return Err("could not verify token login support".to_string());
-        }
-    };
+    let flows =
+        match tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().get_login_types())
+            .await
+        {
+            Ok(Ok(flows)) => flows,
+            Ok(Err(_)) | Err(_) => {
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("could not verify token login support".to_string());
+            }
+        };
     if !flows
         .flows
         .iter()
@@ -1995,19 +2015,24 @@ pub async fn login_with_token(
         return Err("this homeserver does not advertise token login".to_string());
     }
 
-    if client
-        .matrix_auth()
-        .login_token(&token)
-        .initial_device_display_name("Charm")
-        .send()
-        .await
-        .is_err()
-    {
+    if !matches!(
+        tokio::time::timeout(
+            AUTH_NETWORK_TIMEOUT,
+            client
+                .matrix_auth()
+                .login_token(&token)
+                .initial_device_display_name("Charm")
+                .send(),
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
     reservation.defuse();
+    let _restore_store_guard = restore_store_lock().lock().await;
     let cleanup_key = store_key.clone();
     match finish_registration(app.clone(), &state, client, store_key, None, None).await {
         Ok(session) => Ok(session),
@@ -2036,7 +2061,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
                     .extend(sso.identity_providers.into_iter().map(|provider| {
                         LoginIdentityProvider {
                             id: provider.id,
-                            name: provider.name,
+                            name: sanitized_provider_name(&provider.name),
                             brand: provider.brand.map(|brand| brand.as_str().to_owned()),
                         }
                     }));
@@ -2045,6 +2070,29 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
         }
     }
     summary
+}
+
+fn sanitized_provider_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    *character as u32,
+                    0x061c
+                        | 0x200e
+                        | 0x200f
+                        | 0x202a..=0x202e
+                        | 0x2066..=0x2069
+                )
+        })
+        .take(80)
+        .collect::<String>();
+    if sanitized.trim().is_empty() {
+        "Single sign-on".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn identity_provider_is_advertised(flows: &[LoginType], idp_id: &str) -> bool {
@@ -2123,14 +2171,17 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
         let state = app.state::<MatrixState>();
-        if let Some(cancellation) = state
-            .pending_registration_cancel
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            .filter(|(current_id, _)| current_id == &attempt_id)
-            .map(|(_, cancellation)| cancellation.clone())
-        {
+        let cancellation = {
+            let guard = state
+                .pending_registration_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            guard
+                .as_ref()
+                .filter(|(current_id, _)| current_id == &attempt_id)
+                .map(|(_, cancellation)| cancellation.clone())
+        };
+        if let Some(cancellation) = cancellation {
             cancellation.cancel();
             clear_registration_cancellation(&state, &attempt_id);
         }
@@ -2442,7 +2493,6 @@ pub async fn start_sso_login(
         ensure_registration_feature_enabled(&app)?;
     }
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
-    let _restore_store_guard = restore_store_lock().lock().await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
@@ -2572,7 +2622,7 @@ mod registration_uia_tests {
     use super::{
         check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
         is_public_network_ip, next_registration_stage, registration_auth_data,
-        registration_fallback_url, sanitize_password_reset_submit_url,
+        registration_fallback_url, sanitize_password_reset_submit_url, sanitized_provider_name,
         sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
         PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
         AUTH_MAILS_PER_ADDRESS,
@@ -2797,6 +2847,15 @@ mod registration_uia_tests {
             summary.identity_providers[0].brand.as_deref(),
             Some("github")
         );
+    }
+
+    #[test]
+    fn sanitizes_untrusted_identity_provider_labels() {
+        let name = format!("Secure\u{202e}evil{}", "x".repeat(100));
+        let sanitized = sanitized_provider_name(&name);
+        assert!(!sanitized.contains('\u{202e}'));
+        assert_eq!(sanitized.chars().count(), 80);
+        assert_eq!(sanitized_provider_name("\u{200f}\n"), "Single sign-on");
     }
 
     #[test]

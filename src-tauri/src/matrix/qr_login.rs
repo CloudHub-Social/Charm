@@ -82,7 +82,6 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         &app.state::<MatrixState>(),
     )
     .await;
-    let _restore_store_guard = super::auth::restore_store_lock().lock().await;
     // Guards against a double-start (e.g. a double click) leaving two login
     // tasks running concurrently, one of which would hold a stale
     // pending_qr_check_code no longer reachable from the frontend.
