@@ -109,4 +109,26 @@ describe("AppearancePanel", () => {
       ),
     );
   });
+
+  it("persists timeline membership and hidden-event visibility controls", async () => {
+    renderPanel();
+    const membership = screen.getByRole("switch", { name: "Show membership events" });
+    const hidden = screen.getByRole("switch", { name: "Show hidden state events" });
+    expect(membership).toBeChecked();
+    expect(hidden).not.toBeChecked();
+
+    fireEvent.click(membership);
+    fireEvent.click(hidden);
+
+    expect(membership).not.toBeChecked();
+    expect(hidden).toBeChecked();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({
+          state: expect.objectContaining({ hideMembershipEvents: true, showHiddenEvents: true }),
+        }),
+      ),
+    );
+  });
 });

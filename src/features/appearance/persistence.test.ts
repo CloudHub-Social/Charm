@@ -42,6 +42,8 @@ describe("local mirror", () => {
       showUnreadCounts: false,
       autoplayGifs: true,
       stripExifOnUpload: true,
+      hideMembershipEvents: false,
+      showHiddenEvents: false,
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -176,6 +178,8 @@ describe("mergeAppearance", () => {
       showUnreadCounts: true,
       autoplayGifs: false,
       stripExifOnUpload: false,
+      hideMembershipEvents: false,
+      showHiddenEvents: false,
     };
     expect(mergeAppearance(full)).toEqual(full);
   });

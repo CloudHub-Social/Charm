@@ -5,6 +5,7 @@ import {
   onTimelineUpdate,
   type RoomMessageSummary,
   type RoomSummary,
+  type TimelineItemSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { messageRowKey } from "./messageRowShared";
@@ -31,6 +32,7 @@ export function useChatTimeline(
   hasPendingJump = false,
 ) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
+  const [timelineItems, setTimelineItems] = useState<TimelineItemSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
@@ -270,6 +272,16 @@ export function useChatTimeline(
     return newPrependedCount;
   }
 
+  function applyTimelineItems(
+    newMessages: RoomMessageSummary[],
+    newItems: TimelineItemSummary[] | null | undefined,
+  ): number {
+    setTimelineItems(
+      newItems ?? newMessages.map((message) => ({ kind: "message" as const, message })),
+    );
+    return applyMessages(newMessages);
+  }
+
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
     // this a fresh `room` reference on every `room_list:update`, and
@@ -289,6 +301,7 @@ export function useChatTimeline(
     setPrependedCount(0);
     if (!timelineRoomId) {
       setMessages([]);
+      setTimelineItems([]);
       setLoading(false);
       return undefined;
     }
@@ -308,7 +321,7 @@ export function useChatTimeline(
     getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
         if (cancelled) return;
-        applyMessages(page.messages);
+        applyTimelineItems(page.messages, page.items);
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
       })
@@ -366,7 +379,7 @@ export function useChatTimeline(
     try {
       const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
       if (visitGenerationRef.current !== generation) return false;
-      applyMessages(page.messages);
+      applyTimelineItems(page.messages, page.items);
       nextCursorRef.current = page.next_cursor;
       setHasMore(page.next_cursor !== null);
       return true;
@@ -403,7 +416,7 @@ export function useChatTimeline(
       // `setMessages`) detects that via identity, not just an appended tail,
       // and shifts `firstItemIndex` if so, without double-shifting once
       // `loadMoreHistory`'s own response lands afterward for the same change.
-      applyMessages(update.messages);
+      applyTimelineItems(update.messages, update.items);
     });
     return () => {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
@@ -620,7 +633,7 @@ export function useChatTimeline(
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
         const wasEmpty = previousMessagesRef.current.length === 0;
-        const prependedByThisPage = applyMessages(page.messages);
+        const prependedByThisPage = applyTimelineItems(page.messages, page.items);
         setPaginationError(false);
         const madeProgress =
           firstItemIndexRef.current < initialFirstItemIndex ||
@@ -654,6 +667,7 @@ export function useChatTimeline(
 
   return {
     messages,
+    timelineItems,
     loading,
     loadingMore,
     hasMore,

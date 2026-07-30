@@ -643,6 +643,11 @@ where
 #[ts(export, export_to = "../src/bindings/")]
 pub struct TimelinePage {
     pub messages: Vec<RoomMessageSummary>,
+    /// Full message/state/membership stream for Spec 39 consumers. Kept
+    /// alongside `messages` so existing message-only surfaces remain stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Vec<TimelineItemSummary>>,
     /// Spec 14 tweak (the one allowed IPC-contract change): with a
     /// `matrix-sdk-ui` `Timeline` backing pagination, there's no opaque
     /// server-side cursor to resume from any more — `Timeline::paginate_backwards`
@@ -669,6 +674,20 @@ pub struct TimelinePage {
 pub struct RoomTimelineUpdate {
     pub room_id: String,
     pub messages: Vec<RoomMessageSummary>,
+    /// Full message/state/membership snapshot matching `TimelinePage::items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Vec<TimelineItemSummary>>,
+}
+
+fn message_summaries(items: &[TimelineItemSummary]) -> Vec<RoomMessageSummary> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TimelineItemSummary::Message { message } => Some((**message).clone()),
+            TimelineItemSummary::Membership { .. } | TimelineItemSummary::State { .. } => None,
+        })
+        .collect()
 }
 
 /// Re-snapshots a `Timeline`'s current items into `RoomMessageSummary`s,
@@ -1114,8 +1133,9 @@ pub(crate) fn spawn_timeline_listener(
         // task otherwise only holds the `'static` `AppHandle`/`Client`.
         let state = app.state::<MatrixState>();
         let media_cache = state.require_media_cache(&app).await.ok();
-        let initial_summaries =
-            items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+        let initial_items =
+            items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
+        let initial_summaries = message_summaries(&initial_items);
         // Seed with every event id (and the latest timestamp) already present
         // before this listener subscribed — the initial `timeline:update` for
         // a room the user just opened is existing history, never a "new
@@ -1127,6 +1147,7 @@ pub(crate) fn spawn_timeline_listener(
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages: initial_summaries,
+                items: Some(initial_items),
             },
         );
 
@@ -1147,8 +1168,9 @@ pub(crate) fn spawn_timeline_listener(
             }
             let state = app.state::<MatrixState>();
             let media_cache = state.require_media_cache(&app).await.ok();
-            let summaries =
-                items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+            let timeline_items =
+                items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
+            let summaries = message_summaries(&timeline_items);
 
             let new_messages: Vec<&RoomMessageSummary> =
                 summaries.iter().filter(|m| dedup.is_new(m)).collect();
@@ -1163,6 +1185,7 @@ pub(crate) fn spawn_timeline_listener(
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
                     messages: summaries,
+                    items: Some(timeline_items),
                 },
             );
         }
@@ -1340,8 +1363,11 @@ pub async fn get_timeline_page_impl(
     // this second subscription's stream half is dropped immediately below.
     let (items, _stream) = timeline.subscribe().await;
 
+    let timeline_items =
+        items_to_timeline_items(&items, own_user_id.as_deref(), client, media_cache).await;
     Ok(TimelinePage {
-        messages: items_to_summaries(&items, own_user_id.as_deref(), client, media_cache).await,
+        messages: message_summaries(&timeline_items),
+        items: Some(timeline_items),
         next_cursor: if hit_start {
             None
         } else {

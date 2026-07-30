@@ -55,6 +55,81 @@ test("link previews render inside a complete conversation", async ({ page }) => 
   await captureSnapshot(page, "feature-link-previews");
 });
 
+test("timeline membership changes collapse into expandable notices", async ({ page }) => {
+  await page.addInitScript(enableFlags, { timeline_state_events: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+
+  const message = {
+    event_id: "$after-joins",
+    sender: "@alice:cloudhub.social",
+    sender_display_name: "Alice",
+    sender_avatar_url: null,
+    sender_avatar_path: null,
+    body: "Welcome to the room!",
+    formatted_body: null,
+    timestamp_ms: 1735689601000,
+    edited: false,
+    redacted: false,
+    reactions: [],
+    in_reply_to: null,
+    transaction_id: null,
+    send_state: { state: "sent" },
+    media: null,
+    is_undecrypted: false,
+  };
+  await page.evaluate(
+    ({ roomId, message: timelineMessage }) => {
+      const memberships = [
+        ["Alice", "@alice:cloudhub.social"],
+        ["Bob", "@bob:cloudhub.social"],
+        ["Carol", "@carol:cloudhub.social"],
+      ].map(([name, userId], index) => ({
+        kind: "membership",
+        event_id: `$join-${index + 1}`,
+        sender: userId,
+        timestamp_ms: 1735689600001 + index,
+        target_user_id: userId,
+        target_display_name: `${name} (${userId})`,
+        change: { type: "joined" },
+        reason: null,
+      }));
+      window.__e2eEmit("timeline:update", {
+        room_id: roomId,
+        messages: [timelineMessage],
+        items: [
+          ...memberships,
+          {
+            kind: "state",
+            event_id: "$topic",
+            sender: "@alice:cloudhub.social",
+            timestamp_ms: 1735689600004,
+            state_key: "",
+            change: { type: "topic", old_value: null, new_value: "Daily-driver parity" },
+          },
+          { kind: "message", message: timelineMessage },
+        ],
+      });
+    },
+    { roomId: ROOM.room_id, message },
+  );
+
+  await expect(
+    page.getByRole("button", {
+      name: "Alice (@alice:cloudhub.social), Bob (@bob:cloudhub.social) and 1 others joined",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("@alice:cloudhub.social changed the topic to Daily-driver parity"),
+  ).toBeVisible();
+  await captureSnapshot(page, "feature-timeline-state-events");
+});
+
 test("room aliases render in the full room settings flow", async ({ page }) => {
   await page.addInitScript(enableFlags, { room_alias_management: true });
   await page.addInitScript(installMockTauri, {

@@ -1,13 +1,15 @@
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback } from "react";
 import {
   autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
+  hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   showUnreadCountsAtom,
+  showHiddenEventsAtom,
   stripExifOnUploadAtom,
   themeAtom,
   type AppearanceState,
@@ -34,6 +36,7 @@ import { persistAppearance } from "./persistence";
  * atom + persist commit as every other field for consistency.
  */
 export function useAppearance() {
+  const store = useStore();
   const [theme, setThemeAtom] = useAtom(themeAtom);
   const [fontSize, setFontSizeAtom] = useAtom(fontSizeAtom);
   const [density, setDensityAtom] = useAtom(densityAtom);
@@ -43,35 +46,29 @@ export function useAppearance() {
   const [showUnreadCounts, setShowUnreadCountsAtom] = useAtom(showUnreadCountsAtom);
   const [autoplayGifs, setAutoplayGifsAtom] = useAtom(autoplayGifsAtom);
   const [stripExifOnUpload, setStripExifOnUploadAtom] = useAtom(stripExifOnUploadAtom);
+  const [hideMembershipEvents, setHideMembershipEventsAtom] = useAtom(hideMembershipEventsAtom);
+  const [showHiddenEvents, setShowHiddenEventsAtom] = useAtom(showHiddenEventsAtom);
 
   const commit = useCallback(
     (patch: Partial<AppearanceState>) => {
       const next: AppearanceState = {
-        theme,
-        fontSize,
-        density,
-        reducedMotion,
-        messageLayout,
-        jumboEmojiSize,
-        showUnreadCounts,
-        autoplayGifs,
-        stripExifOnUpload,
+        theme: store.get(themeAtom),
+        fontSize: store.get(fontSizeAtom),
+        density: store.get(densityAtom),
+        reducedMotion: store.get(reducedMotionAtom),
+        messageLayout: store.get(messageLayoutAtom),
+        jumboEmojiSize: store.get(jumboEmojiSizeAtom),
+        showUnreadCounts: store.get(showUnreadCountsAtom),
+        autoplayGifs: store.get(autoplayGifsAtom),
+        stripExifOnUpload: store.get(stripExifOnUploadAtom),
+        hideMembershipEvents: store.get(hideMembershipEventsAtom),
+        showHiddenEvents: store.get(showHiddenEventsAtom),
         ...patch,
       };
       applyAppearanceToDom(next);
       void persistAppearance(next);
     },
-    [
-      autoplayGifs,
-      density,
-      fontSize,
-      jumboEmojiSize,
-      messageLayout,
-      reducedMotion,
-      showUnreadCounts,
-      stripExifOnUpload,
-      theme,
-    ],
+    [store],
   );
 
   const setTheme = useCallback(
@@ -146,6 +143,22 @@ export function useAppearance() {
     [commit, setStripExifOnUploadAtom],
   );
 
+  const setHideMembershipEvents = useCallback(
+    (next: boolean) => {
+      setHideMembershipEventsAtom(next);
+      commit({ hideMembershipEvents: next });
+    },
+    [commit, setHideMembershipEventsAtom],
+  );
+
+  const setShowHiddenEvents = useCallback(
+    (next: boolean) => {
+      setShowHiddenEventsAtom(next);
+      commit({ showHiddenEvents: next });
+    },
+    [commit, setShowHiddenEventsAtom],
+  );
+
   return {
     theme,
     fontSize,
@@ -156,6 +169,8 @@ export function useAppearance() {
     showUnreadCounts,
     autoplayGifs,
     stripExifOnUpload,
+    hideMembershipEvents,
+    showHiddenEvents,
     setTheme,
     setFontSize,
     setDensity,
@@ -165,5 +180,7 @@ export function useAppearance() {
     setShowUnreadCounts,
     setAutoplayGifs,
     setStripExifOnUpload,
+    setHideMembershipEvents,
+    setShowHiddenEvents,
   };
 }

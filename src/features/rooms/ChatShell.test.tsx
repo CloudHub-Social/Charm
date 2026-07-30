@@ -11,12 +11,17 @@ import type {
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
+  TimelineItemSummary,
   TypingUpdate,
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { messageRowKey } from "./messageRowShared";
 import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
-import { messageLayoutAtom } from "@/features/appearance/atoms";
+import {
+  hideMembershipEventsAtom,
+  messageLayoutAtom,
+  showHiddenEventsAtom,
+} from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // LinkPreviewForMessage (Spec 29) reads the room-details query cache via
@@ -336,6 +341,19 @@ function summary(
     media: null,
     is_undecrypted: false,
     ...overrides,
+  };
+}
+
+function joinedMembershipItem(id: string, name: string): TimelineItemSummary {
+  return {
+    kind: "membership",
+    event_id: `$${id}`,
+    sender: `@${id}:localhost`,
+    timestamp_ms: 1,
+    target_user_id: `@${id}:localhost`,
+    target_display_name: name,
+    change: { type: "joined" },
+    reason: null,
   };
 }
 
@@ -5104,5 +5122,66 @@ describe("ChatShell", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("renders and expands collapsed membership notices before the next message", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [
+        joinedMembershipItem("alice", "Alice"),
+        joinedMembershipItem("bob", "Bob"),
+        { kind: "message", message },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+    const collapsed = await screen.findByRole("button", { name: "Alice and Bob joined" });
+    fireEvent.click(collapsed);
+    expect(screen.getByText("Alice joined")).toBeInTheDocument();
+    expect(screen.getByText("Bob joined")).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+
+  it("renders state-only timelines and respects membership and hidden-event settings", async () => {
+    const store = createStore();
+    store.set(hideMembershipEventsAtom, true);
+    store.set(showHiddenEventsAtom, true);
+    getTimelinePage.mockResolvedValue({
+      messages: [],
+      items: [
+        {
+          kind: "membership",
+          event_id: "$join",
+          sender: "@alice:localhost",
+          timestamp_ms: 1,
+          target_user_id: "@alice:localhost",
+          target_display_name: "Alice",
+          change: { type: "joined" },
+          reason: null,
+        },
+        {
+          kind: "state",
+          event_id: "$custom",
+          sender: "@mod:localhost",
+          timestamp_ms: 2,
+          state_key: "",
+          change: { type: "hidden", event_type: "com.example.custom" },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell(store);
+    expect(
+      await screen.findByText("@mod:localhost changed com.example.custom"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Alice joined")).not.toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
   });
 });

@@ -194,6 +194,26 @@
       }
     },
     {
+      "slug": "timeline-state-events",
+      "title": "Timeline membership and state notices",
+      "summary": "See room membership, profile, name, topic, avatar, upgrade, and optional hidden-state changes in context without overwhelming busy rooms.",
+      "status": "preview",
+      "spec": "Spec 39",
+      "specLinks": [
+        {
+          "label": "Spec 39",
+          "href": "/specs/day-1/spec-39--timeline-state-and-membership-events/"
+        }
+      ],
+      "flag": "timeline_state_events",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-timeline-state-events",
+        "alt": "Charm conversation showing collapsed membership joins and a room topic notice",
+        "caption": "Consecutive joins collapse into one expandable system notice while room-state changes remain visible in context."
+      }
+    },
+    {
       "slug": "spaces",
       "title": "Spaces and room organization",
       "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages.",

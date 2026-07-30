@@ -40,6 +40,12 @@ import { useMessagePinning } from "./useMessagePinning";
 import { useMessageActionController } from "./useMessageActionController";
 import { MessageActionDialogs } from "./MessageActionDialogs";
 import { TimelineMessageRow } from "./TimelineMessageRow";
+import {
+  hideMembershipEventsAtom,
+  messageLayoutAtom,
+  showHiddenEventsAtom,
+} from "@/features/appearance/atoms";
+import { bucketTimelineNotices, TimelineNoticeList } from "./TimelineNotices";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -206,6 +212,10 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const timelineStateEventsEnabled = useFlag("timeline_state_events");
+  const messageLayout = useAtomValue(messageLayoutAtom);
+  const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
+  const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -272,6 +282,7 @@ export function ChatShell({
   const roomSettingsOpen = roomSettingsTarget !== null;
   const {
     messages,
+    timelineItems,
     loading,
     loadingMore,
     hasMore,
@@ -282,6 +293,15 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
+  const noticeBuckets = useMemo(
+    () =>
+      timelineStateEventsEnabled
+        ? bucketTimelineNotices(timelineItems, hideMembershipEvents, showHiddenEvents)
+        : { beforeMessage: new Map(), trailing: [] },
+    [hideMembershipEvents, showHiddenEvents, timelineItems, timelineStateEventsEnabled],
+  );
+  const hasVisibleNotices =
+    noticeBuckets.beforeMessage.size > 0 || noticeBuckets.trailing.length > 0;
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of
@@ -294,11 +314,18 @@ export function ChatShell({
   // otherwise leaves every other dependency here unchanged once `loadingMore`
   // flips back to `false`, which would immediately re-trigger it again.
   useEffect(() => {
-    if (!loading && messages.length === 0 && hasMore && !loadingMore && !paginationError) {
+    if (
+      !loading &&
+      messages.length === 0 &&
+      !hasVisibleNotices &&
+      hasMore &&
+      !loadingMore &&
+      !paginationError
+    ) {
       loadMoreHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
-  }, [loading, messages.length, hasMore, loadingMore, paginationError]);
+  }, [loading, messages.length, hasVisibleNotices, hasMore, loadingMore, paginationError]);
   // While this is true, `messages` is empty only because the empty-first-
   // page auto-pagination above is still working toward either real content
   // or a confirmed-exhausted history — not because the room's history is
@@ -311,7 +338,8 @@ export function ChatShell({
   // unlikely this early) counting toward the jump-to-present pill — and
   // would freeze the unread divider's position against an empty snapshot
   // instead of the room's actual unread boundary.
-  const awaitingEmptyPagePagination = messages.length === 0 && hasMore && !paginationError;
+  const awaitingEmptyPagePagination =
+    messages.length === 0 && !hasVisibleNotices && hasMore && !paginationError;
   const {
     virtuosoRef,
     atBottom,
@@ -586,7 +614,7 @@ export function ChatShell({
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
-        {!loading && messages.length === 0 && !hasMore && mobile && (
+        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && mobile && (
           <div className="flex flex-1 items-center justify-center px-6 text-center">
             <div className="flex max-w-xs flex-col items-center">
               <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
@@ -599,8 +627,13 @@ export function ChatShell({
             </div>
           </div>
         )}
-        {!loading && messages.length === 0 && !hasMore && !mobile && (
+        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && !mobile && (
           <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
+        )}
+        {!loading && messages.length === 0 && hasVisibleNotices && (
+          <div className="flex-1 overflow-y-auto p-4">
+            <TimelineNoticeList notices={noticeBuckets.trailing} irc={messageLayout === "irc"} />
+          </div>
         )}
         {!loading && messages.length === 0 && hasMore && paginationError && (
           <p className="p-4 text-sm text-muted-foreground">Couldn't load messages</p>
@@ -643,29 +676,40 @@ export function ChatShell({
             // row-local UI state could all end up attached to the wrong
             // message.
             computeItemKey={(_index, message) => messageRowKey(message)}
+            // eslint-disable-next-line react/no-unstable-nested-components -- Virtuoso's row render prop intentionally closes over the active room/controller snapshot.
             itemContent={(index, message) => {
               const i = index - firstItemIndex;
               const readers = receiptsByEvent.get(message.event_id) ?? [];
+              const before = noticeBuckets.beforeMessage.get(message.event_id) ?? [];
+              const trailing = i === messages.length - 1 ? noticeBuckets.trailing : [];
 
               return (
-                <TimelineMessageRow
-                  index={i}
-                  messages={messages}
-                  message={message}
-                  roomId={room.room_id}
-                  currentUserId={currentUserId}
-                  unreadStartIndex={unreadStartIdx}
-                  canRedact={canRedactBySender[message.sender] ?? false}
-                  canPin={canPinMessages}
-                  isPinned={pinnedEventIds.includes(message.event_id)}
-                  readers={readers}
-                  senderNameByUserId={senderNameByUserId}
-                  newMessageKeys={newMessageKeys}
-                  controller={messageActionController}
-                  onJumpToMessage={handleJumpToMessage}
-                  onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
-                  onRoomPillClick={onNavigateToRoom}
-                />
+                <>
+                  {before.length > 0 && (
+                    <TimelineNoticeList notices={before} irc={messageLayout === "irc"} />
+                  )}
+                  <TimelineMessageRow
+                    index={i}
+                    messages={messages}
+                    message={message}
+                    roomId={room.room_id}
+                    currentUserId={currentUserId}
+                    unreadStartIndex={unreadStartIdx}
+                    canRedact={canRedactBySender[message.sender] ?? false}
+                    canPin={canPinMessages}
+                    isPinned={pinnedEventIds.includes(message.event_id)}
+                    readers={readers}
+                    senderNameByUserId={senderNameByUserId}
+                    newMessageKeys={newMessageKeys}
+                    controller={messageActionController}
+                    onJumpToMessage={handleJumpToMessage}
+                    onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
+                    onRoomPillClick={onNavigateToRoom}
+                  />
+                  {trailing.length > 0 && (
+                    <TimelineNoticeList notices={trailing} irc={messageLayout === "irc"} />
+                  )}
+                </>
               );
             }}
           />
