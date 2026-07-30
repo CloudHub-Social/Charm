@@ -312,7 +312,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         setRegistrationEmailChallenge(challenge);
       }
     } catch (err) {
-      if (registrationEmailOperationRef.current === operation) setError(String(err));
+      if (registrationEmailOperationRef.current === operation) {
+        const message = String(err);
+        if (message.includes("registration ended:")) {
+          registrationAttemptRef.current = null;
+          setRegistrationStep(undefined);
+        }
+        setError(message.replace("registration ended:", "").trim());
+      }
     } finally {
       if (registrationEmailOperationRef.current === operation) setPending(false);
     }
@@ -340,17 +347,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  function handleCancelRegistration() {
+  async function handleCancelRegistration() {
     const attemptId = registrationAttemptRef.current;
     registrationAttemptRef.current = null;
     registrationEmailOperationRef.current += 1;
+    if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
     setRegistrationStep(undefined);
     setRegistrationEmailChallenge(undefined);
     setRegistrationEmail("");
     setRegistrationEmailToken("");
     setPending(false);
     setError(null);
-    if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
   }
 
   async function handleOpenRegistrationUrl(url: string) {
@@ -601,12 +608,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           <Tabs
             value={mode}
             onValueChange={(value) => {
-              if (registrationStep) handleCancelRegistration();
-              setMode(value as Mode);
-              setShowTokenLogin(false);
-              setLoginToken("");
-              setError(null);
-              if (ssoPending) handleCancelSso();
+              void (async () => {
+                if (registrationStep) await handleCancelRegistration();
+                setMode(value as Mode);
+                setShowTokenLogin(false);
+                setLoginToken("");
+                setError(null);
+                if (ssoPending) handleCancelSso();
+              })();
             }}
           >
             <TabsList className="w-full">
@@ -723,6 +732,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                             {pending && <Loader2 className="animate-spin" />}
                             Complete email verification
                           </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() => void handleRequestRegistrationEmail()}
+                          >
+                            Resend verification email
+                          </Button>
                           <p className="text-xs text-muted-foreground">
                             To use a different email address, cancel this registration and start
                             again.
@@ -763,7 +780,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     )}
 
                   {error && <p className="text-xs text-destructive">{error}</p>}
-                  <Button type="button" variant="ghost" onClick={handleCancelRegistration}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void handleCancelRegistration()}
+                  >
                     Cancel account creation
                   </Button>
                 </div>
