@@ -37,6 +37,34 @@ import { isWebBuild } from "@/lib/platform";
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
 const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
+const TERMINAL_REGISTRATION_ERRORS = [
+  "registration ended:",
+  "registration attempt expired",
+  "registration attempt is no longer current",
+  "no registration is in progress",
+  "registration cancelled",
+];
+const TERMINAL_PASSWORD_RESET_ERRORS = [
+  "password reset attempt expired",
+  "password reset attempt was superseded",
+  "password reset attempt is no longer current",
+  "password reset attempt expired or was cancelled",
+  "no password reset is in progress",
+];
+
+function isTerminalRegistrationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) =>
+    normalized.includes(terminalError),
+  );
+}
+
+function isTerminalPasswordResetError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_PASSWORD_RESET_ERRORS.some((terminalError) =>
+    normalized.includes(terminalError),
+  );
+}
 
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
@@ -312,9 +340,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     } catch (err) {
       if (registrationEmailOperationRef.current === operation) {
         const message = String(err);
-        if (message.includes("registration ended:")) {
+        if (isTerminalRegistrationError(message)) {
           registrationAttemptRef.current = null;
           setRegistrationStep(undefined);
+          setRegistrationEmailChallenge(undefined);
+          setRegistrationEmail("");
+          setRegistrationEmailToken("");
         }
         setError(message.replace("registration ended:", "").trim());
       }
@@ -339,7 +370,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       await handleRegistrationStep(step, operation);
     } catch (err) {
-      if (registrationEmailOperationRef.current === operation) setError(String(err));
+      if (registrationEmailOperationRef.current === operation) {
+        const message = String(err);
+        if (isTerminalRegistrationError(message)) {
+          registrationAttemptRef.current = null;
+          setRegistrationStep(undefined);
+          setRegistrationEmailChallenge(undefined);
+          setRegistrationEmail("");
+          setRegistrationEmailToken("");
+        }
+        setError(message.replace("registration ended:", "").trim());
+      }
     } finally {
       if (registrationEmailOperationRef.current === operation) setPending(false);
     }
@@ -461,11 +502,19 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setNewPassword("");
       setPassword("");
       setPasswordResetComplete(true);
-    } catch {
+    } catch (error) {
       if (passwordResetOperationRef.current === operation) {
-        setError(
-          "Password reset could not be confirmed. Verify the email step and new password, then try again.",
-        );
+        if (isTerminalPasswordResetError(String(error))) {
+          passwordResetAttemptRef.current = null;
+          setPasswordResetChallenge(undefined);
+          setRecoveryToken("");
+          setNewPassword("");
+          setError("Password reset expired. Request a new recovery email.");
+        } else {
+          setError(
+            "Password reset could not be confirmed. Verify the email step and new password, then try again.",
+          );
+        }
       }
     } finally {
       if (passwordResetOperationRef.current === operation) setPending(false);
