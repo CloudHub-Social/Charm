@@ -197,7 +197,7 @@ export function SpaceRail({
       const { [roomId]: _stale, ...rest } = prev;
       return rest;
     });
-    getRoomDetails(roomId)
+    return getRoomDetails(roomId)
       .then((details) => {
         if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
         setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
@@ -289,9 +289,15 @@ export function SpaceRail({
       recomputeDropRef.current = null;
     };
   }, [updateSpaceDrop]);
+  useEffect(() => {
+    recomputeDropRef.current?.();
+  }, [permissionsById]);
+  useEffect(() => {
+    if (!hierarchyReorganizationEnabled) setMoveTarget(null);
+  }, [hierarchyReorganizationEnabled]);
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
-      if (spaceParentMutationPending) return;
+      if (!hierarchyReorganizationEnabled || spaceParentMutationPending) return;
       // `RoomSummary.parent_space_ids` deliberately does not expose which
       // edge is canonical. Do not skip a drop merely because the target is
       // already one of the Matrix parents: the command may still need to
@@ -320,7 +326,7 @@ export function SpaceRail({
           onSpaceChildrenChanged?.();
         });
     },
-    [onSpaceChildrenChanged, spaceParentMutationPending],
+    [hierarchyReorganizationEnabled, onSpaceChildrenChanged, spaceParentMutationPending],
   );
   const finishSpaceDrop = useCallback(
     (sourceId: string) => {
@@ -623,9 +629,12 @@ export function SpaceRail({
                 <ContextMenuItem
                   disabled={spaceParentMutationPending || ownPermissions?.set_space_parent !== true}
                   onSelect={() => {
-                    for (const candidate of rooms) {
-                      if (candidate.is_space) ensurePermissionsLoaded(candidate.room_id);
-                    }
+                    const candidates = rooms.filter((candidate) => candidate.is_space);
+                    void (async () => {
+                      for (const candidate of candidates) {
+                        await ensurePermissionsLoaded(candidate.room_id);
+                      }
+                    })();
                     setMoveTarget({ spaceId: space.room_id, name: label, parentId });
                   }}
                 >
