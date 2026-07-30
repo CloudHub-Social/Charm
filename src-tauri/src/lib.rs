@@ -1591,12 +1591,7 @@ pub fn run() {
             #[cfg(desktop)]
             if let tauri::RunEvent::Exit = event {
                 let matrix_state = app_handle.state::<matrix::MatrixState>();
-                tauri::async_runtime::block_on(
-                    matrix::auth::cancel_pending_registration_for_superseding_auth(
-                        app_handle,
-                        &matrix_state,
-                    ),
-                );
+                matrix::auth::cancel_pending_registration_on_exit(app_handle, &matrix_state);
                 if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
                     mark_clean_exit(&app_data_dir);
                 }

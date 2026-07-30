@@ -73,7 +73,12 @@ test("password recovery requests email validation and sets a new password", asyn
   await page.getByRole("button", { name: "Forgot password?" }).click();
   await page.getByLabel("Email").fill("alice@example.org");
   await page.getByRole("button", { name: "Send recovery email" }).click();
-  await expect(page.getByText("Open the link in your email, then return here.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Follow the instructions in your email. If it includes a token, enter it below.",
+    ),
+  ).toBeVisible();
+  await page.getByLabel("Email token (if provided)").fill("email-validation-token");
   await page.getByLabel("New password").fill("new correct horse battery staple");
   await page.getByRole("button", { name: "Reset password" }).click();
 
