@@ -430,107 +430,29 @@ See the corrected-root-cause note in the Android detail section above: the fix
 that landed is a manifest-only change (`CAMERA`/`RECORD_AUDIO`/
 `MODIFY_AUDIO_SETTINGS` permissions), not new Kotlin `WebChromeClient` code,
 because wry already implements the grant/deny callback. Device/emulator
-verification is still outstanding. The rest of this section is kept as
-originally written for historical context only; it is superseded and must not be
-used as an instruction to add a second `WebChromeClient`.
+verification is still outstanding. The superseded Kotlin implementation scope
+and acceptance criteria have been removed so this section cannot be mistaken
+for an instruction to add a second `WebChromeClient`.
 
 The pre-fix `getUserMedia` hang remains valid historical evidence. Its original
 root-cause attribution below is not: pinned wry source confirmed that the handler
 already existed, while the Android manifest permissions did not. Closure resumes
 only when a device/emulator can re-run Buttons A/B against the merged manifest fix.
 
-**Environment constraint driving this handoff:** the session doing this
-implementation work may not have an Android SDK/emulator or device available
-(confirmed: this was true of the current session, 2026-07-13 — no
-`android_sdk_root`/emulator tooling present). **Do not block on that.** Land the
-code change and the manifest/permission wiring regardless; end-to-end
-verification (the actual `getUserMedia` grant + `RTCPeerConnection` +
-`getDisplayMedia` re-run against the harness) happens in a *separate* session
-that has emulator/device access — same shape as how Windows's CI-based run and
-Android's own 10-iteration CI run were done in this spike. Flag in the PR
-description that manual/CI verification is a follow-up, not a blocker for
-merging the code.
+### Closed implementation scope
 
-### Historical problem recap (superseded by the corrected root cause above)
-
-`android.permission.CAMERA` / `android.permission.RECORD_AUDIO` are already
-declared in `AndroidManifest.xml` (OS-level runtime permission), but that's
-necessary and not sufficient for in-webview media access. The generated Android
-shell's `WebView` never overrides `WebChromeClient.onPermissionRequest`, so
-when a page calls `getUserMedia`, the in-page permission negotiation has no
-handler to resolve it — the call hangs forever (not reject, not error).
-Confirmed today: `src-tauri/gen/android/app/src/main/java/social/cloudhub/charm/MainActivity.kt`
-on `main` is a bare `TauriActivity` subclass with no `WebChromeClient`
-override — the gap is still present outside the spike branch.
-
-### Scope (in)
-
-1. **Runtime permission request at the `Activity` level.** Before/on first use
-   of a calling surface, request `android.permission.CAMERA` and
-   `android.permission.RECORD_AUDIO` via the standard Android 6+
-   runtime-permission flow (`ActivityCompat.requestPermissions` /
-   `registerForActivityResult(RequestMultiplePermissions())`) if not already
-   granted. Manifest declaration alone (already present) does not grant these
-   at runtime on API 23+.
-2. **`WebChromeClient.onPermissionRequest` override.** Get (or set, if none
-   exists yet) a custom `WebChromeClient` on the Tauri-managed `WebView`
-   instance and override `onPermissionRequest(request: PermissionRequest)` to:
-   - Check the requested resources (`PermissionRequest.RESOURCE_VIDEO_CAPTURE`,
-     `RESOURCE_AUDIO_CAPTURE`).
-   - If the corresponding Android runtime permission is already granted, call
-     `request.grant(request.resources)` on the main thread.
-   - If not granted, deny (`request.deny()`) rather than hang — a real user
-     denial should surface as a JS-side rejection, not an indefinite hang. (The
-     hang itself, independent of grant/deny, is the bug this item fixes — a
-     resolved `deny()` is a correct terminal state; an unresolved promise is
-     not.)
-3. **Wire it into Tauri's Android shell correctly.** Tauri v2's generated
-   Android project builds the `WebView` through its own Kotlin/Rust bridge
-   (not a hand-rolled `WebView` in `MainActivity.kt`), so confirm the actual
-   integration point — likely overriding/extending the `WebViewClient`/
-   `WebChromeClient` Tauri already installs (check `RustWebViewClient` /
-   equivalent in the `gen/android` output, or whether a Tauri plugin hook
-   exists for this) rather than replacing Tauri's own `WebChromeClient`
-   wholesale and losing whatever it already does (e.g. `onShowFileChooser`,
-   console logging).
-4. **Don't reintroduce this on every `tauri android init` regen.** `gen/android`
-   is normally regenerable output. If the fix must live in a file under
-   `gen/android`, confirm whether that directory is checked in (it is, per
-   `MainActivity.kt` existing on `main` today — same "hand-edit checked-in
-   generated file" situation Spec 15 hit with Android's keyring backend) or
-   whether Tauri supports injecting this via a plugin/hook that survives
-   regeneration. Prefer the plugin/hook path if one exists; document the
-   choice either way so it isn't silently lost on the next `tauri android init`.
-
-### Non-goals (out)
-
-- No call UI, no MatrixRTC/Element Call wiring — same non-goals as the parent
-  spec. This item is purely the permission-callback plumbing.
-- No fix for Android `getDisplayMedia` — confirmed absent from Android WebView
-  entirely (MediaProjection is native-only); this is the pre-existing
-  EXPECTED-GAP from the spike, unchanged, and out of scope here.
-- No iOS or Linux work — tracked separately below, not part of this item.
-
-### Acceptance criteria
-
-- [ ] `AndroidManifest.xml` permission declarations unchanged/confirmed present
-      (already there).
-- [ ] Runtime permission request implemented and triggers on first
-      camera/mic-requiring action.
-- [ ] `WebChromeClient.onPermissionRequest` override implemented, granting only
-      resources whose corresponding Android runtime permission is already
-      held, denying (not hanging) otherwise.
-- [ ] Change integrates with Tauri's existing Android `WebView`
-      construction rather than replacing it outright (verify no regression to
-      existing `WebChromeClient` behavior, e.g. file chooser, if Tauri already
-      installs one).
-- [ ] PR description explicitly notes end-to-end verification (re-running the
-      spike harness's Button A/B on a real device or emulator) is a follow-up
-      once Android SDK/emulator access is available, not a merge blocker.
+- [x] Add `CAMERA`, `RECORD_AUDIO`, and `MODIFY_AUDIO_SETTINGS` to the Android
+      manifest while keeping camera/microphone hardware optional — PR #229.
+- [x] Preserve wry's existing `RustWebChromeClient` permission handling; do not
+      replace or duplicate it with application Kotlin.
 - [ ] Follow-up verification (separate session, when emulator/device access
       exists): re-run `public/spike-webrtc.html` Buttons A and B on Android and
       confirm (1) resolves PASS instead of hanging, updating the matrix in this
       findings doc from NO-GO to GO/CONDITIONAL as appropriate.
+
+Android `getDisplayMedia` remains an expected platform gap because Android
+WebView does not expose it. Call UI, MatrixRTC work, and iOS/Linux verification
+remain outside this Android implementation item.
 
 ### Other remaining gaps from this spike (unchanged, tracked here for completeness)
 
