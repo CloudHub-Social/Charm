@@ -103,8 +103,9 @@ connection: the SDK owns that schema and migration lifecycle.
   the preceding valid edit or original content only when the original is not
   tombstoned. A late edit/redaction, backfill, or replay therefore converges without
   retaining or resurrecting stale or redacted text.
-- Backfill: on first login (or first login after this feature ships for existing
-  users), index whatever history is already locally available in the SDK's store;
+- Backfill: on first login, and on the first index open after the feature flag
+  becomes enabled for an already-active account/session, index whatever history
+  is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
   organically as the user scrolls/syncs, same behavior as Seshat.
 - Redaction/edit handling follows the provenance rules above; replacement events
