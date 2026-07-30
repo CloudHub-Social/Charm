@@ -58,6 +58,10 @@ search will silently not work in any encrypted room, which is most rooms.
 Build a local full-text index in Rust, populated only after an event is available
 to Charm as decrypted timeline content. Each desktop account gets a dedicated
 `message-search.sqlite3` database in that account's Charm-owned data directory.
+Android and iOS use the same per-account Rust-owned database under Tauri's
+app-data directory, with identical account isolation and cleanup behavior; the
+mobile build verifies bundled SQLite FTS5/tokenizer availability and backup
+exclusion before enabling the flag.
 Each web-companion session gets a separate index beside the session's random
 `crypto_store_key`; indexes are never shared merely because two sessions use the
 same MXID.
@@ -105,6 +109,11 @@ connection: the SDK owns that schema and migration lifecycle.
   organically as the user scrolls/syncs, same behavior as Seshat.
 - Redaction/edit handling follows the provenance rules above; replacement events
   never become independent search results.
+- Because the index contains decrypted plaintext, deletion is physical as well as
+  logical: redaction and room/account purge rebuild affected FTS storage, enable
+  `secure_delete`, checkpoint and truncate WAL sidecars, and compact freelist pages
+  before reporting cleanup complete. Tests place a unique marker in an indexed
+  body and verify it is absent from the database, WAL, and SHM files after purge.
 - Leaving or forgetting a room atomically purges that room's visible rows and edit
   provenance. Global queries also verify joined membership before returning a
   result, so a failed purge cannot expose departed-room content.
@@ -191,7 +200,10 @@ rather than duplicating or skipping results. Results contain event ID, room ID,
 sender, origin timestamp, a plain-text snippet with match ranges, and the next
 cursor; they never contain FTS-generated HTML markup.
 
-No new Matrix protocol traffic occurs for local-index hits. If a homeserver-side fallback is desired for rooms
+Executing a local-index query causes no Matrix protocol traffic. Opening a result
+outside the loaded timeline can use the existing `/context` navigation path and
+therefore reveals that event ID to the homeserver; the UI discloses that boundary
+before the first network-backed jump. If a homeserver-side fallback is desired for rooms
 the local index hasn't caught up on yet (freshly joined room, unencrypted room with
 old history not yet synced), that's an explicit "search on server too" opt-in
 button, not automatic — avoid silently mixing local (private, but possibly
