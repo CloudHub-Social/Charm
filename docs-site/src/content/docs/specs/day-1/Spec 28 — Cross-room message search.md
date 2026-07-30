@@ -172,7 +172,7 @@ connection: the SDK owns that schema and migration lifecycle.
 
 ### Search UI
 
-- Entry point: a dedicated search affordance (e.g. `Cmd/Ctrl+K` or a search icon in
+- Entry point: a dedicated search affordance (`Cmd/Ctrl+F` or a search icon in
   the room-list header, distinct from Spec 19's existing "Search everywhere" filter
   — clarify/differentiate the two entry points so users don't confuse "find a room"
   with "find a message" during implementation).
