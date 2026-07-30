@@ -481,6 +481,29 @@ pub async fn set_space_parent_impl(
 
     let canonical_parent_ids = canonical_parent_ids(&child).await?;
 
+    // Validate every state-event permission we can know about before sending
+    // the first write. In particular, publishing the new parent's
+    // `m.space.child` edge before discovering that the child rejects
+    // `m.space.parent` would leave a visible, one-sided relationship.
+    require_state_permission(&child, StateEventType::SpaceParent).await?;
+    if let Some(parent) = &new_parent {
+        require_state_permission(parent, StateEventType::SpaceChild).await?;
+    }
+    for old_parent_id in &canonical_parent_ids {
+        if new_parent
+            .as_ref()
+            .is_some_and(|parent| parent.room_id() == old_parent_id)
+        {
+            continue;
+        }
+        if let Some(old_parent) = client
+            .get_room(old_parent_id)
+            .filter(|room| room.state() == matrix_sdk::RoomState::Joined && room.is_space())
+        {
+            require_state_permission(&old_parent, StateEventType::SpaceChild).await?;
+        }
+    }
+
     // Add/promote the new relationship before removing the old canonical
     // relationship, so a successful reparent never leaves the child
     // temporarily undiscoverable from every parent.
@@ -530,6 +553,20 @@ pub async fn set_space_parent_impl(
     }
 
     Ok(())
+}
+
+async fn require_state_permission(room: &Room, event_type: StateEventType) -> Result<(), String> {
+    let client = room.client();
+    let own_user_id = client.user_id().ok_or_else(|| "not logged in".to_owned())?;
+    let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
+    if power_levels.user_can_send_state(own_user_id, event_type.clone()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "insufficient permissions to send {event_type} in {}",
+            room.room_id()
+        ))
+    }
 }
 
 fn require_space(client: &Client, room_id: &str) -> Result<Room, String> {
@@ -910,21 +947,37 @@ mod tests {
         }
     }
 
-    async fn sync_space(server: &MatrixMockServer, client: &Client, room_id: &RoomId) {
+    async fn sync_space_with_power_level(
+        server: &MatrixMockServer,
+        client: &Client,
+        room_id: &RoomId,
+        power_level: i64,
+    ) {
         use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+        use std::collections::BTreeMap;
 
-        let create_event = EventFactory::new()
-            .room(room_id)
-            .sender(&ALICE)
+        let event_factory = EventFactory::new().room(room_id).sender(&ALICE);
+        let create_event = event_factory
             .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
             .with_space_type();
+        let own_user_id = client.user_id().expect("mock client user").to_owned();
+        let power_level = matrix_sdk::ruma::Int::try_from(power_level)
+            .expect("test power level must be a Matrix integer");
+        let power_levels =
+            event_factory.power_levels(&mut BTreeMap::from([(own_user_id, power_level)]));
         server
             .sync_room(
                 client,
-                JoinedRoomBuilder::new(room_id).add_state_event(create_event),
+                JoinedRoomBuilder::new(room_id)
+                    .add_state_event(create_event)
+                    .add_state_event(power_levels),
             )
             .await;
+    }
+
+    async fn sync_space(server: &MatrixMockServer, client: &Client, room_id: &RoomId) {
+        sync_space_with_power_level(server, client, room_id, 100).await;
     }
 
     #[test]
@@ -1352,6 +1405,56 @@ mod tests {
         assert!(
             requests.iter().all(|request| request.method != "PUT"),
             "cycle rejection must happen before any state write"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_parent_impl_preflights_child_permission_before_any_state_write() {
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let new_parent_id = matrix_sdk::ruma::room_id!("!new:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        sync_space_with_power_level(&server, &client, child_id, 0).await;
+        sync_space_with_power_level(&server, &client, new_parent_id, 100).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{child_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "rooms": [{
+                    "room_id": child_id,
+                    "num_joined_members": 1,
+                    "world_readable": false,
+                    "guest_can_join": false,
+                    "join_rule": "invite",
+                    "room_type": "m.space",
+                    "children_state": [],
+                }],
+            })))
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(server.server())
+            .await;
+
+        let result =
+            set_space_parent_impl(&client, child_id.as_str(), Some(new_parent_id.as_str())).await;
+
+        assert_eq!(
+            result.expect_err("child-side permission denial must reject reparenting"),
+            "insufficient permissions to send m.space.parent in !child:example.org"
+        );
+        let requests = server.server().received_requests().await.unwrap();
+        assert!(
+            requests.iter().all(|request| request.method != "PUT"),
+            "permission preflight must reject before publishing either relationship edge"
         );
     }
 
