@@ -721,6 +721,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                             {pending && <Loader2 className="animate-spin" />}
                             Complete email verification
                           </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() => void handleRequestRegistrationEmail()}
+                          >
+                            Resend verification email
+                          </Button>
                           <p className="text-xs text-muted-foreground">
                             To use a different email address, cancel this registration and start
                             again.
