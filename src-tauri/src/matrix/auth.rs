@@ -190,8 +190,8 @@ pub async fn login(
         // previous synchronous-setup path couldn't race a UI-initiated login
         // by construction (the window wasn't interactive yet); this restores
         // that same guarantee for the async path.
-        let _restore_store_guard = restore_store_lock().lock().await;
         cancel_pending_registration_for_superseding_auth(&app, &state).await;
+        let _restore_store_guard = restore_store_lock().lock().await;
 
         // The account's MXID isn't known for certain until login succeeds (the
         // homeserver, not the client, has final say over the resolved server
@@ -652,8 +652,8 @@ pub async fn register(
     // P1): held for this whole function so the startup orphan-temp-store
     // sweep can't delete this registration's temp store out from under it
     // between creation and relocation.
-    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    let _restore_store_guard = restore_store_lock().lock().await;
 
     // Same rationale as `login`: the account isn't certain until
     // registration succeeds, so this opens a temp store and relocates it.
@@ -714,26 +714,11 @@ async fn finish_registration(
         // otherwise startup can restore an account the user explicitly
         // cancelled. Retry once for transient keychain failures and surface
         // any remaining cleanup failure instead of silently claiming success.
-        let session_cleanup = match persistence::clear_session(&account_key) {
-            Ok(()) => Ok(()),
-            Err(_) => persistence::clear_session(&account_key),
-        };
-        let oauth_cleanup = persistence::clear_oauth_session(&account_key);
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
             sync::spawn_sync_task(app, previous_client);
         }
-        if let Err(error) = session_cleanup {
-            return Err(format!(
-                "registration cancelled, but the saved session could not be removed: {error}"
-            ));
-        }
-        if let Err(error) = oauth_cleanup {
-            return Err(format!(
-                "registration cancelled, but OAuth session cleanup failed: {error}"
-            ));
-        }
-        return Err("registration cancelled".to_string());
+        return clear_cancelled_registration_session(&account_key);
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -781,13 +766,11 @@ async fn finish_registration(
         };
         if !completion_won {
             drop(client_slot);
-            let _ = persistence::clear_session(&account_key);
-            let _ = persistence::clear_oauth_session(&account_key);
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
                 sync::spawn_sync_task(app, previous_client);
             }
-            return Err("registration cancelled".to_string());
+            return clear_cancelled_registration_session(&account_key);
         }
         // This is the completion/cancellation linearization point. A cancel
         // that acquired the slot first wins above; after this removal the
@@ -801,6 +784,25 @@ async fn finish_registration(
     Ok(response)
 }
 
+fn clear_cancelled_registration_session(account_key: &str) -> Result<LoginResponse, String> {
+    let session_cleanup = match persistence::clear_session(account_key) {
+        Ok(()) => Ok(()),
+        Err(_) => persistence::clear_session(account_key),
+    };
+    let oauth_cleanup = persistence::clear_oauth_session(account_key);
+    if let Err(error) = session_cleanup {
+        return Err(format!(
+            "registration cancelled, but the saved session could not be removed: {error}"
+        ));
+    }
+    if let Err(error) = oauth_cleanup {
+        return Err(format!(
+            "registration cancelled, but OAuth session cleanup failed: {error}"
+        ));
+    }
+    Err("registration cancelled".to_string())
+}
+
 /// Starts a registration UIA attempt without exposing its client, credentials,
 /// or encrypted temporary-store key across IPC.
 #[tauri::command]
@@ -810,8 +812,8 @@ pub async fn begin_registration(
     request: RegisterRequest,
 ) -> Result<RegistrationStep, String> {
     ensure_registration_feature_enabled(&app)?;
-    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    let _restore_store_guard = restore_store_lock().lock().await;
     let attempt_id = generate_attempt_id();
     let started_at = std::time::Instant::now();
     let cancellation = tokio_util::sync::CancellationToken::new();
@@ -1595,8 +1597,8 @@ pub async fn start_sso_login(
     if idp_id.is_some() {
         ensure_registration_feature_enabled(&app)?;
     }
-    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    let _restore_store_guard = restore_store_lock().lock().await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
