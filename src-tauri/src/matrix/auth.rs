@@ -111,6 +111,7 @@ pub(crate) struct PendingPasswordReset {
 pub(crate) struct AuthMailQuota {
     by_address: std::collections::HashMap<String, Vec<std::time::Instant>>,
     all: Vec<std::time::Instant>,
+    upstream_retry_until: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1189,18 +1190,22 @@ pub async fn request_password_reset(
             let submit_url = sanitize_password_reset_submit_url(
                 &client.homeserver(),
                 response.submit_url.as_deref(),
-            )?;
-            let requires_token = submit_url.is_some();
-            (response.sid, submit_url, requires_token)
+            );
+            match submit_url {
+                Ok(submit_url) => {
+                    let requires_token = submit_url.is_some();
+                    (response.sid, submit_url, requires_token)
+                }
+                Err(_) => synthetic_password_reset_challenge()?,
+            }
         }
-        Err(_) => {
+        Err(error) => {
+            retain_password_reset_retry_after(&state, &error).await;
             // Matrix deliberately permits homeservers to reject an unknown
             // address here. Retain a synthetic pending validation session so
             // confirmation also behaves like a real but unverified attempt;
             // otherwise the missing pending entry becomes an account oracle.
-            let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
-                .map_err(|_| "could not start password reset".to_string())?;
-            (sid, None, false)
+            synthetic_password_reset_challenge()?
         }
     };
     if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
@@ -1240,6 +1245,13 @@ async fn check_auth_mail_quota(state: &MatrixState, address: &str) -> Result<(),
     hasher.write(address.to_lowercase().as_bytes());
     let digest = format!("{:016x}", hasher.finish());
     let mut quota = state.auth_mail_quota.lock().await;
+    if quota
+        .upstream_retry_until
+        .is_some_and(|retry_until| retry_until > now)
+    {
+        return Err("too many recovery emails; try again later".to_string());
+    }
+    quota.upstream_retry_until = None;
     quota
         .all
         .retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
@@ -1258,6 +1270,37 @@ async fn check_auth_mail_quota(state: &MatrixState, address: &str) -> Result<(),
     quota.all.push(now);
     quota.by_address.entry(digest).or_default().push(now);
     Ok(())
+}
+
+fn synthetic_password_reset_challenge(
+) -> Result<(matrix_sdk::ruma::OwnedSessionId, Option<url::Url>, bool), String> {
+    let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
+        .map_err(|_| "could not start password reset".to_string())?;
+    Ok((sid, None, false))
+}
+
+async fn retain_password_reset_retry_after(state: &MatrixState, error: &matrix_sdk::HttpError) {
+    use matrix_sdk::ruma::api::error::RetryAfter;
+
+    let Some(ErrorKind::LimitExceeded(data)) = error.client_api_error_kind() else {
+        return;
+    };
+    let Some(retry_after) = data.retry_after else {
+        return;
+    };
+    let delay = match retry_after {
+        RetryAfter::Delay(delay) => delay,
+        RetryAfter::DateTime(deadline) => deadline
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or_default(),
+    };
+    let retry_until = std::time::Instant::now() + delay;
+    let mut quota = state.auth_mail_quota.lock().await;
+    quota.upstream_retry_until = Some(
+        quota
+            .upstream_retry_until
+            .map_or(retry_until, |current| current.max(retry_until)),
+    );
 }
 
 #[tauri::command]
@@ -1491,8 +1534,13 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || segments[0] == 0x2002
+                || segments[0] == 0x5f00
+                || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
     }
