@@ -1027,6 +1027,7 @@ pub async fn login_with_token(
     let flows = match client.matrix_auth().get_login_types().await {
         Ok(flows) => flows,
         Err(_) => {
+            drop(client);
             let _ = persistence::discard_temp_login_store(&app, &store_key);
             return Err("could not verify token login support".to_string());
         }
@@ -1036,6 +1037,7 @@ pub async fn login_with_token(
         .iter()
         .any(|flow| matches!(flow, LoginType::Token(_)))
     {
+        drop(client);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("this homeserver does not advertise token login".to_string());
     }
@@ -1048,12 +1050,13 @@ pub async fn login_with_token(
         .await
         .is_err()
     {
+        drop(client);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
     reservation.defuse();
     let cleanup_key = store_key.clone();
-    match finish_registration(app.clone(), &state, client, store_key).await {
+    match finish_registration(app.clone(), &state, client, store_key, None).await {
         Ok(session) => Ok(session),
         Err(error) => {
             let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
@@ -1478,11 +1481,13 @@ pub async fn start_sso_login(
         let flows = match client.matrix_auth().get_login_types().await {
             Ok(flows) => flows,
             Err(_) => {
+                drop(client);
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
                 return Err("could not verify this identity provider".to_string());
             }
         };
         if !identity_provider_is_advertised(&flows.flows, idp_id) {
+            drop(client);
             let _ = persistence::discard_temp_login_store(&app, &store_key);
             return Err("this identity provider is not advertised by the homeserver".to_string());
         }
@@ -1491,6 +1496,7 @@ pub async fn start_sso_login(
         match get_sso_login_url_with_provider(&client, &attempt_state, idp_id.as_deref()).await {
             Ok(url) => url,
             Err(error) => {
+                drop(client);
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
                 return Err(error);
             }
