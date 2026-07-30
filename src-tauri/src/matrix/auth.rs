@@ -104,6 +104,7 @@ pub(crate) struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
+    token_submitted: bool,
     attempt_id: String,
     created_at: std::time::Instant,
 }
@@ -1329,6 +1330,7 @@ pub async fn request_password_reset(
         client_secret,
         sid: response.sid,
         submit_url,
+        token_submitted: false,
         attempt_id: attempt_id.clone(),
         created_at: std::time::Instant::now(),
     };
@@ -1365,7 +1367,7 @@ pub async fn confirm_password_reset(
     {
         return Err("password reset attempt expired or was cancelled".to_string());
     }
-    let pending = guard
+    let mut pending = guard
         .take()
         .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
     drop(guard);
@@ -1379,7 +1381,7 @@ pub async fn confirm_password_reset(
         .map(|(_, cancellation)| cancellation.clone())
         .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
     let result = tokio::select! {
-        result = complete_password_reset(&pending, token.as_deref(), new_password) => result,
+        result = complete_password_reset(&mut pending, token.as_deref(), new_password) => result,
         () = cancellation.cancelled() => {
             Err("password reset attempt expired or was cancelled".to_string())
         }
@@ -1487,11 +1489,14 @@ async fn submit_email_validation(
 }
 
 async fn complete_password_reset(
-    pending: &PendingPasswordReset,
+    pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
+        if pending.token_submitted {
+            return complete_password_change(pending, new_password).await;
+        }
         let token = token
             .filter(|token| !token.is_empty())
             .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
@@ -1505,8 +1510,16 @@ async fn complete_password_reset(
         )
         .await
         .map_err(|_| "could not confirm password reset".to_string())?;
+        pending.token_submitted = true;
     }
 
+    complete_password_change(pending, new_password).await
+}
+
+async fn complete_password_change(
+    pending: &PendingPasswordReset,
+    new_password: String,
+) -> Result<(), String> {
     let thirdparty_id_creds =
         ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());
     let email_identity: EmailIdentity = serde_json::from_value(serde_json::json!({
@@ -1685,7 +1698,13 @@ pub async fn login_with_token(
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = build_client(&app, &homeserver_url, &store_key).await?;
+    let client = match build_client(&app, &homeserver_url, &store_key).await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err(error);
+        }
+    };
     let flows = match client.matrix_auth().get_login_types().await {
         Ok(flows) => flows,
         Err(_) => {
@@ -2623,7 +2642,7 @@ mod registration_uia_tests {
             .mount(server.server())
             .await;
 
-        let pending = PendingPasswordReset {
+        let mut pending = PendingPasswordReset {
             client,
             client_secret,
             sid,
@@ -2631,10 +2650,11 @@ mod registration_uia_tests {
                 url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
                     .expect("submit URL"),
             ),
+            token_submitted: false,
             attempt_id: "opaque".to_owned(),
             created_at: std::time::Instant::now(),
         };
-        complete_password_reset(&pending, Some("123456"), "new correct horse".to_owned())
+        complete_password_reset(&mut pending, Some("123456"), "new correct horse".to_owned())
             .await
             .expect("password reset completes");
     }
