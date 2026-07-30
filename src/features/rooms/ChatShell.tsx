@@ -238,6 +238,9 @@ export function ChatShell({
   } | null>(null);
   const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
   const roomId = room?.room_id ?? "";
+  useEffect(() => {
+    setPillProfile(null);
+  }, [roomId]);
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
     pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;

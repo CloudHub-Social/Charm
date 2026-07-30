@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ export function MessagePillProfileDialog({
 }) {
   const userId = profile?.userId ?? "";
   const queryClient = useQueryClient();
+  const roomListSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
@@ -59,7 +60,17 @@ export function MessagePillProfileDialog({
   }, [accountId, detailed, queryClient, roomId, userId]);
   useEffect(() => {
     if (!detailed || !userId) return undefined;
-    const unlisten = onRoomListUpdate(() => {
+    const unlisten = onRoomListUpdate((rooms) => {
+      const signature = rooms
+        .map((room) =>
+          [room.room_id, room.membership, room.name, room.avatar_url, room.avatar_path].join(
+            "\u0000",
+          ),
+        )
+        .toSorted()
+        .join("\u0001");
+      if (roomListSignatureRef.current === signature) return;
+      roomListSignatureRef.current = signature;
       void queryClient.invalidateQueries({
         queryKey: ["mutual-rooms", accountId ?? null, userId],
       });
@@ -150,14 +161,14 @@ export function MessagePillProfileDialog({
                     key={room.room_id}
                     type="button"
                     variant="ghost"
-                    className="h-auto min-h-11 justify-start px-2 py-1.5"
+                    className="h-auto min-h-11 w-full min-w-0 shrink justify-start overflow-hidden px-2 py-1.5 whitespace-normal"
                     disabled={!onNavigateToRoom}
                     onClick={() => {
                       onNavigateToRoom?.(room.room_id);
                       onClose();
                     }}
                   >
-                    {room.name ?? room.room_id}
+                    <span className="min-w-0 truncate">{room.name ?? room.room_id}</span>
                   </Button>
                 ))}
               </div>
