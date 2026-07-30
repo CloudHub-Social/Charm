@@ -411,4 +411,50 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
     expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
+
+  it("closes the reactor dialog when its reaction disappears", async () => {
+    getReactionDetails.mockResolvedValue([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
+    const props = {
+      onToggle: vi.fn(),
+      roomId: "!room:example.org",
+      eventId: "$event",
+    };
+    const { rerender } = render(
+      <ReactionBar {...props} reactions={[{ key: "👍", count: 1, reacted_by_me: false }]} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for 👍" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    rerender(<ReactionBar {...props} reactions={[]} />);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("invalidates tooltip details when a reaction disappears and later returns", async () => {
+    getReactionDetails
+      .mockResolvedValueOnce([{ sender: "@alice:example.org", origin_server_ts: 1 }])
+      .mockResolvedValueOnce([{ sender: "@bob:example.org", origin_server_ts: 2 }]);
+    const props = {
+      onToggle: vi.fn(),
+      roomId: "!room:example.org",
+      eventId: "$event",
+    };
+    const reaction: ReactionGroup = { key: "👍", count: 1, reacted_by_me: false };
+    const { rerender } = render(<ReactionBar {...props} reactions={[reaction]} />);
+    const chip = screen.getByRole("button", { name: /^👍1$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+
+    rerender(<ReactionBar {...props} reactions={[]} />);
+    rerender(<ReactionBar {...props} reactions={[reaction]} />);
+
+    const restoredChip = screen.getByRole("button", { name: /^👍1$/ });
+    fireEvent.mouseEnter(restoredChip);
+    fireEvent.focus(restoredChip);
+
+    expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
 });
