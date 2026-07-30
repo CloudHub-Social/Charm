@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T17:25:57.408Z",
+  "generatedAt": "2026-07-30T18:35:16.267Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
@@ -12,10 +12,10 @@
   "attention": [
     {
       "type": "pull-request",
-      "number": 327,
-      "title": "Clarify Spec 13 hardware-blocked evidence",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
-      "detail": "Day-1 Spec 13 · ready for review"
+      "number": 324,
+      "title": "Start Spec 39 timeline state-event foundation",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
+      "detail": "Day-1 Spec 39 · ready for review"
     },
     {
       "type": "pull-request",
@@ -26,17 +26,17 @@
     },
     {
       "type": "pull-request",
-      "number": 324,
-      "title": "Start Spec 39 timeline state-event foundation",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
-      "detail": "Day-1 Spec 39 · ready for review"
-    },
-    {
-      "type": "pull-request",
       "number": 325,
       "title": "Make Spec 28 local search decision-ready",
       "url": "https://github.com/CloudHub-Social/Charm/pull/325",
       "detail": "Day-1 Spec 28 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 326,
+      "title": "Make Spec 55 quick switcher decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/326",
+      "detail": "Day-1 Spec 55 · ready for review"
     },
     {
       "type": "issue",
@@ -416,7 +416,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T16:06:44Z"
+          "updatedAt": "2026-07-30T18:16:09Z"
         },
         {
           "number": 230,
@@ -893,7 +893,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:56:44Z"
+          "updatedAt": "2026-07-30T18:29:09Z"
         }
       ],
       "issues": []
@@ -1075,7 +1075,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/323",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:56:53Z"
+          "updatedAt": "2026-07-30T18:30:58Z"
         }
       ],
       "issues": []
@@ -1147,7 +1147,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/324",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:56:49Z"
+          "updatedAt": "2026-07-30T18:33:46Z"
         }
       ],
       "issues": []
@@ -1408,7 +1408,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/326",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:56:42Z"
+          "updatedAt": "2026-07-30T18:29:09Z"
         }
       ],
       "issues": []

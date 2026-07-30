@@ -100,10 +100,9 @@ existing timeline IPC/stream into `ChatShell`. No new *fetch* path — the event
 already synced and already reach the SDK Timeline; the fix is to stop discarding
 them in the mapping layer and to carry enough fields (actor, target, membership
 transition, old/new value) to render a friendly string frontend-side.
-Membership/profile-change target labels include the authoritative MXID whenever
-a display name is available: the SDK change item does not expose enough
-room-level ambiguity information to safely publish a bare display name for a
-future notice renderer.
+Membership/profile-change DTOs keep the remote-controlled display name separate
+from the authoritative MXID. Renderers must isolate the display-name fragment and
+show the MXID without concatenating both into a single untrusted string.
 
 ## API/contract changes
 
