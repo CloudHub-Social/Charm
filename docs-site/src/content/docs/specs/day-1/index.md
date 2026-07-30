@@ -96,7 +96,7 @@ here.
 | 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
-| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Pin/unpin, synced reorder, Leave, Remove, Suggested, Add Existing, all remaining removal power-level gates, and a SpaceRail Settings entry are implemented or in review; closure is paired with Spec 33's settings child-management slice |
+| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Pin/unpin, synced reorder, Leave, Remove, Suggested, Add Existing, and a SpaceRail Settings entry are implemented or in review; the RoomList hierarchy-row removal gate remains explicitly in PR #320, and closure is paired with Spec 33's settings child-management slice |
 
 ## Cross-cutting rules
 
