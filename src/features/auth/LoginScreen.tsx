@@ -193,18 +193,23 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       await handleRegistrationStep(await continueRegistration(attemptId, response));
     } catch (err) {
-      setError(String(err));
+      const message = String(err);
+      if (message.includes("registration ended:")) {
+        registrationAttemptRef.current = null;
+        setRegistrationStep(undefined);
+      }
+      setError(message.replace("registration ended:", "").trim());
     } finally {
       setPending(false);
     }
   }
 
-  function handleCancelRegistration() {
+  async function handleCancelRegistration() {
     const attemptId = registrationAttemptRef.current;
     registrationAttemptRef.current = null;
+    if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
     setRegistrationStep(undefined);
     setError(null);
-    if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
   }
 
   async function handleOpenRegistrationUrl(url: string) {
@@ -261,10 +266,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           <Tabs
             value={mode}
             onValueChange={(value) => {
-              if (registrationStep) handleCancelRegistration();
-              setMode(value as Mode);
-              setError(null);
-              if (ssoPending) handleCancelSso();
+              void (async () => {
+                if (registrationStep) await handleCancelRegistration();
+                setMode(value as Mode);
+                setError(null);
+                if (ssoPending) handleCancelSso();
+              })();
             }}
           >
             <TabsList className="w-full">
@@ -349,7 +356,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     )}
 
                   {error && <p className="text-xs text-destructive">{error}</p>}
-                  <Button type="button" variant="ghost" onClick={handleCancelRegistration}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void handleCancelRegistration()}
+                  >
                     Cancel account creation
                   </Button>
                 </div>
