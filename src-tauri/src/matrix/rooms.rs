@@ -687,16 +687,15 @@ pub async fn snapshot_rooms(
                     manual_order,
                     is_space,
                     parent_space_ids: if is_space {
-                        canonical_space_parents
+                        let mut confirmed = parents.get(&room_id).cloned().unwrap_or_default();
+                        if let Some(canonical) = canonical_space_parents
                             .get(&room_id)
-                            .cloned()
-                            .or_else(|| {
-                                parents
-                                    .get(&room_id)
-                                    .and_then(|parents| parents.first().cloned())
-                                    .map(|parent| vec![parent])
-                            })
-                            .unwrap_or_default()
+                            .and_then(|parents| parents.first())
+                        {
+                            confirmed.retain(|parent| parent != canonical);
+                            confirmed.insert(0, canonical.clone());
+                        }
+                        confirmed
                     } else {
                         parents.get(&room_id).cloned().unwrap_or_default()
                     },
