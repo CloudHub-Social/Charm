@@ -611,7 +611,7 @@ export function RoomsScreen({
         }}
         onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
-      <RoomSettingsModal currentUserId={currentUserId} />
+      <RoomSettingsModal currentUserId={currentUserId} rooms={joinedRooms} />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} onJumpToBookmark={handleJumpToBookmark} />
       <CrashRecoveryPrompt

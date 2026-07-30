@@ -551,6 +551,36 @@ export function installMockTauri(seed: {
       return undefined;
     },
     list_space_children: (args) => spaceChildren.get(args.spaceId as string) ?? [],
+    add_existing_space_child: (args) => {
+      const spaceId = args.spaceId as string;
+      const childRoomId = args.childRoomId as string;
+      const childRoom = findRoom(childRoomId);
+      if (!childRoom) throw new Error("child room not found");
+      const current = spaceChildren.get(spaceId) ?? [];
+      if (!current.some((child) => child.room_id === childRoomId)) {
+        spaceChildren.set(spaceId, [
+          ...current,
+          {
+            room_id: childRoomId,
+            name: childRoom.name,
+            topic: null,
+            num_joined_members: 1,
+            join_rule: "invite",
+            is_space: Boolean(childRoom.is_space),
+          },
+        ]);
+      }
+      return undefined;
+    },
+    remove_space_child: (args) => {
+      const spaceId = args.spaceId as string;
+      const childRoomId = args.childRoomId as string;
+      spaceChildren.set(
+        spaceId,
+        (spaceChildren.get(spaceId) ?? []).filter((child) => child.room_id !== childRoomId),
+      );
+      return undefined;
+    },
     list_space_hierarchy: (args) => spaceHierarchy.get(args.spaceId as string) ?? [],
     // Spec 19 Phase 4: create/join-by-address. Mirrors the real Rust
     // commands' contract closely enough to exercise `CreateJoinSpaceDialog`

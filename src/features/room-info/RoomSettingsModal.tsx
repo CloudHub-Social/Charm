@@ -11,6 +11,8 @@ import { useRoomDetails } from "./useRoomDetails";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
+import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
+import type { RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
   { value: "general", label: "General" },
@@ -20,7 +22,10 @@ const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
 
 interface RoomSettingsModalProps {
   currentUserId: string;
+  rooms?: RoomSummary[];
 }
+
+const EMPTY_ROOMS: RoomSummary[] = [];
 
 /**
  * Room settings as a modal — full-screen on mobile, a centered card on
@@ -31,7 +36,7 @@ interface RoomSettingsModalProps {
  * `SettingsScreen`, reading its target room/section from `roomSettingsAtom`
  * rather than being conditionally rendered by a parent.
  */
-export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
+export function RoomSettingsModal({ currentUserId, rooms = EMPTY_ROOMS }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const { data: details, isLoading, isError } = useRoomDetails(target?.roomId ?? null);
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
@@ -133,6 +138,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                       {section.label}
                     </TabsTrigger>
                   ))}
+                  {target.kind === "space" && <TabsTrigger value="children">Children</TabsTrigger>}
                 </TabsList>
               </div>
 
@@ -162,6 +168,16 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                 >
                   <PowerLevelThresholdsEditor details={details} />
                 </TabsContent>
+                {target.kind === "space" && (
+                  <TabsContent value="children">
+                    <SpaceChildrenSettings
+                      spaceId={details.room_id}
+                      spaceName={details.name}
+                      rooms={rooms}
+                      canEdit={details.can.set_space_child}
+                    />
+                  </TabsContent>
+                )}
               </div>
             </Tabs>
           </TooltipProvider>

@@ -34,13 +34,18 @@ The first delivery slice is in progress:
   room-settings shell with space-specific labels. Name, topic, avatar, join
   rules, members, and power-level permissions reuse the existing permission
   gates; the room-only encryption affordance is omitted for spaces.
+- A **Children** settings tab lists the space's published child rooms and
+  subspaces, supports permission-gated removal, and reuses the cycle-safe
+  **Add existing** picker. The list is invalidated after each successful
+  mutation so settings reflects the homeserver response.
 - The same commands are available through desktop IPC and the authenticated web
   companion transport.
 
-Child management inside the settings shell remains the final follow-up slice.
-Matrix state writes span two rooms and are not atomic: failures are surfaced and
-the hierarchy is refetched rather than pretending a failed multi-event update
-rolled back.
+All planned implementation slices are now in review. Matrix state writes span
+two rooms and are not atomic: failures are surfaced and the hierarchy is
+refetched rather than pretending a failed multi-event update rolled back.
+The spec remains `in-progress` until the stacked PRs land and final live
+homeserver evidence is recorded.
 
 ## Problem & why now
 
@@ -182,8 +187,8 @@ and
 2. Drag-to-nest and un-nest with fresh source/target permissions, cycle feedback,
    and failure reconciliation. **In review.**
 3. Space settings in the existing room-settings shell: name, topic, avatar, join
-   rules, and permissions, plus **Settings** from `SpaceRail`. **In review.**
-   Child management remains before this slice and Spec 63 can close.
+   rules, permissions, and child management, plus **Settings** from
+   `SpaceRail`. **In review.**
 
 ## UI-parity addition (from the 2026-07-13 UI deep-dive)
 
