@@ -899,7 +899,7 @@ pub async fn request_registration_email(
     let response = match response {
         Ok(response) => response,
         Err(_) => {
-            match restore_registration_after_email_request(
+            match restore_pending_registration_if_current(
                 &state,
                 &attempt_id,
                 &cancellation,
@@ -931,7 +931,7 @@ pub async fn request_registration_email(
     ) {
         Ok(url) => url,
         Err(error) => {
-            match restore_registration_after_email_request(
+            match restore_pending_registration_if_current(
                 &state,
                 &attempt_id,
                 &cancellation,
@@ -960,7 +960,7 @@ pub async fn request_registration_email(
         submitted: false,
     });
     if let Err(pending) =
-        restore_registration_after_email_request(&state, &attempt_id, &cancellation, pending).await
+        restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending).await
     {
         discard_pending_registration(&app, pending);
         clear_registration_cancellation(&state, &attempt_id);
@@ -970,7 +970,7 @@ pub async fn request_registration_email(
     Ok(RegistrationEmailChallenge { requires_token })
 }
 
-async fn restore_registration_after_email_request(
+async fn restore_pending_registration_if_current(
     state: &MatrixState,
     attempt_id: &str,
     cancellation: &tokio_util::sync::CancellationToken,
@@ -1058,9 +1058,24 @@ pub async fn continue_registration(
     let auth = match auth_result {
         Ok(auth) => auth,
         Err(error) => {
-            state.pending_registration.lock().await.replace(pending);
-            reservation.defuse();
-            return Err(error);
+            return match restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    Err(error)
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Err("registration cancelled".to_string())
+                }
+            };
         }
     };
     let request = registration_request(&pending.request, Some(auth));
@@ -1106,13 +1121,43 @@ pub async fn continue_registration(
                         return Err(error);
                     }
                 };
-                state.pending_registration.lock().await.replace(pending);
-                reservation.defuse();
-                Ok(step)
+                match restore_pending_registration_if_current(
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        reservation.defuse();
+                        Ok(step)
+                    }
+                    Err(pending) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        Err("registration cancelled".to_string())
+                    }
+                }
             } else {
-                state.pending_registration.lock().await.replace(pending);
-                reservation.defuse();
-                Err("registration request failed; retry this stage".to_string())
+                match restore_pending_registration_if_current(
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        reservation.defuse();
+                        Err("registration request failed; retry this stage".to_string())
+                    }
+                    Err(pending) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        Err("registration cancelled".to_string())
+                    }
+                }
             }
         }
     }
