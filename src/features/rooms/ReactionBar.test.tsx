@@ -44,7 +44,7 @@ describe("ReactionBar", () => {
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
     render(<ReactionBar reactions={reactions} onToggle={onToggle} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /👍/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^👍\d+$/ }));
 
     expect(onToggle).toHaveBeenCalledWith("👍");
   });
@@ -59,7 +59,7 @@ describe("ReactionBar", () => {
     const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
     render(<ReactionBar reactions={reactions} onToggle={vi.fn()} disabled />);
 
-    expect(screen.getByRole("button", { name: /👍/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^👍\d+$/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add reaction" })).toBeDisabled();
   });
 
@@ -75,7 +75,7 @@ describe("ReactionBar", () => {
       />,
     );
 
-    fireEvent.mouseEnter(screen.getByRole("button", { name: /👍/ }));
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /^👍\d+$/ }));
 
     expect(getReactionDetails).not.toHaveBeenCalled();
   });
@@ -89,7 +89,7 @@ describe("ReactionBar", () => {
       <ReactionBar reactions={reactions} onToggle={vi.fn()} roomId={roomId} eventId={eventId} />,
     );
 
-    fireEvent.mouseEnter(screen.getByRole("button", { name: /👍/ }));
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /^👍\d+$/ }));
 
     expect(getReactionDetails).not.toHaveBeenCalled();
   });
@@ -105,7 +105,7 @@ describe("ReactionBar", () => {
         eventId="$event"
       />,
     );
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍\d+$/ });
 
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
@@ -125,13 +125,13 @@ describe("ReactionBar", () => {
       />,
     );
 
-    fireEvent.focus(screen.getByRole("button", { name: /👍/ }));
+    fireEvent.focus(screen.getByRole("button", { name: /^👍\d+$/ }));
 
     expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
     expect(getReactionDetails).toHaveBeenCalledOnce();
   });
 
-  it("lists a small reactor set without a View all action", async () => {
+  it("exposes a small reactor set through a touch-accessible viewer action", async () => {
     getReactionDetails.mockResolvedValue([
       { sender: "@alice:example.org", origin_server_ts: 1 },
       { sender: "@bob:example.org", origin_server_ts: 2 },
@@ -145,14 +145,17 @@ describe("ReactionBar", () => {
         eventId="$event"
       />,
     );
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍\d+$/ });
 
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
 
     expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
     expect(screen.getByText("@bob:example.org")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
+    const viewReactors = screen.getByRole("button", { name: "View all 2 reactions for 👍" });
+    fireEvent.click(viewReactors);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("2 reactions")).toBeInTheDocument();
   });
 
   it("exposes the reactor overflow as a directly keyboard-focusable action", async () => {
@@ -272,7 +275,7 @@ describe("ReactionBar", () => {
         eventId="$event"
       />,
     );
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍\d+$/ });
 
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
@@ -300,7 +303,7 @@ describe("ReactionBar", () => {
         eventId="$event"
       />,
     );
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍\d+$/ });
 
     fireEvent.mouseEnter(chip);
     fireEvent.mouseEnter(chip);
@@ -324,7 +327,7 @@ describe("ReactionBar", () => {
         eventId="$event"
       />,
     );
-    const chip = screen.getByRole("button", { name: /👍/ });
+    const chip = screen.getByRole("button", { name: /^👍\d+$/ });
 
     fireEvent.mouseEnter(chip);
     fireEvent.focus(chip);
@@ -372,5 +375,38 @@ describe("ReactionBar", () => {
     expect(
       screen.getByRole("button", { name: "View all 10 reactions for 👍" }),
     ).toBeInTheDocument();
+  });
+
+  it("refreshes an open tooltip when its reaction count changes", async () => {
+    getReactionDetails
+      .mockResolvedValueOnce([{ sender: "@alice:example.org", origin_server_ts: 1 }])
+      .mockResolvedValueOnce([
+        { sender: "@alice:example.org", origin_server_ts: 1 },
+        { sender: "@bob:example.org", origin_server_ts: 2 },
+      ]);
+    const { rerender } = render(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 1, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /^👍1$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+
+    rerender(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 2, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
 });
