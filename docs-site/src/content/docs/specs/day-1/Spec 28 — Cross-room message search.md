@@ -58,10 +58,12 @@ search will silently not work in any encrypted room, which is most rooms.
 Build a local full-text index in Rust, populated only after an event is available
 to Charm as decrypted timeline content. Each desktop account gets a dedicated
 `message-search.sqlite3` database in that account's Charm-owned data directory.
-Android and iOS use the same per-account Rust-owned database under Tauri's
-app-data directory, with identical account isolation and cleanup behavior; the
-mobile build verifies bundled SQLite FTS5/tokenizer availability and backup
-exclusion before enabling the flag.
+Android and iOS use the same Rust-owned database under Tauri's app-data
+directory, keyed by both the account store key and the current Matrix device
+ID. A superseding device or logout deletes the prior device's plaintext index
+before another index can be opened. The mobile build verifies this lifecycle,
+bundled SQLite FTS5/tokenizer availability, and backup exclusion before enabling
+the flag.
 Each web-companion session gets a separate index beside the session's random
 `crypto_store_key`; indexes are never shared merely because two sessions use the
 same MXID.
@@ -192,9 +194,12 @@ New Tauri/web-server command:
 The user query is literal text, not raw FTS5 syntax. The backend stores the
 unmodified display text separately from the token/search representation and uses a
 maintained Lindera-backed custom FTS tokenizer that preserves byte offsets into
-that original text. Snippets and match ranges are produced from the original
-column using those offsets; pre-segmented or normalized text is never returned to
-the UI. This is the selected CJK-capable strategy (subject to the repository's
+that original text internally. The backend converts matched byte spans to UTF-16
+code-unit offsets before transport, validates that every boundary falls on a
+Unicode scalar boundary, and returns the original display snippet plus those
+JavaScript-safe ranges. Tests cover emoji, combining characters, and CJK text.
+Pre-segmented or normalized text is never returned to the UI. This is the
+selected CJK-capable strategy (subject to the repository's
 explicit dependency approval); do not fall back to `unicode61` for unsegmented
 Chinese/Japanese content.
 unmatched quotes and FTS operators are searched as text. Empty-token queries are
