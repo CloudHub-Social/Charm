@@ -542,10 +542,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   <Input
                     id="recovery-homeserver"
                     value={homeserverUrl}
-                    onChange={(event) => setHomeserverUrl(event.currentTarget.value)}
+                    readOnly
                     disabled={pending}
                     required
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Cancel recovery to choose a different homeserver.
+                  </p>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="recovery-email">Email</Label>
