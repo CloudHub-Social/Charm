@@ -223,6 +223,14 @@ instead of adding a second HTTP stack.
 - `begin_token_login(homeserver) -> { attempt_id, state }`
 - `login_with_token(attempt_id, token, state?) -> LoginResponse` (the state is
   required for deep-link completion; direct paste uses the already-open attempt)
+- `cancel_token_login(attempt_id) -> ()`
+
+Token-login attempts are backend-owned resources with one active attempt per
+browser/account flow, a hard expiry that starts before discovery or client
+allocation, explicit cancellation and supersession, and the companion's
+per-source/global unauthenticated admission limits. Completion consumes the
+attempt exactly once; abandoned and flooded attempts are covered by repository
+tests.
 
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
