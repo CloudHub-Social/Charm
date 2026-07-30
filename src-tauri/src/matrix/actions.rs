@@ -837,7 +837,11 @@ pub struct ReactionDetail {
     pub origin_server_ts: u64,
 }
 
-fn dedupe_reaction_details_by_sender(details: Vec<ReactionDetail>) -> Vec<ReactionDetail> {
+fn dedupe_reaction_details_by_sender(mut details: Vec<ReactionDetail>) -> Vec<ReactionDetail> {
+    // A fast un-react/re-react can leave an older acknowledged relation and a
+    // newer queued local echo for the same sender in these combined snapshots.
+    // Keep the newest effective reaction and present reactors newest-first.
+    details.sort_by(|left, right| right.origin_server_ts.cmp(&left.origin_server_ts));
     let mut seen = HashSet::new();
     details
         .into_iter()
@@ -1032,12 +1036,12 @@ mod relation_shape_tests {
             dedupe_reaction_details_by_sender(details),
             vec![
                 ReactionDetail {
-                    sender: "@alice:example.org".to_string(),
-                    origin_server_ts: 1,
-                },
-                ReactionDetail {
                     sender: "@bob:example.org".to_string(),
                     origin_server_ts: 3,
+                },
+                ReactionDetail {
+                    sender: "@alice:example.org".to_string(),
+                    origin_server_ts: 2,
                 },
             ]
         );
