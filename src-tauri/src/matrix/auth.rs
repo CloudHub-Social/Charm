@@ -98,6 +98,7 @@ pub(crate) struct PendingRegistration {
     attempt_id: String,
     uiaa: UiaaInfo,
     email_validation: Option<PendingRegistrationEmail>,
+    email_client_secret: Option<matrix_sdk::ruma::OwnedClientSecret>,
     email_address_key: Option<String>,
     email_send_attempt: u32,
     email_retry_not_before: Option<std::time::Instant>,
@@ -961,19 +962,23 @@ pub async fn begin_registration(
                 attempt_id: attempt_id.clone(),
                 uiaa,
                 email_validation: None,
+                email_client_secret: None,
                 email_address_key: None,
                 email_send_attempt: 0,
                 email_retry_not_before: None,
                 created_at: started_at,
             };
-            restore_pending_registration_if_current(
+            if !restore_or_discard_pending_registration(
                 &app,
                 &state,
                 &attempt_id,
                 &cancellation,
                 pending,
             )
-            .await?;
+            .await
+            {
+                return Err("registration cancelled".to_string());
+            }
             reservation.defuse();
             Ok(step)
         }
@@ -1106,11 +1111,10 @@ pub async fn request_registration_email(
         reservation.defuse();
         return Err("wait before requesting another registration email".to_string());
     }
-    let client_secret = if let Some(validation) = &pending.email_validation {
-        validation.client_secret.clone()
-    } else {
-        ClientSecret::new()
-    };
+    let client_secret = pending
+        .email_client_secret
+        .get_or_insert_with(ClientSecret::new)
+        .clone();
     if let Err(error) = check_auth_mail_quota(&state, &address_key).await {
         if !restore_or_discard_pending_registration(
             &app,
@@ -1127,10 +1131,6 @@ pub async fn request_registration_email(
         return Err(error);
     }
     let send_attempt = pending.email_send_attempt + 1;
-    pending.email_address_key = Some(address_key.clone());
-    pending.email_send_attempt = send_attempt;
-    pending.email_retry_not_before =
-        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
         delivery_email.clone(),
@@ -1172,6 +1172,10 @@ pub async fn request_registration_email(
         clear_registration_cancellation(&state, &attempt_id);
         return Err("registration cancelled".to_string());
     }
+    pending.email_address_key = Some(address_key);
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let submit_url = match sanitize_email_submit_url(
         &pending.client.homeserver(),
         response.submit_url.as_deref(),
