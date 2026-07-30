@@ -67,16 +67,24 @@ connection: the SDK owns that schema and migration lifecycle.
 - Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
   undecryptable placeholders, media filenames/captions, reactions, state events, or
   untrusted raw HTML.
-- Use one content row per `(room_id, event_id)`. A latest edit atomically replaces
-  the searchable body and timestamp metadata for its target event; a redaction
-  deletes the target row. Replaying sync/timeline data is idempotent.
+- Use one visible content row per `(room_id, original_event_id)`. An `m.replace`
+  may update that row only after the same validity checks used by the timeline:
+  the replacement sender must match the original event sender, its target must
+  be the original message in the same room, and its `m.new_content` must be an
+  allowed decrypted text-like msgtype. A different sender's forged relation is
+  ignored.
+- Track replacement provenance separately from the visible FTS row: original
+  content plus the ordered valid edit event IDs/bodies needed to determine the
+  latest non-redacted version. Redacting the original deletes its visible row;
+  redacting an edit removes that candidate and atomically recomputes the row from
+  the preceding valid edit or original content. A late edit/redaction or replay
+  therefore converges without leaving redacted replacement text searchable.
 - Backfill: on first login (or first login after this feature ships for existing
   users), index whatever history is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
   organically as the user scrolls/syncs, same behavior as Seshat.
-- Redaction/edit handling: a redacted event's indexed text must be removed/blanked
-  on redaction; an edited event's index entry must be replaced with the latest
-  content, not append a duplicate.
+- Redaction/edit handling follows the provenance rules above; replacement events
+  never become independent search results.
 
 ### Ownership, privacy, and lifecycle
 
