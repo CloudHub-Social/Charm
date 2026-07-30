@@ -803,9 +803,7 @@ pub async fn get_edit_history_impl(
             origin_server_ts: edit.origin_server_ts.0.into(),
         });
     }
-    edits.sort_by_key(|entry| entry.origin_server_ts);
-    entries.extend(edits);
-    entries.extend(
+    edits.extend(
         pending_edits
             .into_iter()
             .filter(|pending| {
@@ -819,6 +817,8 @@ pub async fn get_edit_history_impl(
                 origin_server_ts: pending.origin_server_ts,
             }),
     );
+    edits.sort_by_key(|entry| entry.origin_server_ts);
+    entries.extend(edits);
 
     Ok(entries)
 }
@@ -839,6 +839,43 @@ fn dedupe_reaction_details_by_sender(details: Vec<ReactionDetail>) -> Vec<Reacti
         .into_iter()
         .filter(|detail| seen.insert(detail.sender.clone()))
         .collect()
+}
+
+async fn pending_reaction_details(
+    room: &matrix_sdk::Room,
+    target_event_id: &EventId,
+    key: &str,
+    sender: &str,
+) -> Result<Vec<ReactionDetail>, String> {
+    let (local_echoes, _updates) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(local_echoes
+        .into_iter()
+        .filter_map(|echo| {
+            let LocalEchoContent::Event {
+                serialized_event,
+                send_handle,
+                ..
+            } = echo.content
+            else {
+                return None;
+            };
+            let Ok(AnyMessageLikeEventContent::Reaction(content)) = serialized_event.deserialize()
+            else {
+                return None;
+            };
+            (content.relates_to.event_id == *target_event_id && content.relates_to.key == key).then(
+                || ReactionDetail {
+                    sender: sender.to_owned(),
+                    origin_server_ts: send_handle.created_at.0.into(),
+                },
+            )
+        })
+        .collect())
 }
 
 /// Returns every reactor who reacted to `target_event_id` with `key` — the
@@ -899,6 +936,11 @@ pub async fn get_reaction_details_impl(
             sender: original.sender.to_string(),
             origin_server_ts: original.origin_server_ts.0.into(),
         });
+    }
+    if let Some(own_user_id) = client.user_id() {
+        details.extend(
+            pending_reaction_details(&room, &parsed_target, &key, own_user_id.as_str()).await?,
+        );
     }
 
     Ok(dedupe_reaction_details_by_sender(details))
@@ -1100,6 +1142,23 @@ mod edit_history_tests {
                         "unsigned": {
                             "transaction_id": acknowledged_transaction_id
                         }
+                    }, {
+                        "type": "m.room.message",
+                        "event_id": "$later-device-edit:example.org",
+                        "sender": own_user_id,
+                        "origin_server_ts": 4_000_000_000_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* later device edit",
+                            "m.new_content": {
+                                "msgtype": "m.text",
+                                "body": "later device edit"
+                            },
+                            "m.relates_to": {
+                                "rel_type": "m.replace",
+                                "event_id": original
+                            }
+                        }
                     }]
                 })),
             )
@@ -1115,13 +1174,72 @@ mod edit_history_tests {
                 .iter()
                 .map(|entry| entry.body.as_str())
                 .collect::<Vec<_>>(),
-            vec!["original body", "first pending edit", "second pending edit"]
+            vec![
+                "original body",
+                "first pending edit",
+                "second pending edit",
+                "later device edit"
+            ]
         );
         assert!(
             history[1..]
                 .iter()
                 .all(|entry| entry.sender == own_user_id.as_str()),
             "queued edits must only be attributed to the logged-in original sender"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reaction_detail_tests {
+    use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+    use matrix_sdk::ruma::events::relation::Annotation;
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reaction_details_include_a_queued_local_reaction() {
+        let room_id = room_id!("!test:example.org");
+        let target = event_id!("$target:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let own_user_id = client.user_id().unwrap().to_owned();
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+        let reaction =
+            ReactionEventContent::new(Annotation::new(target.to_owned(), "👍".to_owned()));
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::Reaction(reaction))
+            .await
+            .unwrap();
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{target}/m.annotation"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "chunk": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let details =
+            get_reaction_details_impl(&client, room_id.as_str(), target.as_str(), "👍".to_owned())
+                .await
+                .unwrap();
+
+        assert_eq!(
+            details
+                .iter()
+                .map(|detail| detail.sender.as_str())
+                .collect::<Vec<_>>(),
+            vec![own_user_id.as_str()]
         );
     }
 }

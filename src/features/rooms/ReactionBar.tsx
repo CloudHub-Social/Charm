@@ -171,6 +171,24 @@ export function ReactionBar({
     detailErrorsByKey,
   ]);
 
+  // A focused trigger can be removed by a live timeline update without
+  // emitting blur/mouseleave. Close any viewer for that vanished key and
+  // invalidate its cache so a later reaction using the same emoji cannot
+  // inherit the previous reactor list.
+  useEffect(() => {
+    if (modalKey !== null && modalReaction === undefined) {
+      closeModal();
+    }
+    if (tooltipKey !== null && tooltipReaction === undefined) {
+      const vanishedKey = tooltipKey;
+      setTooltipKey(null);
+      clearDetails(vanishedKey);
+    }
+    // closeModal and clearDetails are intentionally local lifecycle helpers;
+    // their relevant inputs are represented explicitly below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalKey, modalReaction, tooltipKey, tooltipReaction]);
+
   if (reactions.length === 0) {
     return null;
   }
