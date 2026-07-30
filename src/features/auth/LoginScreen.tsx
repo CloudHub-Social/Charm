@@ -16,6 +16,7 @@ import {
   getLoginFlows,
   login,
   loginWithToken,
+  requestRegistrationEmail,
   requestPasswordReset,
   register,
   startSsoLogin,
@@ -23,6 +24,7 @@ import {
   type LoginFlowSummary,
   type PasswordResetChallenge,
   type RegistrationAuthResponse,
+  type RegistrationEmailChallenge,
   type RegistrationStep,
 } from "@/lib/matrix";
 import { useFlag } from "@/featureFlags";
@@ -61,6 +63,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [registrationStep, setRegistrationStep] = useState<
     Extract<RegistrationStep, { state: "challenge" }> | undefined
   >();
+  const [registrationEmail, setRegistrationEmail] = useState("");
+  const [registrationEmailToken, setRegistrationEmailToken] = useState("");
+  const [registrationEmailChallenge, setRegistrationEmailChallenge] =
+    useState<RegistrationEmailChallenge>();
   const [loginFlows, setLoginFlows] = useState<LoginFlowSummary>();
   const [showTokenLogin, setShowTokenLogin] = useState(false);
   const [loginToken, setLoginToken] = useState("");
@@ -213,12 +219,32 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmailToken("");
       setPassword("");
       onSignedIn(step.session);
       return;
     }
+    if (step.next_stage !== "m.login.email.identity") {
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmailToken("");
+    }
     setRegistrationStep(step);
     setPassword("");
+  }
+
+  async function handleRequestRegistrationEmail() {
+    const attemptId = registrationAttemptRef.current;
+    if (!attemptId || !registrationEmail) return;
+    setPending(true);
+    setError(null);
+    try {
+      setRegistrationEmailChallenge(await requestRegistrationEmail(attemptId, registrationEmail));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPending(false);
+    }
   }
 
   async function handleRegistrationContinue(response: RegistrationAuthResponse) {
@@ -239,6 +265,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     const attemptId = registrationAttemptRef.current;
     registrationAttemptRef.current = null;
     setRegistrationStep(undefined);
+    setRegistrationEmailChallenge(undefined);
+    setRegistrationEmail("");
+    setRegistrationEmailToken("");
     setError(null);
     if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
   }
@@ -516,7 +545,86 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     </div>
                   )}
 
+                  {registrationStep.next_stage === "m.login.email.identity" && (
+                    <div className="flex flex-col gap-3">
+                      {!registrationEmailChallenge ? (
+                        <>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="registration-email">Email</Label>
+                            <Input
+                              id="registration-email"
+                              type="email"
+                              value={registrationEmail}
+                              onChange={(event) => setRegistrationEmail(event.currentTarget.value)}
+                              autoComplete="email"
+                              disabled={pending}
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={pending || !registrationEmail}
+                            onClick={() => void handleRequestRegistrationEmail()}
+                          >
+                            {pending && <Loader2 className="animate-spin" />}
+                            Send verification email
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          {registrationEmailChallenge.requires_token ? (
+                            <div className="flex flex-col gap-1.5">
+                              <Label htmlFor="registration-email-token">Email token</Label>
+                              <Input
+                                id="registration-email-token"
+                                value={registrationEmailToken}
+                                onChange={(event) =>
+                                  setRegistrationEmailToken(event.currentTarget.value)
+                                }
+                                autoComplete="one-time-code"
+                                disabled={pending}
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Open the link in the verification email, then return here.
+                            </p>
+                          )}
+                          <Button
+                            type="button"
+                            disabled={
+                              pending ||
+                              (registrationEmailChallenge.requires_token && !registrationEmailToken)
+                            }
+                            onClick={() =>
+                              void handleRegistrationContinue({
+                                kind: "complete_email",
+                                token: registrationEmailChallenge.requires_token
+                                  ? registrationEmailToken
+                                  : null,
+                              })
+                            }
+                          >
+                            {pending && <Loader2 className="animate-spin" />}
+                            Complete email verification
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() => {
+                              setRegistrationEmailChallenge(undefined);
+                              setRegistrationEmailToken("");
+                            }}
+                          >
+                            Use a different email
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {registrationStep.next_stage !== "m.login.terms" &&
+                    registrationStep.next_stage !== "m.login.email.identity" &&
                     registrationStep.next_stage !== "m.login.dummy" && (
                       <div className="flex flex-col gap-2">
                         <Button

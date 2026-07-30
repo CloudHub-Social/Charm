@@ -14,17 +14,20 @@ behind the default-off `registration_and_recovery` flag. It adds typed
 commands; keeps the pending Matrix client, password, attempt lifetime, and
 encrypted temporary-store key in Rust; selects the shortest incomplete
 homeserver-advertised flow; supports direct terms/dummy completion; and exposes a
-homeserver fallback URL for CAPTCHA, email, and unknown stages. The default-off
+homeserver fallback URL for CAPTCHA and unknown stages. The direct email stage
+generates and retains its client secret and Matrix validation session in Rust,
+requests the homeserver email, accepts either a direct token or link-based
+completion, and exposes neither credential to the frontend. The default-off
 desktop UI renders policy links and terms acceptance, auto-completes dummy
 stages, opens other stages in the homeserver fallback, supports cancellation,
 and lands successful registration in the existing onboarding flow. The
 continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
-This does not yet complete Spec 45. The web companion attempt boundary, direct
-registration email request-token path, and real-homeserver verification remain
-open. Repository and Playwright tests for DTO mapping, stage/session validation,
-and UI navigation are not live-homeserver evidence.
+This does not yet complete Spec 45. The web companion attempt boundary and
+real-homeserver verification remain open. Repository and Playwright tests for DTO
+mapping, stage/session validation, direct email-token submission, and UI
+navigation are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
@@ -192,6 +195,7 @@ instead of adding a second HTTP stack.
 ## API/contract changes
 
 - `begin_registration(request) -> RegistrationStep`
+- `request_registration_email(attempt_id, email) -> RegistrationEmailChallenge`
 - `continue_registration(attempt_id, response) -> RegistrationStep`
 - `cancel_registration(attempt_id) -> ()`
 - `request_password_reset(homeserver, email) -> PasswordResetChallenge`

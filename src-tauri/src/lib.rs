@@ -1439,6 +1439,7 @@ pub fn run() {
             matrix::auth::login,
             matrix::auth::register,
             matrix::auth::begin_registration,
+            matrix::auth::request_registration_email,
             matrix::auth::continue_registration,
             matrix::auth::cancel_registration,
             matrix::auth::request_password_reset,

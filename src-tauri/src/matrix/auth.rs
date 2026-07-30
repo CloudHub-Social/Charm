@@ -5,6 +5,7 @@
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::{
     change_password, register, request_password_change_token_via_email,
+    request_registration_token_via_email,
 };
 use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
@@ -85,7 +86,15 @@ pub(crate) struct PendingRegistration {
     request: RegisterRequest,
     attempt_id: String,
     uiaa: UiaaInfo,
+    email_validation: Option<PendingRegistrationEmail>,
     created_at: std::time::Instant,
+}
+
+struct PendingRegistrationEmail {
+    client_secret: matrix_sdk::ruma::OwnedClientSecret,
+    sid: matrix_sdk::ruma::OwnedSessionId,
+    submit_url: Option<url::Url>,
+    submitted: bool,
 }
 
 pub(crate) struct PendingPasswordReset {
@@ -130,13 +139,20 @@ pub enum RegistrationStep {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RegistrationAuthResponse {
     AcceptTerms,
     CompleteDummy,
+    CompleteEmail { token: Option<String> },
     AcknowledgeFallback { stage: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RegistrationEmailChallenge {
+    pub requires_token: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -800,6 +816,7 @@ pub async fn begin_registration(
                 request,
                 attempt_id: attempt_id.clone(),
                 uiaa,
+                email_validation: None,
                 created_at: std::time::Instant::now(),
             };
             let cancellation = tokio_util::sync::CancellationToken::new();
@@ -820,6 +837,99 @@ pub async fn begin_registration(
             Ok(step)
         }
     }
+}
+
+/// Starts the email-validation sub-flow for the active registration attempt.
+/// The homeserver `sid` and client secret remain backend-owned; the frontend
+/// only learns whether it must prompt for a token.
+#[tauri::command]
+pub async fn request_registration_email(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+    email: String,
+) -> Result<RegistrationEmailChallenge, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let cancellation = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|(current_id, _)| current_id == &attempt_id)
+        .map(|(_, cancellation)| cancellation.clone())
+        .ok_or_else(|| "registration attempt is no longer current".to_string())?;
+    let mut guard = state.pending_registration.lock().await;
+    let Some(current) = guard.as_ref() else {
+        return Err("no registration is in progress".to_string());
+    };
+    if current.attempt_id != attempt_id {
+        return Err("registration attempt is no longer current".to_string());
+    }
+    if current.created_at.elapsed() > REGISTRATION_ATTEMPT_TTL {
+        let expired = guard.take().expect("pending attempt checked above");
+        drop(guard);
+        cancellation.cancel();
+        clear_registration_cancellation(&state, &attempt_id);
+        let _ = persistence::discard_temp_login_store(&app, &expired.store_key);
+        return Err("registration attempt expired; start again".to_string());
+    }
+    if next_registration_stage(&current.uiaa)? != AuthType::EmailIdentity.as_str() {
+        return Err("registration email is not the current authentication stage".to_string());
+    }
+    let mut pending = guard.take().expect("pending attempt checked above");
+    drop(guard);
+
+    let client_secret = ClientSecret::new();
+    let request = request_registration_token_via_email::v3::Request::new(
+        client_secret.clone(),
+        email,
+        UInt::new_saturating(1),
+    );
+    let response = tokio::select! {
+        result = pending.client.send(request) => result,
+        () = cancellation.cancelled() => {
+            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            clear_registration_cancellation(&state, &attempt_id);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => {
+            if cancellation.is_cancelled() {
+                let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+                clear_registration_cancellation(&state, &attempt_id);
+                return Err("registration cancelled".to_string());
+            }
+            state.pending_registration.lock().await.replace(pending);
+            return Err("could not send registration verification email".to_string());
+        }
+    };
+    if cancellation.is_cancelled() {
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    let submit_url = match sanitize_email_submit_url(
+        &pending.client.homeserver(),
+        response.submit_url.as_deref(),
+        "registration",
+    ) {
+        Ok(url) => url,
+        Err(error) => {
+            state.pending_registration.lock().await.replace(pending);
+            return Err(error);
+        }
+    };
+    let requires_token = submit_url.is_some();
+    pending.email_validation = Some(PendingRegistrationEmail {
+        client_secret,
+        sid: response.sid,
+        submit_url,
+        submitted: false,
+    });
+    state.pending_registration.lock().await.replace(pending);
+    Ok(RegistrationEmailChallenge { requires_token })
 }
 
 /// Continues exactly the active registration attempt and Matrix UIA session.
@@ -861,11 +971,31 @@ pub async fn continue_registration(
     }
 
     let expected_stage = next_registration_stage(&current.uiaa)?;
-    let auth = registration_auth_data(response, &expected_stage, &current.uiaa)?;
     let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
     let mut pending = pending_guard.take().expect("pending attempt checked above");
     drop(pending_guard);
 
+    let auth_result = tokio::select! {
+        result = registration_auth_data(
+            response,
+            &expected_stage,
+            &pending.uiaa,
+            pending.email_validation.as_mut(),
+        ) => result,
+        () = cancellation.cancelled() => {
+            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            clear_registration_cancellation(&state, &attempt_id);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let auth = match auth_result {
+        Ok(auth) => auth,
+        Err(error) => {
+            state.pending_registration.lock().await.replace(pending);
+            reservation.defuse();
+            return Err(error);
+        }
+    };
     let request = registration_request(&pending.request, Some(auth));
     let registration_result = tokio::select! {
         result = async { pending.client.matrix_auth().register(request).await } => result,
@@ -891,6 +1021,12 @@ pub async fn continue_registration(
         Err(error) => {
             if let Some(uiaa) = error.as_uiaa_response().cloned() {
                 pending.uiaa = uiaa;
+                if !matches!(
+                    next_registration_stage(&pending.uiaa).as_deref(),
+                    Ok(stage) if stage == AuthType::EmailIdentity.as_str()
+                ) {
+                    pending.email_validation = None;
+                }
                 let step = match registration_challenge(
                     &pending.attempt_id,
                     &pending.client,
@@ -1090,20 +1226,58 @@ fn sanitize_password_reset_submit_url(
     homeserver: &url::Url,
     submit_url: Option<&str>,
 ) -> Result<Option<url::Url>, String> {
+    sanitize_email_submit_url(homeserver, submit_url, "password-reset")
+}
+
+fn sanitize_email_submit_url(
+    homeserver: &url::Url,
+    submit_url: Option<&str>,
+    flow: &str,
+) -> Result<Option<url::Url>, String> {
     let Some(submit_url) = submit_url else {
         return Ok(None);
     };
     let parsed = homeserver
         .join(submit_url)
-        .map_err(|_| "this homeserver returned an unsupported password-reset flow".to_string())?;
+        .map_err(|_| format!("this homeserver returned an unsupported {flow} flow"))?;
     if !matches!(parsed.scheme(), "http" | "https")
         || parsed.origin() != homeserver.origin()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("this homeserver returned an unsupported password-reset flow".to_string());
+        return Err(format!(
+            "this homeserver returned an unsupported {flow} flow"
+        ));
     }
     Ok(Some(parsed))
+}
+
+async fn submit_email_validation(
+    submit_url: &url::Url,
+    sid: &matrix_sdk::ruma::OwnedSessionId,
+    client_secret: &matrix_sdk::ruma::OwnedClientSecret,
+    token: &str,
+    flow: &str,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| format!("could not confirm {flow} email"))?;
+    let response = client
+        .post(submit_url.clone())
+        .json(&serde_json::json!({
+            "sid": sid,
+            "client_secret": client_secret,
+            "token": token,
+        }))
+        .send()
+        .await
+        .map_err(|_| format!("could not confirm {flow} email"))?;
+    if !response.status().is_success() {
+        return Err(format!("could not confirm {flow} email"));
+    }
+    Ok(())
 }
 
 async fn complete_password_reset(
@@ -1115,24 +1289,15 @@ async fn complete_password_reset(
         let token = token
             .filter(|token| !token.is_empty())
             .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|_| "could not confirm password reset".to_string())?;
-        let response = client
-            .post(submit_url.clone())
-            .json(&serde_json::json!({
-                "sid": pending.sid,
-                "client_secret": pending.client_secret,
-                "token": token,
-            }))
-            .send()
-            .await
-            .map_err(|_| "could not confirm password reset".to_string())?;
-        if !response.status().is_success() {
-            return Err("could not confirm password reset".to_string());
-        }
+        submit_email_validation(
+            submit_url,
+            &pending.sid,
+            &pending.client_secret,
+            token,
+            "password-reset",
+        )
+        .await
+        .map_err(|_| "could not confirm password reset".to_string())?;
     }
 
     let thirdparty_id_creds =
@@ -1423,10 +1588,11 @@ fn next_registration_stage(uiaa: &UiaaInfo) -> Result<String, String> {
         .ok_or_else(|| "homeserver returned no incomplete registration stage".to_string())
 }
 
-fn registration_auth_data(
+async fn registration_auth_data(
     response: RegistrationAuthResponse,
     expected_stage: &str,
     uiaa: &UiaaInfo,
+    email_validation: Option<&mut PendingRegistrationEmail>,
 ) -> Result<AuthData, String> {
     let session = uiaa
         .session
@@ -1442,6 +1608,41 @@ fn registration_auth_data(
             let mut dummy = Dummy::new();
             dummy.session = Some(session);
             Ok(AuthData::Dummy(dummy))
+        }
+        RegistrationAuthResponse::CompleteEmail { token }
+            if expected_stage == AuthType::EmailIdentity.as_str() =>
+        {
+            let validation = email_validation
+                .ok_or_else(|| "request a registration verification email first".to_string())?;
+            if !validation.submitted {
+                if let Some(submit_url) = &validation.submit_url {
+                    let token = token
+                        .as_deref()
+                        .filter(|token| !token.is_empty())
+                        .ok_or_else(|| {
+                            "enter the token from your registration email".to_string()
+                        })?;
+                    submit_email_validation(
+                        submit_url,
+                        &validation.sid,
+                        &validation.client_secret,
+                        token,
+                        "registration",
+                    )
+                    .await?;
+                    validation.submitted = true;
+                }
+            }
+            let credentials = ThirdpartyIdCredentials::new(
+                validation.sid.clone(),
+                validation.client_secret.clone(),
+            );
+            let mut email_identity: EmailIdentity = serde_json::from_value(serde_json::json!({
+                "threepid_creds": credentials,
+            }))
+            .map_err(|_| "could not confirm registration email".to_string())?;
+            email_identity.session = Some(session);
+            Ok(AuthData::EmailIdentity(email_identity))
         }
         RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
             Ok(AuthData::fallback_acknowledgement(session))
@@ -1724,7 +1925,7 @@ mod registration_uia_tests {
         complete_password_reset, identity_provider_is_advertised, next_registration_stage,
         registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
         sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
-        PendingPasswordReset, RegistrationAuthResponse,
+        PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
     };
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
@@ -1752,8 +1953,8 @@ mod registration_uia_tests {
         );
     }
 
-    #[test]
-    fn rejects_a_response_for_a_different_stage() {
+    #[tokio::test]
+    async fn rejects_a_response_for_a_different_stage() {
         let info = uiaa(json!({
             "flows": [{"stages": ["m.login.terms"]}],
             "session": "uia-session"
@@ -1763,13 +1964,15 @@ mod registration_uia_tests {
             RegistrationAuthResponse::CompleteDummy,
             AuthType::Terms.as_str(),
             &info,
+            None,
         )
+        .await
         .expect_err("dummy must not satisfy terms");
         assert!(error.contains(AuthType::Terms.as_str()));
     }
 
-    #[test]
-    fn threads_the_homeserver_session_into_terms_auth() {
+    #[tokio::test]
+    async fn threads_the_homeserver_session_into_terms_auth() {
         let info = uiaa(json!({
             "flows": [{"stages": ["m.login.terms"]}],
             "session": "uia-session"
@@ -1779,12 +1982,76 @@ mod registration_uia_tests {
             RegistrationAuthResponse::AcceptTerms,
             AuthType::Terms.as_str(),
             &info,
+            None,
         )
+        .await
         .expect("terms auth");
         assert!(matches!(
             auth,
             AuthData::Terms(terms) if terms.session.as_deref() == Some("uia-session")
         ));
+    }
+
+    #[tokio::test]
+    async fn registration_email_submits_the_token_and_threads_owned_credentials() {
+        let server = MatrixMockServer::new().await;
+        let client_secret = matrix_sdk::ruma::ClientSecret::new();
+        let sid =
+            serde_json::from_value(json!("registration-email-session")).expect("valid session id");
+        Mock::given(method("POST"))
+            .and(path("/validate/email/submitToken"))
+            .and(body_partial_json(json!({
+                "sid": "registration-email-session",
+                "client_secret": client_secret,
+                "token": "654321",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        let info = uiaa(json!({
+            "flows": [{"stages": ["m.login.email.identity"]}],
+            "session": "uia-session"
+        }));
+        let mut validation = PendingRegistrationEmail {
+            client_secret: client_secret.clone(),
+            sid,
+            submit_url: Some(
+                url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
+                    .expect("submission URL"),
+            ),
+            submitted: false,
+        };
+
+        let auth = registration_auth_data(
+            RegistrationAuthResponse::CompleteEmail {
+                token: Some("654321".to_owned()),
+            },
+            AuthType::EmailIdentity.as_str(),
+            &info,
+            Some(&mut validation),
+        )
+        .await
+        .expect("email auth");
+        let serialized = serde_json::to_value(auth).expect("serialize email auth");
+        assert_eq!(serialized["session"], "uia-session");
+        assert_eq!(
+            serialized["threepid_creds"]["sid"],
+            "registration-email-session"
+        );
+        assert_eq!(
+            serialized["threepid_creds"]["client_secret"],
+            client_secret.as_str()
+        );
+
+        registration_auth_data(
+            RegistrationAuthResponse::CompleteEmail { token: None },
+            AuthType::EmailIdentity.as_str(),
+            &info,
+            Some(&mut validation),
+        )
+        .await
+        .expect("a retry reuses the completed email validation");
     }
 
     #[test]

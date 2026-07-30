@@ -39,6 +39,7 @@ import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
+import type { RegistrationEmailChallenge } from "@bindings/RegistrationEmailChallenge";
 import type { RegistrationFlow } from "@bindings/RegistrationFlow";
 import type { RegistrationPolicy } from "@bindings/RegistrationPolicy";
 import type { RegistrationStep } from "@bindings/RegistrationStep";
@@ -173,6 +174,7 @@ export type {
   RecoveryStatusSummary,
   RegisterRequest,
   RegistrationAuthResponse,
+  RegistrationEmailChallenge,
   RegistrationFlow,
   RegistrationPolicy,
   RegistrationStep,
@@ -214,6 +216,13 @@ export function register(request: RegisterRequest): Promise<LoginResponse> {
 
 export function beginRegistration(request: RegisterRequest): Promise<RegistrationStep> {
   return invoke("begin_registration", { request }, { captureOnError: false });
+}
+
+export function requestRegistrationEmail(
+  attemptId: string,
+  email: string,
+): Promise<RegistrationEmailChallenge> {
+  return invoke("request_registration_email", { attemptId, email }, { captureOnError: false });
 }
 
 export function continueRegistration(
