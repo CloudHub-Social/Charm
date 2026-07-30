@@ -172,7 +172,7 @@ test("opens a space in the shared settings shell", async ({ page }) => {
   await page.getByRole("tab", { name: "Children" }).click();
   const childrenPanel = page.getByRole("tabpanel", { name: "Children" });
   await expect(childrenPanel.getByText("Project", { exact: true })).toBeVisible();
-  await childrenPanel.getByRole("button", { name: "Remove" }).click();
+  await childrenPanel.getByRole("button", { name: "Remove Project" }).click();
   await expect(childrenPanel.getByText("This space has no published children.")).toBeVisible();
 
   await childrenPanel.getByRole("button", { name: "Add existing" }).click();
