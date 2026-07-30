@@ -412,15 +412,13 @@ pub async fn create_space_impl(
         .await
         .map_err(|e| e.to_string())?;
     if let Some(parent) = &parent {
-        add_child_edge(parent, room.room_id())
-            .await
-            .map_err(|error| {
-                format!(
-                    "created space {} but could not attach it to {}: {error}",
-                    room.room_id(),
-                    parent.room_id()
-                )
-            })?;
+        add_child_edge(parent, &room).await.map_err(|error| {
+            format!(
+                "created space {} but could not attach it to {}: {error}",
+                room.room_id(),
+                parent.room_id()
+            )
+        })?;
     }
     Ok(room.room_id().to_string())
 }
@@ -471,7 +469,7 @@ pub async fn set_space_parent_impl(
     // temporarily undiscoverable from every parent.
     if let Some(parent) = &new_parent {
         if !has_live_child_via(parent, &child_id).await? {
-            add_child_edge(parent, &child_id).await?;
+            add_child_edge(parent, &child).await?;
         }
         let mut content = SpaceParentEventContent::new(room_route(parent).await?);
         content.canonical = true;
@@ -488,9 +486,21 @@ pub async fn set_space_parent_impl(
         {
             continue;
         }
-        let old_parent = require_space(client, old_parent_id.as_str())?;
-        if has_live_child_via(&old_parent, &child_id).await? {
-            remove_child_edge(&old_parent, &child_id).await?;
+        // The child-side relationship can outlive this account's membership
+        // in the old parent (for example, when the user joins a subspace
+        // directly and later reparents it). Missing access to that old room
+        // must not prevent clearing the canonical relationship we can still
+        // edit on `child`. When the old parent is joined and is still a
+        // space, remove its reciprocal edge first; doing that before clearing
+        // the child-side event keeps a transient parent-edge failure
+        // retryable on the next call.
+        if let Some(old_parent) = client
+            .get_room(&old_parent_id)
+            .filter(|room| room.state() == matrix_sdk::RoomState::Joined && room.is_space())
+        {
+            if has_live_child_via(&old_parent, &child_id).await? {
+                remove_child_edge(&old_parent, &child_id).await?;
+            }
         }
         child
             .send_state_event_raw(
@@ -535,10 +545,12 @@ async fn canonical_parent_ids(space: &Room) -> Result<Vec<matrix_sdk::ruma::Owne
         .collect())
 }
 
-async fn add_child_edge(parent: &Room, child_id: &RoomId) -> Result<(), String> {
-    let via = room_route(parent).await?;
+async fn add_child_edge(parent: &Room, child: &Room) -> Result<(), String> {
+    // `m.space.child.via` routes clients to the child, not the space that
+    // publishes the edge. Those rooms can live on different homeservers.
+    let via = room_route(child).await?;
     parent
-        .send_state_event_for_key(child_id, SpaceChildEventContent::new(via))
+        .send_state_event_for_key(child.room_id(), SpaceChildEventContent::new(via))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -668,7 +680,7 @@ pub async fn add_existing_space_child_impl(
     // `user_id`, e.g. a session lost mid-request, would otherwise silently
     // produce) makes the edge unusable rather than merely degraded, so this
     // is a hard error rather than falling back to an empty list.
-    add_child_edge(&space, &parsed_child_id).await
+    add_child_edge(&space, &child_room).await
 }
 
 /// True if `candidate_ancestor_id` is reachable by walking up `room_id`'s
@@ -1442,6 +1454,118 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected canonical reparent to succeed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_parent_impl_clears_an_inaccessible_canonical_parent() {
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let old_parent_id = matrix_sdk::ruma::room_id!("!old:elsewhere.example");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        sync_space(&server, &client, child_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!([{
+                "content": { "canonical": true, "via": ["elsewhere.example"] },
+                "event_id": "$old_parent",
+                "origin_server_ts": 1,
+                "room_id": child_id,
+                "sender": "@example:localhost",
+                "state_key": old_parent_id,
+                "type": "m.space.parent",
+                "unsigned": {},
+            }])))
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state/m.space.parent/{old_parent_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$parent_cleared" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = set_space_parent_impl(&client, child_id.as_str(), None).await;
+
+        assert!(
+            result.is_ok(),
+            "an inaccessible old parent must not block unparenting: {result:?}"
+        );
+        let requests = server.server().received_requests().await.unwrap();
+        let old_parent_path = format!("/_matrix/client/v3/rooms/{old_parent_id}/");
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.url.path().starts_with(&old_parent_path)),
+            "the command must not query or write the inaccessible old parent room"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_child_edge_routes_via_the_child_room() {
+        use matrix_sdk::ruma::events::room::member::MembershipState;
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let parent_id = matrix_sdk::ruma::room_id!("!parent:parent.example");
+        let child_id = matrix_sdk::ruma::room_id!("!child:child.example");
+        let child_member = matrix_sdk::ruma::user_id!("@child-member:child.example").to_owned();
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+
+        sync_space(&server, &client, parent_id).await;
+        let child_factory = EventFactory::new().room(child_id).sender(&ALICE);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(child_id)
+                    .add_state_event(
+                        child_factory
+                            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+                            .with_space_type(),
+                    )
+                    .add_state_event(
+                        child_factory
+                            .member(&child_member)
+                            .membership(MembershipState::Join),
+                    ),
+            )
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{parent_id}/state/m.space.child/{child_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({
+                "via": ["child.example"],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_added" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let parent = client.get_room(parent_id).expect("synced parent");
+        let child = client.get_room(child_id).expect("synced child");
+        let result = add_child_edge(&parent, &child).await;
+
+        assert!(
+            result.is_ok(),
+            "expected child route to be published on parent edge: {result:?}"
         );
     }
 
