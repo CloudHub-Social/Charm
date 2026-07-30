@@ -6,8 +6,9 @@ use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, Mentions};
+use matrix_sdk::ruma::html::{HtmlSanitizerMode, RemoveReplyFallback};
 use matrix_sdk::ruma::{OwnedUserId, RoomId, UserId};
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
+use matrix_sdk::send_queue::{LocalEchoContent, RoomSendQueueUpdate};
 use matrix_sdk::TransmissionProgress;
 use matrix_sdk::{Client, Room};
 use serde::{Deserialize, Serialize};
@@ -327,6 +328,308 @@ pub async fn send_message(
     let content = build_message_content(body, formatted_body, mentions)?;
     let content = AnyMessageLikeEventContent::RoomMessage(content);
     send_and_capture_transaction_id(&client, &room, content).await
+}
+
+/// Forwards an existing event (`event_id`, in `source_room_id`) into
+/// `target_room_id` as a brand-new message: fetches the source event's
+/// `RoomMessageEventContent`, strips any `m.relates_to` (a forwarded message
+/// shouldn't carry the original's reply/edit relation), and queues it via
+/// the normal send-queue path in the target room. Returns the new
+/// transaction id, same convention as [`super::actions::send_reply`].
+#[tauri::command]
+pub async fn forward_message(
+    state: State<'_, MatrixState>,
+    source_room_id: String,
+    event_id: String,
+    target_room_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    forward_message_impl(&client, &source_room_id, &event_id, &target_room_id).await
+}
+
+/// Same page-limit rationale as `room_admin::latest_edit_body`: a single
+/// relations page only covers the 20 most recent relations, so if enough
+/// newer ones (extra reactions, other members' invalid same-target
+/// replacements) sit in front of the real latest same-sender edit, it could
+/// be missed entirely. Pages forward until a same-sender replacement is
+/// found or the relation stream is exhausted, bounded by
+/// `MAX_EDIT_RELATION_PAGES` as a safety cap. Unlike `latest_edit_body`
+/// (which only needs the edited body string for a preview), this returns
+/// the full replacement content so the caller can `apply_replacement` it.
+///
+/// Review fix: returns `Result` rather than swallowing a lookup failure into
+/// `None` — the caller must be able to tell "the network request failed" (a
+/// real error the forward should abort on) apart from "walked every page and
+/// found no same-sender replacement" (a genuine, safe-to-treat-as-no-edit
+/// `Ok(None)`). Collapsing both to `None` previously meant a transient
+/// `/relations` failure looked identical to "there is no edit", so the
+/// forward would silently fall back to `original_message.content` and
+/// re-share content the sender had actually edited away.
+struct ServerReplacement {
+    transaction_id: Option<String>,
+    origin_server_ts: u64,
+    new_content: matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
+}
+
+async fn latest_replacement_content(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+    original_sender: &matrix_sdk::ruma::UserId,
+) -> Result<Option<ServerReplacement>, String> {
+    use matrix_sdk::room::{IncludeRelations, RelationsOptions};
+    use matrix_sdk::ruma::events::relation::RelationType;
+    use matrix_sdk::ruma::events::room::message::Relation;
+    use matrix_sdk::ruma::events::{
+        AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+    };
+
+    const MAX_EDIT_RELATION_PAGES: usize = 10;
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_EDIT_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Same defensive re-sort as `latest_edit_body`: nothing guarantees
+        // the homeserver actually honored `dir: Backward`, so sort by
+        // `origin_server_ts` explicitly rather than trusting response order.
+        let mut candidates: Vec<_> = relations
+            .chunk
+            .iter()
+            .filter_map(|candidate| {
+                let raw_edit = candidate.raw().deserialize().ok()?;
+                let edit = match raw_edit {
+                    AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(edit),
+                    )) => edit,
+                    _ => return None,
+                };
+                if edit.sender != *original_sender {
+                    return None;
+                }
+                let Relation::Replacement(replacement) = edit.content.relates_to.clone()? else {
+                    return None;
+                };
+                // Same defensive re-check as `latest_edit_body`: the
+                // request is scoped to `event_id`, but nothing guarantees a
+                // homeserver/aggregation response actually honors that
+                // scoping.
+                if replacement.event_id != *event_id {
+                    return None;
+                }
+                Some(ServerReplacement {
+                    transaction_id: edit
+                        .unsigned
+                        .transaction_id
+                        .as_ref()
+                        .map(ToString::to_string),
+                    origin_server_ts: edit.origin_server_ts.0.into(),
+                    new_content: replacement.new_content,
+                })
+            })
+            .collect();
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.origin_server_ts));
+        if let Some(candidate) = candidates.into_iter().next() {
+            return Ok(Some(candidate));
+        }
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            // The relation stream is genuinely exhausted (no more pages to
+            // walk) without finding a same-sender replacement — `None` here
+            // is a real answer, not a truncated one.
+            None => return Ok(None),
+        }
+    }
+
+    // Review fix: hit `MAX_EDIT_RELATION_PAGES` while `next_batch_token` was
+    // still `Some` on the last page — there could be more relations beyond
+    // the cap, so "no edit found within the pages we looked at" is not the
+    // same as "there is no edit". Treating this the same as a genuine
+    // `Ok(None)` let `forward_message_impl` silently forward
+    // `original_message.content`, potentially re-sharing text the sender
+    // had actually edited away just past the cap.
+    Err(format!(
+        "edit relation lookup for {event_id} exceeded the {MAX_EDIT_RELATION_PAGES}-page \
+         limit without exhausting the relation stream"
+    ))
+}
+
+/// A queued local replacement that has not reached the homeserver yet.
+///
+/// Kept module-visible so edit history and forwarding use the same send-queue
+/// view instead of disagreeing while an edit is pending.
+pub(super) struct PendingReplacement {
+    pub transaction_id: String,
+    pub origin_server_ts: u64,
+    pub new_content:
+        matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
+}
+
+/// Returns queued local replacements for `event_id`, in send-queue order.
+/// `/relations` cannot see these local echoes, but the timeline already
+/// applies them optimistically.
+pub(super) async fn pending_replacements(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+) -> Result<Vec<PendingReplacement>, String> {
+    use matrix_sdk::ruma::events::room::message::Relation;
+
+    let (local_echoes, _updates) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(local_echoes
+        .into_iter()
+        .filter_map(|echo| {
+            let transaction_id = echo.transaction_id.to_string();
+            let LocalEchoContent::Event {
+                serialized_event,
+                send_handle,
+                ..
+            } = echo.content
+            else {
+                return None;
+            };
+            let Ok(AnyMessageLikeEventContent::RoomMessage(content)) =
+                serialized_event.deserialize()
+            else {
+                return None;
+            };
+            let Some(Relation::Replacement(replacement)) = content.relates_to else {
+                return None;
+            };
+            (replacement.event_id == *event_id).then(|| PendingReplacement {
+                transaction_id,
+                origin_server_ts: send_handle.created_at.0.into(),
+                new_content: replacement.new_content,
+            })
+        })
+        .collect())
+}
+
+fn latest_effective_replacement(
+    server_edit: Option<ServerReplacement>,
+    pending_edits: Vec<PendingReplacement>,
+) -> Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation> {
+    let acknowledged_transaction_id = server_edit
+        .as_ref()
+        .and_then(|replacement| replacement.transaction_id.as_deref());
+    let pending_edit = pending_edits
+        .into_iter()
+        .filter(|replacement| {
+            Some(replacement.transaction_id.as_str()) != acknowledged_transaction_id
+        })
+        .max_by_key(|replacement| replacement.origin_server_ts);
+
+    match (server_edit, pending_edit) {
+        (Some(server), Some(pending)) if pending.origin_server_ts > server.origin_server_ts => {
+            Some(pending.new_content)
+        }
+        (Some(server), _) => Some(server.new_content),
+        (None, Some(pending)) => Some(pending.new_content),
+        (None, None) => None,
+    }
+}
+
+/// Core logic behind [`forward_message`].
+pub async fn forward_message_impl(
+    client: &Client,
+    source_room_id: &str,
+    event_id: &str,
+    target_room_id: &str,
+) -> Result<String, String> {
+    let parsed_source_room_id = RoomId::parse(source_room_id).map_err(|e| e.to_string())?;
+    let source_room = client
+        .get_room(&parsed_source_room_id)
+        .ok_or_else(|| format!("room {source_room_id} not found"))?;
+
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+    let source_event = source_room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = source_event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return Err("source event is not a room message".to_string());
+    };
+    let original_message = msg
+        .as_original()
+        .ok_or_else(|| "source event has already been redacted".to_string())?;
+
+    // Forward whatever is currently shown in the timeline, not the pre-edit
+    // original: find the latest same-sender `m.replace` targeting this event
+    // and apply it if one exists. Paginated the same way
+    // `room_admin::latest_edit_body` is (see that function's own doc
+    // comment for why a single relations page isn't enough) — a
+    // single-page `load_or_fetch_event_with_relations` call could miss the
+    // real latest edit behind enough newer relations (reactions, or other
+    // members' invalid same-target replacements), silently forwarding
+    // pre-edit content the sender specifically edited away.
+    // Propagate a lookup failure as an error (abort the forward) rather than
+    // falling back to `original_message.content` — see
+    // `latest_replacement_content`'s doc comment for why treating "the
+    // request failed" the same as "there is no edit" is unsafe here.
+    // Snapshot the queue first. If an edit is acknowledged while the
+    // relations request is in flight, it remains represented by this local
+    // snapshot; taking the server snapshot first could miss it in both
+    // places when the queue removes the echo between the two reads.
+    let pending_edits = pending_replacements(&source_room, &parsed_event_id).await?;
+    let server_edit =
+        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender)
+            .await?;
+    let latest_edit = latest_effective_replacement(server_edit, pending_edits);
+
+    let mut content = original_message.content.clone();
+    if let Some(new_content) = latest_edit {
+        content.apply_replacement(new_content);
+    }
+    // A reply's body/formatted_body carries the quoted rich-reply fallback
+    // ("> <@user:server> ..."), which `sanitize` only strips while
+    // `relates_to` still says this is a reply — so this must run before
+    // clearing it below, same ordering `rooms::room_message_preview_from_raw`
+    // uses for the last-message preview.
+    content.sanitize(HtmlSanitizerMode::Compat, RemoveReplyFallback::Yes);
+    // Strip any relation (reply/edit) on the forwarded copy — forwarding
+    // should send a clean new message, not a relation to the original.
+    content.relates_to = None;
+    // Also strip inherited `m.mentions` — a forwarded reply/mention-carrying
+    // message would otherwise silently notify whoever the *original*
+    // sender mentioned, in a room where the forwarder never mentioned them.
+    content.mentions = None;
+
+    let parsed_target_room_id = RoomId::parse(target_room_id).map_err(|e| e.to_string())?;
+    let target_room = client
+        .get_room(&parsed_target_room_id)
+        .ok_or_else(|| format!("room {target_room_id} not found"))?;
+
+    send_and_capture_transaction_id(
+        client,
+        &target_room,
+        AnyMessageLikeEventContent::RoomMessage(content),
+    )
+    .await
 }
 
 /// Builds a `RoomMessageEventContent` from a plain body, an optional
@@ -938,6 +1241,114 @@ mod tests {
     }
 
     #[test]
+    fn forwarded_content_strips_relates_to() {
+        // Same shape check as forward_message_impl's stripping step: build a
+        // reply (which carries an m.relates_to/m.in_reply_to relation), then
+        // confirm clearing `relates_to` removes it from the serialized JSON
+        // entirely, so a forwarded copy never carries the source's relation.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+        assert!(serde_json::to_value(&content).unwrap()["m.relates_to"].is_object());
+
+        content.relates_to = None;
+        let json = serde_json::to_value(&content).unwrap();
+        assert!(
+            json.get("m.relates_to").is_none(),
+            "forwarded content must not carry the source event's m.relates_to"
+        );
+    }
+
+    #[test]
+    fn forwarded_content_strips_mentions() {
+        // A reply carries `m.mentions` (added by `make_reply_to`'s
+        // `AddMentions::Yes`) pointing at the original sender — forwarding
+        // must not carry that mention along, or a room the forwarder never
+        // mentioned anyone in would silently notify that user.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+        assert!(serde_json::to_value(&content).unwrap()["m.mentions"].is_object());
+
+        content.mentions = None;
+        let json = serde_json::to_value(&content).unwrap();
+        assert!(
+            json.get("m.mentions").is_none(),
+            "forwarded content must not carry the source event's m.mentions"
+        );
+    }
+
+    #[test]
+    fn latest_effective_replacement_reconciles_server_and_pending_timestamps() {
+        let content = |body: &str| {
+            let content = RoomMessageEventContent::text_plain(body);
+            let json = serde_json::to_value(content).unwrap();
+            serde_json::from_value(json).unwrap()
+        };
+        let server = ServerReplacement {
+            transaction_id: None,
+            origin_server_ts: 200,
+            new_content: content("newer server edit"),
+        };
+        let older_pending = PendingReplacement {
+            transaction_id: "pending-old".to_string(),
+            origin_server_ts: 100,
+            new_content: content("older pending edit"),
+        };
+
+        let selected = latest_effective_replacement(Some(server), vec![older_pending])
+            .expect("one replacement should be selected");
+
+        assert_eq!(selected.msgtype.body(), "newer server edit");
+    }
+
+    #[test]
+    fn forwarded_reply_content_sanitizes_before_clearing_relates_to() {
+        // forward_message_impl calls `sanitize` before clearing `relates_to`
+        // (not after) because `sanitize`'s reply-fallback stripping only
+        // triggers while `relates_to` still says "this is a reply" — see
+        // `rooms::room_message_preview_from_raw`'s identical ordering. This
+        // ruma version's `make_reply_to` doesn't itself prepend a quoted
+        // fallback into `body` (only the `m.in_reply_to` relation — see
+        // `actions::make_reply_to_builds_in_reply_to_relation_and_fallback`),
+        // so there's nothing to strip today, but the ordering is what makes
+        // stripping *possible* if a future ruma version (or a thread
+        // fallback) reintroduces one — get it right regardless.
+        let metadata = matrix_sdk::ruma::events::room::message::ReplyMetadata::new(
+            matrix_sdk::ruma::event_id!("$original:example.org"),
+            matrix_sdk::ruma::user_id!("@alice:example.org"),
+            None,
+        );
+        let mut content = RoomMessageEventContent::text_plain("hi back").make_reply_to(
+            metadata,
+            matrix_sdk::ruma::events::room::message::ForwardThread::No,
+            matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+        );
+
+        content.sanitize(
+            matrix_sdk::ruma::html::HtmlSanitizerMode::Compat,
+            matrix_sdk::ruma::html::RemoveReplyFallback::Yes,
+        );
+        content.relates_to = None;
+
+        assert_eq!(content.body(), "hi back");
+    }
+
+    #[test]
     fn build_message_content_rejects_invalid_mention_id() {
         let result = build_message_content(
             "hi".to_string(),
@@ -964,10 +1375,41 @@ mod tests {
 /// currently-correct (locked) behavior.
 #[cfg(test)]
 mod concurrency_tests {
-    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::ruma::{event_id, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
 
     use super::*;
+
+    #[tokio::test]
+    async fn pending_replacement_is_used_before_server_relations() {
+        let room_id = room_id!("!test:example.org");
+        let event_id = event_id!("$original:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+
+        let edit = RoomMessageEventContent::text_plain("edited locally").make_replacement(
+            matrix_sdk::ruma::events::room::message::ReplacementMetadata::new(
+                event_id.to_owned(),
+                None,
+            ),
+        );
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::RoomMessage(edit))
+            .await
+            .unwrap();
+
+        let pending = pending_replacements(&room, event_id)
+            .await
+            .unwrap()
+            .pop()
+            .expect("queued edit should be visible before it reaches /relations");
+
+        assert_eq!(pending.new_content.msgtype.body(), "edited locally");
+    }
 
     #[tokio::test]
     async fn concurrent_sends_each_capture_a_distinct_transaction_id() {

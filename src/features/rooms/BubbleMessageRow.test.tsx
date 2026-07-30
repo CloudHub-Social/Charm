@@ -97,7 +97,7 @@ describe("BubbleMessageRow", () => {
     expect(screen.queryByText(/\d+:\d+/)).not.toBeInTheDocument();
   });
 
-  it("renders a redacted message as a Message deleted placeholder with no actions", () => {
+  it("keeps a report-only action menu on a redacted remote message", () => {
     render(
       <BubbleMessageRow
         {...baseProps({
@@ -107,11 +107,12 @@ describe("BubbleMessageRow", () => {
             body: "",
             redacted: true,
           }),
+          onReport: vi.fn(),
         })}
       />,
     );
     expect(screen.getByText("Message deleted")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /more/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /more/i })).toBeInTheDocument();
   });
 
   it("shows a sending suffix while pending and a failed suffix on error", () => {

@@ -121,6 +121,23 @@ describe("DiscordMessageRow", () => {
     expect(screen.getByText("Message deleted")).toBeInTheDocument();
   });
 
+  it("keeps the action-menu entry point on a reportable redacted remote message", () => {
+    render(
+      <DiscordMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            body: "",
+            redacted: true,
+          }),
+          onReport: vi.fn(),
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /more/i })).toBeInTheDocument();
+  });
+
   it("shows pending/error state on the header line", () => {
     render(<DiscordMessageRow {...baseProps({ isPending: true })} />);
     expect(screen.getByText(/sending…/)).toBeInTheDocument();

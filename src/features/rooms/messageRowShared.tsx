@@ -85,4 +85,12 @@ export interface MessageRowLayoutProps {
   disableRelationActions: boolean;
   isUndecrypted: boolean;
   rowKey: string;
+  /** Forwards this message to another room. */
+  onForward?: () => void;
+  /** Opens this message's raw event JSON. */
+  onViewSource?: () => void;
+  /** Reports this message to the homeserver's moderators. */
+  onReport?: () => void;
+  /** Opens this message's edit history. Only rendered when `message.edited` is set. */
+  onViewEditHistory?: () => void;
 }

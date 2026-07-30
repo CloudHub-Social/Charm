@@ -2828,7 +2828,7 @@ describe("ChatShell", () => {
     });
     renderChatShell();
 
-    fireEvent.click(await screen.findByRole("button", { name: /👍/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /👍/, pressed: false }));
 
     expect(toggleReaction).toHaveBeenCalledWith(room.room_id, "$msg:localhost", "👍");
   });

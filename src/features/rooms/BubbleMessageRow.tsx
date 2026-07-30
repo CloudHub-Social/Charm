@@ -50,6 +50,10 @@ export function BubbleMessageRow({
   disableRelationActions,
   isUndecrypted,
   rowKey,
+  onForward,
+  onViewSource,
+  onReport,
+  onViewEditHistory,
 }: MessageRowLayoutProps) {
   const showAvatar = !own && !sameSenderAsPrev;
   const showMeta = !sameSenderAsNext;
@@ -126,9 +130,10 @@ export function BubbleMessageRow({
               )}
             />
           )}
-          {!message.redacted && (
+          {(!message.redacted || (!own && onReport)) && (
             <MessageActions
               ref={(el) => registerActionsRef(rowKey, el)}
+              accountId={currentUserId ?? ""}
               isOwn={own}
               canRedact={canRedact}
               canPin={canPin}
@@ -150,6 +155,12 @@ export function BubbleMessageRow({
               isBookmarked={isBookmarked}
               onResend={onResend}
               onDiscard={onDiscard}
+              onForward={onForward}
+              onViewSource={onViewSource}
+              onReport={onReport}
+              isRedacted={message.redacted}
+              isEdited={message.edited}
+              onViewEditHistory={onViewEditHistory}
             />
           )}
         </div>
@@ -167,6 +178,8 @@ export function BubbleMessageRow({
             reactions={message.reactions}
             onToggle={onReact}
             disabled={disableRelationActions || isUndecrypted}
+            roomId={roomId}
+            eventId={message.event_id}
           />
         )}
         {showMeta && (
