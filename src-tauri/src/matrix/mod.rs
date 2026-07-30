@@ -107,6 +107,16 @@ pub struct MatrixState {
     /// idle challenge.
     pub(crate) pending_registration_cancel:
         std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+    /// One unauthenticated password-reset attempt owned by this app session.
+    /// The email validation session and client secret remain in Rust; the
+    /// frontend receives only an opaque Charm attempt id and whether the
+    /// homeserver expects direct token submission.
+    pub(crate) pending_password_reset: Mutex<Option<auth::PendingPasswordReset>>,
+    /// Cancellation stays reachable while confirmation owns the pending
+    /// reset value during network requests, preventing a cancelled or
+    /// superseded attempt from changing the password later.
+    pub(crate) pending_password_reset_cancel:
+        std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
     /// Set while a QR login is in the `QrScanned` stage (waiting for the
     /// user to type in the check code shown on the other device) — see
     /// `qr_login::submit_qr_check_code`.
@@ -357,6 +367,8 @@ impl Default for MatrixState {
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
+            pending_password_reset: Mutex::default(),
+            pending_password_reset_cancel: std::sync::Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),

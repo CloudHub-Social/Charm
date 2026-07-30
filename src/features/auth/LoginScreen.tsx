@@ -7,17 +7,21 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   beginRegistration,
+  cancelPasswordReset,
   cancelRegistration,
   cancelSsoLogin,
+  confirmPasswordReset,
   completeSsoLogin,
   continueRegistration,
   getLoginFlows,
   login,
   loginWithToken,
+  requestPasswordReset,
   register,
   startSsoLogin,
   type LoginResponse,
   type LoginFlowSummary,
+  type PasswordResetChallenge,
   type RegistrationAuthResponse,
   type RegistrationStep,
 } from "@/lib/matrix";
@@ -60,6 +64,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [loginFlows, setLoginFlows] = useState<LoginFlowSummary>();
   const [showTokenLogin, setShowTokenLogin] = useState(false);
   const [loginToken, setLoginToken] = useState("");
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [passwordResetChallenge, setPasswordResetChallenge] = useState<PasswordResetChallenge>();
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryToken, setRecoveryToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordResetComplete, setPasswordResetComplete] = useState(false);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
@@ -102,12 +112,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
+  const passwordResetAttemptRef = useRef<string | null>(null);
 
   useEffect(
     () => () => {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
+      const resetAttemptId = passwordResetAttemptRef.current;
+      passwordResetAttemptRef.current = null;
+      if (resetAttemptId) cancelPasswordReset(resetAttemptId).catch(logAndIgnore);
     },
     [],
   );
@@ -265,6 +279,61 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     cancelSsoLogin().catch(logAndIgnore);
   }
 
+  async function handleRequestPasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    setPending(true);
+    setError(null);
+    try {
+      const challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
+      passwordResetAttemptRef.current = challenge.attempt_id;
+      setPasswordResetChallenge(challenge);
+    } catch {
+      setError(
+        "Password reset could not be started. Check the homeserver and email, then try again.",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleConfirmPasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    const attemptId = passwordResetAttemptRef.current;
+    if (!attemptId) return;
+    setPending(true);
+    setError(null);
+    try {
+      await confirmPasswordReset(
+        attemptId,
+        passwordResetChallenge?.requires_token ? recoveryToken : undefined,
+        newPassword,
+      );
+      passwordResetAttemptRef.current = null;
+      setRecoveryToken("");
+      setNewPassword("");
+      setPasswordResetComplete(true);
+    } catch {
+      setError(
+        "Password reset could not be confirmed. Verify the email step and new password, then try again.",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function closePasswordReset() {
+    const attemptId = passwordResetAttemptRef.current;
+    passwordResetAttemptRef.current = null;
+    if (attemptId) cancelPasswordReset(attemptId).catch(logAndIgnore);
+    setShowPasswordReset(false);
+    setPasswordResetChallenge(undefined);
+    setPasswordResetComplete(false);
+    setRecoveryEmail("");
+    setRecoveryToken("");
+    setNewPassword("");
+    setError(null);
+  }
+
   return (
     <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
       <div className="flex w-full max-w-90 flex-col gap-5">
@@ -273,7 +342,117 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           <p className="text-sm text-muted-foreground">Sign in to your homeserver</p>
         </div>
 
-        {showQrLogin ? (
+        {showPasswordReset ? (
+          <div className="flex flex-col gap-5">
+            {passwordResetComplete ? (
+              <div className="flex flex-col gap-4" aria-live="polite">
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Password updated</h2>
+                  <p className="text-xs text-muted-foreground">
+                    You can now sign in with your new password.
+                  </p>
+                </div>
+                <Button type="button" onClick={closePasswordReset}>
+                  Return to sign in
+                </Button>
+              </div>
+            ) : passwordResetChallenge ? (
+              <form className="flex flex-col gap-4" onSubmit={handleConfirmPasswordReset}>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Set a new password</h2>
+                  <p className="text-xs text-muted-foreground">
+                    {passwordResetChallenge.requires_token
+                      ? "Enter the token from your email."
+                      : "Open the link in your email, then return here."}
+                  </p>
+                </div>
+                {passwordResetChallenge.requires_token && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="recovery-token">Email token</Label>
+                    <Input
+                      id="recovery-token"
+                      value={recoveryToken}
+                      onChange={(event) => setRecoveryToken(event.currentTarget.value)}
+                      autoComplete="one-time-code"
+                      disabled={pending}
+                      required
+                    />
+                  </div>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-password">New password</Label>
+                  <Input
+                    id="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.currentTarget.value)}
+                    autoComplete="new-password"
+                    disabled={pending}
+                    required
+                  />
+                </div>
+                {error && <p className="text-xs text-destructive">{error}</p>}
+                <Button type="submit" disabled={pending}>
+                  {pending && <Loader2 className="animate-spin" />}
+                  Reset password
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={closePasswordReset}
+                >
+                  Cancel
+                </Button>
+              </form>
+            ) : (
+              <form className="flex flex-col gap-4" onSubmit={handleRequestPasswordReset}>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Reset your password</h2>
+                  <p className="text-xs text-muted-foreground">
+                    We’ll ask your homeserver to send recovery instructions. The response stays
+                    deliberately generic.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-homeserver">Homeserver</Label>
+                  <Input
+                    id="recovery-homeserver"
+                    value={homeserverUrl}
+                    onChange={(event) => setHomeserverUrl(event.currentTarget.value)}
+                    disabled={pending}
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-email">Email</Label>
+                  <Input
+                    id="recovery-email"
+                    type="email"
+                    value={recoveryEmail}
+                    onChange={(event) => setRecoveryEmail(event.currentTarget.value)}
+                    autoComplete="email"
+                    disabled={pending}
+                    required
+                  />
+                </div>
+                {error && <p className="text-xs text-destructive">{error}</p>}
+                <Button type="submit" disabled={pending}>
+                  {pending && <Loader2 className="animate-spin" />}
+                  Send recovery email
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={closePasswordReset}
+                >
+                  Cancel
+                </Button>
+              </form>
+            )}
+          </div>
+        ) : showQrLogin ? (
           <QrLoginScreen
             homeserverUrl={homeserverUrl}
             onSignedIn={onSignedIn}
@@ -457,6 +636,21 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                           : "Sign in"
                         : "Create account"}
                   </Button>
+
+                  {mode === "sign-in" && registrationUiaEnabled && !showTokenLogin && (
+                    <Button
+                      type="button"
+                      variant="link"
+                      disabled={pending || ssoPending}
+                      onClick={() => {
+                        setShowPasswordReset(true);
+                        setError(null);
+                      }}
+                      className="w-full"
+                    >
+                      Forgot password?
+                    </Button>
+                  )}
 
                   {mode === "sign-in" && showNativeSignInOptions && (
                     <>

@@ -25,6 +25,9 @@ const getLoginFlows = vi.fn().mockResolvedValue({
   identity_providers: [],
 });
 const loginWithToken = vi.fn();
+const requestPasswordReset = vi.fn();
+const confirmPasswordReset = vi.fn();
+const cancelPasswordReset = vi.fn().mockResolvedValue(undefined);
 const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso");
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
@@ -48,6 +51,9 @@ vi.mock("@/lib/matrix", () => ({
   cancelRegistration: (...args: unknown[]) => cancelRegistration(...args),
   getLoginFlows: (...args: unknown[]) => getLoginFlows(...args),
   loginWithToken: (...args: unknown[]) => loginWithToken(...args),
+  requestPasswordReset: (...args: unknown[]) => requestPasswordReset(...args),
+  confirmPasswordReset: (...args: unknown[]) => confirmPasswordReset(...args),
+  cancelPasswordReset: (...args: unknown[]) => cancelPasswordReset(...args),
   startSsoLogin: (...args: unknown[]) => startSsoLogin(...args),
   completeSsoLogin: (...args: unknown[]) => completeSsoLogin(...args),
   cancelSsoLogin: (...args: unknown[]) => cancelSsoLogin(...args),
@@ -436,5 +442,86 @@ describe("LoginScreen login choices", () => {
 
     expect(loginWithToken).toHaveBeenCalledWith("https://cloudhub.social", "one-time-secret");
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+});
+
+describe("LoginScreen password recovery", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    getCurrentUrls = null;
+    openUrlCallback = undefined;
+    openUrl.mockReset().mockResolvedValue(undefined);
+    login.mockReset();
+    loginWithToken.mockReset();
+    requestPasswordReset.mockReset();
+    confirmPasswordReset.mockReset();
+    cancelPasswordReset.mockReset().mockResolvedValue(undefined);
+    discoverHomeserver.mockReset().mockReturnValue(new Promise(() => {}));
+    getLoginFlows.mockReset().mockResolvedValue({
+      password: true,
+      token: false,
+      sso: true,
+      identity_providers: [],
+    });
+    featureFlags.registrationEnabled = true;
+  });
+
+  it("requests email recovery and confirms a homeserver-submitted reset", async () => {
+    requestPasswordReset.mockResolvedValue({
+      attempt_id: "reset-attempt",
+      requires_token: false,
+    });
+    confirmPasswordReset.mockResolvedValue(undefined);
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Send recovery email" }).click();
+    });
+
+    expect(requestPasswordReset).toHaveBeenCalledWith(
+      "https://cloudhub.social",
+      "alice@example.org",
+    );
+    expect(screen.getByText("Open the link in your email, then return here.")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "new correct horse" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Reset password" }).click();
+    });
+
+    expect(confirmPasswordReset).toHaveBeenCalledWith(
+      "reset-attempt",
+      undefined,
+      "new correct horse",
+    );
+    expect(screen.getByText("Password updated")).toBeVisible();
+  });
+
+  it("cancels a direct-token recovery attempt without exposing its backend session", async () => {
+    requestPasswordReset.mockResolvedValue({
+      attempt_id: "token-attempt",
+      requires_token: true,
+    });
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Send recovery email" }).click();
+    });
+    expect(screen.getByLabelText("Email token")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(cancelPasswordReset).toHaveBeenCalledWith("token-attempt");
+    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
   });
 });

@@ -104,8 +104,10 @@ export function installMockTauri(seed: {
   registrationUia?: boolean;
   /** Advertise provider SSO and standalone token login on the login screen. */
   loginChoices?: boolean;
+  /** Enable the deterministic email-link password-reset journey. */
+  passwordRecovery?: boolean;
 }) {
-  if (seed.registrationUia || seed.loginChoices) {
+  if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
@@ -347,6 +349,12 @@ export function installMockTauri(seed: {
     start_sso_login: () => "https://matrix.example/sso/company",
     cancel_sso_login: () => null,
     login_with_token: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
+    request_password_reset: () => ({
+      attempt_id: "e2e-password-reset",
+      requires_token: false,
+    }),
+    confirm_password_reset: () => null,
+    cancel_password_reset: () => null,
     begin_registration: () => {
       if (!seed.registrationUia) return undefined;
       return {

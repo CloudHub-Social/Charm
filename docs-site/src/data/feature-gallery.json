@@ -28,7 +28,7 @@
     {
       "slug": "registration",
       "title": "Interactive account registration",
-      "summary": "Create an account through homeserver-advertised UIA, select an advertised SSO provider, or use a supported one-time login token.",
+      "summary": "Create an account through homeserver-advertised UIA, recover a password by email, select an advertised SSO provider, or use a supported one-time login token.",
       "status": "preview",
       "spec": "Spec 45",
       "specLinks": [

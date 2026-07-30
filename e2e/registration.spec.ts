@@ -53,3 +53,27 @@ test("login choices expose a homeserver provider and standalone token login", as
 
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
 });
+
+test("password recovery requests email validation and sets a new password", async ({ page }) => {
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_PASSWORD_RECOVERY",
+    room: { room_id: "!password-recovery:localhost", name: "Recovery", unread_count: 0 },
+    hasRooms: false,
+    restoreSession: false,
+    passwordRecovery: true,
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Forgot password?" }).click();
+  await page.getByLabel("Email").fill("alice@example.org");
+  await page.getByRole("button", { name: "Send recovery email" }).click();
+  await expect(page.getByText("Open the link in your email, then return here.")).toBeVisible();
+  await page.getByLabel("New password").fill("new correct horse battery staple");
+  await page.getByRole("button", { name: "Reset password" }).click();
+
+  await expect(page.getByText("Password updated")).toBeVisible();
+  await captureSnapshot(page, "password-recovery-complete");
+  await page.getByRole("button", { name: "Return to sign in" }).click();
+  await expect(page.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+});

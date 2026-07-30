@@ -22,9 +22,9 @@ continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
 This does not yet complete Spec 45. The web companion attempt boundary, direct
-email request-token path, recovery/SSO/token-login slice, and real-homeserver
-verification remain open. Repository and Playwright tests for DTO mapping,
-stage/session validation, and UI navigation are not live-homeserver evidence.
+registration email request-token path, and real-homeserver verification remain
+open. Repository and Playwright tests for DTO mapping, stage/session validation,
+and UI navigation are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
@@ -32,8 +32,17 @@ selected provider against a fresh homeserver response before building its SSO
 redirect; and supports one-time token login only when the server advertises it.
 Token values remain request-only and the desktop flow uses the same encrypted
 temporary-store relocation as password and SSO login. Provider icon resolution,
-password reset, the web companion equivalents, and live verification remain
-open.
+the web companion equivalents, and live verification remain open.
+
+Desktop password recovery now generates its email-validation client secret in
+Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
+twenty-minute attempt, supports both email-link and homeserver-hosted token
+submission, and completes `/account/password` with `m.login.email.identity`.
+Cancellation, expiry, and superseding requests cancel in-flight confirmation;
+the challenge DTO exposes neither the `sid` nor client secret. A returned direct
+submission URL must match the resolved homeserver origin and is sent with
+redirects disabled, preventing the command from becoming a server-directed SSRF
+primitive. Request failures remain deliberately generic in the UI.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
