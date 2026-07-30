@@ -167,6 +167,7 @@ export function SpaceRail({
       const resolvedTarget = insideRail ? targetId : null;
       const invalid =
         resolvedTarget === sourceId ||
+        (insideRail && resolvedTarget === null) ||
         (resolvedTarget !== null &&
           collectDescendantSpaceIds(sourceId, rooms).has(resolvedTarget)) ||
         (!insideRail && (source?.parent_space_ids.length ?? 0) === 0);

@@ -120,6 +120,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "list_space_children",
+      { spaceId: "!space:example.org" },
+      "GET",
+      "/api/rooms/!space%3Aexample.org/space-children",
+      undefined,
+    ],
+    [
       "join_room",
       { roomIdOrAlias: "#space-room:example.org" },
       "POST",

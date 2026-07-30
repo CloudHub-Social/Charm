@@ -535,6 +535,21 @@ describe("SpaceRail", () => {
     outside.remove();
   });
 
+  it("does not un-nest a space dropped on blank rail chrome", async () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    const home = screen.getByRole("button", { name: "Home" });
+    mockPointerCapture(product);
+    mockElementFromPoint(home);
+
+    fireEvent.pointerDown(product, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
+    fireEvent.pointerMove(product, { pointerId: 1, clientX: 20, clientY: 20, buttons: 1 });
+    fireEvent.pointerUp(product, { pointerId: 1, clientX: 20, clientY: 20 });
+
+    await waitFor(() => expect(setSpaceParent).not.toHaveBeenCalled());
+  });
+
   it("disables Invite until the space's permissions have loaded, then re-enables it once permitted", async () => {
     let resolveDetails: (details: ReturnType<typeof makeRoomDetails>) => void = () => {};
     getRoomDetails.mockReturnValueOnce(

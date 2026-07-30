@@ -11,7 +11,7 @@ use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
 use matrix_sdk::ruma::events::space::parent::SpaceParentEventContent;
 use matrix_sdk::ruma::events::{AnyStateEvent, InitialStateEvent, StateEvent, StateEventType};
 use matrix_sdk::ruma::room::{JoinRuleSummary, RoomType};
-use matrix_sdk::ruma::{uint, OwnedRoomOrAliasId, RoomId};
+use matrix_sdk::ruma::{OwnedRoomOrAliasId, RoomId};
 use matrix_sdk::{Client, Room};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -46,9 +46,9 @@ impl From<&JoinRuleSummary> for SpaceJoinRule {
     }
 }
 
-/// One child room of a space, as returned by the `/hierarchy` endpoint —
-/// Day-1 scope only reads the first page (see module docs), so large spaces
-/// show a "load more" affordance instead of paginating automatically.
+/// One child room of a space, as returned by the `/hierarchy` endpoint.
+/// Direct-child management follows every pagination token so existing
+/// children cannot be hidden from removal or candidate exclusion.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct SpaceChild {
@@ -72,7 +72,7 @@ pub struct SpaceHierarchyNode {
     pub children: Vec<SpaceHierarchyNode>,
 }
 
-/// Fetches the first `/hierarchy` page of direct children for `space_id`.
+/// Fetches every `/hierarchy` page of direct children for `space_id`.
 #[tauri::command]
 pub async fn list_space_children(
     state: State<'_, MatrixState>,
@@ -88,7 +88,7 @@ pub async fn list_space_children_impl(
     space_id: &str,
 ) -> Result<Vec<SpaceChild>, String> {
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
-    let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), true).await?;
+    let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), Some(1)).await?;
 
     Ok(chunks
         .into_iter()
@@ -115,7 +115,12 @@ pub async fn list_space_hierarchy_impl(
     space_id: &str,
 ) -> Result<Vec<SpaceHierarchyNode>, String> {
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
-    let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), false).await?;
+    let chunks = fetch_hierarchy_chunks(
+        client,
+        parsed_space_id.clone(),
+        Some(RECURSIVE_HIERARCHY_MAX_DEPTH),
+    )
+    .await?;
     Ok(build_hierarchy_from_chunks(
         parsed_space_id.as_ref(),
         chunks,
@@ -125,7 +130,7 @@ pub async fn list_space_hierarchy_impl(
 async fn fetch_hierarchy_chunks(
     client: &Client,
     room_id: matrix_sdk::ruma::OwnedRoomId,
-    direct_children_only: bool,
+    max_depth: Option<u32>,
 ) -> Result<Vec<matrix_sdk::ruma::api::client::space::SpaceHierarchyRoomsChunk>, String> {
     let mut chunks = Vec::new();
     let mut from = None;
@@ -134,16 +139,9 @@ async fn fetch_hierarchy_chunks(
     loop {
         let mut request = get_hierarchy::v1::Request::new(room_id.clone());
         request.from = from;
-        request.max_depth = Some(if direct_children_only {
-            uint!(1)
-        } else {
-            RECURSIVE_HIERARCHY_MAX_DEPTH.into()
-        });
+        request.max_depth = max_depth.map(Into::into);
         let response = client.send(request).await.map_err(|e| e.to_string())?;
         chunks.extend(response.rooms);
-        if direct_children_only {
-            return Ok(chunks);
-        }
         from = next_hierarchy_page_token(&mut seen_page_tokens, response.next_batch)?;
         let Some(_) = from else {
             return Ok(chunks);
@@ -164,7 +162,10 @@ async fn live_hierarchy_contains(
     ancestor_id: &RoomId,
     room_id: &str,
 ) -> Result<bool, String> {
-    let chunks = fetch_hierarchy_chunks(client, ancestor_id.to_owned(), false).await?;
+    // Mutation safety must not inherit the display hierarchy's depth cap:
+    // omitting max_depth asks the homeserver for the complete reachable
+    // hierarchy, including descendants deeper than the UI will render.
+    let chunks = fetch_hierarchy_chunks(client, ancestor_id.to_owned(), None).await?;
     Ok(chunks.iter().any(|chunk| chunk.summary.room_id == room_id))
 }
 
