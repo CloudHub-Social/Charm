@@ -107,6 +107,12 @@ pub struct MatrixState {
     /// idle challenge.
     pub(crate) pending_registration_cancel:
         std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+    /// Account key for a registration that has entered its durable
+    /// relocation/adoption phase. Tauri's exit callback is synchronous, so
+    /// it cannot wait for that future to observe cancellation; keeping the
+    /// key here lets orderly shutdown remove a session that was persisted
+    /// but not yet adopted by the UI.
+    pub(crate) finalizing_registration_account: std::sync::Mutex<Option<String>>,
     /// Set while a QR login is in the `QrScanned` stage (waiting for the
     /// user to type in the check code shown on the other device) — see
     /// `qr_login::submit_qr_check_code`.
@@ -357,6 +363,7 @@ impl Default for MatrixState {
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
+            finalizing_registration_account: std::sync::Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),
