@@ -1417,6 +1417,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
