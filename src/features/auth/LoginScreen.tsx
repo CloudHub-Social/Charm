@@ -227,6 +227,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           onSignedIn(await loginWithToken(discovery.homeserverUrl, loginToken));
           setLoginToken("");
         } else {
+          if (discovery.state === "resolved" && !loginFlows?.password) {
+            throw new Error("This homeserver does not offer password sign-in.");
+          }
           onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));
         }
       } else if (registrationUiaEnabled) {
@@ -624,7 +627,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       )}
                       <Button
                         type="button"
-                        disabled={pending || registrationStep.policies.length === 0}
+                        disabled={pending}
                         onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
                       >
                         {pending && <Loader2 className="animate-spin" />}
@@ -701,17 +704,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                             {pending && <Loader2 className="animate-spin" />}
                             Complete email verification
                           </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={() => {
-                              setRegistrationEmailChallenge(undefined);
-                              setRegistrationEmailToken("");
-                            }}
-                          >
-                            Use a different email
-                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            To use a different email address, cancel this registration and start
+                            again.
+                          </p>
                         </>
                       )}
                     </div>
