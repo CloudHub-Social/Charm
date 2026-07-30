@@ -498,6 +498,55 @@ describe("SpaceRail", () => {
     await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
   });
 
+  it("offers a keyboard-operable parent picker", async () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({ room_id: "!alpha:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Alpha" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to space…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Beta" }));
+
+    await waitFor(() =>
+      expect(setSpaceParent).toHaveBeenCalledWith("!alpha:localhost", "!beta:localhost"),
+    );
+  });
+
+  it("does not turn a touch scroll gesture into a hierarchy mutation", async () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({ room_id: "!alpha:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+    const alpha = screen.getByRole("button", { name: "Alpha" });
+    const beta = screen.getByRole("button", { name: "Beta" });
+    mockPointerCapture(alpha);
+    mockElementFromPoint(beta);
+
+    fireEvent.pointerDown(alpha, {
+      pointerId: 1,
+      pointerType: "touch",
+      clientX: 10,
+      clientY: 10,
+      buttons: 1,
+    });
+    fireEvent.pointerMove(alpha, {
+      pointerId: 1,
+      pointerType: "touch",
+      clientX: 10,
+      clientY: 40,
+      buttons: 1,
+    });
+    fireEvent.pointerUp(alpha, { pointerId: 1, pointerType: "touch", clientX: 10, clientY: 40 });
+
+    await Promise.resolve();
+    expect(setSpaceParent).not.toHaveBeenCalled();
+  });
+
   it("rejects a local drag target that is the source space's descendant", async () => {
     renderRail();
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
