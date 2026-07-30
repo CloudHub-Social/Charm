@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useAtom } from "jotai";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -42,10 +43,20 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
   const layout = useAdaptiveLayout();
   const isMobile = layout === "mobile";
   const roomAliasManagementEnabled = useFlag("room_alias_management");
+  const spaceHierarchyEnabled = useFlag("space_hierarchy_reorganization");
   const targetLabel = target?.kind === "space" ? "space" : "room";
 
+  useEffect(() => {
+    if (target?.kind === "space" && !spaceHierarchyEnabled) {
+      setTarget(null);
+    }
+  }, [setTarget, spaceHierarchyEnabled, target?.kind]);
+
+  const visibleTarget =
+    target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
+
   return (
-    <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
+    <Dialog open={visibleTarget !== null} onOpenChange={(open) => !open && setTarget(null)}>
       <DialogContent
         showCloseButton={false}
         className={cn(
