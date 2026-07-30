@@ -15,7 +15,7 @@ use matrix_sdk::ruma::{uint, OwnedRoomOrAliasId, RoomId};
 use matrix_sdk::{Client, Room};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::room_admin::require_room;
@@ -346,6 +346,7 @@ pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<J
 /// MSC1772), optionally nested under an existing joined parent space.
 #[tauri::command]
 pub async fn create_space(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     name: String,
     topic: Option<String>,
@@ -353,6 +354,9 @@ pub async fn create_space(
     public: bool,
     parent_space_id: Option<String>,
 ) -> Result<String, String> {
+    if parent_space_id.is_some() && !hierarchy_reorganization_enabled(&app) {
+        return Err("space hierarchy reorganization is disabled".to_owned());
+    }
     let client = state.require_client().await?;
     create_space_impl(
         &client,
@@ -431,12 +435,25 @@ pub async fn create_space_impl(
 /// unrelated noncanonical relationships intact.
 #[tauri::command]
 pub async fn set_space_parent(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     space_id: String,
     parent_space_id: Option<String>,
 ) -> Result<(), String> {
+    if !hierarchy_reorganization_enabled(&app) {
+        return Err("space hierarchy reorganization is disabled".to_owned());
+    }
     let client = state.require_client().await?;
     set_space_parent_impl(&client, &space_id, parent_space_id.as_deref()).await
+}
+
+fn hierarchy_reorganization_enabled(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::SpaceHierarchyReorganization,
+        )
+    })
 }
 
 pub async fn set_space_parent_impl(

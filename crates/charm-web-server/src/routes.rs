@@ -863,6 +863,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         state
             .sessions
@@ -947,6 +948,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         state
             .sessions
@@ -1007,6 +1009,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@already-gone-throttled:example.invalid").await;
         // Fresh enough that the throttled durable-touch write below would
@@ -1077,6 +1080,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@awaiting-initial:example.invalid").await;
         session
@@ -1155,6 +1159,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@stale-pinned:example.invalid").await;
         let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
@@ -1221,6 +1226,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@active-deleted:example.invalid").await;
         // Genuinely active: an open WebSocket connection, which is what
@@ -2138,6 +2144,9 @@ async fn create_space(
     Json(request): Json<CreateSpaceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    if request.parent_space_id.is_some() {
+        require_space_hierarchy_write_enabled(state.space_hierarchy_reorganization)?;
+    }
     let room_id = create_space_impl(
         &session.client,
         &request.name,
@@ -2163,6 +2172,7 @@ async fn set_space_parent(
     Json(request): Json<SetSpaceParentRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    require_space_hierarchy_write_enabled(state.space_hierarchy_reorganization)?;
     set_space_parent_impl(
         &session.client,
         &room_id,
@@ -2171,6 +2181,40 @@ async fn set_space_parent(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_space_hierarchy_write_enabled(enabled: bool) -> Result<(), ApiError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "space hierarchy reorganization is disabled",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod space_hierarchy_feature_gate_tests {
+    use axum::http::StatusCode;
+
+    #[test]
+    fn hierarchy_writes_are_disabled_by_default() {
+        let error = super::require_space_hierarchy_write_enabled(
+            crate::AppState::default().space_hierarchy_reorganization,
+        )
+        .expect_err("the default-off rollout gate must reject hierarchy writes");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.message,
+            "space hierarchy reorganization is disabled"
+        );
+    }
+
+    #[test]
+    fn hierarchy_writes_can_be_enabled_by_server_configuration() {
+        assert!(super::require_space_hierarchy_write_enabled(true).is_ok());
+    }
 }
 
 async fn leave_room(
