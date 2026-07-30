@@ -8,8 +8,9 @@ status: in-progress
 
 ## Implementation status
 
-The navigation-only v1 is decision-ready and follows Spec 28's now-defined
-room-scoped message-search contract. No user-facing implementation exists yet.
+The navigation-only v1 is decision-ready. Its ⌘F integration remains conditional
+on the linked [Spec 28 message-search contract](/specs/day-1/spec-28--cross-room-message-search/)
+landing first. No user-facing implementation exists yet.
 The first code PR may start after approval to add an established fuzzy-search
 dependency; the preferred choice is Fuse.js.
 
@@ -28,7 +29,8 @@ users migrating from 1.0 (or from Slack/Element/Discord, which all have it).
 
 ## Non-goals
 
-- Not cross-room *message* search (Spec 28) — this jumps to *rooms/people/spaces* by
+- Not cross-room *message* search ([Spec 28](/specs/day-1/spec-28--cross-room-message-search/))
+  — this jumps to *rooms/people/spaces* by
   name, not message content. (They can share a launcher surface — see below — but
   they're different result types.)
 - Not a full action-command palette (run arbitrary commands) in v1 — start with
@@ -43,12 +45,14 @@ users migrating from 1.0 (or from Slack/Element/Discord, which all have it).
   Home/End, Page Up/Down, and Esc work without leaving the input. Use the existing
   dialog primitives and Fuse.js over the already-synced room list.
 - **In-room search hotkey (⌘F)**: Charm 1.0 also binds ⌘F to in-room message search.
-  Wire ⌘F only after Spec 28's room-scoped search surface exists. This spec owns the
-  global hotkey and delegation; it must not substitute room-name filtering or open
-  an inert placeholder.
+  Wire ⌘F only after Spec 28's room-scoped search surface exists. The binding and
+  shortcut-help row require both `quick_switcher` and
+  `encrypted_local_message_search`; either flag can independently remove the
+  integration. This spec owns delegation, not the search implementation.
 - Keep an account-scoped, most-recent-first list of the last 20 successfully
   navigated room IDs. Reuse the account-keyed local-storage pattern already used by
-  recent reactions; never share recents between accounts. Empty-query ordering is
+  recent reactions; never share recents between accounts. Purge the recents key on
+  logout, account deactivation, and local-data removal. Empty-query ordering is
   recents first, then remaining spaces, DMs, and rooms in stable room-list order.
 - Register both shortcuts in the keyboard-shortcuts panel (which exists in 2.0) so
   they're discoverable.
@@ -68,10 +72,12 @@ users migrating from 1.0 (or from Slack/Element/Discord, which all have it).
 
 ## Data flow
 
-Pure frontend over the already-synced room/space list — no new IPC for the switcher
-itself. Fuse.js performs client-side matching over normalized name, canonical
-alias, DM-peer display name/MXID, and space context. Do not include message bodies,
-topics, or hidden account data in the Fuse.js corpus. ⌘F delegates to Spec 28's
+Pure frontend over the already-synced room/space list — no new IPC for the
+switcher itself. The v1 corpus is deliberately limited to fields already exposed
+by `RoomSummary`: resolved room name, DM peer MXID, and parent-space context.
+Canonical aliases and a separate DM-peer display name are deferred until that
+summary contract exposes them without per-room fetches. Fuse.js must not inspect
+message bodies, topics, or hidden account data. ⌘F delegates to Spec 28's
 room-scoped search command and does not issue Matrix traffic itself.
 
 ## API/contract changes
@@ -89,7 +95,8 @@ room-scoped search command and does not issue Matrix traffic itself.
   recents. ⌘F opens room-scoped search (when Spec 28 present).
 - Frontend: account switching cannot reveal the previous account's recents;
   duplicate multi-space rooms collapse to one result; stale recents are discarded;
-  flag-off does not register either hotkey or write recents.
+  logout/deactivation removes the recents key; flag-off does not register either
+  hotkey or write recents.
 - a11y: focus trap in the modal, roving selection, screen-reader labels (through the
   Storybook axe gate), active-option announcements, and focus restoration to the
   launcher after close.
