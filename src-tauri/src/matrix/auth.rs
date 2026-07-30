@@ -1061,7 +1061,13 @@ pub async fn login_with_token(
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = build_client(&app, &homeserver_url, &store_key).await?;
+    let client = match build_client(&app, &homeserver_url, &store_key).await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err(error);
+        }
+    };
     let flows = match client.matrix_auth().get_login_types().await {
         Ok(flows) => flows,
         Err(_) => {

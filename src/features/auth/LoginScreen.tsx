@@ -126,6 +126,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // against completing a callback that doesn't belong to an SSO attempt this
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
+  const ssoOperationRef = useRef(0);
   const registrationAttemptRef = useRef<string | null>(null);
 
   useEffect(
@@ -268,16 +269,22 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   async function handleSsoLogin(idpId?: string) {
+    const operation = ++ssoOperationRef.current;
     setSsoPending(true);
     setError(null);
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
+      if (operation !== ssoOperationRef.current) {
+        cancelSsoLogin().catch(logAndIgnore);
+        return;
+      }
       ssoInProgressRef.current = true;
       await openExternalUrl(ssoUrl);
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
+      if (operation !== ssoOperationRef.current) return;
       ssoInProgressRef.current = false;
       setError(String(err));
       setSsoPending(false);
@@ -285,6 +292,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   function handleCancelSso() {
+    ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
     setSsoPending(false);
     setError(null);
