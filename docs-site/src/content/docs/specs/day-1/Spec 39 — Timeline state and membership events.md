@@ -3,8 +3,21 @@ title: Charm 2.0 Spec — Timeline state and membership events
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The first implementation slice adds an additive, ts-rs-exported
+`TimelineItemSummary` union and maps matrix-sdk-ui's existing membership,
+member-profile, room name, topic, avatar, tombstone, and hidden-state
+classifications into it. The existing message-only page/update payload remains
+unchanged so this foundation can land without destabilizing timeline anchoring,
+message actions, receipts, or virtualized row identity.
+
+The next slice must migrate the wire payload and renderer behind a default-off
+feature flag, then add membership collapsing and appearance controls. This spec
+must not be marked shipped until those surfaces and real-room evidence exist.
 
 **Workstream:** one PR / one agent. Extends Spec 14/26 (timeline). Likely the
 single most-noticeable omission found in the whole parity audit.

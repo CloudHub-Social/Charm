@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use imbl::Vector;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
+use matrix_sdk::ruma::events::StateEventContentChange;
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
-    EventSendState, EventTimelineItem, MsgLikeKind, Profile, Timeline, TimelineDetails,
-    TimelineItem,
+    AnyOtherStateEventContentChange, EventSendState, EventTimelineItem, MembershipChange,
+    MsgLikeKind, Profile, Timeline, TimelineDetails, TimelineItem, TimelineItemContent,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -316,6 +317,301 @@ pub struct RoomMessageSummary {
     /// real decrypted message can legitimately contain that exact string,
     /// which would otherwise false-positive as undecrypted.
     pub is_undecrypted: bool,
+}
+
+/// Additive Spec 39 timeline contract. The existing message-only page/update
+/// payload remains unchanged while the frontend rendering and collapse slice
+/// migrates to this discriminated union.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TimelineItemSummary {
+    Message {
+        message: Box<RoomMessageSummary>,
+    },
+    Membership {
+        event_id: String,
+        sender: String,
+        #[ts(type = "number")]
+        timestamp_ms: u64,
+        target_user_id: String,
+        target_display_name: Option<String>,
+        change: TimelineMembershipChange,
+        reason: Option<String>,
+    },
+    State {
+        event_id: String,
+        sender: String,
+        #[ts(type = "number")]
+        timestamp_ms: u64,
+        state_key: String,
+        change: TimelineStateChange,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TimelineMembershipChange {
+    Joined,
+    Left,
+    Banned,
+    Unbanned,
+    Kicked,
+    Invited,
+    KickedAndBanned,
+    InvitationAccepted,
+    InvitationRejected,
+    InvitationRevoked,
+    Knocked,
+    KnockAccepted,
+    KnockRetracted,
+    KnockDenied,
+    Profile {
+        old_display_name: Option<String>,
+        new_display_name: Option<String>,
+        old_avatar_url: Option<String>,
+        new_avatar_url: Option<String>,
+    },
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TimelineStateChange {
+    Name {
+        old_value: Option<String>,
+        new_value: Option<String>,
+    },
+    Topic {
+        old_value: Option<String>,
+        new_value: Option<String>,
+    },
+    Avatar {
+        old_value: Option<String>,
+        new_value: Option<String>,
+    },
+    Tombstone {
+        body: Option<String>,
+        replacement_room_id: Option<String>,
+    },
+    Hidden {
+        event_type: String,
+    },
+}
+
+/// Maps the SDK's already-classified timeline items into Spec 39's additive
+/// discriminated contract. This deliberately uses `MembershipChange`,
+/// `MemberProfileChange`, and `AnyOtherStateEventContentChange` instead of
+/// re-classifying raw event JSON in Charm.
+pub async fn items_to_timeline_items(
+    items: &Vector<Arc<TimelineItem>>,
+    own_user_id: Option<&UserId>,
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+) -> Vec<TimelineItemSummary> {
+    let mut avatar_paths: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut summaries = Vec::new();
+
+    for item in items
+        .iter()
+        .filter_map(|item: &Arc<TimelineItem>| item.as_event())
+    {
+        if item.content().as_msglike().is_some() {
+            if let Some(message) =
+                timeline_item_to_summary(item, own_user_id, client, media_cache, &mut avatar_paths)
+                    .await
+            {
+                summaries.push(TimelineItemSummary::Message {
+                    message: Box::new(message),
+                });
+            }
+            continue;
+        }
+
+        if let Some(summary) = timeline_state_item_to_summary(item) {
+            summaries.push(summary);
+        }
+    }
+
+    summaries
+}
+
+fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineItemSummary> {
+    let event_id = item.event_id()?.to_string();
+    let sender = item.sender().to_string();
+    let timestamp_ms = item.timestamp().0.into();
+
+    match item.content() {
+        TimelineItemContent::MembershipChange(membership) => {
+            let reason = match membership.content() {
+                StateEventContentChange::Original { content, .. } => content.reason.clone(),
+                StateEventContentChange::Redacted(_) => None,
+            };
+            Some(TimelineItemSummary::Membership {
+                event_id,
+                sender,
+                timestamp_ms,
+                target_user_id: membership.user_id().to_string(),
+                target_display_name: membership.display_name(),
+                change: membership
+                    .change()
+                    .map(membership_change_summary)
+                    .unwrap_or(TimelineMembershipChange::Unknown),
+                reason,
+            })
+        }
+        TimelineItemContent::ProfileChange(profile) => {
+            let (old_display_name, new_display_name) = profile
+                .displayname_change()
+                .map(|change| (change.old.clone(), change.new.clone()))
+                .unwrap_or_default();
+            let (old_avatar_url, new_avatar_url) = profile
+                .avatar_url_change()
+                .map(|change| {
+                    (
+                        change.old.as_ref().map(ToString::to_string),
+                        change.new.as_ref().map(ToString::to_string),
+                    )
+                })
+                .unwrap_or_default();
+            Some(TimelineItemSummary::Membership {
+                event_id,
+                sender,
+                timestamp_ms,
+                target_user_id: profile.user_id().to_string(),
+                target_display_name: new_display_name
+                    .clone()
+                    .or_else(|| old_display_name.clone()),
+                change: TimelineMembershipChange::Profile {
+                    old_display_name,
+                    new_display_name,
+                    old_avatar_url,
+                    new_avatar_url,
+                },
+                reason: None,
+            })
+        }
+        TimelineItemContent::OtherState(state) => Some(TimelineItemSummary::State {
+            event_id,
+            sender,
+            timestamp_ms,
+            state_key: state.state_key().to_owned(),
+            change: state_change_summary(state.content()),
+        }),
+        TimelineItemContent::FailedToParseState {
+            event_type,
+            state_key,
+            ..
+        } => Some(TimelineItemSummary::State {
+            event_id,
+            sender,
+            timestamp_ms,
+            state_key: state_key.clone(),
+            change: TimelineStateChange::Hidden {
+                event_type: event_type.to_string(),
+            },
+        }),
+        TimelineItemContent::MsgLike(_)
+        | TimelineItemContent::FailedToParseMessageLike { .. }
+        | TimelineItemContent::CallInvite
+        | TimelineItemContent::RtcNotification { .. } => None,
+    }
+}
+
+fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChange {
+    match change {
+        MembershipChange::Joined => TimelineMembershipChange::Joined,
+        MembershipChange::Left => TimelineMembershipChange::Left,
+        MembershipChange::Banned => TimelineMembershipChange::Banned,
+        MembershipChange::Unbanned => TimelineMembershipChange::Unbanned,
+        MembershipChange::Kicked => TimelineMembershipChange::Kicked,
+        MembershipChange::Invited => TimelineMembershipChange::Invited,
+        MembershipChange::KickedAndBanned => TimelineMembershipChange::KickedAndBanned,
+        MembershipChange::InvitationAccepted => TimelineMembershipChange::InvitationAccepted,
+        MembershipChange::InvitationRejected => TimelineMembershipChange::InvitationRejected,
+        MembershipChange::InvitationRevoked => TimelineMembershipChange::InvitationRevoked,
+        MembershipChange::Knocked => TimelineMembershipChange::Knocked,
+        MembershipChange::KnockAccepted => TimelineMembershipChange::KnockAccepted,
+        MembershipChange::KnockRetracted => TimelineMembershipChange::KnockRetracted,
+        MembershipChange::KnockDenied => TimelineMembershipChange::KnockDenied,
+        MembershipChange::None | MembershipChange::Error | MembershipChange::NotImplemented => {
+            TimelineMembershipChange::Unknown
+        }
+    }
+}
+
+fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineStateChange {
+    match change {
+        AnyOtherStateEventContentChange::RoomName(change) => {
+            let (old_value, new_value) =
+                original_state_values(change, "name", |content| Some(content.name.clone()));
+            TimelineStateChange::Name {
+                old_value,
+                new_value,
+            }
+        }
+        AnyOtherStateEventContentChange::RoomTopic(change) => {
+            let (old_value, new_value) =
+                original_state_values(change, "topic", |content| Some(content.topic.clone()));
+            TimelineStateChange::Topic {
+                old_value,
+                new_value,
+            }
+        }
+        AnyOtherStateEventContentChange::RoomAvatar(change) => {
+            let (old_value, new_value) = original_state_values(change, "url", |content| {
+                content.url.as_ref().map(ToString::to_string)
+            });
+            TimelineStateChange::Avatar {
+                old_value,
+                new_value,
+            }
+        }
+        AnyOtherStateEventContentChange::RoomTombstone(change) => match change {
+            StateEventContentChange::Original { content, .. } => TimelineStateChange::Tombstone {
+                body: Some(content.body.clone()),
+                replacement_room_id: Some(content.replacement_room.to_string()),
+            },
+            StateEventContentChange::Redacted(_) => TimelineStateChange::Tombstone {
+                body: None,
+                replacement_room_id: None,
+            },
+        },
+        other => TimelineStateChange::Hidden {
+            event_type: other.event_type().to_string(),
+        },
+    }
+}
+
+fn original_state_values<T, F>(
+    change: &StateEventContentChange<T>,
+    previous_field: &str,
+    value: F,
+) -> (Option<String>, Option<String>)
+where
+    T: matrix_sdk::ruma::events::StaticStateEventContent + matrix_sdk::ruma::events::RedactContent,
+    T::PossiblyRedacted: Serialize,
+    F: Fn(&T) -> Option<String>,
+{
+    match change {
+        StateEventContentChange::Original {
+            content,
+            prev_content,
+        } => {
+            let old_value = prev_content.as_ref().and_then(|previous| {
+                serde_json::to_value(previous)
+                    .ok()?
+                    .get(previous_field)?
+                    .as_str()
+                    .map(ToOwned::to_owned)
+            });
+            (old_value, value(content))
+        }
+        StateEventContentChange::Redacted(_) => (None, None),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1336,6 +1632,33 @@ mod mapping_tests {
         items_to_summaries(&items, own_user_id.as_deref(), &client, None).await
     }
 
+    async fn timeline_items_for(
+        events: Vec<matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::AnySyncTimelineEvent>>,
+    ) -> Vec<TimelineItemSummary> {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        let timeline = room.timeline().await.expect("failed to build timeline");
+        let (_, mut stream) = timeline.subscribe().await;
+
+        let mut room_builder = JoinedRoomBuilder::new(room_id);
+        for event in events {
+            room_builder = room_builder.add_timeline_event(event);
+        }
+        server.sync_room(&client, room_builder).await;
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await
+        {
+        }
+
+        let own_user_id = client.user_id().map(ToOwned::to_owned);
+        let (items, _stream) = timeline.subscribe().await;
+        items_to_timeline_items(&items, own_user_id.as_deref(), &client, None).await
+    }
+
     /// Same as [`summaries_for`], but syncs each `Vec` in `batches` as its
     /// own separate sync response rather than one combined one — needed
     /// when a later event's mapping depends on an earlier one already being
@@ -1534,6 +1857,71 @@ mod mapping_tests {
 
         let summaries = summaries_for(vec![member_event]).await;
         assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discriminated_items_preserve_membership_changes() {
+        let items = timeline_items_for(vec![factory()
+            .member(&ALICE)
+            .display_name("Alice")
+            .sender(&BOB)
+            .event_id(event_id!("$joined"))
+            .into_raw_sync()])
+        .await;
+
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            TimelineItemSummary::Membership {
+                event_id,
+                sender,
+                target_user_id,
+                target_display_name,
+                change,
+                ..
+            } => {
+                assert_eq!(event_id, "$joined");
+                assert_eq!(sender, BOB.as_str());
+                assert_eq!(target_user_id, ALICE.as_str());
+                assert_eq!(target_display_name.as_deref(), Some("Alice"));
+                assert!(matches!(change, TimelineMembershipChange::Joined));
+            }
+            other => panic!("expected membership item, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discriminated_items_preserve_room_name_old_and_new_values() {
+        use matrix_sdk::ruma::events::room::name::RoomNameEventContent;
+
+        let items = timeline_items_for(vec![factory()
+            .room_name("After")
+            .prev_content(RoomNameEventContent::new("Before".to_owned()))
+            .sender(&ALICE)
+            .event_id(event_id!("$name"))
+            .into_raw_sync()])
+        .await;
+
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            TimelineItemSummary::State {
+                event_id,
+                sender,
+                state_key,
+                change:
+                    TimelineStateChange::Name {
+                        old_value,
+                        new_value,
+                    },
+                ..
+            } => {
+                assert_eq!(event_id, "$name");
+                assert_eq!(sender, ALICE.as_str());
+                assert!(state_key.is_empty());
+                assert_eq!(old_value.as_deref(), Some("Before"));
+                assert_eq!(new_value.as_deref(), Some("After"));
+            }
+            other => panic!("expected room-name state item, got {other:?}"),
+        }
     }
 
     #[tokio::test]
