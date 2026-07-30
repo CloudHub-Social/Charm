@@ -104,17 +104,20 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const featureFlagsInitialized = useFeatureFlagsInitialized();
   const showAlternativeSignInOptions =
     showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
+  const passwordLoginAvailable =
+    !registrationUiaEnabled || loginFlows === undefined || loginFlowsFailed || loginFlows.password;
   const showGenericSso =
     !registrationUiaEnabled ||
+    loginFlows === undefined ||
     loginFlowsFailed ||
-    (loginFlows?.sso === true && loginFlows.identity_providers.length === 0);
+    (loginFlows.sso && loginFlows.identity_providers.length === 0);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
   useEffect(() => {
     if (!registrationUiaEnabled || mode !== "sign-in" || discovery.state !== "resolved") {
       setLoginFlows(undefined);
-      setLoginFlowsFailed(false);
+      setLoginFlowsFailed(discovery.state === "failed");
       return undefined;
     }
     let current = true;
@@ -139,7 +142,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }, [discovery, mode, registrationUiaEnabled]);
 
   useEffect(() => {
-    if (!registrationUiaEnabled || loginFlows?.token !== true) {
+    if (!registrationUiaEnabled || (loginFlows !== undefined && !loginFlows.token)) {
       setShowTokenLogin(false);
       setLoginToken("");
     }
@@ -737,7 +740,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         Tokens are used once and are never saved by Charm.
                       </p>
                     </div>
-                  ) : (
+                  ) : passwordLoginAvailable || mode === "register" ? (
                     <>
                       <div className="flex flex-col gap-1.5">
                         <Label htmlFor="username">Username</Label>
@@ -764,29 +767,36 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         />
                       </div>
                     </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      This homeserver does not offer password sign-in. Choose one of its sign-in
+                      options below.
+                    </p>
                   )}
                   {error && <p className="text-xs text-destructive">{error}</p>}
 
-                  <Button
-                    type="submit"
-                    disabled={
-                      pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
-                    }
-                    className="w-full"
-                  >
-                    {pending && <Loader2 className="animate-spin" />}
-                    {pending
-                      ? mode === "sign-in"
-                        ? showTokenLogin
-                          ? "Using token…"
-                          : "Signing in…"
-                        : "Creating account…"
-                      : mode === "sign-in"
-                        ? showTokenLogin
-                          ? "Use login token"
-                          : "Sign in"
-                        : "Create account"}
-                  </Button>
+                  {(mode === "register" || showTokenLogin || passwordLoginAvailable) && (
+                    <Button
+                      type="submit"
+                      disabled={
+                        pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
+                      }
+                      className="w-full"
+                    >
+                      {pending && <Loader2 className="animate-spin" />}
+                      {pending
+                        ? mode === "sign-in"
+                          ? showTokenLogin
+                            ? "Using token…"
+                            : "Signing in…"
+                          : "Creating account…"
+                        : mode === "sign-in"
+                          ? showTokenLogin
+                            ? "Use login token"
+                            : "Sign in"
+                          : "Create account"}
+                    </Button>
+                  )}
 
                   {mode === "sign-in" &&
                     registrationUiaEnabled &&
