@@ -195,14 +195,23 @@ export function SpaceRail({
       const targetId =
         element?.closest<HTMLElement>("[data-space-drop-id]")?.dataset.spaceDropId ?? null;
       const source = rooms.find((room) => room.room_id === sourceId);
+      const sourceHasOverride = Object.prototype.hasOwnProperty.call(
+        canonicalParentOverrides,
+        sourceId,
+      );
+      const sourceHasParent = sourceHasOverride
+        ? canonicalParentOverrides[sourceId] !== null
+        : (source?.parent_space_ids.length ?? 0) > 0;
       const insideRail = railRef.current?.contains(element) ?? false;
       const resolvedTarget = insideRail ? targetId : null;
       const invalid =
         resolvedTarget === sourceId ||
         (resolvedTarget !== null &&
-          collectDescendantSpaceIds(sourceId, rooms).has(resolvedTarget)) ||
+          collectDescendantSpaceIds(sourceId, rooms, canonicalParentOverrides).has(
+            resolvedTarget,
+          )) ||
         (insideRail && resolvedTarget === null) ||
-        (!insideRail && (source?.parent_space_ids.length ?? 0) === 0);
+        (!insideRail && !sourceHasParent);
       const scrollBounds = railScrollRef.current?.getBoundingClientRect();
       const scrollContainer = railScrollRef.current;
       if (scrollBounds && typeof scrollContainer?.scrollBy === "function") {
@@ -215,7 +224,7 @@ export function SpaceRail({
       spaceDropRef.current = nextDrop;
       setSpaceDrop(nextDrop);
     },
-    [rooms],
+    [canonicalParentOverrides, rooms],
   );
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
@@ -904,11 +913,25 @@ function SpaceButton({
   );
 }
 
-function collectDescendantSpaceIds(spaceId: string, rooms: RoomSummary[]) {
+function collectDescendantSpaceIds(
+  spaceId: string,
+  rooms: RoomSummary[],
+  canonicalParentOverrides: Record<string, string | null> = {},
+) {
   const childrenByParent = new Map<string, string[]>();
   for (const room of rooms) {
     if (!room.is_space) continue;
-    for (const parentId of room.parent_space_ids) {
+    const hasOverride = Object.prototype.hasOwnProperty.call(
+      canonicalParentOverrides,
+      room.room_id,
+    );
+    const overriddenParent = canonicalParentOverrides[room.room_id];
+    const parentIds = hasOverride
+      ? overriddenParent
+        ? [overriddenParent]
+        : []
+      : room.parent_space_ids;
+    for (const parentId of parentIds) {
       childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), room.room_id]);
     }
   }
