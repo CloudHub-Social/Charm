@@ -384,6 +384,11 @@ pub async fn create_space_impl(
         Some(parent_id) => Some(require_space(client, parent_id)?),
         None => None,
     };
+    if let Some(parent) = &parent {
+        // A failed reciprocal edge after `create_room` cannot be rolled back:
+        // preflight the existing parent before creating the child space.
+        require_state_permission(parent, StateEventType::SpaceChild).await?;
+    }
     let mut content = create_room::v3::CreationContent::new();
     content.room_type = Some(RoomType::Space);
     let creation_content = Raw::new(&content).map_err(|e| e.to_string())?;
@@ -489,21 +494,6 @@ pub async fn set_space_parent_impl(
     if let Some(parent) = &new_parent {
         require_state_permission(parent, StateEventType::SpaceChild).await?;
     }
-    for old_parent_id in &canonical_parent_ids {
-        if new_parent
-            .as_ref()
-            .is_some_and(|parent| parent.room_id() == old_parent_id)
-        {
-            continue;
-        }
-        if let Some(old_parent) = client
-            .get_room(old_parent_id)
-            .filter(|room| room.state() == matrix_sdk::RoomState::Joined && room.is_space())
-        {
-            require_state_permission(&old_parent, StateEventType::SpaceChild).await?;
-        }
-    }
-
     // Add/promote the new relationship before removing the old canonical
     // relationship, so a successful reparent never leaves the child
     // temporarily undiscoverable from every parent.
@@ -538,7 +528,12 @@ pub async fn set_space_parent_impl(
             .get_room(&old_parent_id)
             .filter(|room| room.state() == matrix_sdk::RoomState::Joined && room.is_space())
         {
-            if has_live_child_via(&old_parent, &child_id).await? {
+            // Losing permission in the old parent must not trap a child-side
+            // canonical relationship that this account is still allowed to
+            // clear. Skip only that reciprocal edge and continue.
+            if can_send_state(&old_parent, StateEventType::SpaceChild).await?
+                && has_live_child_via(&old_parent, &child_id).await?
+            {
                 remove_child_edge(&old_parent, &child_id).await?;
             }
         }
@@ -556,10 +551,7 @@ pub async fn set_space_parent_impl(
 }
 
 async fn require_state_permission(room: &Room, event_type: StateEventType) -> Result<(), String> {
-    let client = room.client();
-    let own_user_id = client.user_id().ok_or_else(|| "not logged in".to_owned())?;
-    let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
-    if power_levels.user_can_send_state(own_user_id, event_type.clone()) {
+    if can_send_state(room, event_type.clone()).await? {
         Ok(())
     } else {
         Err(format!(
@@ -567,6 +559,13 @@ async fn require_state_permission(room: &Room, event_type: StateEventType) -> Re
             room.room_id()
         ))
     }
+}
+
+async fn can_send_state(room: &Room, event_type: StateEventType) -> Result<bool, String> {
+    let client = room.client();
+    let own_user_id = client.user_id().ok_or_else(|| "not logged in".to_owned())?;
+    let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
+    Ok(power_levels.user_can_send_state(own_user_id, event_type))
 }
 
 fn require_space(client: &Client, room_id: &str) -> Result<Room, String> {
@@ -1339,6 +1338,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_space_impl_preflights_parent_permission_before_creating_room() {
+        let parent_id = matrix_sdk::ruma::room_id!("!parent:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        sync_space_with_power_level(&server, &client, parent_id, 0).await;
+
+        let result = create_space_impl(
+            &client,
+            "Nested",
+            None,
+            None,
+            false,
+            Some(parent_id.as_str()),
+        )
+        .await;
+
+        assert_eq!(
+            result.expect_err("parent-side permission denial must reject creation"),
+            "insufficient permissions to send m.space.child in !parent:example.org"
+        );
+        let requests = server.server().received_requests().await.unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.url.path().ends_with("/createRoom")),
+            "permission preflight must reject before creating the child room"
+        );
+    }
+
+    #[tokio::test]
     async fn set_space_parent_impl_rejects_self_parenting_before_network_writes() {
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
         let server = MatrixMockServer::new().await;
@@ -1629,6 +1659,62 @@ mod tests {
                 .iter()
                 .all(|request| !request.url.path().starts_with(&old_parent_path)),
             "the command must not query or write the inaccessible old parent room"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_parent_impl_clears_child_when_old_parent_is_not_writable() {
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let old_parent_id = matrix_sdk::ruma::room_id!("!old:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        sync_space_with_power_level(&server, &client, child_id, 100).await;
+        sync_space_with_power_level(&server, &client, old_parent_id, 0).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!([{
+                "content": { "canonical": true, "via": ["localhost"] },
+                "event_id": "$old_parent",
+                "origin_server_ts": 1,
+                "room_id": child_id,
+                "sender": "@example:localhost",
+                "state_key": old_parent_id,
+                "type": "m.space.parent",
+                "unsigned": {},
+            }])))
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state/m.space.parent/{old_parent_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$parent_cleared" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = set_space_parent_impl(&client, child_id.as_str(), None).await;
+
+        assert!(
+            result.is_ok(),
+            "an unwritable old parent must not trap the child relationship: {result:?}"
+        );
+        let requests = server.server().received_requests().await.unwrap();
+        let old_parent_path = format!("/_matrix/client/v3/rooms/{old_parent_id}/");
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.url.path().starts_with(&old_parent_path)),
+            "the command must skip reads and writes in the unwritable old parent"
         );
     }
 
