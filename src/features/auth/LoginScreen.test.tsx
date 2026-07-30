@@ -525,7 +525,7 @@ describe("LoginScreen login choices", () => {
       screen.getByRole("button", { name: "Use login token" }).click();
     });
 
-    expect(loginWithToken).toHaveBeenCalledWith("https://cloudhub.social", "one-time-secret");
+    expect(loginWithToken).toHaveBeenCalledWith("https://matrix.example/", "one-time-secret");
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
 
@@ -573,7 +573,7 @@ describe("LoginScreen login choices", () => {
     expect(screen.getByRole("button", { name: "Continue with Company SSO" })).toBeVisible();
   });
 
-  it("preserves token input while login flows reload for a corrected homeserver", async () => {
+  it("clears a homeserver-scoped token while login flows reload", async () => {
     render(<LoginScreen onSignedIn={vi.fn()} />);
     await discoverLoginChoices();
 
@@ -585,7 +585,7 @@ describe("LoginScreen login choices", () => {
       target: { value: "https://other.example" },
     });
 
-    expect(screen.getByLabelText("Login token")).toHaveValue("one-time-secret");
+    expect(screen.queryByLabelText("Login token")).not.toBeInTheDocument();
   });
 });
 
