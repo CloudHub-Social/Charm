@@ -42,13 +42,17 @@ export function MessagePillProfileDialog({
   const userId = profile?.userId ?? "";
   const queryClient = useQueryClient();
   const roomListSignatureRef = useRef<string | null>(null);
+  const pendingProfileRefreshRef = useRef(false);
   useEffect(() => {
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
       if (details.room_id === roomId) {
-        void queryClient.invalidateQueries({
-          queryKey: ["user-profile", accountId ?? null, userId, roomId],
-        });
+        const profileKey = ["user-profile", accountId ?? null, userId, roomId] as const;
+        if (queryClient.isFetching({ queryKey: profileKey, exact: true }) > 0) {
+          pendingProfileRefreshRef.current = true;
+        } else {
+          void queryClient.invalidateQueries({ queryKey: profileKey });
+        }
       }
       void queryClient.invalidateQueries({
         queryKey: ["mutual-rooms", accountId ?? null, userId],
@@ -86,6 +90,12 @@ export function MessagePillProfileDialog({
     queryFn: () => getUserProfile(userId, roomId),
     enabled: detailed && userId !== "",
   });
+  useEffect(() => {
+    if (!profileQuery.isFetching && pendingProfileRefreshRef.current) {
+      pendingProfileRefreshRef.current = false;
+      void profileQuery.refetch();
+    }
+  }, [profileQuery.isFetching, profileQuery.refetch]);
   const mutualRoomsQuery = useQuery({
     queryKey: ["mutual-rooms", accountId ?? null, userId],
     queryFn: () => getMutualRooms(userId),
@@ -125,7 +135,10 @@ export function MessagePillProfileDialog({
                     src={resolveAvatar(resolvedProfile.avatar_path, resolvedProfile.avatar_url)}
                     alt=""
                   />
-                  <AvatarFallback style={{ background: avatarColor(profile.userId) }}>
+                  <AvatarFallback
+                    style={{ background: avatarColor(profile.userId) }}
+                    className="text-white"
+                  >
                     {initials(profile.userId, resolvedProfile.display_name)}
                   </AvatarFallback>
                 </Avatar>
