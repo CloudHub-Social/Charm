@@ -758,18 +758,60 @@ pub async fn begin_registration(
     ensure_registration_feature_enabled(&app)?;
     let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    let attempt_id = generate_attempt_id();
+    let started_at = std::time::Instant::now();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .replace((attempt_id.clone(), cancellation.clone()));
+    spawn_registration_expiry(app.clone(), attempt_id.clone());
+
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = build_client(&app, &request.homeserver_url, &store_key).await?;
-    let attempt_id = generate_attempt_id();
+    let client = tokio::select! {
+        result = build_client(&app, &request.homeserver_url, &store_key) => {
+            match result {
+                Ok(client) => client,
+                Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err(error);
+                }
+            }
+        }
+        () = cancellation.cancelled() => {
+            clear_registration_cancellation(&state, &attempt_id);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("registration cancelled".to_string());
+        }
+    };
     let register_request = registration_request(&request, None);
 
-    match client.matrix_auth().register(register_request).await {
+    let matrix_auth = client.matrix_auth();
+    let registration_result = tokio::select! {
+        result = matrix_auth.register(register_request) => result,
+        () = cancellation.cancelled() => {
+            drop(client);
+            clear_registration_cancellation(&state, &attempt_id);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("registration cancelled".to_string());
+        }
+    };
+
+    match registration_result {
         Ok(_) => {
             let cleanup_key = store_key.clone();
-            match finish_registration(app.clone(), &state, client, store_key, None).await {
-                Ok(session) => Ok(RegistrationStep::Complete { session }),
+            match finish_registration(app.clone(), &state, client, store_key, Some(&cancellation))
+                .await
+            {
+                Ok(session) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Ok(RegistrationStep::Complete { session })
+                }
                 Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
                     let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
                     Err(error)
                 }
@@ -778,6 +820,7 @@ pub async fn begin_registration(
         Err(error) => {
             let Some(uiaa) = error.as_uiaa_response().cloned() else {
                 drop(client);
+                clear_registration_cancellation(&state, &attempt_id);
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
                 return Err(safe_registration_error(&error));
             };
@@ -785,6 +828,7 @@ pub async fn begin_registration(
                 Ok(step) => step,
                 Err(error) => {
                     drop(client);
+                    clear_registration_cancellation(&state, &attempt_id);
                     let _ = persistence::discard_temp_login_store(&app, &store_key);
                     return Err(error);
                 }
@@ -795,23 +839,13 @@ pub async fn begin_registration(
                 request,
                 attempt_id: attempt_id.clone(),
                 uiaa,
-                created_at: std::time::Instant::now(),
+                created_at: started_at,
             };
-            let cancellation = tokio_util::sync::CancellationToken::new();
             let previous = state.pending_registration.lock().await.replace(pending);
-            let previous_cancellation = state
-                .pending_registration_cancel
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .replace((attempt_id.clone(), cancellation));
             reservation.defuse();
             if let Some(previous) = previous {
                 discard_pending_registration(&app, previous);
             }
-            if let Some((_, previous_cancellation)) = previous_cancellation {
-                previous_cancellation.cancel();
-            }
-            spawn_registration_expiry(app, attempt_id);
             Ok(step)
         }
     }
@@ -1488,6 +1522,7 @@ pub async fn start_sso_login(
     if idp_id.is_some() {
         ensure_registration_feature_enabled(&app)?;
     }
+    let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
