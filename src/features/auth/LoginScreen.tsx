@@ -228,7 +228,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           onSignedIn(await loginWithToken(discovery.homeserverUrl, loginToken));
           setLoginToken("");
         } else {
-          if (discovery.state === "resolved" && !loginFlows?.password) {
+          if (discovery.state === "resolved" && loginFlows && !loginFlows.password) {
             throw new Error("This homeserver does not offer password sign-in.");
           }
           onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));
