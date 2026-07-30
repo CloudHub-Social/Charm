@@ -3,8 +3,15 @@ title: Charm 2.0 Spec — Command palette and quick switcher
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The navigation-only v1 is decision-ready and follows Spec 28's now-defined
+room-scoped message-search contract. No user-facing implementation exists yet.
+The first code PR may start after approval to add an established fuzzy-search
+dependency; the preferred choice is Fuse.js.
 
 **Workstream:** one PR / one agent. New spec from the UI-parity deep-dive
 (2026-07-13); two agents independently confirmed its absence.
@@ -30,37 +37,64 @@ users migrating from 1.0 (or from Slack/Element/Discord, which all have it).
 
 ## High-level design
 
-- A modal launcher opened by **⌘K / Ctrl-K** (and a clickable affordance, e.g. the
-  search field in the sidebar), rendering a fuzzy-filtered list of the user's rooms,
-  DMs, and spaces with avatar + name + context (space it's in / DM peer). Enter
-  navigates; arrow keys move; Esc closes. Uses the existing dialog system
-  (`components/ui/dialog.tsx`) and a fuzzy matcher over the already-synced room list.
+- A modal launcher opened by **⌘K / Ctrl-K** and a clickable sidebar affordance,
+  rendering a fuzzy-filtered list of the user's rooms, DMs, and spaces with avatar,
+  name, and context (space membership or DM peer). Enter navigates; Arrow Up/Down,
+  Home/End, Page Up/Down, and Esc work without leaving the input. Use the existing
+  dialog primitives and Fuse.js over the already-synced room list.
 - **In-room search hotkey (⌘F)**: Charm 1.0 also binds ⌘F to in-room message search.
-  Wire ⌘F to open Spec 28's search scoped to the current room (this spec provides the
-  hotkey + entry; Spec 28 provides the search itself). If Spec 28 hasn't landed,
-  ship the quick-switcher alone and add ⌘F when it does.
-- Recent/frequently-visited rooms shown first when the query is empty (nice-to-have,
-  matches the "jump back to where I was" use case).
+  Wire ⌘F only after Spec 28's room-scoped search surface exists. This spec owns the
+  global hotkey and delegation; it must not substitute room-name filtering or open
+  an inert placeholder.
+- Keep an account-scoped, most-recent-first list of the last 20 successfully
+  navigated room IDs. Reuse the account-keyed local-storage pattern already used by
+  recent reactions; never share recents between accounts. Empty-query ordering is
+  recents first, then remaining spaces, DMs, and rooms in stable room-list order.
 - Register both shortcuts in the keyboard-shortcuts panel (which exists in 2.0) so
   they're discoverable.
+
+### Result identity and navigation
+
+- One Matrix room/space ID produces one result even when it appears in multiple
+  spaces. Context may list more than one parent, but navigation identity is the room
+  ID.
+- DMs are ordinary room results with peer context, not user-profile results; v1
+  does not create a new DM from a person search.
+- Selecting a space activates its existing `SpaceRail` scope. Selecting a room or
+  DM activates that room through the same navigation state used by `RoomList`.
+- Exclude left/invited rooms and entries unavailable to the current account.
+- Record a recent only after navigation succeeds. Stale recent IDs are filtered
+  against the current synced result set and removed lazily.
 
 ## Data flow
 
 Pure frontend over the already-synced room/space list — no new IPC for the switcher
-itself. Fuzzy matching client-side (small dependency or hand-rolled). ⌘F delegates to
-Spec 28's search command.
+itself. Fuse.js performs client-side matching over normalized name, canonical
+alias, DM-peer display name/MXID, and space context. Do not include message bodies,
+topics, or hidden account data in the Fuse.js corpus. ⌘F delegates to Spec 28's
+room-scoped search command and does not issue Matrix traffic itself.
 
 ## API/contract changes
 
-None for the switcher (uses existing room-list data). ⌘F reuses Spec 28's search.
+- Add a default-off `quick_switcher` flag to the Rust and TypeScript catalogs.
+  Although v1 is frontend-only, both catalogs remain authoritative and the global
+  hotkey, sidebar entry, modal, recents writes, and shortcut-help row are all gated.
+- No Matrix or Tauri command changes for the switcher. ⌘F reuses Spec 28's typed
+  room-scoped search surface after it lands.
 
 ## Testing strategy
 
 - Frontend: ⌘K opens the palette; typing filters rooms/DMs/spaces by fuzzy match;
   Enter navigates to the selected room; arrow/Esc behavior; empty-query shows
   recents. ⌘F opens room-scoped search (when Spec 28 present).
+- Frontend: account switching cannot reveal the previous account's recents;
+  duplicate multi-space rooms collapse to one result; stale recents are discarded;
+  flag-off does not register either hotkey or write recents.
 - a11y: focus trap in the modal, roving selection, screen-reader labels (through the
-  Storybook axe gate).
+  Storybook axe gate), active-option announcements, and focus restoration to the
+  launcher after close.
+- E2E: open with the platform shortcut, fuzzy-match a space and room, navigate using
+  keyboard only, reopen to verify recency, then exercise ⌘F once Spec 28 is present.
 - Manual: with many rooms, jump to a room by typing part of its name in a couple of
   keystrokes.
 
@@ -71,6 +105,10 @@ None for the switcher (uses existing room-list data). ⌘F reuses Spec 28's sear
 - **Share the launcher with message search vs separate**: keep the ⌘K room-jump and
   ⌘F message-search as distinct entry points (matching 1.0 and user muscle memory),
   even if they can share a modal shell.
+- **Fuzzy matcher**: use Fuse.js rather than a bespoke scorer. Its mature weighted
+  keys, match ranges, threshold controls, and deterministic tests cover the solved
+  edge cases this feature needs. Adding it requires explicit dependency approval
+  before `pnpm install`.
 
 ## What I'd revisit as this grows
 
