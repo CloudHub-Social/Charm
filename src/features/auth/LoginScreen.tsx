@@ -35,6 +35,20 @@ import { isWebBuild } from "@/lib/platform";
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
 const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
+const TERMINAL_REGISTRATION_ERRORS = [
+  "registration ended:",
+  "registration attempt expired",
+  "registration attempt is no longer current",
+  "no registration is in progress",
+  "registration cancelled",
+];
+
+function isTerminalRegistrationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) =>
+    normalized.includes(terminalError),
+  );
+}
 
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
@@ -278,7 +292,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       await handleRegistrationStep(await continueRegistration(attemptId, response));
     } catch (err) {
       const message = String(err);
-      if (message.includes("registration ended:")) {
+      if (isTerminalRegistrationError(message)) {
         registrationAttemptRef.current = null;
         setRegistrationStep(undefined);
       }
