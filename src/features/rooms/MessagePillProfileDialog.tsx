@@ -39,9 +39,13 @@ export function MessagePillProfileDialog({
   useEffect(() => {
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
-      if (details.room_id !== roomId) return;
+      if (details.room_id === roomId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["user-profile", accountId ?? null, userId, roomId],
+        });
+      }
       void queryClient.invalidateQueries({
-        queryKey: ["user-profile", accountId ?? null, userId, roomId],
+        queryKey: ["mutual-rooms", accountId ?? null, userId],
       });
     });
     return () => {

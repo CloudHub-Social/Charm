@@ -159,4 +159,37 @@ describe("MessagePillProfileDialog", () => {
 
     expect(await screen.findByRole("heading", { name: "Alice Updated" })).toBeInTheDocument();
   });
+
+  it("refreshes mutual rooms when any joined-room state changes", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          room_id: "!new-mutual:example.org",
+          name: "New Mutual",
+          avatar_url: null,
+          avatar_path: null,
+          is_direct: false,
+          is_space: false,
+        },
+      ]);
+    renderDialog({ detailed: true, roomId: "!current:example.org" });
+    await screen.findByRole("heading", { name: "Alice" });
+
+    await act(async () => {
+      mocks.roomDetailsCallback?.({ room_id: "!other:example.org" });
+    });
+
+    expect(await screen.findByRole("button", { name: "New Mutual" })).toBeInTheDocument();
+  });
 });
