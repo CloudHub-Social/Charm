@@ -115,6 +115,7 @@ export function SpaceRail({
   const [canonicalParentOverrides, setCanonicalParentOverrides] = useState<
     Record<string, string | null>
   >({});
+  const canonicalParentOverrideStartedAt = useRef<Record<string, number>>({});
   useEffect(() => {
     setCanonicalParentOverrides((current) => {
       let changed = false;
@@ -125,6 +126,14 @@ export function SpaceRail({
         const observedParent = room.parent_space_ids[0] ?? null;
         if (observedParent === expectedParent && room.parent_space_ids.length <= 1) {
           delete next[spaceId];
+          delete canonicalParentOverrideStartedAt.current[spaceId];
+          changed = true;
+        } else if (
+          Date.now() - (canonicalParentOverrideStartedAt.current[spaceId] ?? 0) >=
+          15_000
+        ) {
+          delete next[spaceId];
+          delete canonicalParentOverrideStartedAt.current[spaceId];
           changed = true;
         }
       }
@@ -239,6 +248,7 @@ export function SpaceRail({
       setSpaceParentMutationPending(true);
       setSpaceParent(sourceId, targetId ?? undefined)
         .then(() => {
+          canonicalParentOverrideStartedAt.current[sourceId] = Date.now();
           setCanonicalParentOverrides((current) => ({ ...current, [sourceId]: targetId }));
         })
         .catch(reportActionError)
@@ -259,10 +269,14 @@ export function SpaceRail({
       setSpaceDrop(null);
       if (!drop || drop.sourceId !== sourceId || drop.invalid) return;
       const source = rooms.find((room) => room.room_id === sourceId);
-      if (drop.targetId === null && (source?.parent_space_ids.length ?? 0) === 0) return;
+      const hasOverride = Object.prototype.hasOwnProperty.call(canonicalParentOverrides, sourceId);
+      const effectiveParent = hasOverride
+        ? canonicalParentOverrides[sourceId]
+        : (source?.parent_space_ids[0] ?? null);
+      if (drop.targetId === null && effectiveParent === null) return;
       mutateSpaceParent(sourceId, drop.targetId);
     },
-    [mutateSpaceParent, rooms],
+    [canonicalParentOverrides, mutateSpaceParent, rooms],
   );
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
