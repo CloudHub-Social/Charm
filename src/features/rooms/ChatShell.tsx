@@ -302,6 +302,14 @@ export function ChatShell({
   );
   const hasVisibleNotices =
     noticeBuckets.beforeMessage.size > 0 || noticeBuckets.trailing.length > 0;
+  const noticeOnlyScrollerRef = useRef<HTMLDivElement>(null);
+  const noticeOnlyPinnedRef = useRef(true);
+  useEffect(() => {
+    const scroller = noticeOnlyScrollerRef.current;
+    if (messages.length === 0 && hasVisibleNotices && scroller && noticeOnlyPinnedRef.current) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }, [hasVisibleNotices, messages.length, noticeBuckets.trailing.length]);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of
@@ -623,7 +631,15 @@ export function ChatShell({
           <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
         )}
         {!loading && messages.length === 0 && hasVisibleNotices && (
-          <div className="flex-1 overflow-y-auto p-4">
+          <div
+            ref={noticeOnlyScrollerRef}
+            className="flex-1 overflow-y-auto p-4"
+            onScroll={(event) => {
+              const scroller = event.currentTarget;
+              noticeOnlyPinnedRef.current =
+                scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+            }}
+          >
             <TimelineNoticeList notices={noticeBuckets.trailing} irc={messageLayout === "irc"} />
           </div>
         )}
@@ -673,6 +689,10 @@ export function ChatShell({
               const i = index - firstItemIndex;
               const readers = receiptsByEvent.get(message.event_id) ?? [];
               const before = noticeBuckets.beforeMessage.get(message.event_id) ?? [];
+              const nextMessage = messages[i + 1];
+              const hasNoticesBeforeNext =
+                nextMessage !== undefined &&
+                (noticeBuckets.beforeMessage.get(nextMessage.event_id)?.length ?? 0) > 0;
               const trailing = i === messages.length - 1 ? noticeBuckets.trailing : [];
               const previousMessageTimestamp = messages[i - 1]?.timestamp_ms ?? null;
               const previousTimelineTimestamp =
@@ -705,6 +725,8 @@ export function ChatShell({
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
                     previousTimelineTimestampMs={previousTimelineTimestamp}
+                    hasNoticesBefore={before.length > 0}
+                    hasNoticesBeforeNext={hasNoticesBeforeNext}
                   />
                   {trailing.length > 0 && (
                     <TimelineNoticeList

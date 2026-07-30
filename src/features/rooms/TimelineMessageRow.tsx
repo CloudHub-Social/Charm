@@ -25,6 +25,8 @@ interface TimelineMessageRowProps {
   onUserPillClick: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
   previousTimelineTimestampMs?: number | null;
+  hasNoticesBefore?: boolean;
+  hasNoticesBeforeNext?: boolean;
 }
 
 export function TimelineMessageRow({
@@ -45,6 +47,8 @@ export function TimelineMessageRow({
   onUserPillClick,
   onRoomPillClick,
   previousTimelineTimestampMs,
+  hasNoticesBefore = false,
+  hasNoticesBeforeNext = false,
 }: TimelineMessageRowProps) {
   const own = message.sender === currentUserId;
   const prev = messages[index - 1];
@@ -77,8 +81,12 @@ export function TimelineMessageRow({
         roomId={roomId}
         currentUserId={currentUserId}
         own={own}
-        sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(index)}
-        sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(index + 1)}
+        sameSenderAsPrev={
+          prev?.sender === message.sender && !hasNoticesBefore && !isGroupBreakAt(index)
+        }
+        sameSenderAsNext={
+          next?.sender === message.sender && !hasNoticesBeforeNext && !isGroupBreakAt(index + 1)
+        }
         canRedact={own || canRedact}
         canPin={canPin}
         isPinned={isPinned}

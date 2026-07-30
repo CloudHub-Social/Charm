@@ -1171,6 +1171,15 @@ pub(crate) fn spawn_timeline_listener(
             let timeline_items =
                 items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
             let summaries = message_summaries(&timeline_items);
+            // Labs and remote-rollout changes apply to an already-open room.
+            // Capturing the initial value would make the next live diff erase
+            // notices after the flag changes until this Timeline is evicted.
+            let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+                crate::feature_flags::flag(
+                    &dir,
+                    crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+                )
+            });
 
             let new_messages: Vec<&RoomMessageSummary> =
                 summaries.iter().filter(|m| dedup.is_new(m)).collect();
