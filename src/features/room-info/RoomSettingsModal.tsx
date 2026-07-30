@@ -158,7 +158,9 @@ export function RoomSettingsModal({
                       {section.label}
                     </TabsTrigger>
                   ))}
-                  {target.kind === "space" && <TabsTrigger value="children">Children</TabsTrigger>}
+                  {spaceHierarchyEnabled && target.kind === "space" && (
+                    <TabsTrigger value="children">Children</TabsTrigger>
+                  )}
                 </TabsList>
               </div>
 
@@ -188,7 +190,7 @@ export function RoomSettingsModal({
                 >
                   <PowerLevelThresholdsEditor details={details} />
                 </TabsContent>
-                {target.kind === "space" && (
+                {spaceHierarchyEnabled && target.kind === "space" && (
                   <TabsContent value="children">
                     <SpaceChildrenSettings
                       spaceId={details.room_id}

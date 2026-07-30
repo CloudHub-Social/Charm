@@ -18,6 +18,9 @@ interface AddExistingToSpaceDialogProps {
    * sync keeps current) refresh immediately instead of only after the user
    * navigates away and back. */
   onAdded?: (childRoomId: string) => void;
+  /** Called after the Matrix write settles, including ambiguous transport
+   * failures where the homeserver may already have committed the edge. */
+  onSettled?: () => void;
 }
 
 /** Spec 63's "Add Existing" flow: file an already-joined room or space under
@@ -29,6 +32,7 @@ export function AddExistingToSpaceDialog({
   excludedIds,
   onOpenChange,
   onAdded,
+  onSettled,
 }: AddExistingToSpaceDialogProps) {
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -96,6 +100,7 @@ export function AddExistingToSpaceDialog({
       if (latestSpaceIdRef.current !== requestSpaceId) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      onSettled?.();
       if (latestSpaceIdRef.current === requestSpaceId) setPendingId(null);
     }
   }

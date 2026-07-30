@@ -142,6 +142,9 @@ export function SpaceChildrenSettings({
               is_space: room?.is_space ?? false,
             },
           ]);
+        }}
+        onSettled={() => {
+          void refresh();
           onChanged?.();
         }}
       />
