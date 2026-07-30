@@ -729,6 +729,7 @@ async fn finish_registration(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    let _finalizing = FinalizingRegistrationGuard::new(state, account_key.clone());
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &temp_key,
@@ -859,7 +860,7 @@ pub async fn begin_registration(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .replace((attempt_id.clone(), cancellation.clone()));
-    spawn_registration_expiry(app.clone(), attempt_id.clone());
+    spawn_registration_expiry(app.clone(), attempt_id.clone(), cancellation.clone());
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
@@ -1682,8 +1683,10 @@ pub async fn login_with_token(
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
-    reservation.defuse();
     let _restore_store_guard = restore_store_lock().lock().await;
+    // Keep the reservation visible until the process-wide restore/sweep lock
+    // is held, so cleanup cannot delete this active store in the gap.
+    reservation.defuse();
     let cleanup_key = store_key.clone();
     match finish_registration(app.clone(), &state, client, store_key, None, None).await {
         Ok(session) => Ok(session),
@@ -1695,6 +1698,7 @@ pub async fn login_with_token(
 }
 
 fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
+    const MAX_IDENTITY_PROVIDERS: usize = 32;
     let mut summary = LoginFlowSummary {
         password: false,
         token: false,
@@ -1707,15 +1711,21 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
             LoginType::Token(_) => summary.token = true,
             LoginType::Sso(sso) => {
                 summary.sso = true;
-                summary
-                    .identity_providers
-                    .extend(sso.identity_providers.into_iter().map(|provider| {
-                        LoginIdentityProvider {
-                            id: provider.id,
-                            name: sanitized_provider_name(&provider.name),
-                            brand: provider.brand.map(|brand| brand.as_str().to_owned()),
-                        }
-                    }));
+                for provider in sso.identity_providers {
+                    if summary.identity_providers.len() >= MAX_IDENTITY_PROVIDERS
+                        || summary
+                            .identity_providers
+                            .iter()
+                            .any(|existing| existing.id == provider.id)
+                    {
+                        continue;
+                    }
+                    summary.identity_providers.push(LoginIdentityProvider {
+                        id: provider.id,
+                        name: sanitized_provider_name(&provider.name),
+                        brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                    });
+                }
             }
             _ => {}
         }
@@ -1726,16 +1736,32 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
 fn sanitized_provider_name(name: &str) -> String {
     let sanitized = name
         .chars()
-        .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    *character as u32,
-                    0x061c
-                        | 0x200e
-                        | 0x200f
-                        | 0x202a..=0x202e
-                        | 0x2066..=0x2069
-                )
+        .filter_map(|character| {
+            if character.is_alphanumeric() {
+                Some(character)
+            } else if character.is_whitespace() {
+                Some(' ')
+            } else if matches!(
+                character,
+                '-' | '_'
+                    | '.'
+                    | ','
+                    | ':'
+                    | ';'
+                    | '/'
+                    | '&'
+                    | '+'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '\''
+                    | '’'
+            ) {
+                Some(character)
+            } else {
+                None
+            }
         })
         .take(80)
         .collect::<String>();
@@ -1803,6 +1829,15 @@ pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &Matri
             discard_pending_registration(app, pending);
         }
     }
+    if let Some(account_key) = state
+        .finalizing_registration_account
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        let _ = persistence::clear_session(&account_key);
+        let _ = persistence::clear_oauth_session(&account_key);
+    }
 }
 
 fn clear_registration_cancellation(state: &MatrixState, attempt_id: &str) {
@@ -1853,9 +1888,16 @@ async fn restore_pending_registration_if_current(
     Ok(())
 }
 
-fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
+fn spawn_registration_expiry(
+    app: AppHandle,
+    attempt_id: String,
+    cancellation: tokio_util::sync::CancellationToken,
+) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
+        tokio::select! {
+            () = tokio::time::sleep(REGISTRATION_ATTEMPT_TTL) => {}
+            () = cancellation.cancelled() => return,
+        }
         let state = app.state::<MatrixState>();
         let cancellation = {
             let guard = state
@@ -1885,6 +1927,35 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
             discard_pending_registration(&app, expired);
         }
     });
+}
+
+struct FinalizingRegistrationGuard<'a> {
+    state: &'a MatrixState,
+    account_key: String,
+}
+
+impl<'a> FinalizingRegistrationGuard<'a> {
+    fn new(state: &'a MatrixState, account_key: String) -> Self {
+        state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(account_key.clone());
+        Self { state, account_key }
+    }
+}
+
+impl Drop for FinalizingRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self
+            .state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if guard.as_deref() == Some(self.account_key.as_str()) {
+            guard.take();
+        }
+    }
 }
 
 fn discard_pending_registration(app: &AppHandle, pending: PendingRegistration) {
@@ -2431,6 +2502,41 @@ mod registration_uia_tests {
         assert!(!sanitized.contains('\u{202e}'));
         assert_eq!(sanitized.chars().count(), 80);
         assert_eq!(sanitized_provider_name("\u{200f}\n"), "Single sign-on");
+        assert_eq!(
+            sanitized_provider_name("\u{200b}\u{2060}\u{feff}"),
+            "Single sign-on"
+        );
+    }
+
+    #[test]
+    fn caps_and_deduplicates_identity_providers() {
+        let providers = (0..40)
+            .map(|index| {
+                json!({
+                    "id": format!("provider-{index}"),
+                    "name": format!("Provider {index}")
+                })
+            })
+            .chain(std::iter::once(json!({
+                "id": "provider-0",
+                "name": "Duplicate"
+            })))
+            .collect::<Vec<_>>();
+        let flows = login_flows(json!([{
+            "type": "m.login.sso",
+            "identity_providers": providers
+        }]));
+
+        let summary = summarize_login_flows(flows);
+        assert_eq!(summary.identity_providers.len(), 32);
+        assert_eq!(
+            summary
+                .identity_providers
+                .iter()
+                .filter(|provider| provider.id == "provider-0")
+                .count(),
+            1
+        );
     }
 
     #[test]
