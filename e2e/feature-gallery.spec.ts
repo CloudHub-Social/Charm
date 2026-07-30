@@ -64,6 +64,10 @@ test("timeline membership changes collapse into expandable notices", async ({ pa
   });
   await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByText("No messages yet")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eListenerCount("timeline:update")))
+    .toBeGreaterThan(0);
 
   const message = {
     event_id: "$after-joins",

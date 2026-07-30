@@ -132,6 +132,7 @@ export function useChatTimeline(
   // function's own comment) without racing the `prependedCount` state
   // variable, which doesn't update until next render.
   const prependedCountRef = useRef(0);
+  const liveTimelineRevisionRef = useRef(0);
   // Tracks the room id these refs were last reset for — `undefined` (not
   // `null`) as the initial sentinel, since `null` ("no room active") is
   // itself a valid target state distinct from "never reset yet".
@@ -398,13 +399,19 @@ export function useChatTimeline(
     if (!room) return false;
     const targetRoomId = room.room_id;
     const generation = visitGenerationRef.current;
+    const liveRevision = liveTimelineRevisionRef.current;
     try {
       // Deliberately preserve the backend's current live/focused timeline and
       // the viewport anchors. This refresh only asks that current snapshot to
       // include newly enabled item kinds; it must not behave like Jump to
       // Present.
       const page = await getTimelinePage(targetRoomId);
-      if (visitGenerationRef.current !== generation) return false;
+      if (
+        visitGenerationRef.current !== generation ||
+        liveTimelineRevisionRef.current !== liveRevision
+      ) {
+        return false;
+      }
       applyTimelineItems(page.messages, page.items);
       nextCursorRef.current = page.next_cursor;
       setHasMore(page.next_cursor !== null);
@@ -420,6 +427,7 @@ export function useChatTimeline(
     if (!listenerRoomId) return undefined;
     const unlisten = onTimelineUpdate((update) => {
       if (update.room_id !== listenerRoomId) return;
+      liveTimelineRevisionRef.current += 1;
       // `update.messages` is a full re-snapshot of the room's live Timeline
       // (Spec 14) — every call to `timeline:update` carries the complete
       // current item list, not a delta to merge onto existing state. Merging

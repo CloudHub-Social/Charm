@@ -25,6 +25,7 @@ let overridesCache: FeatureFlagOverrides = {};
 let persistedOverridesCache: FeatureFlagOverrides = {};
 let remoteCache: FeatureFlagRemote = {};
 let cacheMutationId = 0;
+const persistedOverrideVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -111,6 +112,16 @@ export function useFlag(key: FeatureFlagKey): boolean {
   return value;
 }
 
+/**
+ * Increments after this key's local override reaches durable storage. Native
+ * consumers whose Rust side reads the on-disk envelope can react to this
+ * signal without racing the optimistic JS update.
+ */
+export function useFeatureFlagPersistenceVersion(key: FeatureFlagKey): number {
+  const snapshot = () => persistedOverrideVersions[key] ?? 0;
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
   const mutationId = ++cacheMutationId;
@@ -120,6 +131,8 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
   try {
     if (await persistOverrides(next)) {
       persistedOverridesCache = next;
+      persistedOverrideVersions[key] = (persistedOverrideVersions[key] ?? 0) + 1;
+      emit();
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -140,6 +153,8 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
   try {
     if (await persistOverrides(next)) {
       persistedOverridesCache = next;
+      persistedOverrideVersions[key] = (persistedOverrideVersions[key] ?? 0) + 1;
+      emit();
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {

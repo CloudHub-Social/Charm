@@ -47,7 +47,10 @@ const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
-vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => mockUseFlag(),
+  useFeatureFlagPersistenceVersion: () => 0,
+}));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -5189,6 +5192,65 @@ describe("ChatShell", () => {
     );
     expect(screen.getByTestId("timeline-notices")).toHaveTextContent("Bob (@bob:localhost) joined");
     expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+
+  it("does not jump to the live tail when the first trailing notice arrives while scrolled up", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+      timestamp_ms: 1,
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [{ kind: "message", message }],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("hello");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [message],
+        items: [{ kind: "message", message }, joinedMembershipItem("bob", "Bob")],
+      });
+    });
+
+    expect(await screen.findByTestId("timeline-notices")).toHaveTextContent(
+      "Bob (@bob:localhost) joined",
+    );
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("aligns an oversized final notice row to its message on initial load", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+      timestamp_ms: 20,
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [
+        ...Array.from({ length: 20 }, (_, index) =>
+          joinedMembershipItem(`member-${index}`, `Member ${index}`),
+        ),
+        { kind: "message", message },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+    await screen.findByText("hello");
+    await waitFor(() =>
+      expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith({
+        index: "LAST",
+        align: "end",
+      }),
+    );
   });
 
   it("renders state-only timelines and respects membership and hidden-event settings", async () => {

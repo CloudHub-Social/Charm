@@ -26,6 +26,7 @@ declare global {
       convertFileSrc: (filePath: string) => string;
     };
     __e2eEmit: (event: string, payload: unknown) => void;
+    __e2eListenerCount: (event: string) => number;
   }
 }
 
@@ -175,6 +176,7 @@ export function installMockTauri(seed: {
   // don't already emit as a side effect.
   // oxlint-disable-next-line no-underscore-dangle
   window.__e2eEmit = emit;
+  window.__e2eListenerCount = (event) => listenersByEvent.get(event)?.size ?? 0;
 
   let nextTxnId = 1;
   let nextEventId = 1;

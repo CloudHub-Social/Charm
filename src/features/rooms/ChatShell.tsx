@@ -6,7 +6,7 @@ import { Virtuoso } from "react-virtuoso";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
-import { useFlag } from "@/featureFlags";
+import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
@@ -213,6 +213,9 @@ export function ChatShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
+  const timelineStateEventsPersistenceVersion = useFeatureFlagPersistenceVersion(
+    "timeline_state_events",
+  );
   const messageLayout = useAtomValue(messageLayoutAtom);
   const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
   const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
@@ -376,17 +379,24 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   });
-  const previousTimelineStateEventsEnabledRef = useRef(timelineStateEventsEnabled);
+  const previousTimelineStateEventsPersistenceVersionRef = useRef(
+    timelineStateEventsPersistenceVersion,
+  );
   useEffect(() => {
-    const wasEnabled = previousTimelineStateEventsEnabledRef.current;
-    previousTimelineStateEventsEnabledRef.current = timelineStateEventsEnabled;
-    if (!wasEnabled && timelineStateEventsEnabled && room) {
+    const previousVersion = previousTimelineStateEventsPersistenceVersionRef.current;
+    previousTimelineStateEventsPersistenceVersionRef.current =
+      timelineStateEventsPersistenceVersion;
+    if (
+      timelineStateEventsPersistenceVersion !== previousVersion &&
+      timelineStateEventsEnabled &&
+      room
+    ) {
       void hydrateCurrentTimeline();
     }
     // hydrateCurrentTimeline closes over the current room visit generation; the flag
     // transition and room id are the only activation inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.room_id, timelineStateEventsEnabled]);
+  }, [room?.room_id, timelineStateEventsEnabled, timelineStateEventsPersistenceVersion]);
   const trailingNoticeInitialScrollRoomRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -396,13 +406,35 @@ export function ChatShell({
       trailingNoticeInitialScrollRoomRef.current !== room.room_id
     ) {
       trailingNoticeInitialScrollRoomRef.current = room.room_id;
+      if (!atBottom) return undefined;
       const frame = requestAnimationFrame(() => {
         virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
       });
       return () => cancelAnimationFrame(frame);
     }
     return undefined;
-  }, [messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
+  }, [atBottom, messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
+  const leadingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  const finalLeadingNoticeCount =
+    messages.length > 0
+      ? (noticeBuckets.beforeMessage.get(messages.at(-1)?.event_id ?? "")?.length ?? 0)
+      : 0;
+  useEffect(() => {
+    if (
+      room &&
+      messages.length > 0 &&
+      finalLeadingNoticeCount > 0 &&
+      leadingNoticeInitialScrollRoomRef.current !== room.room_id
+    ) {
+      leadingNoticeInitialScrollRoomRef.current = room.room_id;
+      if (!atBottom) return undefined;
+      const frame = requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [atBottom, finalLeadingNoticeCount, messages.length, room, virtuosoRef]);
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).
