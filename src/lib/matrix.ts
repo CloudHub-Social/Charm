@@ -785,6 +785,10 @@ export function listSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
   return invoke("list_space_children", { spaceId });
 }
 
+export function listManageableSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
+  return invoke("list_manageable_space_children", { spaceId });
+}
+
 export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[]> {
   return invoke("list_space_hierarchy", { spaceId });
 }

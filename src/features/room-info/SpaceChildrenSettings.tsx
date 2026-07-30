@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
-  listSpaceChildren,
+  listManageableSpaceChildren,
   removeSpaceChild,
   type RoomSummary,
   type SpaceChild,
@@ -38,7 +38,7 @@ export function SpaceChildrenSettings({
     isError,
   } = useQuery({
     queryKey: queryKey(spaceId),
-    queryFn: () => listSpaceChildren(spaceId),
+    queryFn: () => listManageableSpaceChildren(spaceId),
   });
   const excludedIds = useMemo(
     () => childCandidateExclusions(spaceId, rooms, children),

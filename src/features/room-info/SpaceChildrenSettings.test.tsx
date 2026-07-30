@@ -5,12 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRoomSummary } from "@/features/rooms/testFixtures";
 import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
 
-const listSpaceChildren = vi.fn();
+const listManageableSpaceChildren = vi.fn();
 const removeSpaceChild = vi.fn();
 const addExistingSpaceChild = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
-  listSpaceChildren: (...args: unknown[]) => listSpaceChildren(...args),
+  listManageableSpaceChildren: (...args: unknown[]) => listManageableSpaceChildren(...args),
   removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
 }));
@@ -41,13 +41,13 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SpaceChildrenSe
 
 describe("SpaceChildrenSettings", () => {
   beforeEach(() => {
-    listSpaceChildren.mockReset().mockResolvedValue([child]);
+    listManageableSpaceChildren.mockReset().mockResolvedValue([child]);
     removeSpaceChild.mockReset().mockResolvedValue(undefined);
     addExistingSpaceChild.mockReset().mockResolvedValue(undefined);
   });
 
   it("lists published children and refreshes after removing one", async () => {
-    listSpaceChildren.mockResolvedValueOnce([child]).mockResolvedValueOnce([]);
+    listManageableSpaceChildren.mockResolvedValueOnce([child]).mockResolvedValueOnce([]);
     const onChanged = vi.fn();
     renderSettings({ onChanged });
 
@@ -57,7 +57,7 @@ describe("SpaceChildrenSettings", () => {
     await waitFor(() =>
       expect(removeSpaceChild).toHaveBeenCalledWith("!space:example.org", "!child:example.org"),
     );
-    await waitFor(() => expect(listSpaceChildren).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listManageableSpaceChildren).toHaveBeenCalledTimes(2));
     expect(onChanged).toHaveBeenCalledOnce();
     expect(await screen.findByText("This space has no published children.")).toBeInTheDocument();
   });
