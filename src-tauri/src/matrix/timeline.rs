@@ -446,6 +446,7 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
 
     match item.content() {
         TimelineItemContent::MembershipChange(membership) => {
+            let target_user_id = membership.user_id();
             let reason = match membership.content() {
                 StateEventContentChange::Original { content, .. } => content.reason.clone(),
                 StateEventContentChange::Redacted(_) => None,
@@ -454,8 +455,11 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 event_id,
                 sender,
                 timestamp_ms,
-                target_user_id: membership.user_id().to_string(),
-                target_display_name: membership.display_name(),
+                target_user_id: target_user_id.to_string(),
+                target_display_name: membership_target_label(
+                    target_user_id,
+                    membership.display_name(),
+                ),
                 change: membership
                     .change()
                     .map(membership_change_summary)
@@ -464,6 +468,7 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
             })
         }
         TimelineItemContent::ProfileChange(profile) => {
+            let target_user_id = profile.user_id();
             let (old_display_name, new_display_name) = profile
                 .displayname_change()
                 .map(|change| (change.old.clone(), change.new.clone()))
@@ -481,10 +486,13 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 event_id,
                 sender,
                 timestamp_ms,
-                target_user_id: profile.user_id().to_string(),
-                target_display_name: new_display_name
-                    .clone()
-                    .or_else(|| old_display_name.clone()),
+                target_user_id: target_user_id.to_string(),
+                target_display_name: membership_target_label(
+                    target_user_id,
+                    new_display_name
+                        .clone()
+                        .or_else(|| old_display_name.clone()),
+                ),
                 change: TimelineMembershipChange::Profile {
                     old_display_name,
                     new_display_name,
@@ -519,6 +527,21 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
         | TimelineItemContent::CallInvite
         | TimelineItemContent::RtcNotification { .. } => None,
     }
+}
+
+/// Membership/profile-change items do not expose matrix-sdk-ui's room-level
+/// ambiguity flag for the target identity. Never publish a bare display name
+/// that a future notice renderer could mistake for unique: pair every available
+/// target label with its MXID, while `target_user_id` remains the authoritative
+/// identity when no display name is available.
+fn membership_target_label(user_id: &UserId, display_name: Option<String>) -> Option<String> {
+    display_name.map(|name| {
+        if name == user_id.as_str() {
+            name
+        } else {
+            format!("{name} ({user_id})")
+        }
+    })
 }
 
 fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChange {
@@ -1884,7 +1907,11 @@ mod mapping_tests {
                 assert_eq!(event_id, "$joined");
                 assert_eq!(sender, BOB.as_str());
                 assert_eq!(target_user_id, ALICE.as_str());
-                assert_eq!(target_display_name.as_deref(), Some("Alice"));
+                let expected_label = format!("Alice ({})", ALICE.as_str());
+                assert_eq!(
+                    target_display_name.as_deref(),
+                    Some(expected_label.as_str())
+                );
                 assert!(matches!(change, TimelineMembershipChange::Joined));
             }
             other => panic!("expected membership item, got {other:?}"),
