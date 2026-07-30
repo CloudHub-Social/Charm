@@ -1928,7 +1928,7 @@ pub async fn login_with_token(
     }
     reservation.defuse();
     let cleanup_key = store_key.clone();
-    match finish_registration(app.clone(), &state, client, store_key, None).await {
+    match finish_registration(app.clone(), &state, client, store_key, None, None).await {
         Ok(session) => Ok(session),
         Err(error) => {
             let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
