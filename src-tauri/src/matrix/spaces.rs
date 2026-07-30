@@ -115,26 +115,28 @@ pub async fn list_manageable_space_children_impl(
     space_id: &str,
 ) -> Result<Vec<SpaceChild>, String> {
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
+    let space = require_space(client, space_id)?;
     let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), Some(1)).await?;
     let summaries = chunks
         .into_iter()
         .filter(|chunk| chunk.summary.room_id != parsed_space_id)
         .map(|chunk| (chunk.summary.room_id.to_owned(), chunk_to_child(chunk)))
         .collect::<HashMap<_, _>>();
-    let response = client
-        .send(get_state_events::v3::Request::new(parsed_space_id.clone()))
+    let child_events = space
+        .get_state_events_static::<SpaceChildEventContent>()
         .await
         .map_err(|e| e.to_string())?;
-    let mut children = response
-        .room_state
+    let mut children = child_events
         .into_iter()
-        .filter_map(|raw| match raw.deserialize().ok()? {
-            AnyStateEvent::SpaceChild(StateEvent::Original(event))
-                if !event.content.via.is_empty() =>
-            {
-                Some(event.state_key)
-            }
-            _ => None,
+        .filter_map(|raw| {
+            let event = raw.deserialize().ok()?;
+            let has_via = matches!(
+                &event,
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(original)
+                ) if !original.content.via.is_empty()
+            );
+            has_via.then(|| event.state_key().to_owned())
         })
         .map(|child_id| {
             summaries.get(&child_id).cloned().unwrap_or_else(|| {

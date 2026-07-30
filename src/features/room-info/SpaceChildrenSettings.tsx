@@ -36,6 +36,7 @@ export function SpaceChildrenSettings({
     data: children = [],
     isLoading,
     isError,
+    isFetching,
   } = useQuery({
     queryKey: queryKey(spaceId),
     queryFn: () => listManageableSpaceChildren(spaceId),
@@ -54,11 +55,11 @@ export function SpaceChildrenSettings({
     setPendingId(child.room_id);
     try {
       await removeSpaceChild(spaceId, child.room_id);
-      await refresh();
-      onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      await refresh().catch(() => {});
+      onChanged?.();
       setPendingId(null);
     }
   }
@@ -74,7 +75,7 @@ export function SpaceChildrenSettings({
         </div>
         <Button
           size="sm"
-          disabled={!canEdit || pendingId !== null}
+          disabled={!canEdit || pendingId !== null || isFetching || isError}
           onClick={() => setAddOpen(true)}
         >
           Add existing

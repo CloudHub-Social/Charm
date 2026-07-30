@@ -622,7 +622,6 @@ export function RoomsScreen({
         currentUserId={currentUserId}
         rooms={joinedRooms}
         onSpaceChildrenChanged={() => {
-          refreshRooms().catch(logAndIgnore);
           setHierarchyRefreshToken((token) => token + 1);
         }}
       />

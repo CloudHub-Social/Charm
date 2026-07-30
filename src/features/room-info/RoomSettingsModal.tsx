@@ -45,7 +45,7 @@ export function RoomSettingsModal({
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
-  const { data: details, isLoading, isError, refetch } = useRoomDetails(targetRoomId);
+  const { data: details, isLoading, isError, isFetching, refetch } = useRoomDetails(targetRoomId);
   useEffect(() => {
     if (targetRoomId) void refetch();
   }, [refetch, targetRoomId]);
@@ -184,7 +184,7 @@ export function RoomSettingsModal({
                       spaceId={details.room_id}
                       spaceName={details.name}
                       rooms={rooms}
-                      canEdit={details.can.set_space_child}
+                      canEdit={details.can.set_space_child && !isFetching && !isError}
                       onChanged={onSpaceChildrenChanged}
                     />
                   </TabsContent>
