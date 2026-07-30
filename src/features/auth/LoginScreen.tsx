@@ -112,7 +112,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }, [discovery, mode, registrationUiaEnabled]);
 
   useEffect(() => {
-    if (!registrationUiaEnabled || (loginFlows !== undefined && !loginFlows.token)) {
+    // A token is a homeserver-scoped bearer credential. Clear it as soon as
+    // discovery restarts so a value entered for server A can never be sent
+    // to server B while B's capabilities are still loading.
+    if (!registrationUiaEnabled || !loginFlows?.token) {
       setShowTokenLogin(false);
       setLoginToken("");
     }
@@ -187,7 +190,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       if (mode === "sign-in") {
         if (showTokenLogin) {
-          onSignedIn(await loginWithToken(homeserverUrl, loginToken));
+          if (discovery.state !== "resolved" || !loginFlows?.token) {
+            throw new Error("Token login options changed; re-enter the token.");
+          }
+          onSignedIn(await loginWithToken(discovery.homeserverUrl, loginToken));
           setLoginToken("");
         } else {
           onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));

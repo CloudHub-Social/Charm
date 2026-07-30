@@ -1020,7 +1020,9 @@ pub async fn login_with_token(
     let _restore_store_guard = restore_store_lock().lock().await;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     if let Some(pending) = state.pending_sso.lock().await.take() {
-        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        let store_key = pending.store_key.clone();
+        drop(pending);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
     }
 
     let store_key = persistence::temp_store_key();
@@ -1542,7 +1544,9 @@ pub async fn start_sso_login(
     // via a different trigger (a new attempt instead of an explicit
     // cancel).
     if let Some(previous) = previous {
-        let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+        let store_key = previous.store_key.clone();
+        drop(previous);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
     }
 
     Ok(sso_url)
@@ -1564,7 +1568,9 @@ fn generate_sso_state() -> String {
 #[tauri::command]
 pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     if let Some(pending) = state.pending_sso.lock().await.take() {
-        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        let store_key = pending.store_key.clone();
+        drop(pending);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
     }
     Ok(())
 }
