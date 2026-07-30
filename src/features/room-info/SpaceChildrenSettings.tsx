@@ -146,7 +146,7 @@ export function SpaceChildrenSettings({
               aria-label={`Remove ${child.name ?? child.room_id} from space`}
               size="sm"
               variant="outline"
-              disabled={!canEdit || pendingId !== null}
+              disabled={!canEdit || pendingId !== null || isFetching}
               onClick={() => remove(child)}
             >
               {pendingId === child.room_id ? "Removing…" : "Remove"}
