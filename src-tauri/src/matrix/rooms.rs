@@ -690,6 +690,12 @@ pub async fn snapshot_rooms(
                         canonical_space_parents
                             .get(&room_id)
                             .cloned()
+                            .or_else(|| {
+                                parents
+                                    .get(&room_id)
+                                    .and_then(|parents| parents.first().cloned())
+                                    .map(|parent| vec![parent])
+                            })
                             .unwrap_or_default()
                     } else {
                         parents.get(&room_id).cloned().unwrap_or_default()
