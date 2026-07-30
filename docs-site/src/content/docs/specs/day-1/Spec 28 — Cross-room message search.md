@@ -159,6 +159,14 @@ connection: the SDK owns that schema and migration lifecycle.
   never sufficient evidence that backfill/reconciliation completed. Tests stop the
   process between SDK persistence and search commit and verify restart removes
   redacted plaintext and fills missing events.
+- Live indexing is sourced before room UI/timeline selection: the shared Rust sync
+  pipeline decrypts joined-room timeline events from every sync response and submits
+  eligible events to the indexer even when that room has never been opened. Initial and
+  recovery backfill enumerate each joined room's locally persisted SDK event cache and
+  pass encrypted events through the SDK's decryption machinery; the indexer never
+  scrapes mounted React timelines. Tests cover an encrypted message arriving in an
+  unopened room and becoming searchable without opening that room or making a
+  search-triggered Matrix request.
 
 ### Search UI
 
