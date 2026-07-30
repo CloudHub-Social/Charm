@@ -529,7 +529,10 @@ export function RoomsScreen({
             onOpenSettings={(spaceId) =>
               setRoomSettingsTarget({ roomId: spaceId, section: "general", kind: "space" })
             }
-            onSpaceChildrenChanged={() => setHierarchyRefreshToken((token) => token + 1)}
+            onSpaceChildrenChanged={() => {
+              void refreshRooms();
+              setHierarchyRefreshToken((token) => token + 1);
+            }}
           />
         }
         activeRoomId={activeRoom?.room_id ?? null}

@@ -99,7 +99,13 @@ export function CreateJoinSpaceDialog({
       resetAndClose();
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
-      setError(err instanceof Error ? err.message : "Couldn't create the space.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : "Couldn't create the space.",
+      );
       setPending(false);
     }
   }

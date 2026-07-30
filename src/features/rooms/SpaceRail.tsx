@@ -26,6 +26,13 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
@@ -102,7 +109,13 @@ export function SpaceRail({
   } | null>(null);
   const spaceDropRef = useRef<typeof spaceDrop>(null);
   const [spaceParentMutationPending, setSpaceParentMutationPending] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<{
+    spaceId: string;
+    name: string;
+    parentId: string | null;
+  } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const railScrollRef = useRef<HTMLDivElement | null>(null);
   const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return () => {
@@ -169,29 +182,31 @@ export function SpaceRail({
         resolvedTarget === sourceId ||
         (resolvedTarget !== null &&
           collectDescendantSpaceIds(sourceId, rooms).has(resolvedTarget)) ||
+        (insideRail && resolvedTarget === null) ||
         (!insideRail && (source?.parent_space_ids.length ?? 0) === 0);
+      const scrollBounds = railScrollRef.current?.getBoundingClientRect();
+      const scrollContainer = railScrollRef.current;
+      if (scrollBounds && typeof scrollContainer?.scrollBy === "function") {
+        if (clientY < scrollBounds.top + 32) scrollContainer.scrollBy({ top: -16 });
+        if (clientY > scrollBounds.bottom - 32) {
+          scrollContainer.scrollBy({ top: 16 });
+        }
+      }
       const nextDrop = { sourceId, targetId: resolvedTarget, invalid };
       spaceDropRef.current = nextDrop;
       setSpaceDrop(nextDrop);
     },
     [rooms],
   );
-  const finishSpaceDrop = useCallback(
-    (sourceId: string) => {
-      const drop = spaceDropRef.current;
-      spaceDropRef.current = null;
-      setSpaceDrop(null);
-      if (!drop || drop.sourceId !== sourceId || drop.invalid || spaceParentMutationPending) return;
-      const source = rooms.find((room) => room.room_id === sourceId);
-      if (drop.targetId === null && (source?.parent_space_ids.length ?? 0) === 0) {
-        return;
-      }
+  const mutateSpaceParent = useCallback(
+    (sourceId: string, targetId: string | null) => {
+      if (spaceParentMutationPending) return;
       // `RoomSummary.parent_space_ids` deliberately does not expose which
       // edge is canonical. Do not skip a drop merely because the target is
       // already one of the Matrix parents: the command may still need to
       // promote that noncanonical relationship to Charm's canonical parent.
       setSpaceParentMutationPending(true);
-      setSpaceParent(sourceId, drop.targetId ?? undefined)
+      setSpaceParent(sourceId, targetId ?? undefined)
         .catch(reportActionError)
         .finally(() => {
           setSpaceParentMutationPending(false);
@@ -202,6 +217,18 @@ export function SpaceRail({
         });
     },
     [onSpaceChildrenChanged, rooms, spaceParentMutationPending],
+  );
+  const finishSpaceDrop = useCallback(
+    (sourceId: string) => {
+      const drop = spaceDropRef.current;
+      spaceDropRef.current = null;
+      setSpaceDrop(null);
+      if (!drop || drop.sourceId !== sourceId || drop.invalid) return;
+      const source = rooms.find((room) => room.room_id === sourceId);
+      if (drop.targetId === null && (source?.parent_space_ids.length ?? 0) === 0) return;
+      mutateSpaceParent(sourceId, drop.targetId);
+    },
+    [mutateSpaceParent, rooms],
   );
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
@@ -463,6 +490,24 @@ export function SpaceRail({
                   Settings
                 </ContextMenuItem>
               )}
+              {hierarchyReorganizationEnabled && (
+                <ContextMenuItem
+                  disabled={spaceParentMutationPending}
+                  onSelect={() =>
+                    setMoveTarget({ spaceId: space.room_id, name: label, parentId })
+                  }
+                >
+                  Move to space…
+                </ContextMenuItem>
+              )}
+              {hierarchyReorganizationEnabled && parentId && (
+                <ContextMenuItem
+                  disabled={spaceParentMutationPending}
+                  onSelect={() => mutateSpaceParent(space.room_id, null)}
+                >
+                  Move to top level
+                </ContextMenuItem>
+              )}
               {managementEnabled && parentId && (
                 <>
                   <ContextMenuItem
@@ -591,7 +636,10 @@ export function SpaceRail({
             </div>
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
-          <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1">
+          <div
+            ref={railScrollRef}
+            className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1"
+          >
             {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
             {unpinnedTopLevelSpaces.length > 0 && (
               <>
@@ -643,6 +691,37 @@ export function SpaceRail({
         }}
         onAdded={onSpaceChildrenChanged}
       />
+      <Dialog open={moveTarget !== null} onOpenChange={(open) => !open && setMoveTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Move {moveTarget?.name}</DialogTitle>
+            <DialogDescription>Choose a new parent space.</DialogDescription>
+          </DialogHeader>
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+            {moveTarget &&
+              rooms
+                .filter(
+                  (room) =>
+                    room.is_space &&
+                    room.room_id !== moveTarget.spaceId &&
+                    !collectDescendantSpaceIds(moveTarget.spaceId, rooms).has(room.room_id),
+                )
+                .map((room) => (
+                  <button
+                    key={room.room_id}
+                    type="button"
+                    className="min-h-11 rounded-md px-3 text-left text-sm hover:bg-accent"
+                    onClick={() => {
+                      mutateSpaceParent(moveTarget.spaceId, room.room_id);
+                      setMoveTarget(null);
+                    }}
+                  >
+                    {displayName(room.room_id, room.name)}
+                  </button>
+                ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   );
 }
@@ -738,8 +817,9 @@ function SpaceButton({
   const [dragOffset, setDragOffset] = useState<[number, number]>([0, 0]);
   const draggedRef = useRef(false);
   const bind = useDrag(
-    ({ down, first, last, movement, xy }) => {
+    ({ down, first, last, movement, xy, event }) => {
       if (!dragEnabled) return;
+      if ("pointerType" in event && event.pointerType && event.pointerType !== "mouse") return;
       if (first) draggedRef.current = false;
       if (down && (Math.abs(movement[0]) > 3 || Math.abs(movement[1]) > 3)) {
         draggedRef.current = true;
@@ -769,11 +849,7 @@ function SpaceButton({
             transform: dragging ? `translate(${dragOffset[0]}px, ${dragOffset[1]}px)` : undefined,
             position: dragging ? "relative" : undefined,
             zIndex: dragging ? 20 : undefined,
-            // `@use-gesture/react` requires this on the bound target before
-            // the pointer goes down; applying it only after `dragging`
-            // becomes true is too late for touch browsers to suppress their
-            // native pan gesture.
-            touchAction: dragEnabled ? "none" : undefined,
+            touchAction: dragEnabled ? "pan-y" : undefined,
             pointerEvents: dragging ? "none" : undefined,
           }}
           className={cn(
