@@ -140,6 +140,32 @@ export function SpaceRail({
       return changed ? next : current;
     });
   }, [rooms]);
+  useEffect(() => {
+    const deadlines = Object.keys(canonicalParentOverrides)
+      .map(
+        (spaceId) =>
+          (canonicalParentOverrideStartedAt.current[spaceId] ?? Date.now()) + 15_000,
+      )
+      .filter((deadline) => Number.isFinite(deadline));
+    if (deadlines.length === 0) return undefined;
+    const delay = Math.max(0, Math.min(...deadlines) - Date.now());
+    const timeout = window.setTimeout(() => {
+      const now = Date.now();
+      setCanonicalParentOverrides((current) => {
+        const next = { ...current };
+        let changed = false;
+        for (const spaceId of Object.keys(current)) {
+          if (now - (canonicalParentOverrideStartedAt.current[spaceId] ?? 0) >= 15_000) {
+            delete next[spaceId];
+            delete canonicalParentOverrideStartedAt.current[spaceId];
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+    }, delay);
+    return () => window.clearTimeout(timeout);
+  }, [canonicalParentOverrides]);
   const [moveTarget, setMoveTarget] = useState<{
     spaceId: string;
     name: string;
