@@ -895,9 +895,10 @@ function SpaceButton({
       if (down && (Math.abs(movement[0]) > 3 || Math.abs(movement[1]) > 3)) {
         draggedRef.current = true;
       }
-      setDragging(down);
-      setDragOffset(down ? [movement[0], movement[1]] : [0, 0]);
-      if (down) onDragMove(space.room_id, xy[0], xy[1]);
+      const activeDrag = down && draggedRef.current;
+      setDragging(activeDrag);
+      setDragOffset(activeDrag ? [movement[0], movement[1]] : [0, 0]);
+      if (activeDrag) onDragMove(space.room_id, xy[0], xy[1]);
       if (last && draggedRef.current) onDragEnd(space.room_id);
     },
     { filterTaps: true, enabled: dragEnabled },
