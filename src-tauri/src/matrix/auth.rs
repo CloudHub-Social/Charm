@@ -79,6 +79,8 @@ pub struct RegisterRequest {
 }
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
 pub(crate) struct PendingRegistration {
@@ -96,6 +98,9 @@ struct PendingRegistrationEmail {
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
     homeserver: url::Url,
+    normalized_email: String,
+    send_attempt: u32,
+    retry_not_before: std::time::Instant,
     submitted: bool,
 }
 
@@ -747,11 +752,29 @@ async fn finish_registration(
         return Err(e.into());
     }
     if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
-        let _ = persistence::clear_session(&account_key);
-        let _ = persistence::clear_oauth_session(&account_key);
+        // Relocation has already made this session durable. A cancellation
+        // response is only truthful if we also remove that durable session;
+        // otherwise startup can restore an account the user explicitly
+        // cancelled. Retry once for transient keychain failures and surface
+        // any remaining cleanup failure instead of silently claiming success.
+        let session_cleanup = match persistence::clear_session(&account_key) {
+            Ok(()) => Ok(()),
+            Err(_) => persistence::clear_session(&account_key),
+        };
+        let oauth_cleanup = persistence::clear_oauth_session(&account_key);
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
             sync::spawn_sync_task(app, previous_client);
+        }
+        if let Err(error) = session_cleanup {
+            return Err(format!(
+                "registration cancelled, but the saved session could not be removed: {error}"
+            ));
+        }
+        if let Err(error) = oauth_cleanup {
+            return Err(format!(
+                "registration cancelled, but OAuth session cleanup failed: {error}"
+            ));
         }
         return Err("registration cancelled".to_string());
     }
@@ -935,11 +958,62 @@ pub async fn request_registration_email(
     let mut pending = guard.take().expect("pending attempt checked above");
     drop(guard);
 
-    let client_secret = ClientSecret::new();
+    let normalized_email = email.trim().to_lowercase();
+    if normalized_email.is_empty() {
+        let _ =
+            restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending)
+                .await;
+        reservation.defuse();
+        return Err("enter an email address".to_string());
+    }
+    let (client_secret, send_attempt) = if let Some(validation) = &pending.email_validation {
+        if validation.normalized_email != normalized_email {
+            let _ = restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await;
+            reservation.defuse();
+            return Err(
+                "cancel this registration and start again to use a different email address"
+                    .to_string(),
+            );
+        }
+        if validation.send_attempt >= REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS {
+            let _ = restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await;
+            reservation.defuse();
+            return Err("registration email resend limit reached; start again".to_string());
+        }
+        if std::time::Instant::now() < validation.retry_not_before {
+            let _ = restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await;
+            reservation.defuse();
+            return Err("wait before requesting another registration email".to_string());
+        }
+        (
+            validation.client_secret.clone(),
+            validation.send_attempt + 1,
+        )
+    } else {
+        (ClientSecret::new(), 1)
+    };
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
-        email,
-        UInt::new_saturating(1),
+        normalized_email.clone(),
+        UInt::new_saturating(send_attempt.into()),
     );
     let response = tokio::select! {
         result = pending.client.send(request) => result,
@@ -1010,6 +1084,9 @@ pub async fn request_registration_email(
         sid: response.sid,
         submit_url,
         homeserver: pending.client.homeserver(),
+        normalized_email,
+        send_attempt,
+        retry_not_before: std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
         submitted: false,
     });
     if let Err(pending) =
@@ -2398,6 +2475,9 @@ mod registration_uia_tests {
                     .expect("submission URL"),
             ),
             homeserver: server.uri().parse().expect("homeserver URL"),
+            normalized_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
             submitted: false,
         };
 

@@ -157,6 +157,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
   const ssoOperationRef = useRef(0);
+  // Keeps cancellation from exposing the SSO buttons while the backend is
+  // still creating an attempt. Once that setup settles, its stale-operation
+  // branch cancels the exact pending attempt before allowing another start.
+  const ssoSetupInFlightRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
   const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
@@ -251,9 +255,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  async function handleRegistrationStep(initialStep: RegistrationStep) {
+  async function handleRegistrationStep(initialStep: RegistrationStep, expectedOperation?: number) {
     let step = initialStep;
     for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+      if (
+        expectedOperation !== undefined &&
+        registrationEmailOperationRef.current !== expectedOperation
+      ) {
+        return;
+      }
       registrationAttemptRef.current = step.attempt_id;
       if (step.next_stage !== "m.login.dummy") break;
       if (automaticStages >= 8) {
@@ -263,6 +273,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       // must use the challenge returned by the previous request.
       // oxlint-disable-next-line no-await-in-loop
       step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
+    }
+    if (
+      expectedOperation !== undefined &&
+      registrationEmailOperationRef.current !== expectedOperation
+    ) {
+      return;
     }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
@@ -305,14 +321,22 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleRegistrationContinue(response: RegistrationAuthResponse) {
     const attemptId = registrationAttemptRef.current;
     if (!attemptId) return;
+    const operation = ++registrationEmailOperationRef.current;
     setPending(true);
     setError(null);
     try {
-      await handleRegistrationStep(await continueRegistration(attemptId, response));
+      const step = await continueRegistration(attemptId, response);
+      if (
+        registrationEmailOperationRef.current !== operation ||
+        registrationAttemptRef.current !== attemptId
+      ) {
+        return;
+      }
+      await handleRegistrationStep(step, operation);
     } catch (err) {
-      setError(String(err));
+      if (registrationEmailOperationRef.current === operation) setError(String(err));
     } finally {
-      setPending(false);
+      if (registrationEmailOperationRef.current === operation) setPending(false);
     }
   }
 
@@ -340,12 +364,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSsoLogin(idpId?: string) {
     const operation = ++ssoOperationRef.current;
+    ssoSetupInFlightRef.current = true;
     setSsoPending(true);
     setError(null);
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
+      ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
-        cancelSsoLogin().catch(logAndIgnore);
+        await cancelSsoLogin().catch(logAndIgnore);
+        setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = true;
@@ -354,7 +381,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
-      if (operation !== ssoOperationRef.current) return;
+      ssoSetupInFlightRef.current = false;
+      if (operation !== ssoOperationRef.current) {
+        setSsoPending(false);
+        return;
+      }
       ssoInProgressRef.current = false;
       setError(String(err));
       setSsoPending(false);
@@ -364,7 +395,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   function handleCancelSso() {
     ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
-    setSsoPending(false);
+    // If setup is still in flight, keep the controls disabled. The stale
+    // setup branch above performs a second cancellation after the backend
+    // has actually installed its pending attempt, then clears this state.
+    if (!ssoSetupInFlightRef.current) setSsoPending(false);
     setError(null);
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
