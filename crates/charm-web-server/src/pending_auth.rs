@@ -480,13 +480,14 @@ impl PendingAuthStore {
 
     pub async fn commit_attempt(&self, owner: &str, attempt_id: &str) -> bool {
         let mut cancellations = self.cancellations.lock().await;
-        let can_commit = cancellations
-            .get(attempt_id)
-            .is_some_and(|(attempt_owner, token)| attempt_owner == owner && !token.is_cancelled());
-        if can_commit {
-            cancellations.remove(attempt_id);
+        let Some((attempt_owner, token)) = cancellations.remove(attempt_id) else {
+            return false;
+        };
+        if attempt_owner != owner {
+            cancellations.insert(attempt_id.to_owned(), (attempt_owner, token));
+            return false;
         }
-        can_commit
+        !token.is_cancelled()
     }
 
     pub async fn request_password_reset(
@@ -1366,6 +1367,10 @@ mod tests {
         assert!(store.commit_attempt("browser-a", "winning-attempt").await);
         assert!(!store.commit_attempt("browser-a", "cancelled-attempt").await);
         assert!(!store.commit_attempt("browser-b", "cancelled-attempt").await);
+        assert!(
+            store.cancellations.lock().await.is_empty(),
+            "commit must consume both successful and already-cancelled attempts"
+        );
         assert!(
             store
                 .owned_cancellation("browser-a", "winning-attempt")
