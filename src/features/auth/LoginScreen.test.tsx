@@ -455,7 +455,32 @@ describe("LoginScreen login choices", () => {
     expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
   });
 
-  it("leaves token mode when the homeserver changes", async () => {
+  it("keeps generic SSO available when homeserver resolution fails", async () => {
+    discoverHomeserver.mockRejectedValue(new Error("offline"));
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
+  });
+
+  it("hides password submission when the homeserver does not advertise it", async () => {
+    getLoginFlows.mockResolvedValue({
+      password: false,
+      token: false,
+      sso: true,
+      identity_providers: [{ id: "company", name: "Company SSO", brand: null }],
+    });
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.queryByLabelText("Username")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue with Company SSO" })).toBeVisible();
+  });
+
+  it("preserves token input while login flows reload for a corrected homeserver", async () => {
     render(<LoginScreen onSignedIn={vi.fn()} />);
     await discoverLoginChoices();
 
@@ -467,8 +492,7 @@ describe("LoginScreen login choices", () => {
       target: { value: "https://other.example" },
     });
 
-    expect(screen.queryByLabelText("Login token")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Username")).toBeVisible();
+    expect(screen.getByLabelText("Login token")).toHaveValue("one-time-secret");
   });
 });
 
