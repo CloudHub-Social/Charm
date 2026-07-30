@@ -693,6 +693,7 @@ async fn finish_registration(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    let _finalizing = FinalizingRegistrationGuard::new(state, account_key.clone());
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &temp_key,
@@ -823,7 +824,7 @@ pub async fn begin_registration(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .replace((attempt_id.clone(), cancellation.clone()));
-    spawn_registration_expiry(app.clone(), attempt_id.clone());
+    spawn_registration_expiry(app.clone(), attempt_id.clone(), cancellation.clone());
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
@@ -1333,6 +1334,15 @@ pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &Matri
             discard_pending_registration(app, pending);
         }
     }
+    if let Some(account_key) = state
+        .finalizing_registration_account
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        let _ = persistence::clear_session(&account_key);
+        let _ = persistence::clear_oauth_session(&account_key);
+    }
 }
 
 fn clear_registration_cancellation(state: &MatrixState, attempt_id: &str) {
@@ -1383,9 +1393,16 @@ async fn restore_pending_registration_if_current(
     Ok(())
 }
 
-fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
+fn spawn_registration_expiry(
+    app: AppHandle,
+    attempt_id: String,
+    cancellation: tokio_util::sync::CancellationToken,
+) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
+        tokio::select! {
+            () = tokio::time::sleep(REGISTRATION_ATTEMPT_TTL) => {}
+            () = cancellation.cancelled() => return,
+        }
         let state = app.state::<MatrixState>();
         let cancellation = {
             let guard = state
@@ -1415,6 +1432,35 @@ fn spawn_registration_expiry(app: AppHandle, attempt_id: String) {
             discard_pending_registration(&app, expired);
         }
     });
+}
+
+struct FinalizingRegistrationGuard<'a> {
+    state: &'a MatrixState,
+    account_key: String,
+}
+
+impl<'a> FinalizingRegistrationGuard<'a> {
+    fn new(state: &'a MatrixState, account_key: String) -> Self {
+        state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(account_key.clone());
+        Self { state, account_key }
+    }
+}
+
+impl Drop for FinalizingRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self
+            .state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if guard.as_deref() == Some(self.account_key.as_str()) {
+            guard.take();
+        }
+    }
 }
 
 fn discard_pending_registration(app: &AppHandle, pending: PendingRegistration) {
