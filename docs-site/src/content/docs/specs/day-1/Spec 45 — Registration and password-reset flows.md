@@ -38,7 +38,8 @@ homeservers. The parity audit (2026-07-13) found:
 
 ## Non-goals
 
-- Not guest access or room peeking. That read-only, session-boundary-heavy surface
+- Not guest access or room peeking. That read-only, session-boundary-heavy surface,
+  including the ephemeral guest-token acquisition required for history previews,
   is now [day-2 Spec 14](/specs/day-2/spec-14--guest-room-previews/) rather than a
   contradictory low-priority item inside this daily-driver authentication spec.
 - Not multi-account (day-2 Spec 09).

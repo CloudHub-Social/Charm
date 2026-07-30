@@ -27,20 +27,27 @@ hostile, and every write-capable control must remain absent.
   device, notification, and account actions.
 - Offer a clear transition to sign in/register, preserving only the intended room
   reference rather than carrying preview state into the authenticated session.
-- Prefer the Matrix room-preview APIs where supported. Do not create an
-  `m.login.guest` account unless a later decision shows that server support and
-  lifecycle cleanup are adequate.
+- Use unauthenticated room-summary discovery where the homeserver supports it.
+  Treat that as summary-only: it is not sufficient for timeline history.
+- When history is offered, acquire an ephemeral guest access token through
+  `POST /register?kind=guest` and use the guest-authorized room-preview endpoints.
+  Bind that token to one preview session, keep it out of the normal account list
+  and durable account store, and discard its client, caches, and credentials when
+  the preview closes or transitions to sign-in.
 
 ## Non-goals
 
 - Not part of Spec 45 registration, recovery, SSO, or token login.
 - Not a promise that encrypted, invite-only, or non-world-readable history can be
   previewed.
-- Not anonymous participation, guest message sending, or a durable guest account.
+- Not anonymous participation, guest message sending, or promoting an ephemeral
+  preview guest into a durable Charm account.
 
 ## Decision gates before implementation
 
-1. Verify target homeserver support and the current Matrix room-preview contract.
+1. Verify target homeserver support for guest registration, guest access, and the
+   current Matrix room-preview contract; degrade to summary-only when a usable
+   guest token cannot be acquired.
 2. Define the unauthenticated companion/Tauri transport without reusing an active
    account's client, caches, media credentials, or telemetry identity.
 3. Threat-model hostile event/media rendering and cross-account cache leakage.

@@ -31,7 +31,7 @@ already contain a settled architecture and detailed acceptance criteria.
 | 11 | [Jump to date](/specs/day-2/spec-11--jump-to-date/) | **Planned** | Must preserve Day-1 Spec 26 timeline anchoring |
 | 12 | [Bookmarks and saved messages](/specs/day-2/spec-12--bookmarks-and-saved-messages/) | **Shipped** | Private saves, distinct from shared room pins |
 | 13 | [Scheduled and delayed send](/specs/day-2/spec-13--scheduled-and-delayed-send/) | **Planned** | Prefer server-side MSC4140 delayed events |
-| 14 | [Guest room previews](/specs/day-2/spec-14--guest-room-previews/) | **Planned** | Read-only unauthenticated preview, split from Day-1 Spec 45 |
+| 14 | [Guest room previews](/specs/day-2/spec-14--guest-room-previews/) | **Planned** | Read-only summary or ephemeral guest-token history preview, split from Day-1 Spec 45 |
 
 ## Shared implementation seams
 
