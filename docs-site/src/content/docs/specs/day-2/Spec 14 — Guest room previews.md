@@ -36,6 +36,12 @@ hostile, and every write-capable control must remain absent.
   where supported before discarding the client, caches, and credentials; record
   failed cleanup and require a bounded server-side expiry policy rather than
   describing local deletion as revocation.
+- Admit guest registration before allocating a client or calling
+  `POST /register?kind=guest`: one active preview per browser session, bounded
+  per-source and global creation rates, and a hard expiry that begins before the
+  homeserver request. Abandoned previews still consume homeserver accounts, so
+  tests must cover floods and requests that never return, not only local token
+  cleanup.
 - Preview clients are a distinct backend capability with a read-only allowlist.
   Every generic join, send, react, upload, account, moderation, or state-write
   command rejects preview-session credentials even if the homeserver would permit
