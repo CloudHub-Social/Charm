@@ -344,10 +344,10 @@ IPC commands).
 2. **Linux:** same shape of item for WebKitGTK's `permission-request` signal —
    still fully open, no fake-device/fake-UI equivalent exists for WebKitGTK the
    way it does for Chromium/WebView2.
-3. ~~**Android:** identify and fix the `getUserMedia` hang~~ — **Resolved in
-   PR #229:** wry already implements the `WebChromeClient` permission callback;
-   the missing manifest declarations were added without custom Kotlin. Only the
-   hardware-blocked device/emulator re-run remains.
+3. **Android:** PR #229 added the missing manifest declarations and confirmed
+   that wry already implements the `WebChromeClient` permission callback without
+   custom Kotlin. Whether that change resolves the observed `getUserMedia` hang
+   remains open and hardware-blocked until the device/emulator Buttons A/B rerun.
 4. **iOS/Android screen share:** both are native-API-only (ReplayKit /
    MediaProjection) and not reachable from the webview — Phase 4 either bridges
    these natively or descopes screen share on mobile. This is an EXPECTED-GAP by
@@ -442,6 +442,8 @@ only when a device/emulator can re-run Buttons A/B against the merged manifest f
       manifest while keeping camera/microphone hardware optional — PR #229.
 - [x] Preserve wry's existing `RustWebChromeClient` permission handling; do not
       replace or duplicate it with application Kotlin.
+- [ ] Protect the declarations from `src-tauri/gen/android` regeneration with a
+      surviving hook or a documented, tested reapplication step.
 - [ ] Follow-up verification (separate session, when emulator/device access
       exists): re-run `public/spike-webrtc.html` Buttons A and B on Android and
       confirm (1) resolves PASS instead of hanging, updating the matrix in this
