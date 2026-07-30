@@ -254,6 +254,13 @@ per-source/global unauthenticated admission limits. Completion consumes the
 attempt exactly once; abandoned and flooded attempts are covered by repository
 tests.
 
+SSO attempts have the same resource boundary: start expiry and apply
+per-source/global companion admission limits before creating a Matrix client or
+temporary crypto store; allow only one active attempt per browser flow; consume
+completion exactly once; and cancel, expire, or supersede abandoned attempts
+with their temporary stores removed. Companion tests cover both abandoned SSO
+starts and floods that rotate pre-auth sessions.
+
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
 defaulting to `false`. The existing legacy dummy registration and generic SSO
