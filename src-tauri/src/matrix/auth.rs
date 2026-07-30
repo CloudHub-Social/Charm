@@ -1030,11 +1030,14 @@ pub async fn request_password_reset(
     if let Some((_, cancellation)) = previous_cancellation {
         cancellation.cancel();
     }
-    let client = Client::builder()
-        .server_name_or_homeserver_url(&homeserver_url)
-        .build()
-        .await
-        .map_err(|_| "could not start password reset".to_string())?;
+    let client = tokio::select! {
+        result = Client::builder()
+            .server_name_or_homeserver_url(&homeserver_url)
+            .build() => result.map_err(|_| "could not start password reset".to_string()),
+        () = cancellation.cancelled() => {
+            Err("password reset attempt was superseded".to_string())
+        }
+    }?;
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
