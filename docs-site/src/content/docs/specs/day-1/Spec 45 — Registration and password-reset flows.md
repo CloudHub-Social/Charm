@@ -21,10 +21,12 @@ and lands successful registration in the existing onboarding flow. The
 continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
-This does not yet complete Spec 45. The web companion attempt boundary, direct
-registration email request-token path, and real-homeserver verification remain
-open. Repository and Playwright tests for DTO mapping, stage/session validation,
-and UI navigation are not live-homeserver evidence.
+This does not yet complete Spec 45. The web companion authentication
+equivalents, direct registration email request-token path, provider icon
+resolution, and real-homeserver verification remain open. Provider-aware SSO,
+one-time token login, and desktop password recovery are implemented in the
+slices below. Repository and Playwright tests for DTO mapping, stage/session
+validation, and UI navigation are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
