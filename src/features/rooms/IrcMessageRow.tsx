@@ -73,9 +73,12 @@ export function IrcMessageRow({
       {onSenderClick ? (
         <button
           type="button"
-          className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
+          className="relative z-10 -my-3 flex min-h-11 max-w-40 shrink items-center truncate py-3 font-mono text-[13px] font-semibold"
           style={{ color: nickColor(message.sender) }}
           title={nick}
+          aria-label={`Open profile for ${nick}`}
+          onTouchStart={(event) => event.stopPropagation()}
+          onTouchEnd={(event) => event.stopPropagation()}
           onClick={() => onSenderClick(message.sender, nick)}
         >
           &lt;{nick}&gt;

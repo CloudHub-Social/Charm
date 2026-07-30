@@ -77,8 +77,10 @@ export function DiscordMessageRow({
         onSenderClick ? (
           <button
             type="button"
-            className="h-fit rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="-m-2 flex min-h-11 min-w-11 items-center justify-center rounded-full p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={`Open profile for ${message.sender_display_name ?? message.sender}`}
+            onTouchStart={(event) => event.stopPropagation()}
+            onTouchEnd={(event) => event.stopPropagation()}
             onClick={() =>
               onSenderClick(message.sender, message.sender_display_name ?? message.sender)
             }

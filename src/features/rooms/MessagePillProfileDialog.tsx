@@ -8,7 +8,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useFlag } from "@/featureFlags";
 import { getMutualRooms, getUserProfile } from "@/lib/matrix";
+import { usePresence } from "@/features/presence/usePresence";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
 export interface MessagePillProfile {
@@ -32,6 +34,8 @@ export function MessagePillProfileDialog({
   onClose: () => void;
 }) {
   const userId = profile?.userId ?? "";
+  const presenceDetailsEnabled = useFlag("presence_privacy_controls");
+  const livePresence = usePresence(detailed && userId !== "" ? userId : null);
   const profileQuery = useQuery({
     queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
     queryFn: () => getUserProfile(userId, roomId),
@@ -42,7 +46,8 @@ export function MessagePillProfileDialog({
     queryFn: () => getMutualRooms(userId),
     enabled: detailed && userId !== "",
   });
-  const resolvedProfile = profileQuery.data;
+  const resolvedProfile = detailed ? profileQuery.data : undefined;
+  const presence = livePresence ?? resolvedProfile?.presence;
   const displayName =
     resolvedProfile?.room_display_name ?? resolvedProfile?.display_name ?? profile?.label ?? null;
   const avatarUrl = resolvedProfile?.room_avatar_url ?? resolvedProfile?.avatar_url ?? null;
@@ -64,6 +69,14 @@ export function MessagePillProfileDialog({
             </Avatar>
             <DialogTitle>{displayName}</DialogTitle>
             <DialogDescription>{profile.userId}</DialogDescription>
+            {detailed &&
+              resolvedProfile?.room_display_name &&
+              resolvedProfile.display_name &&
+              resolvedProfile.room_display_name !== resolvedProfile.display_name && (
+                <p className="text-sm text-muted-foreground">
+                  Global profile: {resolvedProfile.display_name}
+                </p>
+              )}
             {detailed && profileQuery.isPending && (
               <p className="text-sm text-muted-foreground">Loading profile…</p>
             )}
@@ -72,12 +85,17 @@ export function MessagePillProfileDialog({
                 Profile details could not be loaded.
               </p>
             )}
-            {detailed && resolvedProfile?.presence && (
+            {detailed && presence && (
               <p className="text-sm text-muted-foreground">
-                {resolvedProfile.presence.presence}
-                {resolvedProfile.presence.status_msg
-                  ? ` · ${resolvedProfile.presence.status_msg}`
+                {presence.presence === "unavailable" ? "away" : presence.presence}
+                {presenceDetailsEnabled && presence.status_msg
+                  ? ` · ${presence.status_msg}`
                   : ""}
+              </p>
+            )}
+            {detailed && mutualRoomsQuery.isError && (
+              <p role="alert" className="text-sm text-destructive">
+                Mutual rooms could not be loaded.
               </p>
             )}
             {detailed && mutualRoomsQuery.data && mutualRoomsQuery.data.length > 0 && (
