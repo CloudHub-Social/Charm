@@ -526,7 +526,11 @@ export function RoomsScreen({
               setCreateJoinDialogOpen(true);
             }}
             onSpaceChildrenChanged={() => {
-              void refreshRooms();
+              // SpaceRail reconciles its canonical placement immediately
+              // and retains that override until a sync snapshot confirms
+              // it. A manual listRooms() read is only another in-memory SDK
+              // snapshot and can race a newer room_list:update, so refresh
+              // only the live hierarchy consumer here.
               setHierarchyRefreshToken((token) => token + 1);
             }}
           />
