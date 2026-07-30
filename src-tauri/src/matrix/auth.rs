@@ -902,7 +902,7 @@ pub async fn request_registration_email(
     let response = match response {
         Ok(response) => response,
         Err(_) => {
-            match restore_registration_after_email_request(
+            match restore_pending_registration_if_current(
                 &state,
                 &attempt_id,
                 &cancellation,
@@ -934,7 +934,7 @@ pub async fn request_registration_email(
     ) {
         Ok(url) => url,
         Err(error) => {
-            match restore_registration_after_email_request(
+            match restore_pending_registration_if_current(
                 &state,
                 &attempt_id,
                 &cancellation,
@@ -963,7 +963,7 @@ pub async fn request_registration_email(
         submitted: false,
     });
     if let Err(pending) =
-        restore_registration_after_email_request(&state, &attempt_id, &cancellation, pending).await
+        restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending).await
     {
         discard_pending_registration(&app, pending);
         clear_registration_cancellation(&state, &attempt_id);
@@ -973,7 +973,7 @@ pub async fn request_registration_email(
     Ok(RegistrationEmailChallenge { requires_token })
 }
 
-async fn restore_registration_after_email_request(
+async fn restore_pending_registration_if_current(
     state: &MatrixState,
     attempt_id: &str,
     cancellation: &tokio_util::sync::CancellationToken,
@@ -1016,6 +1016,10 @@ pub async fn continue_registration(
         cancel_pending_registration_for_superseding_auth(&app, &state).await;
         return Err(error);
     }
+    // Registration completion relocates the temporary crypto store. Keep
+    // the startup orphan-store sweep out for the whole continuation so it
+    // cannot delete that store between UIA submission and relocation.
+    let _restore_store_guard = restore_store_lock().lock().await;
     let cancellation = state
         .pending_registration_cancel
         .lock()
@@ -1061,9 +1065,24 @@ pub async fn continue_registration(
     let auth = match auth_result {
         Ok(auth) => auth,
         Err(error) => {
-            state.pending_registration.lock().await.replace(pending);
-            reservation.defuse();
-            return Err(error);
+            return match restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    Err(error)
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Err("registration cancelled".to_string())
+                }
+            };
         }
     };
     let request = registration_request(&pending.request, Some(auth));
@@ -1109,13 +1128,43 @@ pub async fn continue_registration(
                         return Err(error);
                     }
                 };
-                state.pending_registration.lock().await.replace(pending);
-                reservation.defuse();
-                Ok(step)
+                match restore_pending_registration_if_current(
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        reservation.defuse();
+                        Ok(step)
+                    }
+                    Err(pending) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        Err("registration cancelled".to_string())
+                    }
+                }
             } else {
-                state.pending_registration.lock().await.replace(pending);
-                reservation.defuse();
-                Err("registration request failed; retry this stage".to_string())
+                match restore_pending_registration_if_current(
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        reservation.defuse();
+                        Err("registration request failed; retry this stage".to_string())
+                    }
+                    Err(pending) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        Err("registration cancelled".to_string())
+                    }
+                }
             }
         }
     }
@@ -1171,12 +1220,14 @@ pub async fn request_password_reset(
 ) -> Result<PasswordResetChallenge, String> {
     ensure_registration_feature_enabled(&app)?;
     state.pending_password_reset.lock().await.take();
-    if let Some((_, cancellation)) = state
+    let attempt_id = generate_attempt_id();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let previous_cancellation = state
         .pending_password_reset_cancel
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .take()
-    {
+        .replace((attempt_id.clone(), cancellation.clone()));
+    if let Some((_, cancellation)) = previous_cancellation {
         cancellation.cancel();
     }
     let client = Client::builder()
@@ -1190,13 +1241,18 @@ pub async fn request_password_reset(
         email,
         UInt::new_saturating(1),
     );
-    let response = client
-        .send(request)
-        .await
-        .map_err(|_| "could not start password reset".to_string())?;
+    let response = tokio::select! {
+        result = client.send(request) => result
+            .map_err(|_| "could not start password reset".to_string()),
+        () = cancellation.cancelled() => {
+            Err("password reset attempt was superseded".to_string())
+        }
+    }?;
+    if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
+        return Err("password reset attempt was superseded".to_string());
+    }
     let submit_url =
         sanitize_password_reset_submit_url(&client.homeserver(), response.submit_url.as_deref())?;
-    let attempt_id = generate_attempt_id();
     let pending = PendingPasswordReset {
         client,
         client_secret,
@@ -1206,17 +1262,14 @@ pub async fn request_password_reset(
         created_at: std::time::Instant::now(),
     };
     let mut pending_guard = state.pending_password_reset.lock().await;
-    pending_guard.replace(pending);
-    let cancellation = tokio_util::sync::CancellationToken::new();
-    let previous_cancellation = state
-        .pending_password_reset_cancel
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .replace((attempt_id.clone(), cancellation));
-    drop(pending_guard);
-    if let Some((_, previous_cancellation)) = previous_cancellation {
-        previous_cancellation.cancel();
+    if cancellation.is_cancelled()
+        || !password_reset_cancellation_is_current(&state, &attempt_id)
+        || pending_guard.is_some()
+    {
+        return Err("password reset attempt was superseded".to_string());
     }
+    pending_guard.replace(pending);
+    drop(pending_guard);
     spawn_password_reset_expiry(app, attempt_id.clone());
     Ok(PasswordResetChallenge {
         attempt_id,
@@ -1394,34 +1447,43 @@ async fn email_validation_submission_client(
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15));
 
-    // A Matrix homeserver may delegate email validation to an identity
-    // service on another HTTPS origin. Resolve that host once, reject every
-    // non-public answer, and pin the approved addresses into reqwest so a
-    // second DNS lookup cannot rebind the submission to a local service.
-    if submit_url.origin() != homeserver.origin() {
-        let host = submit_url
-            .host_str()
-            .ok_or_else(|| "could not confirm password reset".to_string())?;
-        let port = submit_url
-            .port_or_known_default()
-            .ok_or_else(|| "could not confirm password reset".to_string())?;
-        let addresses = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|_| "could not confirm password reset".to_string())?
-            .collect::<Vec<_>>();
-        if addresses.is_empty()
-            || addresses
+    // Resolve every submission host exactly once and pin that result into
+    // reqwest. Origin equality does not prevent a configured hostname from
+    // being rebound between the homeserver request and token submission.
+    let host = submit_url
+        .host_str()
+        .ok_or_else(|| "could not confirm password reset".to_string())?;
+    let port = submit_url
+        .port_or_known_default()
+        .ok_or_else(|| "could not confirm password reset".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "could not confirm password reset".to_string())?
+        .collect::<Vec<_>>();
+    let explicitly_local_same_origin = submit_url.origin() == homeserver.origin()
+        && (host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok());
+    if addresses.is_empty()
+        || (!explicitly_local_same_origin
+            && addresses
                 .iter()
-                .any(|address| !is_public_network_ip(address.ip()))
-        {
-            return Err("could not confirm password reset".to_string());
-        }
-        builder = builder.resolve_to_addrs(host, &addresses);
+                .any(|address| !is_public_network_ip(address.ip())))
+    {
+        return Err("could not confirm password reset".to_string());
     }
+    builder = builder.resolve_to_addrs(host, &addresses);
 
     builder
         .build()
         .map_err(|_| "could not confirm password reset".to_string())
+}
+
+fn password_reset_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
+    state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
 }
 
 fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
