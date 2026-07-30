@@ -26,6 +26,26 @@
       }
     },
     {
+      "slug": "registration",
+      "title": "Interactive account registration",
+      "summary": "Create an account through homeserver-advertised terms, automatic dummy, and browser fallback verification stages.",
+      "status": "preview",
+      "spec": "Spec 45",
+      "specLinks": [
+        {
+          "label": "Spec 45",
+          "href": "/specs/day-1/spec-45--registration-and-password-reset-flows/"
+        }
+      ],
+      "flag": "registration_and_recovery",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "registration-terms-challenge",
+        "alt": "Charm account registration showing a homeserver terms challenge",
+        "caption": "Playwright begins registration and captures the homeserver policy-acceptance stage."
+      }
+    },
+    {
       "slug": "room-invites",
       "title": "Room invitations",
       "summary": "Review pending invitations, see who invited you, and accept or decline without leaving the room list.",

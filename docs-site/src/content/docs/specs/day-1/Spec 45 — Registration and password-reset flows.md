@@ -14,15 +14,17 @@ behind the default-off `registration_and_recovery` flag. It adds typed
 commands; keeps the pending Matrix client, password, attempt lifetime, and
 encrypted temporary-store key in Rust; selects the shortest incomplete
 homeserver-advertised flow; supports direct terms/dummy completion; and exposes a
-homeserver fallback URL for CAPTCHA, email, and unknown stages. The continuation
-validates both the opaque Charm attempt ID and the next advertised stage, while
-policy links are restricted to HTTP(S).
+homeserver fallback URL for CAPTCHA, email, and unknown stages. The default-off
+desktop UI renders policy links and terms acceptance, auto-completes dummy
+stages, opens other stages in the homeserver fallback, supports cancellation,
+and lands successful registration in the existing onboarding flow. The
+continuation validates both the opaque Charm attempt ID and the next advertised
+stage, while policy links are restricted to HTTP(S).
 
-This does not yet make registration user-facing or complete Spec 45. The web
-companion attempt boundary, fallback-stage UI, email request-token path,
-recovery/SSO/token-login slice, and real-homeserver verification remain open.
-Repository tests for DTO mapping and stage/session validation are not
-live-homeserver evidence.
+This does not yet complete Spec 45. The web companion attempt boundary, direct
+email request-token path, recovery/SSO/token-login slice, and real-homeserver
+verification remain open. Repository and Playwright tests for DTO mapping,
+stage/session validation, and UI navigation are not live-homeserver evidence.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
@@ -79,7 +81,7 @@ homeservers. The parity audit (2026-07-13) found:
   never exposes the Matrix client, access token, store key, or raw server response
   to TypeScript.
 - Return a discriminated `RegistrationStep` DTO containing an opaque Charm attempt
-  ID, the homeserver UIA session ID, completed stage names, viable ordered flows,
+  ID, completed stage names, viable ordered flows,
   sanitized stage parameters, and exactly one of `challenge` or `complete`.
   Passwords and CAPTCHA/email tokens are request-only fields and must not be
   persisted, logged, added to breadcrumbs, or echoed in errors.
@@ -181,9 +183,9 @@ instead of adding a second HTTP stack.
 - `login_with_token(homeserver, token) -> LoginResponse`
 
 All user-facing entry points use a matching Rust and TypeScript
-`registration_and_recovery` feature flag defaulting to `false`. The backend
-commands remain fully validated even when the UI flag is disabled; flags are
-rollout controls, not authorization boundaries.
+`registration_and_recovery` feature flag defaulting to `false`. The Tauri
+commands enforce the same flag and fully validate attempt and stage inputs when
+enabled; flags are rollout controls, not authorization boundaries.
 
 ## Testing strategy
 

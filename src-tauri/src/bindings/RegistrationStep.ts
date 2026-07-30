@@ -3,4 +3,4 @@ import type { LoginResponse } from "./LoginResponse";
 import type { RegistrationFlow } from "./RegistrationFlow";
 import type { RegistrationPolicy } from "./RegistrationPolicy";
 
-export type RegistrationStep = { "state": "challenge", attempt_id: string, session: string, completed: Array<string>, flows: Array<RegistrationFlow>, next_stage: string, fallback_url: string, policies: Array<RegistrationPolicy>, } | { "state": "complete", session: LoginResponse, };
+export type RegistrationStep = { "state": "challenge", attempt_id: string, completed: Array<string>, flows: Array<RegistrationFlow>, next_stage: string, fallback_url: string, policies: Array<RegistrationPolicy>, } | { "state": "complete", session: LoginResponse, };

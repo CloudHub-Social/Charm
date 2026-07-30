@@ -104,7 +104,6 @@ pub struct RegistrationPolicy {
 pub enum RegistrationStep {
     Challenge {
         attempt_id: String,
-        session: String,
         completed: Vec<String>,
         flows: Vec<RegistrationFlow>,
         next_stage: String,
@@ -1076,7 +1075,6 @@ fn registration_challenge(
     let policies = sanitized_registration_policies(uiaa);
     Ok(RegistrationStep::Challenge {
         attempt_id: attempt_id.to_owned(),
-        session,
         completed: uiaa
             .completed
             .iter()
