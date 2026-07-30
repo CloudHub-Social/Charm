@@ -210,6 +210,43 @@ describe("ForwardMessageDialog", () => {
     expect(onForwarded).not.toHaveBeenCalled();
   });
 
+  it("clears filter and error state when the parent retargets the dialog", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockRejectedValue(new Error("boom"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const dialog = (eventId: string) => (
+      <QueryClientProvider client={client}>
+        <ForwardMessageDialog
+          open
+          sourceRoomId="!source:localhost"
+          eventId={eventId}
+          onOpenChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(dialog("$first:localhost"));
+
+    await screen.findByText("Alpha");
+    fireEvent.change(screen.getByPlaceholderText("Filter rooms…"), {
+      target: { value: "alpha" },
+    });
+    fireEvent.click(screen.getByText("Alpha"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+
+    view.rerender(dialog("$second:localhost"));
+
+    expect(screen.getByPlaceholderText("Filter rooms…")).toHaveValue("");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("excludes pending invites from the forward targets", async () => {
     listRooms.mockResolvedValue([
       {
