@@ -27,6 +27,12 @@ username `sso-test@localhost`, password `testpass123` — via Dex's
 involved, so it works offline and in CI without a human clicking through a
 real consent screen.
 
+The same stack starts `preview-target`, a fixed OpenGraph page reachable only on
+the Compose network. `configure-homeserver.sh` enables Synapse URL previews with
+the recommended private-network blacklist and a single-IP exception for that
+container. Specs/tests must use `http://preview-target/`; do not weaken the
+blacklist or copy these local-only settings to a public homeserver.
+
 Homeserver is then reachable at `http://localhost:8008` — matches the default
 `homeserver_url` in the app's Phase 0 login screen.
 

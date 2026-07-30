@@ -25,6 +25,14 @@ the desktop contract. Both platforms remain gated behind the default-off
 graceful-failure contract; live-homeserver manual verification was not
 recorded.
 
+**Closure evidence is now automated but not yet claimed.** The local Synapse
+harness enables URL previews against a deterministic OpenGraph target on its
+isolated Docker network. CI exercises the authenticated desktop core and
+authenticated web-companion route against that real Synapse instance, while a
+frontend regression test proves duplicate consumers reuse one TanStack Query
+fetch. Keep this spec at in-progress until a green CI run records both live
+transports; repository/mock tests alone are not a live-homeserver verdict.
+
 :::note[Historical baseline]
 The proposal below is retained as the implementation design. Its present-tense
 gap statements describe the state before PR #250.
