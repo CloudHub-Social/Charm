@@ -153,6 +153,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
+  const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
 
   useEffect(
     () => () => {
@@ -248,22 +249,30 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleRegistrationStep(initialStep: RegistrationStep, expectedOperation?: number) {
     let step = initialStep;
-    for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
-      if (
-        expectedOperation !== undefined &&
-        registrationEmailOperationRef.current !== expectedOperation
-      ) {
-        return;
+    try {
+      for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+        if (
+          expectedOperation !== undefined &&
+          registrationEmailOperationRef.current !== expectedOperation
+        ) {
+          return;
+        }
+        registrationAttemptRef.current = step.attempt_id;
+        if (step.next_stage !== "m.login.dummy") break;
+        if (automaticStages >= 8) {
+          throw new Error("Homeserver repeated an automatic registration stage; start again.");
+        }
+        // UIA stages are ordered and stateful, so each automatic dummy response
+        // must use the challenge returned by the previous request.
+        // oxlint-disable-next-line no-await-in-loop
+        step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
-      registrationAttemptRef.current = step.attempt_id;
-      if (step.next_stage !== "m.login.dummy") break;
-      if (automaticStages >= 8) {
-        throw new Error("Homeserver repeated an automatic registration stage; start again.");
-      }
-      // UIA stages are ordered and stateful, so each automatic dummy response
-      // must use the challenge returned by the previous request.
-      // oxlint-disable-next-line no-await-in-loop
-      step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
+    } catch (error) {
+      const attemptId = registrationAttemptRef.current;
+      registrationAttemptRef.current = null;
+      setRegistrationStep(undefined);
+      if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
+      throw error;
     }
     if (
       expectedOperation !== undefined &&
@@ -400,6 +409,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleRequestPasswordReset(e: React.FormEvent) {
     e.preventDefault();
     const operation = ++passwordResetOperationRef.current;
+    if (passwordResetCancellationRef.current) {
+      await passwordResetCancellationRef.current;
+    }
+    if (passwordResetOperationRef.current !== operation) return;
     setPending(true);
     setError(null);
     let challenge: PasswordResetChallenge;
@@ -458,7 +471,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
-    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    passwordResetCancellationRef.current = cancellation;
+    void cancellation.finally(() => {
+      if (passwordResetCancellationRef.current === cancellation) {
+        passwordResetCancellationRef.current = undefined;
+      }
+    });
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);

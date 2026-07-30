@@ -107,6 +107,10 @@ pub struct MatrixState {
     /// idle challenge.
     pub(crate) pending_registration_cancel:
         std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+    /// Process-scoped, non-raw-address quota for registration verification
+    /// mail. This survives cancellation/restart of an individual UIA attempt
+    /// so a compromised renderer cannot bypass the per-attempt resend cap.
+    pub(crate) registration_mail_quota: Mutex<auth::RegistrationMailQuota>,
     /// One unauthenticated password-reset attempt owned by this app session.
     /// The email validation session and client secret remain in Rust; the
     /// frontend receives only an opaque Charm attempt id and whether the
@@ -367,6 +371,7 @@ impl Default for MatrixState {
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
+            registration_mail_quota: Mutex::default(),
             pending_password_reset: Mutex::default(),
             pending_password_reset_cancel: std::sync::Mutex::default(),
             pending_qr_check_code: Mutex::default(),

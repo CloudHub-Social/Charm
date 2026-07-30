@@ -21,6 +21,7 @@ use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
@@ -82,6 +83,9 @@ pub struct RegisterRequest {
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
+const REGISTRATION_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const REGISTRATION_MAILS_PER_ADDRESS: usize = 3;
+const REGISTRATION_MAILS_PER_PROCESS: usize = 12;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
 pub(crate) struct PendingRegistration {
@@ -95,6 +99,12 @@ pub(crate) struct PendingRegistration {
     email_send_attempt: u32,
     email_retry_not_before: Option<std::time::Instant>,
     created_at: std::time::Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct RegistrationMailQuota {
+    by_address: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    all: Vec<std::time::Instant>,
 }
 
 struct PendingRegistrationEmail {
@@ -1100,6 +1110,21 @@ pub async fn request_registration_email(
     pending.email_send_attempt = send_attempt;
     pending.email_retry_not_before =
         Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
+    if let Err(error) = check_registration_mail_quota(&state, &address_key).await {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err(error);
+    }
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
         delivery_email.clone(),
@@ -1185,6 +1210,35 @@ pub async fn request_registration_email(
     }
     reservation.defuse();
     Ok(RegistrationEmailChallenge { requires_token })
+}
+
+async fn check_registration_mail_quota(
+    state: &MatrixState,
+    address_key: &str,
+) -> Result<(), String> {
+    let cutoff = std::time::Instant::now() - REGISTRATION_MAIL_QUOTA_WINDOW;
+    let now = std::time::Instant::now();
+    let digest = Sha256::digest(address_key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut quota = state.registration_mail_quota.lock().await;
+    quota.all.retain(|at| *at >= cutoff);
+    quota.by_address.retain(|_, attempts| {
+        attempts.retain(|at| *at >= cutoff);
+        !attempts.is_empty()
+    });
+    if quota.all.len() >= REGISTRATION_MAILS_PER_PROCESS
+        || quota
+            .by_address
+            .get(&digest)
+            .is_some_and(|attempts| attempts.len() >= REGISTRATION_MAILS_PER_ADDRESS)
+    {
+        return Err("too many registration emails; try again later".to_string());
+    }
+    quota.all.push(now);
+    quota.by_address.entry(digest).or_default().push(now);
+    Ok(())
 }
 
 async fn restore_pending_registration_if_current(
