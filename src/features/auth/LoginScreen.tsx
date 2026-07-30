@@ -18,7 +18,7 @@ import {
   type RegistrationAuthResponse,
   type RegistrationStep,
 } from "@/lib/matrix";
-import { useFlag } from "@/featureFlags";
+import { useFeatureFlagsInitialized, useFlag } from "@/featureFlags";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -66,6 +66,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
+  const featureFlagsInitialized = useFeatureFlagsInitialized();
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -132,6 +133,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (mode === "register" && !featureFlagsInitialized) return;
     setPending(true);
     setError(null);
     try {
@@ -294,12 +296,18 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       )}
                       <Button
                         type="button"
-                        disabled={pending}
+                        disabled={pending || registrationStep.policies.length === 0}
                         onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
                       >
                         {pending && <Loader2 className="animate-spin" />}
                         Accept and continue
                       </Button>
+                      {registrationStep.policies.length === 0 && (
+                        <p role="alert" className="text-xs text-destructive">
+                          This homeserver did not provide terms that Charm can display. Cancel and
+                          use the homeserver's registration page.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -336,7 +344,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   <Button
                     type="button"
                     variant="ghost"
-                    disabled={pending}
                     onClick={handleCancelRegistration}
                   >
                     Cancel account creation
@@ -388,7 +395,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     {error && <p className="text-xs text-destructive">{error}</p>}
                   </div>
 
-                  <Button type="submit" disabled={pending || ssoPending} className="w-full">
+                  <Button
+                    type="submit"
+                    disabled={
+                      pending ||
+                      ssoPending ||
+                      (mode === "register" && !featureFlagsInitialized)
+                    }
+                    className="w-full"
+                  >
                     {pending && <Loader2 className="animate-spin" />}
                     {pending
                       ? mode === "sign-in"

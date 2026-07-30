@@ -22,7 +22,7 @@ const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso"
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
 const discoverHomeserver = vi.fn().mockReturnValue(new Promise(() => {}));
-const featureFlags = vi.hoisted(() => ({ registrationEnabled: false }));
+const featureFlags = vi.hoisted(() => ({ registrationEnabled: false, initialized: true }));
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: () => getCurrent(),
@@ -47,6 +47,7 @@ vi.mock("@/lib/matrix", () => ({
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => key === "registration_and_recovery" && featureFlags.registrationEnabled,
+  useFeatureFlagsInitialized: () => featureFlags.initialized,
 }));
 
 vi.mock("./QrLoginScreen", () => ({
@@ -79,6 +80,7 @@ describe("LoginScreen SSO callback handling", () => {
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
     featureFlags.registrationEnabled = false;
+    featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
     cancelSsoLogin.mockClear().mockResolvedValue(undefined);

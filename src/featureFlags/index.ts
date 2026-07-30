@@ -24,6 +24,7 @@ let overridesCache: FeatureFlagOverrides = {};
 // to restore after a later overlapping mutation fails.
 let persistedOverridesCache: FeatureFlagOverrides = {};
 let remoteCache: FeatureFlagRemote = {};
+let initialized = false;
 let cacheMutationId = 0;
 const listeners = new Set<() => void>();
 
@@ -87,6 +88,8 @@ export async function initializeFeatureFlags(): Promise<void> {
   }
   emit();
   startRemoteRefresh();
+  initialized = true;
+  emit();
 }
 
 /**
@@ -109,6 +112,12 @@ export function useFlag(key: FeatureFlagKey): boolean {
     reportFlagEvaluation(key, value);
   }, [key, value]);
   return value;
+}
+
+/** True once persisted/remote cached flag state has been reconciled. */
+export function useFeatureFlagsInitialized(): boolean {
+  const snapshot = () => initialized;
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
@@ -221,6 +230,7 @@ export const featureFlagTestHooks = {
     overridesCache = {};
     persistedOverridesCache = {};
     remoteCache = {};
+    initialized = false;
     cacheMutationId = 0;
     refreshStarted = false;
     refreshInFlight = false;
@@ -230,6 +240,7 @@ export const featureFlagTestHooks = {
     cacheMutationId += 1;
     overridesCache = overrides;
     persistedOverridesCache = overrides;
+    initialized = true;
     emit();
   },
   setRemoteCache(remote: FeatureFlagRemote) {
