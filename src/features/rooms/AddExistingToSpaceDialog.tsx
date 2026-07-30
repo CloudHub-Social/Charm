@@ -17,7 +17,7 @@ interface AddExistingToSpaceDialogProps {
    * list is a separately-fetched `/hierarchy` snapshot, not something Matrix
    * sync keeps current) refresh immediately instead of only after the user
    * navigates away and back. */
-  onAdded?: () => void;
+  onAdded?: (childRoomId: string) => void;
 }
 
 /** Spec 63's "Add Existing" flow: file an already-joined room or space under
@@ -90,7 +90,7 @@ export function AddExistingToSpaceDialog({
       // while pending, but the parent could still swap `spaceId` directly) —
       // don't close/notify on behalf of a target that's no longer showing.
       if (latestSpaceIdRef.current !== requestSpaceId) return;
-      onAdded?.();
+      onAdded?.(childRoomId);
       handleClose(false);
     } catch (err) {
       if (latestSpaceIdRef.current !== requestSpaceId) return;

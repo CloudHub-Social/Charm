@@ -55,10 +55,13 @@ export function SpaceChildrenSettings({
     setPendingId(child.room_id);
     try {
       await removeSpaceChild(spaceId, child.room_id);
+      queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) =>
+        current.filter((candidate) => candidate.room_id !== child.room_id),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       await refresh().catch(() => {});
+    } finally {
       onChanged?.();
       setPendingId(null);
     }
@@ -126,8 +129,19 @@ export function SpaceChildrenSettings({
         rooms={rooms}
         excludedIds={excludedIds}
         onOpenChange={setAddOpen}
-        onAdded={() => {
-          void refresh();
+        onAdded={(childRoomId) => {
+          const room = rooms.find((candidate) => candidate.room_id === childRoomId);
+          queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) => [
+            ...current.filter((candidate) => candidate.room_id !== childRoomId),
+            {
+              room_id: childRoomId,
+              name: room?.name ?? null,
+              topic: null,
+              num_joined_members: 0,
+              join_rule: "other",
+              is_space: room?.is_space ?? false,
+            },
+          ]);
           onChanged?.();
         }}
       />

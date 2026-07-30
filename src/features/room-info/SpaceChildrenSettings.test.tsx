@@ -57,7 +57,7 @@ describe("SpaceChildrenSettings", () => {
     await waitFor(() =>
       expect(removeSpaceChild).toHaveBeenCalledWith("!space:example.org", "!child:example.org"),
     );
-    await waitFor(() => expect(listManageableSpaceChildren).toHaveBeenCalledTimes(2));
+    expect(listManageableSpaceChildren).toHaveBeenCalledOnce();
     expect(onChanged).toHaveBeenCalledOnce();
     expect(await screen.findByText("This space has no published children.")).toBeInTheDocument();
   });
