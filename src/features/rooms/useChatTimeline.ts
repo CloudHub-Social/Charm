@@ -394,6 +394,27 @@ export function useChatTimeline(
     }
   }
 
+  async function hydrateCurrentTimeline(): Promise<boolean> {
+    if (!room) return false;
+    const targetRoomId = room.room_id;
+    const generation = visitGenerationRef.current;
+    try {
+      // Deliberately preserve the backend's current live/focused timeline and
+      // the viewport anchors. This refresh only asks that current snapshot to
+      // include newly enabled item kinds; it must not behave like Jump to
+      // Present.
+      const page = await getTimelinePage(targetRoomId);
+      if (visitGenerationRef.current !== generation) return false;
+      applyTimelineItems(page.messages, page.items);
+      nextCursorRef.current = page.next_cursor;
+      setHasMore(page.next_cursor !== null);
+      return true;
+    } catch (err) {
+      if (visitGenerationRef.current === generation) logAndIgnore(err);
+      return false;
+    }
+  }
+
   useEffect(() => {
     const listenerRoomId = room?.room_id;
     if (!listenerRoomId) return undefined;
@@ -680,6 +701,7 @@ export function useChatTimeline(
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    hydrateCurrentTimeline,
     resetToLive,
   };
 }

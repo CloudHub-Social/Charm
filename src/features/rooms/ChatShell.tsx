@@ -291,6 +291,7 @@ export function ChatShell({
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    hydrateCurrentTimeline,
     resetToLive,
   } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
   const noticeBuckets = useMemo(
@@ -304,6 +305,9 @@ export function ChatShell({
     noticeBuckets.beforeMessage.size > 0 || noticeBuckets.trailing.length > 0;
   const noticeOnlyScrollerRef = useRef<HTMLDivElement>(null);
   const noticeOnlyPinnedRef = useRef(true);
+  useEffect(() => {
+    noticeOnlyPinnedRef.current = true;
+  }, [roomId]);
   useEffect(() => {
     const scroller = noticeOnlyScrollerRef.current;
     if (messages.length === 0 && hasVisibleNotices && scroller && noticeOnlyPinnedRef.current) {
@@ -377,12 +381,28 @@ export function ChatShell({
     const wasEnabled = previousTimelineStateEventsEnabledRef.current;
     previousTimelineStateEventsEnabledRef.current = timelineStateEventsEnabled;
     if (!wasEnabled && timelineStateEventsEnabled && room) {
-      void resetToLive();
+      void hydrateCurrentTimeline();
     }
-    // resetToLive closes over the current room visit generation; the flag
+    // hydrateCurrentTimeline closes over the current room visit generation; the flag
     // transition and room id are the only activation inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.room_id, timelineStateEventsEnabled]);
+  const trailingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      room &&
+      messages.length > 0 &&
+      noticeBuckets.trailing.length > 0 &&
+      trailingNoticeInitialScrollRoomRef.current !== room.room_id
+    ) {
+      trailingNoticeInitialScrollRoomRef.current = room.room_id;
+      const frame = requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).
