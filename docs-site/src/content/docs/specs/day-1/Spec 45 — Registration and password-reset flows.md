@@ -39,10 +39,12 @@ Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
 twenty-minute attempt, supports both email-link and homeserver-hosted token
 submission, and completes `/account/password` with `m.login.email.identity`.
 Cancellation, expiry, and superseding requests cancel in-flight confirmation;
-the challenge DTO exposes neither the `sid` nor client secret. A returned direct
-submission URL must match the resolved homeserver origin and is sent with
-redirects disabled, preventing the command from becoming a server-directed SSRF
-primitive. Request failures remain deliberately generic in the UI.
+the challenge DTO exposes neither the `sid` nor client secret. A returned
+submission URL may use the homeserver origin or a delegated identity-service
+HTTPS origin. Charm resolves it once, rejects non-public delegated addresses,
+pins the approved addresses, and disables redirects; explicitly configured
+same-origin localhost or literal-IP development servers remain supported.
+Request failures remain deliberately generic in the UI.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
