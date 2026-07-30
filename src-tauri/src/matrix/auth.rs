@@ -699,7 +699,7 @@ pub async fn register(
     let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
-    finish_registration(app, &state, client, temp_key).await
+    finish_registration(app, &state, client, temp_key, None).await
 }
 
 async fn finish_registration(
@@ -707,6 +707,7 @@ async fn finish_registration(
     state: &MatrixState,
     client: Client,
     temp_key: String,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<LoginResponse, String> {
     let session = client
         .matrix_auth()
@@ -718,6 +719,9 @@ async fn finish_registration(
     // See `login`'s identical guard and its doc comment on
     // `MatrixState::login_completion_lock`.
     let _completion_guard = state.login_completion_lock.lock().await;
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err("registration cancelled".to_string());
+    }
 
     // See `login`'s identical capture-and-restore-on-failure rationale.
     let previous_client = state.client.lock().await.clone();
@@ -740,6 +744,15 @@ async fn finish_registration(
             }
         }
         return Err(e.into());
+    }
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        let _ = persistence::clear_session(&account_key);
+        let _ = persistence::clear_oauth_session(&account_key);
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
+        return Err("registration cancelled".to_string());
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -792,7 +805,7 @@ pub async fn begin_registration(
     match client.matrix_auth().register(register_request).await {
         Ok(_) => {
             let cleanup_key = store_key.clone();
-            match finish_registration(app.clone(), &state, client, store_key).await {
+            match finish_registration(app.clone(), &state, client, store_key, None).await {
                 Ok(session) => Ok(RegistrationStep::Complete { session }),
                 Err(error) => {
                     let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
@@ -1094,14 +1107,29 @@ pub async fn continue_registration(
             return Err("registration cancelled".to_string());
         }
     };
+    if cancellation.is_cancelled() || !registration_cancellation_is_current(&state, &attempt_id) {
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
     match registration_result {
         Ok(_) => {
-            clear_registration_cancellation(&state, &attempt_id);
             let cleanup_key = pending.store_key.clone();
-            match finish_registration(app.clone(), &state, pending.client, pending.store_key).await
+            match finish_registration(
+                app.clone(),
+                &state,
+                pending.client,
+                pending.store_key,
+                Some(&cancellation),
+            )
+            .await
             {
-                Ok(session) => Ok(RegistrationStep::Complete { session }),
+                Ok(session) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Ok(RegistrationStep::Complete { session })
+                }
                 Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
                     let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
                     Err(error)
                 }
@@ -1147,24 +1175,28 @@ pub async fn continue_registration(
                     }
                 }
             } else {
-                match restore_pending_registration_if_current(
-                    &state,
-                    &attempt_id,
-                    &cancellation,
-                    pending,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        reservation.defuse();
-                        Err("registration request failed; retry this stage".to_string())
+                let message = safe_registration_error(&error);
+                if registration_error_allows_retry(&error) {
+                    match restore_pending_registration_if_current(
+                        &state,
+                        &attempt_id,
+                        &cancellation,
+                        pending,
+                    )
+                    .await
+                    {
+                        Ok(()) => reservation.defuse(),
+                        Err(pending) => {
+                            discard_pending_registration(&app, pending);
+                            clear_registration_cancellation(&state, &attempt_id);
+                            return Err("registration cancelled".to_string());
+                        }
                     }
-                    Err(pending) => {
-                        discard_pending_registration(&app, pending);
-                        clear_registration_cancellation(&state, &attempt_id);
-                        Err("registration cancelled".to_string())
-                    }
+                } else {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
                 }
+                Err(message)
             }
         }
     }
@@ -1770,6 +1802,13 @@ fn safe_registration_error(error: &matrix_sdk::Error) -> String {
     }
 }
 
+fn registration_error_allows_retry(error: &matrix_sdk::Error) -> bool {
+    matches!(
+        error.client_api_error_kind(),
+        None | Some(ErrorKind::LimitExceeded(_))
+    )
+}
+
 fn registration_request(
     request: &RegisterRequest,
     auth: Option<AuthData>,
@@ -1818,19 +1857,15 @@ async fn registration_auth_data(
     uiaa: &UiaaInfo,
     email_validation: Option<&mut PendingRegistrationEmail>,
 ) -> Result<AuthData, String> {
-    let session = uiaa
-        .session
-        .clone()
-        .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
     match response {
         RegistrationAuthResponse::AcceptTerms if expected_stage == AuthType::Terms.as_str() => {
             let mut terms = Terms::new();
-            terms.session = Some(session);
+            terms.session = uiaa.session.clone();
             Ok(AuthData::Terms(terms))
         }
         RegistrationAuthResponse::CompleteDummy if expected_stage == AuthType::Dummy.as_str() => {
             let mut dummy = Dummy::new();
-            dummy.session = Some(session);
+            dummy.session = uiaa.session.clone();
             Ok(AuthData::Dummy(dummy))
         }
         RegistrationAuthResponse::CompleteEmail { token }
@@ -1870,6 +1905,10 @@ async fn registration_auth_data(
             Ok(AuthData::EmailIdentity(email_identity))
         }
         RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
+            let session = uiaa
+                .session
+                .clone()
+                .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
             Ok(AuthData::fallback_acknowledgement(session))
         }
         _ => Err(format!(
@@ -1883,12 +1922,18 @@ fn registration_challenge(
     client: &Client,
     uiaa: &UiaaInfo,
 ) -> Result<RegistrationStep, String> {
-    let session = uiaa
-        .session
-        .clone()
-        .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
     let next_stage = next_registration_stage(uiaa)?;
-    let fallback_url = registration_fallback_url(client, &next_stage, &session)?;
+    let fallback_url = match uiaa.session.as_deref() {
+        Some(session) => registration_fallback_url(client, &next_stage, session)?,
+        None if matches!(
+            next_stage.as_str(),
+            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+        ) =>
+        {
+            String::new()
+        }
+        None => return Err("homeserver omitted the registration UIA session".to_string()),
+    };
     let policies = sanitized_registration_policies(uiaa);
     Ok(RegistrationStep::Challenge {
         attempt_id: attempt_id.to_owned(),
@@ -2279,6 +2324,29 @@ mod registration_uia_tests {
         )
         .await
         .expect("a retry reuses the completed email validation");
+    }
+
+    #[test]
+    fn accepts_sessionless_direct_terms_and_dummy_auth() {
+        let terms_info = uiaa(json!({"flows": [{"stages": ["m.login.terms"]}]}));
+        let dummy_info = uiaa(json!({"flows": [{"stages": ["m.login.dummy"]}]}));
+
+        assert!(matches!(
+            registration_auth_data(
+                RegistrationAuthResponse::AcceptTerms,
+                AuthType::Terms.as_str(),
+                &terms_info,
+            ),
+            Ok(AuthData::Terms(terms)) if terms.session.is_none()
+        ));
+        assert!(matches!(
+            registration_auth_data(
+                RegistrationAuthResponse::CompleteDummy,
+                AuthType::Dummy.as_str(),
+                &dummy_info,
+            ),
+            Ok(AuthData::Dummy(dummy)) if dummy.session.is_none()
+        ));
     }
 
     #[test]
