@@ -217,7 +217,7 @@ impl FeatureFlagKey {
                 "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave)."
             }
             FeatureFlagKey::SpaceHierarchyReorganization => {
-                "Create spaces inside other spaces and reorganize their canonical hierarchy."
+                "Create and reorganize nested spaces, and open their space-management settings."
             }
             FeatureFlagKey::MessagePinning => {
                 "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge."

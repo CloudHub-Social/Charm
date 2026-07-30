@@ -50,9 +50,10 @@ lifetime — dropping the prior value first so a stale permission from an
 earlier open never stays visible mid-refetch — and disables the gated menu
 item until a fresh, permitted result lands — so a member without the
 required power level never sees this action in the rail's context menu.
-`RoomList`'s own hierarchy-row `Remove from space` action (a separate surface)
-now has the same fresh parent-space permission gate in its focused follow-up
-PR; it remains disabled while permissions load or when the lookup fails.
+`RoomList`'s own hierarchy-row `Remove from space` action is a separate surface.
+Its focused Spec 63 follow-up must add the same fresh parent-space permission
+gate, disabled while permissions load or fail, before this spec can be marked
+shipped; this settings-entry PR does not implement that gate.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy
