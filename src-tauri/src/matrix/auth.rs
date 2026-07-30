@@ -837,6 +837,10 @@ pub async fn continue_registration(
         cancel_pending_registration_for_superseding_auth(&app, &state).await;
         return Err(error);
     }
+    // Registration completion relocates the temporary crypto store. Keep
+    // the startup orphan-store sweep out for the whole continuation so it
+    // cannot delete that store between UIA submission and relocation.
+    let _restore_store_guard = restore_store_lock().lock().await;
     let cancellation = state
         .pending_registration_cancel
         .lock()
