@@ -19,10 +19,18 @@ interface EditHistoryDialogProps {
 }
 
 function formatTimestamp(timestampMs: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(timestampMs));
+  const timestamp = new Date(timestampMs);
+  if (!Number.isFinite(timestampMs) || Number.isNaN(timestamp.getTime())) {
+    return "Unknown time";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(timestamp);
+  } catch {
+    return "Unknown time";
+  }
 }
 
 /** Read-only edit history viewer: the original message followed by each

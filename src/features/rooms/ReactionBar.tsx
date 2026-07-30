@@ -46,6 +46,7 @@ export function ReactionBar({
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
   const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
   const [modalKey, setModalKeyState] = useState<string | null>(null);
+  const [tooltipKey, setTooltipKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
   // by tooltip close/refetch.
@@ -59,9 +60,14 @@ export function ReactionBar({
   // read from. The ref is updated in the same tick as the click, before
   // React's batched re-render.
   const modalKeyRef = useRef<string | null>(null);
+  const tooltipKeyRef = useRef<string | null>(null);
   function setModalKey(key: string | null) {
     modalKeyRef.current = key;
     setModalKeyState(key);
+  }
+  function setTooltipKey(key: string | null) {
+    tooltipKeyRef.current = key;
+    setTooltipKeyState(key);
   }
   // Records the reaction `count` the cache entry for a given key was last
   // fetched at, so the modal-open effect below can tell "still fresh" from
@@ -95,6 +101,7 @@ export function ReactionBar({
       })
       .catch(() => {
         if (requestGenerationRef.current[key] !== generation) return;
+        fetchedAtCountRef.current[key] = reaction.count;
         setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
       })
       .finally(() => {
@@ -133,22 +140,36 @@ export function ReactionBar({
   }
 
   const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
+  const tooltipReaction = reactions.find((reaction) => reaction.key === tooltipKey);
 
-  // Live-refreshes the modal's reactor list while it's open: a reaction
-  // arriving/leaving mid-view changes `count` without necessarily closing
-  // the modal, and the cache (keyed by emoji alone, not count — see
-  // `loadDetails`) wouldn't otherwise notice the underlying data went
-  // stale. Force-refetches whenever the count drifts from what the cached
-  // entry was actually fetched at.
+  // Live-refreshes every visible reactor list while it is open. A reaction
+  // arriving/leaving changes `count` without necessarily closing either the
+  // hover/focus tooltip or modal, and the emoji-keyed cache would otherwise
+  // keep showing the previous reactor set.
   useEffect(() => {
-    if (!modalReaction) return;
-    if (fetchedAtCountRef.current[modalReaction.key] === modalReaction.count) return;
-    loadDetails(modalReaction, { force: true });
+    const activeReactions = [modalReaction, tooltipReaction].filter(
+      (reaction): reaction is ReactionGroup => reaction !== undefined,
+    );
+    const refreshedKeys = new Set<string>();
+    for (const reaction of activeReactions) {
+      if (refreshedKeys.has(reaction.key)) continue;
+      refreshedKeys.add(reaction.key);
+      if (inFlightKeysRef.current.has(reaction.key)) continue;
+      if (fetchedAtCountRef.current[reaction.key] === reaction.count) continue;
+      loadDetails(reaction, { force: true });
+    }
     // loadDetails is stable across renders (recreated each render but with
     // the same closed-over deps as this effect); including it would just
     // re-run this effect every render without changing behavior.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modalReaction?.key, modalReaction?.count]);
+  }, [
+    modalReaction?.key,
+    modalReaction?.count,
+    tooltipReaction?.key,
+    tooltipReaction?.count,
+    detailsByKey,
+    detailErrorsByKey,
+  ]);
 
   if (reactions.length === 0) {
     return null;
@@ -184,7 +205,16 @@ export function ReactionBar({
     const detailError = detailErrorsByKey[reaction.key];
     return (
       <Fragment key={reaction.key}>
-        <Tooltip onOpenChange={(open) => !open && clearDetails(reaction.key)}>
+        <Tooltip
+          onOpenChange={(open) => {
+            if (open) {
+              setTooltipKey(reaction.key);
+              return;
+            }
+            if (tooltipKeyRef.current === reaction.key) setTooltipKey(null);
+            clearDetails(reaction.key);
+          }}
+        >
           <TooltipTrigger asChild>{chip}</TooltipTrigger>
           <TooltipContent>
             {detailError ? (
@@ -202,17 +232,15 @@ export function ReactionBar({
             )}
           </TooltipContent>
         </Tooltip>
-        {reaction.count > TOOLTIP_NAME_LIMIT && (
-          <button
-            type="button"
-            aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
-            disabled={disabled}
-            className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-            onClick={() => setModalKey(reaction.key)}
-          >
-            View all {reaction.count}
-          </button>
-        )}
+        <button
+          type="button"
+          aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
+          disabled={disabled}
+          className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+          onClick={() => setModalKey(reaction.key)}
+        >
+          {reaction.count > TOOLTIP_NAME_LIMIT ? `View all ${reaction.count}` : "View reactors"}
+        </button>
       </Fragment>
     );
   });

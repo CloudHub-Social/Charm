@@ -48,6 +48,30 @@ describe("EditHistoryDialog", () => {
     expect(screen.getByText("Edit 1")).toBeInTheDocument();
   });
 
+  it("renders a safe fallback for an out-of-range federated timestamp", async () => {
+    getEditHistory.mockResolvedValue([
+      {
+        event_id: "$orig:localhost",
+        body: "hello",
+        formatted_body: null,
+        sender: "@alice:localhost",
+        origin_server_ts: Number.MAX_SAFE_INTEGER,
+      },
+    ]);
+
+    render(
+      <EditHistoryDialog
+        open
+        roomId="!room:localhost"
+        eventId="$orig:localhost"
+        onOpenChange={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("Unknown time")).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+
   it("shows an error message when the fetch fails", async () => {
     getEditHistory.mockRejectedValue(new Error("boom"));
 
