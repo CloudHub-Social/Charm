@@ -74,7 +74,7 @@
   {
     "key": "space_hierarchy_reorganization",
     "default": false,
-    "description": "Create spaces inside other spaces and reorganize their canonical hierarchy.",
+    "description": "Create and reorganize nested spaces, and open their space-management settings.",
     "owner": "Spec 33 (space hierarchy reorganization)"
   },
   {
