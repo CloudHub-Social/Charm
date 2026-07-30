@@ -18,7 +18,7 @@ import {
   type RegistrationAuthResponse,
   type RegistrationStep,
 } from "@/lib/matrix";
-import { useFeatureFlagsInitialized, useFlag } from "@/featureFlags";
+import { useFlag } from "@/featureFlags";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -34,6 +34,7 @@ const TERMINAL_REGISTRATION_ERRORS = [
   "registration attempt is no longer current",
   "no registration is in progress",
   "registration cancelled",
+  "registration and recovery is not enabled",
 ];
 
 function isTerminalRegistrationError(message: string): boolean {
@@ -80,7 +81,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
-  const featureFlagsInitialized = useFeatureFlagsInitialized();
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -147,7 +147,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (mode === "register" && !featureFlagsInitialized) return;
     setPending(true);
     setError(null);
     try {
@@ -426,9 +425,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
                   <Button
                     type="submit"
-                    disabled={
-                      pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
-                    }
+                    disabled={pending || ssoPending}
                     className="w-full"
                   >
                     {pending && <Loader2 className="animate-spin" />}
