@@ -1298,10 +1298,6 @@ pub async fn continue_registration(
         cancel_pending_registration_for_superseding_auth(&app, &state).await;
         return Err(error);
     }
-    // Registration completion relocates the temporary crypto store. Keep
-    // the startup orphan-store sweep out for the whole continuation so it
-    // cannot delete that store between UIA submission and relocation.
-    let _restore_store_guard = restore_store_lock().lock().await;
     let cancellation = state
         .pending_registration_cancel
         .lock()
@@ -1310,6 +1306,14 @@ pub async fn continue_registration(
         .filter(|(current_id, _)| current_id == &attempt_id)
         .map(|(_, cancellation)| cancellation.clone())
         .ok_or_else(|| "registration attempt is no longer current".to_string())?;
+    // Cancellation must remain responsive while another login/restore owns
+    // this process-wide store lock.
+    let _restore_store_guard = tokio::select! {
+        guard = restore_store_lock().lock() => guard,
+        () = cancellation.cancelled() => {
+            return Err("registration cancelled".to_string());
+        }
+    };
     let mut pending_guard = state.pending_registration.lock().await;
     let Some(current) = pending_guard.as_ref() else {
         return Err("no registration is in progress".to_string());
@@ -1465,6 +1469,7 @@ pub async fn continue_registration(
                 } else {
                     discard_pending_registration(&app, pending);
                     clear_registration_cancellation(&state, &attempt_id);
+                    return Err(format!("registration ended: {message}"));
                 }
                 Err(message)
             }
@@ -1853,6 +1858,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
