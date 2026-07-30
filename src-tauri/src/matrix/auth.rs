@@ -1960,7 +1960,9 @@ fn registration_challenge(
         Some(session) => registration_fallback_url(client, &next_stage, session)?,
         None if matches!(
             next_stage.as_str(),
-            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+            stage if stage == AuthType::Terms.as_str()
+                || stage == AuthType::Dummy.as_str()
+                || stage == AuthType::EmailIdentity.as_str()
         ) =>
         {
             String::new()

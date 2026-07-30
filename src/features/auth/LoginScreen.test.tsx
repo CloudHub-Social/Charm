@@ -426,6 +426,42 @@ describe("LoginScreen registration UIA", () => {
     });
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
+
+  it("ignores a registration email response after account creation is cancelled", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-email",
+      completed: [],
+      flows: [{ stages: ["m.login.email.identity"] }],
+      next_stage: "m.login.email.identity",
+      fallback_url: "",
+      policies: [],
+    });
+    let resolveEmail: ((challenge: { requires_token: boolean }) => void) | undefined;
+    requestRegistrationEmail.mockReturnValue(
+      new Promise((resolve) => {
+        resolveEmail = resolve;
+      }),
+    );
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send verification email" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel account creation" }));
+
+    await act(async () => {
+      resolveEmail?.({ requires_token: true });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByLabelText("Email token")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeVisible();
+  });
 });
 
 describe("LoginScreen login choices", () => {
