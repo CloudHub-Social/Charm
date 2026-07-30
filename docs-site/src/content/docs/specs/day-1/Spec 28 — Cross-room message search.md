@@ -68,7 +68,9 @@ connection: the SDK owns that schema and migration lifecycle.
 - Index fields: room ID, event ID, sender, plain-text body, origin timestamp.
   Normalize formatted Matrix content with Ruma's sanitizer and
   `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
-  stripper or index hidden/disallowed elements.
+  stripper or index hidden/disallowed elements. Remove the descendants of
+  `data-mx-spoiler` elements before extraction, so concealed text cannot appear in
+  either matches or plain snippets. Cross-spec tests must cover Spec 58 spoilers.
 - Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
   undecryptable placeholders, media filenames/captions, reactions, state events, or
   untrusted raw HTML.
@@ -85,11 +87,13 @@ connection: the SDK owns that schema and migration lifecycle.
   content plus every valid edit's event ID, `origin_server_ts`, and optional
   searchable body/msgtype. Determine the latest non-redacted replacement with the
   same timestamp ordering and deterministic event-ID tie-break used by the
-  timeline, never local arrival order. Redacting the original deletes its visible
-  row; redacting an edit removes that candidate and atomically recomputes the row
-  from the preceding valid edit or original content. A late edit/redaction,
-  backfill, or replay therefore converges without retaining stale or redacted
-  replacement text.
+  timeline, never local arrival order. Redacting the original writes a persistent
+  tombstone, deletes the visible row, and purges every original/edit plaintext body
+  in provenance; later edits and replay must remain suppressed by that tombstone.
+  Redacting an edit removes that candidate and atomically recomputes the row from
+  the preceding valid edit or original content only when the original is not
+  tombstoned. A late edit/redaction, backfill, or replay therefore converges without
+  retaining or resurrecting stale or redacted text.
 - Backfill: on first login (or first login after this feature ships for existing
   users), index whatever history is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
@@ -105,16 +109,21 @@ connection: the SDK owns that schema and migration lifecycle.
 - The index handle belongs to the authenticated account session. Desktop and web
   use the same core index abstraction but resolve their account roots through their
   existing, separate persistence layers.
-- Derive the index directory from the existing opaque desktop account store key or
-  web session `crypto_store_key`; never
+- Derive the desktop index directory from an opaque hash of the account store key
+  plus Matrix device ID, and the web directory from the session
+  `crypto_store_key`; never
   put an MXID, homeserver, access token, or raw account identifier in a filename.
+  A new/superseding desktop device never reopens a previous device's plaintext
+  index; supersession closes and deletes the old device index.
 - Create the directory and database with owner-only permissions where the platform
   supports Unix modes. The database contains decrypted message text, so the privacy
   model and docs must state that local search expands the plaintext-at-rest surface
   beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
   initial boundary; SQLCipher is not silently implied.
-- Desktop logout continues to preserve a retained account index, but account
-  deactivation must close and delete it. The account-management surface must also
+- Desktop logout may retain only the current Matrix device's index for that same
+  device to reopen; creating a superseding device closes and deletes the prior
+  device index. Account deactivation must close and delete every retained index.
+  The account-management surface must also
   expose an explicit local-data wipe that removes both the retained SDK store and
   search index; its confirmation and Spec 08 documentation disclose the plaintext
   index separately from the encrypted SDK store. Web logout, session expiry, and
@@ -150,7 +159,10 @@ New Tauri/web-server command:
 `search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
 
 The user query is literal text, not raw FTS5 syntax. The backend applies Unicode
-normalization, tokenizes it with the index tokenizer, and safely quotes each token;
+normalization and tokenizes both indexed content and queries with the maintained
+Lindera segmenter before safely quoting each token for FTS5. This is the selected
+CJK-capable strategy (subject to the repository's explicit dependency approval);
+do not fall back to `unicode61` for unsegmented Chinese/Japanese content.
 unmatched quotes and FTS operators are searched as text. Empty-token queries are
 rejected with a typed invalid-query error. Requests are capped server-side at 512
 UTF-8 bytes and `limit` is clamped to 1–100.
@@ -194,7 +206,8 @@ without the user knowing which is which.
   matrix-sdk files.
 - Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
   ordering, stale cursors after writes, leave/forget purge, deactivation wipe, and
-  web-session isolation/cleanup.
+  web-session isolation/cleanup. Include substring word queries within unsegmented
+  Chinese and Japanese sentences, not just whole-message queries.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
   indexed; confirm a never-decrypted (e.g. undecryptable/UTD) event is not indexed
   with garbage ciphertext.
