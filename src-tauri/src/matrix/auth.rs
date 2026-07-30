@@ -1661,7 +1661,7 @@ pub async fn login_with_token(
     }
     reservation.defuse();
     let cleanup_key = store_key.clone();
-    match finish_registration(app.clone(), &state, client, store_key).await {
+    match finish_registration(app.clone(), &state, client, store_key, None).await {
         Ok(session) => Ok(session),
         Err(error) => {
             let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
@@ -1901,7 +1901,7 @@ async fn registration_auth_data(
                 "threepid_creds": credentials,
             }))
             .map_err(|_| "could not confirm registration email".to_string())?;
-            email_identity.session = Some(session);
+            email_identity.session = uiaa.session.clone();
             Ok(AuthData::EmailIdentity(email_identity))
         }
         RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
@@ -2326,8 +2326,8 @@ mod registration_uia_tests {
         .expect("a retry reuses the completed email validation");
     }
 
-    #[test]
-    fn accepts_sessionless_direct_terms_and_dummy_auth() {
+    #[tokio::test]
+    async fn accepts_sessionless_direct_terms_and_dummy_auth() {
         let terms_info = uiaa(json!({"flows": [{"stages": ["m.login.terms"]}]}));
         let dummy_info = uiaa(json!({"flows": [{"stages": ["m.login.dummy"]}]}));
 
@@ -2336,7 +2336,9 @@ mod registration_uia_tests {
                 RegistrationAuthResponse::AcceptTerms,
                 AuthType::Terms.as_str(),
                 &terms_info,
-            ),
+                None,
+            )
+            .await,
             Ok(AuthData::Terms(terms)) if terms.session.is_none()
         ));
         assert!(matches!(
@@ -2344,7 +2346,9 @@ mod registration_uia_tests {
                 RegistrationAuthResponse::CompleteDummy,
                 AuthType::Dummy.as_str(),
                 &dummy_info,
-            ),
+                None,
+            )
+            .await,
             Ok(AuthData::Dummy(dummy)) if dummy.session.is_none()
         ));
     }
