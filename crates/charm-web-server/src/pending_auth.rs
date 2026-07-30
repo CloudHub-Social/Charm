@@ -15,6 +15,7 @@ use charm_lib::matrix::auth::{
     RegisterRequest, RegistrationAuthResponse, RegistrationEmailChallenge, RegistrationFlow,
     RegistrationPolicy, RegistrationStep,
 };
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::ruma::api::client::account::{
     change_password, register, request_password_change_token_via_email,
     request_registration_token_via_email,
@@ -209,11 +210,10 @@ impl PendingAuthStore {
                     crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
                     return Err("registration attempt expired or was cancelled".to_string());
                 }
-                self.finish_attempt(&attempt_id).await;
-                Ok(BeginRegistrationResult::Complete(Box::new(authenticated(
-                    completed,
-                    homeserver_url,
-                ))))
+                Ok(BeginRegistrationResult::Complete {
+                    completed: Box::new(authenticated(completed, homeserver_url)),
+                    attempt_id,
+                })
             }
             Err(error) => {
                 let Some(uiaa) = error.as_uiaa_response().cloned() else {
@@ -267,13 +267,14 @@ impl PendingAuthStore {
             let _ = self.restore_registration(pending).await;
             return Err("registration email is not the current authentication stage".to_string());
         }
-        let normalized_email = email.trim().to_lowercase();
-        if normalized_email.is_empty() {
+        let delivery_email = email.trim().to_owned();
+        let address_key = delivery_email.to_lowercase();
+        if delivery_email.is_empty() {
             let _ = self.restore_registration(pending).await;
             return Err("enter an email address".to_string());
         }
         let (client_secret, send_attempt) = if let Some(validation) = &pending.email {
-            if validation.normalized_email != normalized_email {
+            if validation.normalized_email != address_key {
                 let _ = self.restore_registration(pending).await;
                 return Err(
                     "cancel this registration and start again to use a different email address"
@@ -295,13 +296,13 @@ impl PendingAuthStore {
         } else {
             (ClientSecret::new(), 1)
         };
-        if let Err(error) = self.check_mail_quota(owner, &normalized_email).await {
+        if let Err(error) = self.check_mail_quota(owner, &address_key).await {
             let _ = self.restore_registration(pending).await;
             return Err(error);
         }
         let request = request_registration_token_via_email::v3::Request::new(
             client_secret.clone(),
-            normalized_email.clone(),
+            delivery_email,
             UInt::new_saturating(send_attempt.into()),
         );
         let response = tokio::select! {
@@ -340,7 +341,7 @@ impl PendingAuthStore {
             sid: response.sid,
             submit_url,
             homeserver: pending.client.homeserver(),
-            normalized_email,
+            normalized_email: address_key,
             send_attempt,
             retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
             submitted: false,
@@ -417,10 +418,10 @@ impl PendingAuthStore {
                     self.finish_attempt(attempt_id).await;
                     return Err("registration cancelled".to_string());
                 }
-                self.finish_attempt(attempt_id).await;
-                Ok(ContinueRegistrationResult::Complete(Box::new(
-                    authenticated(completed, homeserver_url),
-                )))
+                Ok(ContinueRegistrationResult::Complete {
+                    completed: Box::new(authenticated(completed, homeserver_url)),
+                    attempt_id: attempt_id.to_owned(),
+                })
             }
             Err(error) => {
                 if let Some(uiaa) = error.as_uiaa_response().cloned() {
@@ -469,6 +470,17 @@ impl PendingAuthStore {
         Ok(())
     }
 
+    pub async fn commit_registration(&self, owner: &str, attempt_id: &str) -> bool {
+        let mut cancellations = self.cancellations.lock().await;
+        let can_commit = cancellations
+            .get(attempt_id)
+            .is_some_and(|(attempt_owner, token)| attempt_owner == owner && !token.is_cancelled());
+        if can_commit {
+            cancellations.remove(attempt_id);
+        }
+        can_commit
+    }
+
     pub async fn request_password_reset(
         &self,
         owner: String,
@@ -476,7 +488,8 @@ impl PendingAuthStore {
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
         let capacity = self.reserve_capacity()?;
-        let normalized_email = self.check_mail_quota(&owner, &email).await?;
+        let delivery_email = email.trim().to_owned();
+        self.check_mail_quota(&owner, &delivery_email).await?;
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
@@ -516,7 +529,7 @@ impl PendingAuthStore {
         let client_secret = ClientSecret::new();
         let request = request_password_change_token_via_email::v3::Request::new(
             client_secret.clone(),
-            normalized_email,
+            delivery_email,
             UInt::new_saturating(1),
         );
         let response_result = tokio::select! {
@@ -529,7 +542,12 @@ impl PendingAuthStore {
             Ok(response) => response,
             Err(_) => {
                 self.finish_attempt(&attempt_id).await;
-                return Err("could not start password reset".to_string());
+                // Keep an unknown-address rejection indistinguishable from a
+                // sent email until the user can prove control of the address.
+                return Ok(PasswordResetChallenge {
+                    attempt_id,
+                    requires_token: false,
+                });
             }
         };
         let submit_url = match sanitize_submit_url(
@@ -678,7 +696,7 @@ impl PendingAuthStore {
         }
     }
 
-    async fn check_mail_quota(&self, owner: &str, email: &str) -> Result<String, String> {
+    async fn check_mail_quota(&self, owner: &str, email: &str) -> Result<(), String> {
         let normalized = email.trim().to_lowercase();
         if normalized.is_empty() {
             return Err("enter an email address".to_string());
@@ -726,7 +744,7 @@ impl PendingAuthStore {
             .or_default()
             .push(now);
         quota.by_address.entry(address_key).or_default().push(now);
-        Ok(normalized)
+        Ok(())
     }
 
     async fn owned_cancellation(
@@ -792,12 +810,18 @@ fn registration_error_allows_retry(error: &matrix_sdk::Error) -> bool {
 
 pub enum BeginRegistrationResult {
     Challenge(RegistrationStep),
-    Complete(Box<AuthenticatedClient>),
+    Complete {
+        completed: Box<AuthenticatedClient>,
+        attempt_id: String,
+    },
 }
 
 pub enum ContinueRegistrationResult {
     Challenge(RegistrationStep),
-    Complete(Box<AuthenticatedClient>),
+    Complete {
+        completed: Box<AuthenticatedClient>,
+        attempt_id: String,
+    },
 }
 
 fn authenticated(
@@ -1201,6 +1225,8 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
@@ -1243,6 +1269,7 @@ async fn complete_password_reset(
     pending
         .client
         .send(request)
+        .with_request_config(RequestConfig::new().skip_auth())
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
@@ -1300,6 +1327,44 @@ mod tests {
             .owned_cancellation("browser-b", "attempt")
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn registration_commit_linearizes_against_cancellation() {
+        let store = PendingAuthStore::default();
+        store.cancellations.lock().await.insert(
+            "winning-attempt".to_owned(),
+            ("browser-a".to_owned(), CancellationToken::new()),
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        store.cancellations.lock().await.insert(
+            "cancelled-attempt".to_owned(),
+            ("browser-a".to_owned(), cancelled),
+        );
+
+        assert!(
+            store
+                .commit_registration("browser-a", "winning-attempt")
+                .await
+        );
+        assert!(
+            !store
+                .commit_registration("browser-a", "cancelled-attempt")
+                .await
+        );
+        assert!(
+            !store
+                .commit_registration("browser-b", "cancelled-attempt")
+                .await
+        );
+        assert!(
+            store
+                .owned_cancellation("browser-a", "winning-attempt")
+                .await
+                .is_err(),
+            "a committed attempt must no longer be cancellable"
+        );
     }
 
     #[test]
@@ -1374,6 +1439,8 @@ mod tests {
             "::1",
             "fc00::1",
             "fe80::1",
+            "fec0::1",
+            "64:ff9b:1::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
         ] {

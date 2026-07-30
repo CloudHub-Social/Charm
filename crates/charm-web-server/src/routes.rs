@@ -1562,6 +1562,36 @@ async fn finish_login(
     token
 }
 
+async fn discard_unpublished_login(state: &AppState, token: &str) {
+    let mut live_crypto = None;
+    if let Some(session) = state.sessions.remove(token).await {
+        live_crypto = session.persisted_crypto.clone();
+        if let Some(handle) = session
+            .sync_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
+        tokio::spawn(async move {
+            let _ = session.client.matrix_auth().logout().await;
+        });
+    }
+    state.sessions.forget_evicted_presence(token);
+    if let Some(persistence) = &state.persistence {
+        let crypto = live_crypto
+            .as_ref()
+            .map(|crypto| (crypto.store_key.as_str(), crypto.passphrase.as_str()));
+        if let Err(error) = persistence.remove(token, crypto).await {
+            tracing::warn!("failed to remove cancelled unpublished session: {error}");
+            crate::auth::cleanup_failed_crypto_store(&live_crypto);
+        }
+    } else {
+        crate::auth::cleanup_failed_crypto_store(&live_crypto);
+    }
+}
+
 async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1669,9 +1699,20 @@ async fn begin_registration(
         crate::pending_auth::BeginRegistrationResult::Challenge(step) => {
             Ok((jar.add(preauth_cookie(owner)), Json(step)))
         }
-        crate::pending_auth::BeginRegistrationResult::Complete(completed) => {
+        crate::pending_auth::BeginRegistrationResult::Complete {
+            completed,
+            attempt_id,
+        } => {
             let (response, session, initial_response, homeserver_url) = *completed;
             let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            if !state
+                .pending_auth
+                .commit_registration(&owner, &attempt_id)
+                .await
+            {
+                discard_unpublished_login(&state, &token).await;
+                return Err(ApiError::bad_request("registration cancelled"));
+            }
             Ok((
                 jar.remove(clear_preauth_cookie())
                     .add(session_cookie(token)),
@@ -1722,9 +1763,20 @@ async fn continue_registration(
         .map_err(ApiError::bad_request)?
     {
         crate::pending_auth::ContinueRegistrationResult::Challenge(step) => Ok((jar, Json(step))),
-        crate::pending_auth::ContinueRegistrationResult::Complete(completed) => {
+        crate::pending_auth::ContinueRegistrationResult::Complete {
+            completed,
+            attempt_id,
+        } => {
             let (response, session, initial_response, homeserver_url) = *completed;
             let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            if !state
+                .pending_auth
+                .commit_registration(&owner, &attempt_id)
+                .await
+            {
+                discard_unpublished_login(&state, &token).await;
+                return Err(ApiError::bad_request("registration cancelled"));
+            }
             Ok((
                 jar.remove(clear_preauth_cookie())
                     .add(session_cookie(token)),
