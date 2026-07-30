@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T03:19:28.412Z",
+  "generatedAt": "2026-07-30T14:27:05.135Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
     "follow-up": 4,
-    "in-progress": 0,
-    "planned": 34
+    "in-progress": 1,
+    "planned": 33
   },
   "attention": [
     {
@@ -104,8 +104,8 @@
       "counts": {
         "shipped": 11,
         "follow-up": 2,
-        "in-progress": 0,
-        "planned": 23
+        "in-progress": 1,
+        "planned": 22
       }
     },
     {
@@ -1022,7 +1022,7 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": []
     },

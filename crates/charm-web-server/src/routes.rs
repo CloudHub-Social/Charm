@@ -33,7 +33,9 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
-use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
+use charm_lib::matrix::profiles::{
+    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, OwnProfile,
+};
 use charm_lib::matrix::room_admin::{
     add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
     enable_room_encryption_impl, get_room_local_aliases_impl, get_room_member_list_impl,
@@ -256,6 +258,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/presence", put(set_presence))
         .route("/api/presence/{user_id}", get(get_presence))
         .route("/api/profile/me", get(get_own_profile))
+        .route("/api/users/{user_id}/profile", get(get_user_profile))
+        .route("/api/users/{user_id}/mutual-rooms", get(get_mutual_rooms))
         .route("/api/profile/display-name", put(set_display_name))
         .route(
             "/api/account/deactivate-url",
@@ -3057,6 +3061,36 @@ async fn get_own_profile(
         profile,
         uses_oauth: session.client.oauth().user_session().is_some(),
     }))
+}
+
+#[derive(Deserialize)]
+struct UserProfileQuery {
+    room_id: Option<String>,
+}
+
+async fn get_user_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(user_id): Path<String>,
+    Query(query): Query<UserProfileQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let profile = get_user_profile_impl(&session.client, None, &user_id, query.room_id.as_deref())
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(profile))
+}
+
+async fn get_mutual_rooms(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(user_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let rooms = get_mutual_rooms_impl(&session.client, None, &user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(rooms))
 }
 
 #[derive(Serialize)]

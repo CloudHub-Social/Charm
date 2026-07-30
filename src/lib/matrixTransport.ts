@@ -616,6 +616,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("GET", `/api/presence/${encodeSegment(String(args.userId))}`);
     case "get_own_profile":
       return requestJson<T>("GET", "/api/profile/me");
+    case "get_user_profile": {
+      const roomId =
+        typeof args.roomId === "string" ? `?room_id=${encodeURIComponent(args.roomId)}` : "";
+      return requestJson<T>(
+        "GET",
+        `/api/users/${encodeSegment(String(args.userId))}/profile${roomId}`,
+      );
+    }
+    case "get_mutual_rooms":
+      return requestJson<T>("GET", `/api/users/${encodeSegment(String(args.userId))}/mutual-rooms`);
     case "get_profile": {
       const profile = await requestJson<{
         user_id: string;

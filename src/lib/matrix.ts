@@ -16,6 +16,7 @@ import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
 import type { MembershipKind } from "@bindings/MembershipKind";
+import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
 import type { NotificationSettingsSummary } from "@bindings/NotificationSettingsSummary";
 import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
@@ -58,6 +59,7 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { UrlPreview } from "@bindings/UrlPreview";
+import type { UserProfile } from "@bindings/UserProfile";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
@@ -144,6 +146,7 @@ export type {
   LoginResponse,
   MediaContent,
   MembershipKind,
+  MutualRoomSummary,
   NotificationSettingsSummary,
   OwnProfile,
   PinnedMessageSummary,
@@ -184,6 +187,7 @@ export type {
   TypingUpdate,
   UploadProgress,
   UrlPreview,
+  UserProfile,
   VerificationRequestSummary,
 };
 
@@ -725,6 +729,14 @@ export function setPrivacySettings(settings: PrivacySettings): Promise<void> {
 
 export function getOwnProfile(): Promise<OwnProfile> {
   return invoke("get_own_profile");
+}
+
+export function getUserProfile(userId: string, roomId?: string): Promise<UserProfile> {
+  return invoke("get_user_profile", { userId, roomId });
+}
+
+export function getMutualRooms(userId: string): Promise<MutualRoomSummary[]> {
+  return invoke("get_mutual_rooms", { userId });
 }
 
 /** Fires when the signed-in user's own display name/avatar changes out of band (e.g. from another client) — see `profiles.rs`'s module doc comment. */

@@ -15,15 +15,19 @@
 //! share with anyone. `register_self_profile_handler` watches for exactly
 //! that and pushes `profile:self`.
 
-use matrix_sdk::ruma::events::room::member::{RoomMemberEventContent, SyncRoomMemberEvent};
+use futures_util::StreamExt;
+use matrix_sdk::ruma::api::client::profile::{AvatarUrl, DisplayName};
+use matrix_sdk::ruma::events::room::member::{
+    MembershipState, RoomMemberEventContent, SyncRoomMemberEvent,
+};
 use matrix_sdk::ruma::UserId;
-use matrix_sdk::Client;
+use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
 use super::media;
-use super::presence::PresenceStateDto;
+use super::presence::{get_presence_impl, PresenceStateDto, PresenceUpdate};
 use super::MatrixState;
 
 fn recover_poisoned_presence_lock(
@@ -64,6 +68,40 @@ pub struct OwnProfile {
     pub avatar_url: Option<String>,
     pub avatar_path: Option<String>,
     pub presence: PresenceStateDto,
+}
+
+/// Canonical profile-card read model (Spec 36).
+///
+/// Global profile fields and room-scoped membership fields intentionally stay
+/// separate: a room display name/avatar can differ from the account-wide
+/// profile, and collapsing them would make the UI unable to explain which
+/// identity other room members actually see.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct UserProfile {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub avatar_path: Option<String>,
+    pub room_display_name: Option<String>,
+    pub room_avatar_url: Option<String>,
+    pub room_avatar_path: Option<String>,
+    pub presence: Option<PresenceUpdate>,
+}
+
+/// Minimal room identity returned for the mutual-rooms section of a profile
+/// card. Notification counts, tags, and message previews from `RoomSummary`
+/// are deliberately excluded because they are unrelated private room-list
+/// state.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct MutualRoomSummary {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub avatar_path: Option<String>,
+    pub is_direct: bool,
+    pub is_space: bool,
 }
 
 /// Pushed on `profile:self` when the signed-in user's own membership event
@@ -144,6 +182,166 @@ pub async fn get_own_profile_impl(
     })
 }
 
+/// Returns another user's global profile, optional room-scoped membership
+/// profile, resolved avatar thumbnails, and best-effort presence.
+#[tauri::command]
+pub async fn get_user_profile(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    user_id: String,
+    room_id: Option<String>,
+) -> Result<UserProfile, String> {
+    let client = state.require_client().await?;
+    let media_cache = state.require_media_cache(&app).await.ok();
+    get_user_profile_impl(&client, media_cache, &user_id, room_id.as_deref()).await
+}
+
+/// Core logic behind [`get_user_profile`], shared with the web companion.
+pub async fn get_user_profile_impl(
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+    user_id: &str,
+    room_id: Option<&str>,
+) -> Result<UserProfile, String> {
+    let user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
+
+    let room_member = match room_id {
+        Some(room_id) => {
+            let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|e| e.to_string())?;
+            let room = client
+                .get_room(&room_id)
+                .ok_or_else(|| format!("room {room_id} not found"))?;
+            if room.state() != RoomState::Joined {
+                return Err(format!("room {room_id} is not joined"));
+            }
+            room.get_member_no_sync(&user_id)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        None => None,
+    };
+
+    let room_display_name = room_member
+        .as_ref()
+        .and_then(|member| member.display_name().map(ToOwned::to_owned));
+    let room_avatar_url = room_member
+        .as_ref()
+        .and_then(|member| member.avatar_url().map(ToString::to_string));
+
+    // A homeserver may restrict the unauthenticated profile endpoint while
+    // still exposing this user's membership profile in a shared room. Keep
+    // the card usable in that case, but fail when neither source is
+    // available so a typo or wholly unknown user is not presented as an
+    // empty, valid profile.
+    let global_profile = client.account().fetch_user_profile_of(&user_id).await;
+    if let Err(error) = &global_profile {
+        if room_member.is_none() {
+            return Err(error.to_string());
+        }
+    }
+
+    let (display_name, avatar_url) = match global_profile {
+        Ok(profile) => {
+            let display_name = profile
+                .get_static::<DisplayName>()
+                .map_err(|e| e.to_string())?;
+            let avatar_url = profile
+                .get_static::<AvatarUrl>()
+                .map_err(|e| e.to_string())?
+                .map(|url| url.to_string());
+            (display_name, avatar_url)
+        }
+        Err(_) => (None, None),
+    };
+
+    let (avatar_path, presence) = tokio::join!(
+        async {
+            match avatar_url.as_deref() {
+                Some(mxc) => resolve_avatar_path(client, media_cache, mxc).await,
+                None => None,
+            }
+        },
+        get_presence_impl(client, user_id.as_str())
+    );
+    let room_avatar_path = match room_avatar_url.as_deref() {
+        Some(mxc) if Some(mxc) == avatar_url.as_deref() => avatar_path.clone(),
+        Some(mxc) => resolve_avatar_path(client, media_cache, mxc).await,
+        None => None,
+    };
+
+    Ok(UserProfile {
+        user_id: user_id.to_string(),
+        display_name,
+        avatar_url,
+        avatar_path,
+        room_display_name,
+        room_avatar_url,
+        room_avatar_path,
+        presence: presence?,
+    })
+}
+
+/// Lists joined rooms where `user_id` is currently joined, using only the
+/// authenticated account's synced membership state.
+#[tauri::command]
+pub async fn get_mutual_rooms(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    user_id: String,
+) -> Result<Vec<MutualRoomSummary>, String> {
+    let client = state.require_client().await?;
+    let media_cache = state.require_media_cache(&app).await.ok();
+    get_mutual_rooms_impl(&client, media_cache, &user_id).await
+}
+
+/// Core logic behind [`get_mutual_rooms`], shared with the web companion.
+pub async fn get_mutual_rooms_impl(
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+    user_id: &str,
+) -> Result<Vec<MutualRoomSummary>, String> {
+    let user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
+
+    let mut rooms = futures_util::stream::iter(client.joined_rooms().into_iter().map(|room| {
+        let user_id = &user_id;
+        async move {
+            let member = room.get_member_no_sync(user_id).await.ok().flatten()?;
+            if member.membership() != &MembershipState::Join {
+                return None;
+            }
+
+            let avatar_url = room.avatar_url().map(|url| url.to_string());
+            let (name, is_direct) = tokio::join!(room.display_name(), room.is_direct());
+            let avatar_path = match avatar_url.as_deref() {
+                Some(mxc) => resolve_avatar_path(client, media_cache, mxc).await,
+                None => None,
+            };
+
+            Some(MutualRoomSummary {
+                room_id: room.room_id().to_string(),
+                name: name.ok().map(|name| name.to_string()),
+                avatar_url,
+                avatar_path,
+                is_direct: is_direct.unwrap_or(false),
+                is_space: room.is_space(),
+            })
+        }
+    }))
+    .buffer_unordered(16)
+    .filter_map(|room| async move { room })
+    .collect::<Vec<_>>()
+    .await;
+
+    rooms.sort_by(|a, b| {
+        a.name
+            .as_deref()
+            .unwrap_or_default()
+            .cmp(b.name.as_deref().unwrap_or_default())
+            .then_with(|| a.room_id.cmp(&b.room_id))
+    });
+    Ok(rooms)
+}
+
 /// Pure: given the signed-in user's id and an incoming `m.room.member`
 /// event's state key + content, returns the profile update to push if (and
 /// only if) this event is about the signed-in user themself. Unit-tested
@@ -210,6 +408,10 @@ pub fn register_self_profile_handler(app: AppHandle, client: &Client) {
 mod self_profile_update_tests {
     use matrix_sdk::ruma::events::room::member::MembershipState;
     use matrix_sdk::ruma::{user_id, OwnedMxcUri};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
 
@@ -253,5 +455,30 @@ mod self_profile_update_tests {
         let update = self_profile_update(own, own, &content).expect("own event yields an update");
         assert_eq!(update.display_name, None);
         assert_eq!(update.avatar_url, None);
+    }
+
+    #[tokio::test]
+    async fn get_user_profile_maps_global_profile_fields() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/v3/profile/.*alice.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "displayname": "Alice",
+                "avatar_url": "mxc://example.org/alice",
+            })))
+            .mount(server.server())
+            .await;
+
+        let profile = get_user_profile_impl(&client, None, "@alice:example.org", None)
+            .await
+            .expect("profile lookup succeeds");
+
+        assert_eq!(profile.display_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            profile.avatar_url.as_deref(),
+            Some("mxc://example.org/alice")
+        );
     }
 }

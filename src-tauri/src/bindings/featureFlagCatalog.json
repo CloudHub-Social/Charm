@@ -100,5 +100,11 @@
     "default": false,
     "description": "Show a typing badge on room-list rows for rooms with someone currently typing.",
     "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "user_profile_cards",
+    "default": false,
+    "description": "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms.",
+    "owner": "Spec 36 (user profile cards)"
   }
 ]
