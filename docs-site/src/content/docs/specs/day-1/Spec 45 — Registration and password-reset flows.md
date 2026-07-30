@@ -150,6 +150,10 @@ homeservers. The parity audit (2026-07-13) found:
 - Cancellation, app exit, superseding login/registration, and timeout must release
   the pending client and clean its temporary store using Spec 15's existing
   reservation/sweep rules.
+- The companion persists enough pending-store ownership metadata to sweep
+  abandoned unauthenticated crypto-store directories on startup after a crash.
+  Restart tests interrupt registration after store creation and verify that the
+  orphan is removed before a new attempt is admitted.
 - The companion admits at most one unauthenticated registration attempt per
   pre-auth browser session, enforces a process-wide cap before allocating a
   client/store, and applies per-source quotas. The hard expiry starts before
@@ -246,6 +250,7 @@ instead of adding a second HTTP stack.
 - `cancel_registration(attempt_id) -> ()`
 - `request_password_reset(homeserver, email) -> PasswordResetChallenge`
 - `confirm_password_reset(attempt_id, token?, new_password) -> ()`
+- `cancel_password_reset(attempt_id) -> ()`
 - `get_login_flows(homeserver) -> LoginFlowSummary`
 - `start_sso_login(homeserver, idp_id?) -> redirect_url`
 - `begin_token_login(homeserver) -> { attempt_id, state }`

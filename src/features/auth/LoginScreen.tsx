@@ -38,18 +38,6 @@ import { isWebBuild } from "@/lib/platform";
 // can't slip past a plain `startsWith` check.
 const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
 
-function syntheticPasswordResetAttemptId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `unavailable-${globalThis.crypto.randomUUID()}`;
-  }
-  if (typeof globalThis.crypto?.getRandomValues === "function") {
-    const bytes = new Uint8Array(16);
-    globalThis.crypto.getRandomValues(bytes);
-    return `unavailable-${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-  }
-  return `unavailable-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
 }
@@ -415,13 +403,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
     } catch {
-      // Do not disclose whether the homeserver rejected an unknown email.
-      // The synthetic attempt advances through the same UI and only fails at
-      // confirmation, after the user would need access to the mailbox.
-      challenge = {
-        attempt_id: syntheticPasswordResetAttemptId(),
-        requires_token: false,
-      };
+      // The backend deliberately maps homeserver responses to a single
+      // account-independent error. Preserve that privacy boundary while
+      // still surfacing connection/configuration failures as actionable.
+      if (passwordResetOperationRef.current === operation) {
+        setError(
+          "Could not start password reset. Check your connection and homeserver settings, then try again.",
+        );
+      }
+      return;
     } finally {
       if (passwordResetOperationRef.current === operation) setPending(false);
     }
