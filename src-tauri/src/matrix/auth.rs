@@ -20,6 +20,7 @@ use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use std::hash::{BuildHasher, Hasher};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
@@ -34,6 +35,8 @@ use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
 const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
 
 static RESTORE_STORE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+static AUTH_MAIL_ADDRESS_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+    std::sync::OnceLock::new();
 
 /// Serializes fresh client restores that open and use the persisted Matrix
 /// store before a live app client owns it. App startup and Android's
@@ -80,6 +83,9 @@ pub struct RegisterRequest {
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const AUTH_MAILS_PER_ADDRESS: usize = 3;
+const AUTH_MAILS_PER_PROCESS: usize = 12;
 
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
@@ -98,6 +104,12 @@ pub(crate) struct PendingPasswordReset {
     token_submitted: bool,
     attempt_id: String,
     created_at: std::time::Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct AuthMailQuota {
+    by_address: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    all: Vec<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1124,6 +1136,8 @@ pub async fn request_password_reset(
     email: String,
 ) -> Result<PasswordResetChallenge, String> {
     ensure_registration_feature_enabled(&app)?;
+    let delivery_email = email.trim().to_owned();
+    check_auth_mail_quota(&state, &delivery_email).await?;
     let started_at = std::time::Instant::now();
     let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
     state.pending_password_reset.lock().await.take();
@@ -1151,19 +1165,33 @@ pub async fn request_password_reset(
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
-        email,
+        delivery_email,
         UInt::new_saturating(1),
     );
     let response = tokio::select! {
-        result = client.send(request) => result
-            .map_err(|_| "could not start password reset".to_string()),
+        result = client.send(request) => result,
         () = cancellation.cancelled() => {
-            Err("password reset attempt was superseded".to_string())
+            clear_password_reset_cancellation(&state, &attempt_id);
+            return Err("password reset attempt was superseded".to_string());
         },
         () = tokio::time::sleep_until(deadline) => {
-            Err("password reset attempt expired; start again".to_string())
+            clear_password_reset_cancellation(&state, &attempt_id);
+            return Err("password reset attempt expired; start again".to_string());
         }
-    }?;
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => {
+            // Matrix deliberately permits homeservers to reject an unknown
+            // address here. Advancing to the same pre-verification UI state
+            // keeps that rejection indistinguishable from a sent email.
+            clear_password_reset_cancellation(&state, &attempt_id);
+            return Ok(PasswordResetChallenge {
+                attempt_id,
+                requires_token: false,
+            });
+        }
+    };
     if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
         return Err("password reset attempt was superseded".to_string());
     }
@@ -1192,6 +1220,35 @@ pub async fn request_password_reset(
         attempt_id,
         requires_token: response.submit_url.is_some(),
     })
+}
+
+async fn check_auth_mail_quota(state: &MatrixState, address: &str) -> Result<(), String> {
+    let now = std::time::Instant::now();
+    let cutoff = now.checked_sub(AUTH_MAIL_QUOTA_WINDOW);
+    let mut hasher = AUTH_MAIL_ADDRESS_HASHER
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .build_hasher();
+    hasher.write(address.to_lowercase().as_bytes());
+    let digest = format!("{:016x}", hasher.finish());
+    let mut quota = state.auth_mail_quota.lock().await;
+    quota
+        .all
+        .retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
+    quota.by_address.retain(|_, attempts| {
+        attempts.retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
+        !attempts.is_empty()
+    });
+    if quota.all.len() >= AUTH_MAILS_PER_PROCESS
+        || quota
+            .by_address
+            .get(&digest)
+            .is_some_and(|attempts| attempts.len() >= AUTH_MAILS_PER_ADDRESS)
+    {
+        return Err("too many recovery emails; try again later".to_string());
+    }
+    quota.all.push(now);
+    quota.by_address.entry(digest).or_default().push(now);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1425,6 +1482,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
@@ -2111,11 +2169,13 @@ mod registration_uia_tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::{
-        complete_password_reset, identity_provider_is_advertised, is_public_network_ip,
-        next_registration_stage, registration_auth_data, registration_fallback_url,
-        sanitize_password_reset_submit_url, sanitized_registration_policies, summarize_login_flows,
-        PasswordResetChallenge, PendingPasswordReset, RegistrationAuthResponse,
+        check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
+        is_public_network_ip, next_registration_stage, registration_auth_data,
+        registration_fallback_url, sanitize_password_reset_submit_url,
+        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
+        PendingPasswordReset, RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
     };
+    use crate::matrix::MatrixState;
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
         serde_json::from_value(value).expect("valid UIA fixture")
@@ -2318,6 +2378,7 @@ mod registration_uia_tests {
             "::1",
             "fc00::1",
             "fe80::1",
+            "64:ff9b:1::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
         ] {
@@ -2346,6 +2407,22 @@ mod registration_uia_tests {
         assert_eq!(json["requires_token"], true);
         assert!(json.get("sid").is_none());
         assert!(json.get("client_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn password_reset_mail_quota_survives_individual_attempts() {
+        let state = MatrixState::default();
+        for _ in 0..AUTH_MAILS_PER_ADDRESS {
+            check_auth_mail_quota(&state, "Alice@Example.org")
+                .await
+                .expect("within address quota");
+        }
+        assert!(
+            check_auth_mail_quota(&state, "alice@example.org")
+                .await
+                .is_err(),
+            "normalized address quota must not reset with a new attempt"
+        );
     }
 
     #[tokio::test]

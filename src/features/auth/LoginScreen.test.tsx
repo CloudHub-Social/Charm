@@ -598,8 +598,11 @@ describe("LoginScreen password recovery", () => {
     expect(screen.getByText("Password updated")).toBeVisible();
   });
 
-  it("does not reveal that a homeserver rejected the recovery request", async () => {
-    requestPasswordReset.mockRejectedValue(new Error("unknown email"));
+  it("shows the same pre-verification state for an opaque rejected recovery request", async () => {
+    requestPasswordReset.mockResolvedValue({
+      attempt_id: "opaque-rejected-attempt",
+      requires_token: false,
+    });
     render(<LoginScreen onSignedIn={vi.fn()} />);
     await discoverLoginChoices();
 
@@ -611,12 +614,8 @@ describe("LoginScreen password recovery", () => {
       screen.getByRole("button", { name: "Send recovery email" }).click();
     });
 
-    expect(
-      screen.getByText(
-        "Could not start password reset. Check your connection and homeserver settings, then try again.",
-      ),
-    ).toBeVisible();
-    expect(screen.queryByText(/unknown email/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Follow the instructions in your email/i)).toBeVisible();
+    expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
   });
 
   it("can close recovery while its request is still pending", async () => {
@@ -666,6 +665,35 @@ describe("LoginScreen password recovery", () => {
 
     expect(cancelPasswordReset).toHaveBeenCalledWith("token-attempt");
     expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+  });
+
+  it("returns to the request step after a password-reset attempt expires", async () => {
+    requestPasswordReset.mockResolvedValue({
+      attempt_id: "expired-attempt",
+      requires_token: false,
+    });
+    confirmPasswordReset.mockRejectedValue(
+      new Error("password reset attempt expired or was cancelled"),
+    );
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Send recovery email" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "new correct horse" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Reset password" }).click();
+    });
+
+    expect(screen.getByRole("button", { name: "Send recovery email" })).toBeVisible();
+    expect(screen.getByText("Password reset expired. Request a new recovery email.")).toBeVisible();
   });
 
   it("does not offer legacy recovery when the homeserver has no password flow", async () => {

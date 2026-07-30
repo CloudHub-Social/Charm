@@ -42,10 +42,24 @@ const TERMINAL_REGISTRATION_ERRORS = [
   "no registration is in progress",
   "registration cancelled",
 ];
+const TERMINAL_PASSWORD_RESET_ERRORS = [
+  "password reset attempt expired",
+  "password reset attempt was superseded",
+  "password reset attempt is no longer current",
+  "password reset attempt expired or was cancelled",
+  "no password reset is in progress",
+];
 
 function isTerminalRegistrationError(message: string): boolean {
   const normalized = message.toLowerCase();
   return TERMINAL_REGISTRATION_ERRORS.some((terminalError) =>
+    normalized.includes(terminalError),
+  );
+}
+
+function isTerminalPasswordResetError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_PASSWORD_RESET_ERRORS.some((terminalError) =>
     normalized.includes(terminalError),
   );
 }
@@ -413,11 +427,19 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setNewPassword("");
       setPassword("");
       setPasswordResetComplete(true);
-    } catch {
+    } catch (error) {
       if (passwordResetOperationRef.current === operation) {
-        setError(
-          "Password reset could not be confirmed. Verify the email step and new password, then try again.",
-        );
+        if (isTerminalPasswordResetError(String(error))) {
+          passwordResetAttemptRef.current = null;
+          setPasswordResetChallenge(undefined);
+          setRecoveryToken("");
+          setNewPassword("");
+          setError("Password reset expired. Request a new recovery email.");
+        } else {
+          setError(
+            "Password reset could not be confirmed. Verify the email step and new password, then try again.",
+          );
+        }
       }
     } finally {
       if (passwordResetOperationRef.current === operation) setPending(false);
