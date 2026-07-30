@@ -88,7 +88,12 @@ pub async fn list_space_children_impl(
     space_id: &str,
 ) -> Result<Vec<SpaceChild>, String> {
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
-    let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), Some(1)).await?;
+    let mut request = get_hierarchy::v1::Request::new(parsed_space_id.clone());
+    request.max_depth = Some(1_u32.into());
+    // Preserve Spec 06's first-page direct-child contract. Complete child
+    // management has a separate state-event-backed API in the settings
+    // track; opening the lightweight SpaceBrowser must stay bounded.
+    let chunks = client.send(request).await.map_err(|e| e.to_string())?.rooms;
 
     Ok(chunks
         .into_iter()
@@ -149,22 +154,79 @@ async fn fetch_hierarchy_chunks(
     }
 }
 
-/// True if `room_id` appears anywhere in `ancestor_id`'s live recursive
-/// hierarchy, per the server's `/hierarchy` endpoint (the same one
-/// `list_space_hierarchy` uses) — i.e. `ancestor_id` is already an ancestor
-/// of `room_id`. Used by [`add_existing_space_child_impl`] to guard against
-/// adding `ancestor_id` as a child of `room_id`, which would otherwise form
-/// a cycle; queries the server directly rather than the local
-/// `parent_space_ids` derived from this client's own sync-populated store,
-/// for the same staleness reason as `live_child_content`.
+/// Proves whether `room_id` appears below `ancestor_id` by walking live
+/// `m.space.child` state. `/hierarchy` can omit inaccessible branches, so a
+/// plain "not present in returned chunks" result is not sufficient for a
+/// mutation-safety decision: an unclassified child makes this fail closed.
 async fn live_hierarchy_contains(
     client: &Client,
     ancestor_id: &RoomId,
     room_id: &str,
 ) -> Result<bool, String> {
-    // Mutation safety must not inherit the display hierarchy's depth cap.
-    let chunks = fetch_hierarchy_chunks(client, ancestor_id.to_owned(), None).await?;
-    Ok(chunks.iter().any(|chunk| chunk.summary.room_id == room_id))
+    let target = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let mut pending = vec![ancestor_id.to_owned()];
+    let mut visited = HashSet::new();
+
+    while let Some(space_id) = pending.pop() {
+        if !visited.insert(space_id.clone()) {
+            continue;
+        }
+        if visited.len() > 10_000 {
+            return Err("space hierarchy is too large to verify safely".to_string());
+        }
+
+        let chunks = fetch_hierarchy_chunks(client, space_id.clone(), Some(1)).await?;
+        if chunks.iter().any(|chunk| chunk.summary.room_id == target) {
+            return Ok(true);
+        }
+        let child_types = chunks
+            .into_iter()
+            .filter(|chunk| chunk.summary.room_id != space_id)
+            .map(|chunk| {
+                let is_space = chunk_is_space(&chunk);
+                (chunk.summary.room_id, is_space)
+            })
+            .collect::<HashMap<_, _>>();
+        let response = client
+            .send(get_state_events::v3::Request::new(space_id.clone()))
+            .await
+            .map_err(|_| {
+                "could not inspect every descendant; hierarchy change was not applied".to_string()
+            })?;
+
+        for child_id in
+            response
+                .room_state
+                .into_iter()
+                .filter_map(|raw| match raw.deserialize().ok()? {
+                    AnyStateEvent::SpaceChild(StateEvent::Original(event))
+                        if !event.content.via.is_empty() =>
+                    {
+                        Some(event.state_key)
+                    }
+                    _ => None,
+                })
+        {
+            if child_id == target {
+                return Ok(true);
+            }
+            match child_types
+                .get(&child_id)
+                .copied()
+                .or_else(|| client.get_room(&child_id).map(|room| room.is_space()))
+            {
+                Some(true) => pending.push(child_id),
+                Some(false) => {}
+                None => {
+                    return Err(
+                        "could not inspect every descendant; hierarchy change was not applied"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn next_hierarchy_page_token(
