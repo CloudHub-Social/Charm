@@ -4,6 +4,7 @@ pub mod crypto_store;
 pub mod events;
 pub mod media_cache;
 pub mod observability;
+pub mod pending_auth;
 pub mod persistence;
 pub mod routes;
 pub mod session;
@@ -17,6 +18,7 @@ use session::SessionStore;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub sessions: SessionStore,
+    pub pending_auth: pending_auth::PendingAuthStore,
     /// `None` when `CHARM_WEB_SERVER_MASTER_KEY` isn't set — sessions then
     /// behave exactly like sub-PR A (in-memory only, dropped on restart).
     /// See `persistence.rs`'s module doc comment.

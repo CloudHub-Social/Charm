@@ -21,7 +21,7 @@ use crate::session::{CryptoStoreHandle, Session};
 /// store from the very first `Client::builder().build()` call, rather than
 /// being established in-memory and needing a separate migration into a store
 /// afterward.
-async fn build_client(
+pub(crate) async fn build_client(
     homeserver_url: &str,
     has_persistence: bool,
 ) -> Result<(Client, Option<CryptoStoreHandle>), String> {
@@ -73,7 +73,7 @@ async fn build_client(
 /// propagated — the caller already has a real auth error to report, and
 /// leftover disk usage from a rare cleanup failure is far less urgent than
 /// surfacing that.
-fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
+pub(crate) fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
     let Some(crypto) = crypto else { return };
     match crate::crypto_store::existing_store_dir(&crypto.store_key) {
         Ok(Some(dir)) => {
@@ -84,6 +84,43 @@ fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
         Ok(None) => {}
         Err(e) => tracing::warn!("failed to resolve crypto store directory for cleanup: {e}"),
     }
+}
+
+/// Converts an already-authenticated Matrix client into the same web
+/// session shape used by password login, registration UIA, and token login.
+pub(crate) async fn finish_authenticated_client(
+    client: Client,
+    crypto: Option<CryptoStoreHandle>,
+    flow: &str,
+) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
+    let Some(session_meta) = client.matrix_auth().session() else {
+        cleanup_failed_crypto_store(&crypto);
+        return Err(format!("{flow} succeeded but no session was returned"));
+    };
+    let user_id = session_meta.meta.user_id.to_string();
+    let device_id = session_meta.meta.device_id.to_string();
+    let crypto_store_open = crypto.is_some();
+    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
+    crate::sync_loop::register_event_handlers(
+        &client,
+        session.events.clone(),
+        session.pending_verification_events.clone(),
+        session.profile_and_presence_snapshots(),
+    );
+    let initial_response = client
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                "{flow}'s initial sync failed, deferring to the background sync loop's own retry: {error}"
+            );
+            matrix_sdk::sync::SyncResponse::default()
+        });
+    Ok((
+        LoginResponse { user_id, device_id },
+        session,
+        initial_response,
+    ))
 }
 
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
@@ -115,62 +152,7 @@ pub async fn login(
         return Err(e.to_string());
     }
 
-    let Some(session_meta) = client.matrix_auth().session() else {
-        cleanup_failed_crypto_store(&crypto);
-        return Err("login succeeded but no session was returned".to_string());
-    };
-    let user_id = session_meta.meta.user_id.to_string();
-
-    // Built (and its event handlers registered — see
-    // `register_event_handlers`'s doc comment for why that must happen
-    // *before* the sync below, not just before `sync_loop::spawn`) ahead of
-    // that sync, not after: `Session::new` is what creates this session's
-    // broadcast channel, and a `to-device` verification event landing in
-    // this very first sync response is processed synchronously as part of
-    // this call — never replayed later — so the handler needs somewhere to
-    // push it to before this call happens, not after.
-    let crypto_store_open = crypto.is_some();
-    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
-    crate::sync_loop::register_event_handlers(
-        &client,
-        session.events.clone(),
-        session.pending_verification_events.clone(),
-        session.profile_and_presence_snapshots(),
-    );
-
-    // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
-    // room store, which only gets populated by a sync — without this, every
-    // room route 404s/empties out for a freshly logged-in session even
-    // though the account genuinely has rooms. This also doubles as
-    // `sync_loop::spawn`'s initial sync — see this function's doc comment.
-    //
-    // A failure here is *not* propagated as this whole function's error:
-    // the login itself already succeeded above, so failing this call would
-    // throw away valid, already-authenticated credentials over what's very
-    // often a transient network/homeserver hiccup, forcing the user to
-    // resubmit their password for no reason the login itself caused. An
-    // empty/default `SyncResponse` lets the caller still issue a session
-    // cookie; `sync_loop::spawn`'s own loop (using this same empty response
-    // as its "initial state") will attempt its first real sync immediately
-    // after and surface a `sync:state` error there if the homeserver is
-    // genuinely still unreachable — this route just stops being the one
-    // thing standing between "logged in" and "usable".
-    let initial_response = client
-        .sync_once(SyncSettings::default())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                "login's initial sync failed, deferring to the background sync loop's own retry: {e}"
-            );
-            matrix_sdk::sync::SyncResponse::default()
-        });
-
-    let response = LoginResponse {
-        user_id,
-        device_id: session_meta.meta.device_id.to_string(),
-    };
-
-    Ok((response, session, initial_response))
+    finish_authenticated_client(client, crypto, "login").await
 }
 
 /// Registers a new account and logs it in, same in-memory-client shape as
@@ -191,44 +173,5 @@ pub async fn register(
         return Err(e);
     }
 
-    let Some(session_meta) = client.matrix_auth().session() else {
-        cleanup_failed_crypto_store(&crypto);
-        return Err("registration succeeded but no session was returned".to_string());
-    };
-    let user_id = session_meta.meta.user_id.to_string();
-
-    // See `login`'s doc comment on this same ordering: session (and its
-    // event handlers) built before the initial sync, not after.
-    let crypto_store_open = crypto.is_some();
-    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
-    crate::sync_loop::register_event_handlers(
-        &client,
-        session.events.clone(),
-        session.pending_verification_events.clone(),
-        session.profile_and_presence_snapshots(),
-    );
-
-    // Not propagated as an error — see `login`'s matching doc comment, and
-    // more so here: the account was *just created* by
-    // `register_with_dummy_auth` above, so failing this call would strand
-    // the user with an account that already exists but no way back in —
-    // retrying "registration" fails outright (username taken), and this
-    // route never told the caller the account/device id it needs to fall
-    // back to a plain login instead.
-    let initial_response = client
-        .sync_once(SyncSettings::default())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                "registration's initial sync failed, deferring to the background sync loop's own retry: {e}"
-            );
-            matrix_sdk::sync::SyncResponse::default()
-        });
-
-    let response = LoginResponse {
-        user_id,
-        device_id: session_meta.meta.device_id.to_string(),
-    };
-
-    Ok((response, session, initial_response))
+    finish_authenticated_client(client, crypto, "registration").await
 }

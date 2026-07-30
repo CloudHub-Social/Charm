@@ -87,7 +87,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
-  const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
+  const registrationUiaEnabled = useFlag("registration_and_recovery");
+  const showAlternativeSignInOptions =
+    showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
   const showGenericSso =
     !registrationUiaEnabled ||
     (loginFlows?.sso === true && loginFlows.identity_providers.length === 0);
@@ -760,7 +762,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     </Button>
                   )}
 
-                  {mode === "sign-in" && showNativeSignInOptions && (
+                  {mode === "sign-in" && showAlternativeSignInOptions && (
                     <>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
                         <div className="h-px flex-1 bg-border" />
@@ -783,7 +785,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-2">
-                          {showGenericSso && (
+                          {showNativeSignInOptions && showGenericSso && (
                             <Button
                               type="button"
                               variant="outline"
@@ -794,7 +796,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               Continue with SSO
                             </Button>
                           )}
-                          {registrationUiaEnabled &&
+                          {showNativeSignInOptions &&
+                            registrationUiaEnabled &&
                             loginFlows?.identity_providers.map((provider) => (
                               <Button
                                 key={provider.id}
@@ -822,15 +825,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               {showTokenLogin ? "Use password instead" : "Use a login token"}
                             </Button>
                           )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={() => setShowQrLogin(true)}
-                            className="w-full"
-                          >
-                            Sign in with QR code
-                          </Button>
+                          {showNativeSignInOptions && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={pending}
+                              onClick={() => setShowQrLogin(true)}
+                              className="w-full"
+                            >
+                              Sign in with QR code
+                            </Button>
+                          )}
                         </div>
                       )}
                     </>

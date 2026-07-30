@@ -306,6 +306,46 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", "/api/auth/login", args.request);
     case "register":
       return requestJson<T>("POST", "/api/auth/register", args.request);
+    case "begin_registration":
+      return requestJson<T>("POST", "/api/auth/registration/begin", args.request);
+    case "request_registration_email":
+      return requestJson<T>("POST", "/api/auth/registration/email", {
+        attempt_id: args.attemptId,
+        email: args.email,
+      });
+    case "continue_registration":
+      return requestJson<T>("POST", "/api/auth/registration/continue", {
+        attempt_id: args.attemptId,
+        response: args.response,
+      });
+    case "cancel_registration":
+      return requestJson<T>("POST", "/api/auth/registration/cancel", {
+        attempt_id: args.attemptId,
+      });
+    case "request_password_reset":
+      return requestJson<T>("POST", "/api/auth/password-reset/request", {
+        homeserver_url: args.homeserverUrl,
+        email: args.email,
+      });
+    case "confirm_password_reset":
+      return requestJson<T>("POST", "/api/auth/password-reset/confirm", {
+        attempt_id: args.attemptId,
+        token: args.token,
+        new_password: args.newPassword,
+      });
+    case "cancel_password_reset":
+      return requestJson<T>("POST", "/api/auth/password-reset/cancel", {
+        attempt_id: args.attemptId,
+      });
+    case "get_login_flows":
+      return requestJson<T>("POST", "/api/auth/login-flows", {
+        homeserver_url: args.homeserverUrl,
+      });
+    case "login_with_token":
+      return requestJson<T>("POST", "/api/auth/token", {
+        homeserver_url: args.homeserverUrl,
+        token: args.token,
+      });
     case "try_restore_session":
       return requestJson<T>("GET", "/api/auth/me").catch((error: unknown) => {
         if (error instanceof HttpError && (error.status === 401 || error.status === 400)) {

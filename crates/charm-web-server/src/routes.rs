@@ -22,7 +22,9 @@ use charm_lib::matrix::actions::{
     get_edit_history_impl, get_event_source_impl, get_reaction_details_impl, redact_event_impl,
     report_event_impl, resend_message_impl, send_reply_impl, toggle_reaction_impl,
 };
-use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
+use charm_lib::matrix::auth::{
+    DiscoverHomeserverResponse, LoginRequest, RegisterRequest, RegistrationAuthResponse,
+};
 use charm_lib::matrix::commands::run_command_impl;
 use charm_lib::matrix::commands::SlashCommand;
 use charm_lib::matrix::devices::{
@@ -71,6 +73,7 @@ use crate::session::{self, Session};
 use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
+const PREAUTH_COOKIE: &str = "charm_preauth";
 
 /// Sanity cap on an avatar upload — well over any real profile picture, but
 /// (unlike attachments) an avatar has no legitimate reason to approach
@@ -98,6 +101,30 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/discover", post(discover_homeserver))
         .route("/api/auth/login", post(login))
         .route("/api/auth/register", post(register))
+        .route("/api/auth/registration/begin", post(begin_registration))
+        .route(
+            "/api/auth/registration/email",
+            post(request_registration_email),
+        )
+        .route(
+            "/api/auth/registration/continue",
+            post(continue_registration),
+        )
+        .route("/api/auth/registration/cancel", post(cancel_registration))
+        .route(
+            "/api/auth/password-reset/request",
+            post(request_password_reset),
+        )
+        .route(
+            "/api/auth/password-reset/confirm",
+            post(confirm_password_reset),
+        )
+        .route(
+            "/api/auth/password-reset/cancel",
+            post(cancel_password_reset),
+        )
+        .route("/api/auth/login-flows", post(get_login_flows))
+        .route("/api/auth/token", post(login_with_token))
         // -- session --
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
@@ -861,6 +888,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         state
             .sessions
@@ -945,6 +973,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         state
             .sessions
@@ -1005,6 +1034,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         let session = dummy_live_session("@already-gone-throttled:example.invalid").await;
         // Fresh enough that the throttled durable-touch write below would
@@ -1075,6 +1105,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         let session = dummy_live_session("@awaiting-initial:example.invalid").await;
         session
@@ -1153,6 +1184,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         let session = dummy_live_session("@stale-pinned:example.invalid").await;
         let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
@@ -1219,6 +1251,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..Default::default()
         };
         let session = dummy_live_session("@active-deleted:example.invalid").await;
         // Genuinely active: an open WebSocket connection, which is what
@@ -1548,6 +1581,240 @@ async fn register(
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 
+fn new_preauth_owner() -> String {
+    use rand::distr::Alphanumeric;
+    use rand::RngExt;
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
+fn preauth_cookie(owner: String) -> Cookie<'static> {
+    let secure = std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() != Ok("1");
+    Cookie::build((PREAUTH_COOKIE, owner))
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .max_age(time::Duration::minutes(20))
+        .build()
+}
+
+fn clear_preauth_cookie() -> Cookie<'static> {
+    Cookie::build(PREAUTH_COOKIE)
+        .path("/")
+        .max_age(time::Duration::ZERO)
+        .build()
+}
+
+fn require_preauth_owner(jar: &CookieJar) -> Result<String, ApiError> {
+    jar.get(PREAUTH_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::unauthorized("authentication attempt is no longer current"))
+}
+
+async fn begin_registration(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<RegisterRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        state.pending_auth.cancel_owner(previous.value()).await;
+    }
+    let owner = new_preauth_owner();
+    match state
+        .pending_auth
+        .begin_registration(owner.clone(), request, state.persistence.is_some())
+        .await
+        .map_err(ApiError::bad_request)?
+    {
+        crate::pending_auth::BeginRegistrationResult::Challenge(step) => {
+            Ok((jar.add(preauth_cookie(owner)), Json(step)))
+        }
+        crate::pending_auth::BeginRegistrationResult::Complete(completed) => {
+            let (response, session, initial_response, homeserver_url) = *completed;
+            let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            Ok((
+                jar.remove(clear_preauth_cookie())
+                    .add(session_cookie(token)),
+                Json(charm_lib::matrix::auth::RegistrationStep::Complete { session: response }),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RegistrationEmailRequest {
+    attempt_id: String,
+    email: String,
+}
+
+async fn request_registration_email(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<RegistrationEmailRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = require_preauth_owner(&jar)?;
+    state
+        .pending_auth
+        .request_registration_email(&owner, &request.attempt_id, request.email)
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_request)
+}
+
+#[derive(Deserialize)]
+struct ContinueRegistrationRequest {
+    attempt_id: String,
+    response: RegistrationAuthResponse,
+}
+
+async fn continue_registration(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<ContinueRegistrationRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = require_preauth_owner(&jar)?;
+    match state
+        .pending_auth
+        .continue_registration(&owner, &request.attempt_id, request.response)
+        .await
+        .map_err(ApiError::bad_request)?
+    {
+        crate::pending_auth::ContinueRegistrationResult::Challenge(step) => Ok((jar, Json(step))),
+        crate::pending_auth::ContinueRegistrationResult::Complete(completed) => {
+            let (response, session, initial_response, homeserver_url) = *completed;
+            let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            Ok((
+                jar.remove(clear_preauth_cookie())
+                    .add(session_cookie(token)),
+                Json(charm_lib::matrix::auth::RegistrationStep::Complete { session: response }),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AttemptRequest {
+    attempt_id: String,
+}
+
+async fn cancel_registration(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<AttemptRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = require_preauth_owner(&jar)?;
+    state
+        .pending_auth
+        .cancel_registration(&owner, &request.attempt_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((jar.remove(clear_preauth_cookie()), Json(())))
+}
+
+#[derive(Deserialize)]
+struct PasswordResetRequest {
+    homeserver_url: String,
+    email: String,
+}
+
+async fn request_password_reset(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<PasswordResetRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        state.pending_auth.cancel_owner(previous.value()).await;
+    }
+    let owner = new_preauth_owner();
+    let challenge = state
+        .pending_auth
+        .request_password_reset(owner.clone(), request.homeserver_url, request.email)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((jar.add(preauth_cookie(owner)), Json(challenge)))
+}
+
+#[derive(Deserialize)]
+struct ConfirmPasswordResetRequest {
+    attempt_id: String,
+    token: Option<String>,
+    new_password: String,
+}
+
+async fn confirm_password_reset(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<ConfirmPasswordResetRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = require_preauth_owner(&jar)?;
+    state
+        .pending_auth
+        .confirm_password_reset(
+            &owner,
+            &request.attempt_id,
+            request.token,
+            request.new_password,
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((jar.remove(clear_preauth_cookie()), Json(())))
+}
+
+async fn cancel_password_reset(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<AttemptRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = require_preauth_owner(&jar)?;
+    state
+        .pending_auth
+        .cancel_password_reset(&owner, &request.attempt_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((jar.remove(clear_preauth_cookie()), Json(())))
+}
+
+#[derive(Deserialize)]
+struct HomeserverRequest {
+    homeserver_url: String,
+}
+
+async fn get_login_flows(
+    Json(request): Json<HomeserverRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::pending_auth::get_login_flows(&request.homeserver_url)
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_request)
+}
+
+#[derive(Deserialize)]
+struct TokenLoginRequest {
+    homeserver_url: String,
+    token: String,
+}
+
+async fn login_with_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<TokenLoginRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let (response, session, initial_response, homeserver_url) =
+        crate::pending_auth::login_with_token(
+            request.homeserver_url,
+            request.token,
+            state.persistence.is_some(),
+        )
+        .await
+        .map_err(ApiError::unauthorized)?;
+    let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+    Ok((jar.add(session_cookie(token)), Json(response)))
+}
+
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1729,7 +1996,7 @@ fn session_cookie(token: String) -> Cookie<'static> {
 
 #[cfg(test)]
 mod session_cookie_tests {
-    use super::session_cookie;
+    use super::{preauth_cookie, session_cookie, PREAUTH_COOKIE};
 
     /// Regression test: a cookie with no `Max-Age`/`Expires` is a
     /// browser-session cookie that most browsers discard on close, forcing a
@@ -1753,6 +2020,21 @@ mod session_cookie_tests {
             max_age.whole_seconds(),
             crate::session::SESSION_COOKIE_MAX_AGE_SECS
         );
+    }
+
+    #[test]
+    fn preauth_cookie_is_short_lived_and_not_script_readable() {
+        let cookie = preauth_cookie("browser-owner".to_owned());
+
+        assert_eq!(cookie.name(), PREAUTH_COOKIE);
+        assert_eq!(cookie.value(), "browser-owner");
+        assert_eq!(cookie.max_age().map(|age| age.whole_minutes()), Some(20));
+        assert_eq!(cookie.http_only(), Some(true));
+        assert_eq!(
+            cookie.same_site(),
+            Some(axum_extra::extract::cookie::SameSite::Strict)
+        );
+        assert_eq!(cookie.path(), Some("/"));
     }
 }
 

@@ -24,18 +24,32 @@ and lands successful registration in the existing onboarding flow. The
 continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
-This does not yet complete Spec 45. The web companion attempt boundary and
-real-homeserver verification remain open. Repository and Playwright tests for DTO
-mapping, stage/session validation, direct email-token submission, and UI
-navigation are not live-homeserver evidence.
+The web companion now implements the same registration and recovery surface.
+Before a normal session exists, the server owns every pending Matrix client,
+password, UIA session, client secret, email validation session, and cancellation
+token. A separate opaque, HttpOnly, SameSite-strict pre-auth cookie binds each
+attempt to one browser; a superseding flow cancels the previous attempt, and the
+twenty-minute expiry covers both stored and in-flight work. Companion routes also
+provide login-flow discovery and advertised one-time token login. The browser
+never receives a Matrix access token, email `sid`, client secret, or crypto-store
+credential.
+
+This does not yet complete Spec 45. Real-homeserver verification remains open.
+Repository and Playwright tests for DTO mapping, stage/session validation, direct
+email-token submission, browser-owner isolation, cancellation, and UI navigation
+are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
 selected provider against a fresh homeserver response before building its SSO
 redirect; and supports one-time token login only when the server advertises it.
 Token values remain request-only and the desktop flow uses the same encrypted
-temporary-store relocation as password and SSO login. Provider icon resolution,
-the web companion equivalents, and live verification remain open.
+temporary-store relocation as password and SSO login. The web companion supports
+flow discovery and token login, while browser provider SSO and provider icon
+resolution are explicitly split into
+[issue #338](https://github.com/CloudHub-Social/Charm/issues/338) because the
+server-owned callback needs an operator-configured public URL and a dedicated
+redirect lifecycle. Live verification also remains open.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque

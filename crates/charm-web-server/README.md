@@ -163,6 +163,12 @@ cargo run -p charm-web-server
 
 Listens on `CHARM_WEB_SERVER_ADDR` (default `0.0.0.0:8787`).
 
+Registration UIA, password recovery, login-flow discovery, and advertised token
+login are exposed through `/api/auth/*`. Pending registration and recovery state
+is server-owned and bound to a short-lived, opaque `charm_preauth` cookie; Matrix
+UIA sessions, email validation credentials, passwords, and access tokens are
+never returned to the browser.
+
 The session cookie is `Secure` by default, which browsers refuse to store or
 send over plain HTTP — `main.rs` itself only ever serves plain HTTP (TLS is
 expected to terminate in front of it, e.g. a reverse proxy in production).
