@@ -214,9 +214,7 @@ pub async fn get_user_profile_impl(
             if room.state() != RoomState::Joined {
                 return Err(format!("room {room_id} is not joined"));
             }
-            room.get_member_no_sync(&user_id)
-                .await
-                .map_err(|e| e.to_string())?
+            room.get_member(&user_id).await.map_err(|e| e.to_string())?
         }
         None => None,
     };
@@ -302,35 +300,54 @@ pub async fn get_mutual_rooms_impl(
 ) -> Result<Vec<MutualRoomSummary>, String> {
     let user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
 
-    let mut rooms = futures_util::stream::iter(client.joined_rooms().into_iter().map(|room| {
+    let candidates = futures_util::stream::iter(client.joined_rooms().into_iter().map(|room| {
         let user_id = &user_id;
         async move {
-            let member = room.get_member_no_sync(user_id).await.ok().flatten()?;
+            let member = room
+                .get_member(user_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let Some(member) = member else {
+                return Ok(None);
+            };
             if member.membership() != &MembershipState::Join {
-                return None;
+                return Ok(None);
             }
 
-            let avatar_url = room.avatar_url().map(|url| url.to_string());
             let (name, is_direct) = tokio::join!(room.display_name(), room.is_direct());
+            let is_direct = is_direct.unwrap_or(false);
+            let avatar_url = room.avatar_url().map(|url| url.to_string()).or_else(|| {
+                is_direct
+                    .then(|| room.heroes())
+                    .and_then(|heroes| match heroes.as_slice() {
+                        [hero] => hero.avatar_url.as_ref().map(ToString::to_string),
+                        _ => None,
+                    })
+            });
             let avatar_path = match avatar_url.as_deref() {
                 Some(mxc) => resolve_avatar_path(client, media_cache, mxc).await,
                 None => None,
             };
 
-            Some(MutualRoomSummary {
+            Ok::<_, String>(Some(MutualRoomSummary {
                 room_id: room.room_id().to_string(),
                 name: name.ok().map(|name| name.to_string()),
                 avatar_url,
                 avatar_path,
-                is_direct: is_direct.unwrap_or(false),
+                is_direct,
                 is_space: room.is_space(),
-            })
+            }))
         }
     }))
     .buffer_unordered(16)
-    .filter_map(|room| async move { room })
     .collect::<Vec<_>>()
     .await;
+    let mut rooms = candidates
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
     rooms.sort_by(|a, b| {
         a.name
