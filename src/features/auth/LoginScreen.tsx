@@ -27,7 +27,7 @@ import {
   type RegistrationEmailChallenge,
   type RegistrationStep,
 } from "@/lib/matrix";
-import { useFeatureFlagsInitialized, useFlag } from "@/featureFlags";
+import { useFlag } from "@/featureFlags";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -43,6 +43,7 @@ const TERMINAL_REGISTRATION_ERRORS = [
   "registration attempt is no longer current",
   "no registration is in progress",
   "registration cancelled",
+  "registration and recovery is not enabled",
 ];
 const TERMINAL_PASSWORD_RESET_ERRORS = [
   "password reset attempt expired",
@@ -117,7 +118,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery");
-  const featureFlagsInitialized = useFeatureFlagsInitialized();
   const showAlternativeSignInOptions =
     showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
   const passwordLoginAvailable =
@@ -244,7 +244,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (mode === "register" && !featureFlagsInitialized) return;
     setPending(true);
     setError(null);
     try {
@@ -622,10 +621,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   <Input
                     id="recovery-homeserver"
                     value={homeserverUrl}
-                    onChange={(event) => setHomeserverUrl(event.currentTarget.value)}
+                    readOnly
                     disabled={pending}
                     required
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Cancel recovery to choose a different homeserver.
+                  </p>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="recovery-email">Email</Label>
@@ -915,9 +917,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {(mode === "register" || showTokenLogin || passwordLoginAvailable) && (
                     <Button
                       type="submit"
-                      disabled={
-                        pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
-                      }
+                      disabled={pending || ssoPending}
                       className="w-full"
                     >
                       {pending && <Loader2 className="animate-spin" />}
