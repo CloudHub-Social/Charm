@@ -12,8 +12,10 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 
 const ROOM = { room_id: "!e2e:localhost", name: "E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
+/** Only the "forward" test needs a second joined room to pick as a target. */
+const OTHER_ROOM_NAME = "Other Room";
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     localStorage.setItem(
       "charm:featureFlags",
@@ -27,6 +29,9 @@ test.beforeEach(async ({ page }) => {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
     room: ROOM,
+    extraRooms: testInfo.title.includes("forwards a message")
+      ? [{ room_id: "!other:localhost", name: OTHER_ROOM_NAME }]
+      : undefined,
   });
   await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
@@ -98,9 +103,20 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
 
   // --- react ---
   await originalRow.getByRole("button", { name: "React", exact: true }).click();
-  await page.getByRole("button", { name: "React with 👍" }).click();
-  await expect(originalRow.getByText("👍", { exact: true })).toBeVisible();
-  await expect(originalRow.getByText("1", { exact: true })).toBeVisible();
+  // Scoped to the popover content: with `message_action_parity` on, the
+  // quick-react row (Spec 37) also renders a same-labelled "React with 👍"
+  // button directly in the row (👍 is in the default recent-emoji set), so
+  // an unscoped query here would match both and violate strict mode.
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "React with 👍" })
+    .click();
+  // Scoped to the pressed reaction chip: the quick-react row (Spec 37) also
+  // renders a same-emoji "React with 👍" button in this row, so an unscoped
+  // text query would match both it and the chip.
+  const reactionChip = originalRow.getByRole("button", { name: /👍/, pressed: true });
+  await expect(reactionChip).toBeVisible();
+  await expect(reactionChip.getByText("1", { exact: true })).toBeVisible();
   await captureSnapshot(page, "message-actions-reacted");
 
   // --- edit ---
@@ -161,12 +177,160 @@ test("opening More-actions still closes another already-open Radix popover on th
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
   await row.getByRole("button", { name: "React", exact: true }).click();
-  await expect(page.getByRole("button", { name: "React with 👍" })).toBeVisible();
+  // Scoped to the popover content: with `message_action_parity` on, the
+  // quick-react row (Spec 37) also renders a persistent same-labelled
+  // "React with 👍" button directly in the row, so an unscoped query would
+  // match it too and violate strict mode / never reach zero below.
+  const popoverReactWithThumbsUp = page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "React with 👍" });
+  await expect(popoverReactWithThumbsUp).toBeVisible();
 
   await row.getByRole("button", { name: "More actions" }).click();
 
   // The click both opened the dropdown (not a #226 self-dismiss no-op)...
   await expect(page.getByRole("menuitem", { name: "Edit" })).toBeVisible();
   // ...and closed the EmojiPicker popover it interrupted.
-  await expect(page.getByRole("button", { name: "React with 👍" })).toHaveCount(0);
+  await expect(popoverReactWithThumbsUp).toHaveCount(0);
+});
+
+test("views raw event source for a sent message", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("show me the source");
+  await composer.press("Enter");
+
+  const row = page
+    .getByText("show me the source", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "View source" }).click();
+
+  await expect(page.getByRole("heading", { name: "View source" })).toBeVisible();
+  await expect(page.getByText(/"show me the source"/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Copy" }).click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("show me the source");
+});
+
+test("reports another user's message with a reason", async ({ page }) => {
+  const OTHER_USER = "@other:localhost";
+  // Seed a message from someone else, since own messages can't be reported.
+  await page.evaluate((sender) => {
+    // oxlint-disable-next-line no-underscore-dangle
+    window.__e2eEmit("timeline:update", {
+      room_id: "!e2e:localhost",
+      messages: [
+        {
+          event_id: "$other-1",
+          sender,
+          sender_display_name: null,
+          sender_avatar_url: null,
+          sender_avatar_path: null,
+          body: "reportable message",
+          formatted_body: null,
+          timestamp_ms: Date.now(),
+          edited: false,
+          redacted: false,
+          reactions: [],
+          in_reply_to: null,
+          transaction_id: null,
+          send_state: { state: "sent" },
+        },
+      ],
+    });
+  }, OTHER_USER);
+
+  const row = page
+    .getByText("reportable message", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Report" }).click();
+  await expect(page.getByRole("heading", { name: "Report message?" })).toBeVisible();
+  await page.getByLabel("Reason (optional)").fill("spam");
+  // The dropdown's "Report" menuitem is already closed by this point, so the
+  // confirm dialog's "Report" button is the only match.
+  await page.getByRole("button", { name: "Report" }).click();
+  await expect(page.getByRole("heading", { name: "Report message?" })).toHaveCount(0);
+});
+
+test("views edit history for an edited message", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("original body");
+  await composer.press("Enter");
+  await expect(page.getByText("original body", { exact: true })).toBeVisible();
+
+  const originalRow = page
+    .getByText("original body", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await originalRow.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  await composer.fill("edited body");
+  await composer.press("Enter");
+  await expect(page.getByText("edited body", { exact: true })).toBeVisible();
+
+  const editedRow = page
+    .getByText("edited body", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await editedRow.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit history" }).click();
+
+  // Scoped to the dialog: "edited body" also still matches the live message
+  // bubble behind the overlay, so an unscoped query would match both.
+  const dialog = page.locator('[data-slot="dialog-content"]');
+  await expect(dialog.getByRole("heading", { name: "Edit history" })).toBeVisible();
+  await expect(dialog.getByText("Original", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("edited body", { exact: true })).toBeVisible();
+});
+
+test("shows who reacted in a hover tooltip", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("react to me");
+  await composer.press("Enter");
+  const row = page
+    .getByText("react to me", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+
+  await row.getByRole("button", { name: "React", exact: true }).click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "React with 🎉" })
+    .click();
+
+  const chip = row.getByRole("button", { name: /🎉/, pressed: true });
+  await expect(chip).toBeVisible();
+  await chip.hover();
+  // Scoped to the tooltip content: the current user's id also appears
+  // elsewhere on the page (sidebar profile), so an unscoped query matches
+  // more than one element.
+  // `.first()`: Radix Tooltip renders its content into two portal nodes
+  // (one used for layout measurement), both matching this query.
+  await expect(
+    page.locator('[data-slot="tooltip-content"]').getByText(USER_ID, { exact: true }).first(),
+  ).toBeVisible();
+});
+
+test("forwards a message to another joined room", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("forward me");
+  await composer.press("Enter");
+
+  const row = page
+    .getByText("forward me", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Forward" }).click();
+
+  // Scoped to the dialog: the sidebar's own room-list row for the same
+  // room name is also on the page (behind the overlay), so an unscoped
+  // query would match both and violate strict mode.
+  const dialog = page.locator('[data-slot="dialog-content"]');
+  await expect(dialog.getByRole("heading", { name: "Forward message" })).toBeVisible();
+  await dialog.getByRole("button", { name: OTHER_ROOM_NAME }).click();
+  await expect(page.getByRole("heading", { name: "Forward message" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: OTHER_ROOM_NAME }).click();
+  await expect(page.getByText("forward me", { exact: true })).toBeVisible();
 });

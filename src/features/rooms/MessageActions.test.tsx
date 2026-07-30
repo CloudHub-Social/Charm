@@ -18,6 +18,7 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
 
   render(
     <MessageActions
+      accountId="@me:example.org"
       isOwn={false}
       canRedact={false}
       onReply={onReply}
@@ -159,6 +160,19 @@ describe("MessageActions", () => {
     expect(screen.queryByText("Copy link")).not.toBeInTheDocument();
   });
 
+  it("does not persist picker reactions while message-action parity is disabled", async () => {
+    const storageKey = "charm:recentReactions:%40me%3Aexample.org";
+    localStorage.removeItem(storageKey);
+    mockUseFlag.mockReturnValue(false);
+    const { onReact } = renderActions();
+
+    fireEvent.click(screen.getByRole("button", { name: "React" }));
+    fireEvent.click(await screen.findByRole("button", { name: "React with 👍" }));
+
+    expect(onReact).toHaveBeenCalledWith("👍");
+    expect(localStorage.getItem(storageKey)).toBeNull();
+  });
+
   it("has 44x44px hit targets for the trigger buttons", () => {
     renderActions();
     const moreButton = screen.getByRole("button", { name: "More actions" });
@@ -214,6 +228,30 @@ describe("MessageActions", () => {
     fireEvent.click(await screen.findByText("Copy"));
 
     expect(onCopy).not.toHaveBeenCalled();
+  });
+
+  it("keeps Report available for an undecrypted event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isUndecrypted: true, onReport });
+    openMenu();
+
+    const report = (await screen.findByText("Report")).closest('[role="menuitem"]');
+    expect(report).not.toHaveAttribute("data-disabled");
+    fireEvent.click(report!);
+    expect(onReport).toHaveBeenCalledOnce();
+  });
+
+  it("shows only Report for a redacted remote event", async () => {
+    const onReport = vi.fn();
+    renderActions({ isOwn: false, isRedacted: true, onReport });
+
+    openMenu();
+    fireEvent.click(await screen.findByText("Report"));
+
+    expect(onReport).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+    expect(screen.queryByText("Copy")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "React" })).not.toBeInTheDocument();
   });
 
   it("does not show Resend or Discard for a normal (non-failed) message", async () => {
@@ -280,6 +318,7 @@ describe("MessageActions", () => {
       <div data-testid="row" onTouchStart={outerStartLongPress} onTouchEnd={outerCancelLongPress}>
         <MessageActions
           ref={ref}
+          accountId="@me:example.org"
           isOwn={false}
           canRedact={false}
           onReply={vi.fn()}

@@ -1,0 +1,308 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as MatrixModule from "@/lib/matrix";
+import { ForwardMessageDialog } from "./ForwardMessageDialog";
+
+const listRooms = vi.fn();
+const forwardMessage = vi.fn();
+
+vi.mock("@/lib/matrix", async () => {
+  const actual = await vi.importActual<typeof MatrixModule>("@/lib/matrix");
+  return {
+    ...actual,
+    listRooms: (...args: unknown[]) => listRooms(...args),
+    forwardMessage: (...args: unknown[]) => forwardMessage(...args),
+  };
+});
+
+function renderDialog(onForwarded = vi.fn(), onOpenChange = vi.fn()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <ForwardMessageDialog
+        open
+        sourceRoomId="!source:localhost"
+        eventId="$event:localhost"
+        onOpenChange={onOpenChange}
+        onForwarded={onForwarded}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  listRooms.mockReset();
+  forwardMessage.mockReset();
+});
+
+describe("ForwardMessageDialog", () => {
+  it("lists rooms and forwards to the clicked one", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!b:localhost",
+        name: "Bravo",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockResolvedValue("txn-1");
+    const onForwarded = vi.fn();
+
+    renderDialog(onForwarded);
+
+    fireEvent.click(await screen.findByText("Alpha"));
+
+    expect(forwardMessage).toHaveBeenCalledWith(
+      "!source:localhost",
+      "$event:localhost",
+      "!a:localhost",
+    );
+  });
+
+  it("filters rooms by name", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!b:localhost",
+        name: "Bravo",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+
+    renderDialog();
+
+    await screen.findByText("Alpha");
+    fireEvent.change(screen.getByPlaceholderText("Filter rooms…"), {
+      target: { value: "brav" },
+    });
+
+    expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+    expect(screen.getByText("Bravo")).toBeInTheDocument();
+  });
+
+  it("shows an inline error when forwarding fails", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockRejectedValue(new Error("boom"));
+
+    renderDialog();
+
+    fireEvent.click(await screen.findByText("Alpha"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("shows a room-loading error and retries the query", async () => {
+    listRooms.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+
+    renderDialog();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load rooms. Check your connection and try again.",
+    );
+    expect(screen.queryByText("No rooms match.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not imply that an in-flight forward can be cancelled", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockReturnValue(new Promise(() => {}));
+    const onOpenChange = vi.fn();
+
+    renderDialog(vi.fn(), onOpenChange);
+    fireEvent.click(await screen.findByText("Alpha"));
+
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Forwarding…")).toBeInTheDocument();
+  });
+
+  it("releases a stale submission when the parent retargets the dialog", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    let resolveForward: ((value: string) => void) | undefined;
+    forwardMessage.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveForward = resolve;
+      }),
+    );
+    const onForwarded = vi.fn();
+    const onOpenChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const dialog = (eventId: string) => (
+      <QueryClientProvider client={client}>
+        <ForwardMessageDialog
+          open
+          sourceRoomId="!source:localhost"
+          eventId={eventId}
+          onOpenChange={onOpenChange}
+          onForwarded={onForwarded}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(dialog("$first:localhost"));
+
+    fireEvent.click(await screen.findByText("Alpha"));
+    expect(screen.getByText("Forwarding…")).toBeInTheDocument();
+
+    view.rerender(dialog("$second:localhost"));
+
+    expect(screen.queryByText("Forwarding…")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Alpha/ })).toBeEnabled();
+
+    await act(async () => {
+      resolveForward?.("txn-1");
+    });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onForwarded).not.toHaveBeenCalled();
+  });
+
+  it("clears filter and error state when the parent retargets the dialog", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+    ]);
+    forwardMessage.mockRejectedValue(new Error("boom"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const dialog = (eventId: string) => (
+      <QueryClientProvider client={client}>
+        <ForwardMessageDialog
+          open
+          sourceRoomId="!source:localhost"
+          eventId={eventId}
+          onOpenChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(dialog("$first:localhost"));
+
+    await screen.findByText("Alpha");
+    fireEvent.change(screen.getByPlaceholderText("Filter rooms…"), {
+      target: { value: "alpha" },
+    });
+    fireEvent.click(screen.getByText("Alpha"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+
+    view.rerender(dialog("$second:localhost"));
+
+    expect(screen.getByPlaceholderText("Filter rooms…")).toHaveValue("");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("excludes pending invites from the forward targets", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!a:localhost",
+        name: "Alpha",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+      },
+      {
+        room_id: "!c:localhost",
+        name: "Charlie",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "invite",
+      },
+    ]);
+
+    renderDialog();
+
+    await screen.findByText("Alpha");
+    expect(screen.queryByText("Charlie")).not.toBeInTheDocument();
+  });
+
+  it("excludes the source room and joined spaces from forward targets", async () => {
+    listRooms.mockResolvedValue([
+      {
+        room_id: "!target:localhost",
+        name: "Target",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: false,
+      },
+      {
+        room_id: "!source:localhost",
+        name: "Source",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: false,
+      },
+      {
+        room_id: "!space:localhost",
+        name: "Community",
+        avatar_url: null,
+        avatar_path: null,
+        membership: "join",
+        is_space: true,
+      },
+    ]);
+
+    renderDialog();
+
+    await screen.findByText("Target");
+    expect(screen.queryByText("Source")).not.toBeInTheDocument();
+    expect(screen.queryByText("Community")).not.toBeInTheDocument();
+  });
+});

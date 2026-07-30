@@ -123,6 +123,23 @@ describe("IrcMessageRow", () => {
     expect(screen.getByText("* message deleted")).toBeInTheDocument();
   });
 
+  it("keeps the action-menu entry point on a reportable redacted remote message", () => {
+    render(
+      <IrcMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            body: "",
+            redacted: true,
+          }),
+          onReport: vi.fn(),
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /more/i })).toBeInTheDocument();
+  });
+
   it("hides edited/pending/error status suffixes for a redacted message", () => {
     // Regression test: an edited message that's later redacted must not
     // show "(edited)" next to "* message deleted" — matches Bubble/Discord,

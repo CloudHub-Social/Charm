@@ -8,10 +8,13 @@
 //! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
 //! `resend_message`/`discard_failed_message`.
 
+use std::collections::HashSet;
+
+use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, ReplacementMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplacementMetadata, RoomMessageEventContent,
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
@@ -29,6 +32,70 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
     client
         .get_room(&parsed_room_id)
         .ok_or_else(|| format!("room {room_id} not found"))
+}
+
+/// Fetches *every* relation of `relation_type` targeting `event_id`, paging
+/// forward (`next_batch_token`) until the relation stream is exhausted or
+/// `MAX_RELATION_PAGES` is reached — same paginated-walk shape as
+/// `room_admin::latest_edit_body` / `send::latest_replacement_content`, but
+/// those only need the single *latest* matching relation and can return as
+/// soon as they find one; `get_edit_history_impl` and
+/// `get_reaction_details_impl` need the *complete* set (full edit history,
+/// every reactor), so this collects across all pages instead of short-
+/// circuiting. Without this, either caller's `load_or_fetch_event_with_relations`
+/// call only saw the first (most recent) 20 relations, silently truncating
+/// history/reactor lists in rooms with enough relation noise (reactions,
+/// other edits, etc.) ahead of the older entries.
+// 100 pages keeps the endpoint bounded against a malicious/non-terminating
+// homeserver while covering up to 2,000 relations — enough for genuinely
+// popular messages without turning the safety cap into an ordinary product
+// limitation at only 200 reactions.
+const MAX_RELATION_PAGES: usize = 100;
+
+async fn paginated_relations(
+    room: &matrix_sdk::Room,
+    event_id: &EventId,
+    relation_type: matrix_sdk::ruma::events::relation::RelationType,
+) -> Result<Vec<matrix_sdk::deserialized_responses::TimelineEvent>, String> {
+    use matrix_sdk::room::{IncludeRelations, RelationsOptions};
+
+    let mut all = Vec::new();
+    let mut from: Option<String> = None;
+
+    for _ in 0..MAX_RELATION_PAGES {
+        let relations = room
+            .relations(
+                event_id.to_owned(),
+                RelationsOptions {
+                    dir: matrix_sdk::ruma::api::Direction::Backward,
+                    include_relations: IncludeRelations::RelationsOfType(relation_type.clone()),
+                    limit: matrix_sdk::ruma::UInt::new(20),
+                    from: from.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        all.extend(relations.chunk);
+
+        match relations.next_batch_token {
+            Some(next) => from = Some(next),
+            // Genuinely exhausted — every relation has been collected.
+            None => return Ok(all),
+        }
+    }
+
+    // Review fix: hit `MAX_RELATION_PAGES` while `next_batch_token` was
+    // still `Some` — there are more relations beyond the cap that this
+    // never fetched. Returning `all` here would present a silently
+    // truncated subset to `EditHistoryDialog`/`WhoReactedDialog` as if it
+    // were the complete edit history / reactor list. Erroring instead lets
+    // the frontend show a real failure rather than confidently wrong data.
+    Err(format!(
+        "relation lookup for {event_id} exceeded the {MAX_RELATION_PAGES}-page limit \
+         without exhausting the relation stream"
+    ))
 }
 
 /// Result of `toggle_reaction`, so the frontend can optimistically flip
@@ -530,8 +597,366 @@ pub async fn discard_failed_message_impl(
     Ok(aborted)
 }
 
+/// Reports `event_id` in `room_id` to the homeserver via
+/// `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`
+/// (`report_content::v3::Request`). The vendored ruma (0.24.0 client-api)
+/// only carries a `reason: Option<String>` on this request — there is no
+/// `score` field in this version, so the `score` parameter accepted here is
+/// currently unused (kept in the signature for forward-compatibility/
+/// frontend simplicity, in case a future ruma bump reintroduces it).
+#[tauri::command]
+pub async fn report_event(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+    reason: Option<String>,
+    score: Option<i32>,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    report_event_impl(&client, &room_id, &event_id, reason, score).await
+}
+
+/// Core logic behind [`report_event`].
+pub async fn report_event_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    reason: Option<String>,
+    _score: Option<i32>,
+) -> Result<(), String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let parsed_event_id = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let mut request = report_content::v3::Request::new(parsed_room_id, parsed_event_id);
+    request.reason = reason;
+
+    client.send(request).await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Fetches the raw JSON of `event_id` in `room_id`, pretty-printed, for a
+/// debug "view source" viewer. Uses the same cache-first
+/// `load_or_fetch_event` as `edit_message_impl`/`send_reply_impl`.
+#[tauri::command]
+pub async fn get_event_source(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    get_event_source_impl(&client, &room_id, &event_id).await
+}
+
+/// Core logic behind [`get_event_source`].
+pub async fn get_event_source_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> Result<String, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_event_id = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let event = room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let value: serde_json::Value =
+        serde_json::to_value(event.kind.raw()).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
+/// Extracts the formatted (HTML) body from a message's `msgtype`, for the
+/// kinds that carry one (`m.text`/`m.notice`/`m.emote`). Other msgtypes
+/// (media, location, ...) have no formatted body.
+fn formatted_body_of(
+    msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
+) -> Option<String> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    match msgtype {
+        MessageType::Text(text) => text.formatted.as_ref().map(|f| f.body.clone()),
+        MessageType::Notice(notice) => notice.formatted.as_ref().map(|f| f.body.clone()),
+        MessageType::Emote(emote) => emote.formatted.as_ref().map(|f| f.body.clone()),
+        _ => None,
+    }
+}
+
+/// One entry in a message's edit history — either the original event, or one
+/// of its `m.replace` edits, in chronological (oldest-first) order.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct EditHistoryEntry {
+    pub event_id: String,
+    pub body: String,
+    pub formatted_body: Option<String>,
+    pub sender: String,
+    #[ts(type = "number")]
+    pub origin_server_ts: u64,
+}
+
+/// Returns the full edit history of `event_id` in `room_id`: the original
+/// event first, followed by each `m.replace` in chronological order,
+/// including the current user's queued local replacements that are not yet
+/// visible through `/relations`. Walks relations the same way
+/// `toggle_reaction_impl` walks reactions.
+#[tauri::command]
+pub async fn get_edit_history(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<Vec<EditHistoryEntry>, String> {
+    let client = state.require_client().await?;
+    get_edit_history_impl(&client, &room_id, &event_id).await
+}
+
+/// Core logic behind [`get_edit_history`].
+pub async fn get_edit_history_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+) -> Result<Vec<EditHistoryEntry>, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_target = EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let original_event = room
+        .load_or_fetch_event(&parsed_target, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let original_deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent = original_event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = original_deserialized
+    else {
+        return Err("target event is not a room message".to_string());
+    };
+    let original_message = msg
+        .as_original()
+        .ok_or_else(|| "target event has already been redacted".to_string())?;
+    let pending_edits = if client.user_id() == Some(original_message.sender.as_ref()) {
+        super::send::pending_replacements(&room, &parsed_target).await?
+    } else {
+        // A replacement is only valid when its sender matches the original
+        // event. Every local echo belongs to the current account, so none can
+        // be a valid edit of another member's message.
+        Vec::new()
+    };
+    // Snapshot the send queue before fetching server relations. If an edit is
+    // acknowledged while the relations request is in flight, it is then
+    // represented by at least one of the two snapshots rather than falling
+    // through the acknowledgement boundary between them.
+    let relations = paginated_relations(
+        &room,
+        &parsed_target,
+        matrix_sdk::ruma::events::relation::RelationType::Replacement,
+    )
+    .await?;
+
+    let mut entries = vec![EditHistoryEntry {
+        event_id: original_message.event_id.to_string(),
+        body: original_message.content.msgtype.body().to_string(),
+        formatted_body: formatted_body_of(&original_message.content.msgtype),
+        sender: original_message.sender.to_string(),
+        origin_server_ts: original_message.origin_server_ts.0.into(),
+    }];
+
+    let mut edits: Vec<EditHistoryEntry> = Vec::new();
+    let mut acknowledged_transaction_ids = HashSet::new();
+    for related in &relations {
+        let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
+            related.kind.raw().deserialize();
+        let Ok(deserialized) = deserialized else {
+            continue;
+        };
+        let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+            AnySyncMessageLikeEvent::RoomMessage(edit_msg),
+        ) = deserialized
+        else {
+            continue;
+        };
+        let Some(edit) = edit_msg.as_original() else {
+            continue;
+        };
+        // Matrix clients only apply an `m.replace` from the original
+        // event's own sender — same check `latest_edit_body` (room_admin.rs)
+        // already applies — so a different member's replacement targeting
+        // this event is not a real edit and must not be shown as one.
+        if edit.sender != original_message.sender {
+            continue;
+        }
+        let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
+            continue;
+        };
+        if replacement.event_id != parsed_target {
+            continue;
+        }
+        if let Some(transaction_id) = &edit.unsigned.transaction_id {
+            acknowledged_transaction_ids.insert(transaction_id.to_string());
+        }
+
+        edits.push(EditHistoryEntry {
+            event_id: edit.event_id.to_string(),
+            body: replacement.new_content.msgtype.body().to_string(),
+            formatted_body: formatted_body_of(&replacement.new_content.msgtype),
+            sender: edit.sender.to_string(),
+            origin_server_ts: edit.origin_server_ts.0.into(),
+        });
+    }
+    edits.extend(
+        pending_edits
+            .into_iter()
+            .filter(|pending| {
+                !acknowledged_transaction_ids.contains(pending.transaction_id.as_str())
+            })
+            .map(|pending| EditHistoryEntry {
+                event_id: pending.transaction_id,
+                body: pending.new_content.msgtype.body().to_string(),
+                formatted_body: formatted_body_of(&pending.new_content.msgtype),
+                sender: original_message.sender.to_string(),
+                origin_server_ts: pending.origin_server_ts,
+            }),
+    );
+    edits.sort_by_key(|entry| entry.origin_server_ts);
+    entries.extend(edits);
+
+    Ok(entries)
+}
+
+/// One reactor on a given reaction `key` for a target event — who reacted
+/// and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct ReactionDetail {
+    pub sender: String,
+    #[ts(type = "number")]
+    pub origin_server_ts: u64,
+}
+
+fn dedupe_reaction_details_by_sender(mut details: Vec<ReactionDetail>) -> Vec<ReactionDetail> {
+    // A fast un-react/re-react can leave an older acknowledged relation and a
+    // newer queued local echo for the same sender in these combined snapshots.
+    // Keep the newest effective reaction and present reactors newest-first.
+    details.sort_by_key(|detail| std::cmp::Reverse(detail.origin_server_ts));
+    let mut seen = HashSet::new();
+    details
+        .into_iter()
+        .filter(|detail| seen.insert(detail.sender.clone()))
+        .collect()
+}
+
+async fn pending_reaction_details(
+    room: &matrix_sdk::Room,
+    target_event_id: &EventId,
+    key: &str,
+    sender: &str,
+) -> Result<Vec<ReactionDetail>, String> {
+    let (local_echoes, _updates) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(local_echoes
+        .into_iter()
+        .filter_map(|echo| {
+            let LocalEchoContent::Event {
+                serialized_event,
+                send_handle,
+                ..
+            } = echo.content
+            else {
+                return None;
+            };
+            let Ok(AnyMessageLikeEventContent::Reaction(content)) = serialized_event.deserialize()
+            else {
+                return None;
+            };
+            (content.relates_to.event_id == *target_event_id && content.relates_to.key == key).then(
+                || ReactionDetail {
+                    sender: sender.to_owned(),
+                    origin_server_ts: send_handle.created_at.0.into(),
+                },
+            )
+        })
+        .collect())
+}
+
+/// Returns every reactor who reacted to `target_event_id` with `key` — the
+/// "who reacted" detail view. Reuses the same relation-walk as
+/// `toggle_reaction_impl`, but collects *all* matching reactions rather than
+/// stopping at the current user's own.
+#[tauri::command]
+pub async fn get_reaction_details(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    target_event_id: String,
+    key: String,
+) -> Result<Vec<ReactionDetail>, String> {
+    let client = state.require_client().await?;
+    get_reaction_details_impl(&client, &room_id, &target_event_id, key).await
+}
+
+/// Core logic behind [`get_reaction_details`].
+pub async fn get_reaction_details_impl(
+    client: &Client,
+    room_id: &str,
+    target_event_id: &str,
+    key: String,
+) -> Result<Vec<ReactionDetail>, String> {
+    let room = get_room(client, room_id)?;
+    let parsed_target = EventId::parse(target_event_id).map_err(|e| e.to_string())?;
+
+    let relations = paginated_relations(
+        &room,
+        &parsed_target,
+        matrix_sdk::ruma::events::relation::RelationType::Annotation,
+    )
+    .await?;
+
+    let mut details = Vec::new();
+    for related in &relations {
+        let deserialized: Result<matrix_sdk::ruma::events::AnySyncTimelineEvent, _> =
+            related.kind.raw().deserialize();
+        let Ok(deserialized) = deserialized else {
+            continue;
+        };
+        let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+            AnySyncMessageLikeEvent::Reaction(reaction),
+        ) = deserialized
+        else {
+            continue;
+        };
+        let Some(original) = reaction.as_original() else {
+            continue;
+        };
+        if original.content.relates_to.event_id != parsed_target
+            || original.content.relates_to.key != key
+        {
+            continue;
+        }
+
+        details.push(ReactionDetail {
+            sender: original.sender.to_string(),
+            origin_server_ts: original.origin_server_ts.0.into(),
+        });
+    }
+    if let Some(own_user_id) = client.user_id() {
+        details.extend(
+            pending_reaction_details(&room, &parsed_target, &key, own_user_id.as_str()).await?,
+        );
+    }
+
+    Ok(dedupe_reaction_details_by_sender(details))
+}
+
 #[cfg(test)]
 mod relation_shape_tests {
+    use super::{dedupe_reaction_details_by_sender, ReactionDetail};
     use matrix_sdk::ruma::events::reaction::ReactionEventContent;
     use matrix_sdk::ruma::events::relation::Annotation;
     use matrix_sdk::ruma::events::room::message::{
@@ -591,6 +1016,38 @@ mod relation_shape_tests {
     }
 
     #[test]
+    fn reaction_details_keep_only_one_entry_per_sender() {
+        let details = vec![
+            ReactionDetail {
+                sender: "@alice:example.org".to_string(),
+                origin_server_ts: 1,
+            },
+            ReactionDetail {
+                sender: "@alice:example.org".to_string(),
+                origin_server_ts: 2,
+            },
+            ReactionDetail {
+                sender: "@bob:example.org".to_string(),
+                origin_server_ts: 3,
+            },
+        ];
+
+        assert_eq!(
+            dedupe_reaction_details_by_sender(details),
+            vec![
+                ReactionDetail {
+                    sender: "@bob:example.org".to_string(),
+                    origin_server_ts: 3,
+                },
+                ReactionDetail {
+                    sender: "@alice:example.org".to_string(),
+                    origin_server_ts: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn replacement_metadata_from_original_event_uses_its_event_id() {
         let original: OriginalRoomMessageEvent = serde_json::from_value(serde_json::json!({
             "type": "m.room.message",
@@ -606,6 +1063,192 @@ mod relation_shape_tests {
         let content = RoomMessageEventContent::text_plain("edited").make_replacement(metadata);
         let json = to_value(&content).unwrap();
         assert_eq!(json["m.relates_to"]["event_id"], "$original:example.org");
+    }
+}
+
+#[cfg(test)]
+mod edit_history_tests {
+    use matrix_sdk::ruma::events::room::message::{ReplacementMetadata, RoomMessageEventContent};
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn edit_history_includes_queued_local_replacements_in_order() {
+        let room_id = room_id!("!test:example.org");
+        let original = event_id!("$original:example.org");
+        let unrelated = event_id!("$unrelated:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let own_user_id = client.user_id().unwrap().to_owned();
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+
+        for (target, body) in [
+            (original, "first pending edit"),
+            (unrelated, "other message's edit"),
+            (original, "second pending edit"),
+        ] {
+            let edit = RoomMessageEventContent::text_plain(body)
+                .make_replacement(ReplacementMetadata::new(target.to_owned(), None));
+            room.send_queue()
+                .send(AnyMessageLikeEventContent::RoomMessage(edit))
+                .await
+                .unwrap();
+        }
+        let acknowledged_transaction_id = super::super::send::pending_replacements(&room, original)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .transaction_id;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": own_user_id,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": "$acknowledged-edit:example.org",
+                        "sender": own_user_id,
+                        "origin_server_ts": 1_700_000_000_001u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* first pending edit",
+                            "m.new_content": {
+                                "msgtype": "m.text",
+                                "body": "first pending edit"
+                            },
+                            "m.relates_to": {
+                                "rel_type": "m.replace",
+                                "event_id": original
+                            }
+                        },
+                        "unsigned": {
+                            "transaction_id": acknowledged_transaction_id
+                        }
+                    }, {
+                        "type": "m.room.message",
+                        "event_id": "$later-device-edit:example.org",
+                        "sender": own_user_id,
+                        "origin_server_ts": 4_000_000_000_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* later device edit",
+                            "m.new_content": {
+                                "msgtype": "m.text",
+                                "body": "later device edit"
+                            },
+                            "m.relates_to": {
+                                "rel_type": "m.replace",
+                                "event_id": original
+                            }
+                        }
+                    }]
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let history = get_edit_history_impl(&client, room_id.as_str(), original.as_str())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.body.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "original body",
+                "first pending edit",
+                "second pending edit",
+                "later device edit"
+            ]
+        );
+        assert!(
+            history[1..]
+                .iter()
+                .all(|entry| entry.sender == own_user_id.as_str()),
+            "queued edits must only be attributed to the logged-in original sender"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reaction_detail_tests {
+    use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+    use matrix_sdk::ruma::events::relation::Annotation;
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reaction_details_include_a_queued_local_reaction() {
+        let room_id = room_id!("!test:example.org");
+        let target = event_id!("$target:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let own_user_id = client.user_id().unwrap().to_owned();
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+        let reaction =
+            ReactionEventContent::new(Annotation::new(target.to_owned(), "👍".to_owned()));
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::Reaction(reaction))
+            .await
+            .unwrap();
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{target}/m.annotation"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "chunk": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let details =
+            get_reaction_details_impl(&client, room_id.as_str(), target.as_str(), "👍".to_owned())
+                .await
+                .unwrap();
+
+        assert_eq!(
+            details
+                .iter()
+                .map(|detail| detail.sender.as_str())
+                .collect::<Vec<_>>(),
+            vec![own_user_id.as_str()]
+        );
     }
 }
 
