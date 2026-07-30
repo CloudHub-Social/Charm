@@ -1125,6 +1125,7 @@ pub async fn login_with_token(
     homeserver_url: String,
     token: String,
 ) -> Result<LoginResponse, String> {
+    let deadline = tokio::time::Instant::now() + AUTH_NETWORK_TIMEOUT;
     ensure_registration_feature_enabled(&app)?;
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     if let Some(pending) = state.pending_sso.lock().await.take() {
@@ -1135,26 +1136,22 @@ pub async fn login_with_token(
 
     let store_key = persistence::temp_store_key();
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = match tokio::time::timeout(
-        AUTH_NETWORK_TIMEOUT,
-        build_client(&app, &homeserver_url, &store_key),
-    )
-    .await
-    {
-        Ok(Ok(client)) => client,
-        Err(_) => {
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return Err("token login setup timed out".to_string());
-        }
-        Ok(Err(error)) => {
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return Err(error);
-        }
-    };
-    let flows =
-        match tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().get_login_types())
+    let client =
+        match tokio::time::timeout_at(deadline, build_client(&app, &homeserver_url, &store_key))
             .await
         {
+            Ok(Ok(client)) => client,
+            Err(_) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("token login setup timed out".to_string());
+            }
+            Ok(Err(error)) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err(error);
+            }
+        };
+    let flows =
+        match tokio::time::timeout_at(deadline, client.matrix_auth().get_login_types()).await {
             Ok(Ok(flows)) => flows,
             Ok(Err(_)) | Err(_) => {
                 drop(client);
@@ -1173,8 +1170,8 @@ pub async fn login_with_token(
     }
 
     if !matches!(
-        tokio::time::timeout(
-            AUTH_NETWORK_TIMEOUT,
+        tokio::time::timeout_at(
+            deadline,
             client
                 .matrix_auth()
                 .login_token(&token)
@@ -1712,6 +1709,7 @@ pub async fn start_sso_login(
     homeserver_url: String,
     idp_id: Option<String>,
 ) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + AUTH_NETWORK_TIMEOUT;
     if idp_id.is_some() {
         ensure_registration_feature_enabled(&app)?;
     }
@@ -1726,32 +1724,60 @@ pub async fn start_sso_login(
     // unprotected for however long that network setup takes — `pending_sso`
     // itself isn't set until after both succeed.
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = build_client(&app, &homeserver_url, &store_key).await?;
-    let attempt_state = generate_sso_state();
-    if let Some(idp_id) = idp_id.as_deref() {
-        let flows = match client.matrix_auth().get_login_types().await {
-            Ok(flows) => flows,
-            Err(_) => {
-                drop(client);
+    let client =
+        match tokio::time::timeout_at(deadline, build_client(&app, &homeserver_url, &store_key))
+            .await
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
                 let _ = persistence::discard_temp_login_store(&app, &store_key);
-                return Err("could not verify this identity provider".to_string());
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("single sign-on setup timed out".to_string());
             }
         };
+    let attempt_state = generate_sso_state();
+    if let Some(idp_id) = idp_id.as_deref() {
+        let flows =
+            match tokio::time::timeout_at(deadline, client.matrix_auth().get_login_types()).await {
+                Ok(Ok(flows)) => flows,
+                Ok(Err(_)) => {
+                    drop(client);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err("could not verify this identity provider".to_string());
+                }
+                Err(_) => {
+                    drop(client);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err("single sign-on setup timed out".to_string());
+                }
+            };
         if !identity_provider_is_advertised(&flows.flows, idp_id) {
             drop(client);
             let _ = persistence::discard_temp_login_store(&app, &store_key);
             return Err("this identity provider is not advertised by the homeserver".to_string());
         }
     }
-    let sso_url =
-        match get_sso_login_url_with_provider(&client, &attempt_state, idp_id.as_deref()).await {
-            Ok(url) => url,
-            Err(error) => {
-                drop(client);
-                let _ = persistence::discard_temp_login_store(&app, &store_key);
-                return Err(error);
-            }
-        };
+    let sso_url = match tokio::time::timeout_at(
+        deadline,
+        get_sso_login_url_with_provider(&client, &attempt_state, idp_id.as_deref()),
+    )
+    .await
+    {
+        Ok(Ok(url)) => url,
+        Ok(Err(error)) => {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err(error);
+        }
+        Err(_) => {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("single sign-on setup timed out".to_string());
+        }
+    };
 
     // Publish to `pending_sso` *before* defusing the reservation, not after
     // (Codex review on #288, P2): defusing first would leave a gap between
