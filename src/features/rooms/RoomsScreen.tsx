@@ -525,7 +525,10 @@ export function RoomsScreen({
               setCreateSpaceParentId(spaceId);
               setCreateJoinDialogOpen(true);
             }}
-            onSpaceChildrenChanged={() => setHierarchyRefreshToken((token) => token + 1)}
+            onSpaceChildrenChanged={() => {
+              void refreshRooms();
+              setHierarchyRefreshToken((token) => token + 1);
+            }}
           />
         }
         activeRoomId={activeRoom?.room_id ?? null}
