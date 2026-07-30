@@ -412,6 +412,32 @@ describe("ReactionBar", () => {
     expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes an open tooltip when membership changes at the same count", async () => {
+    getReactionDetails
+      .mockResolvedValueOnce([{ sender: "@alice:example.org", origin_server_ts: 1 }])
+      .mockResolvedValueOnce([{ sender: "@bob:example.org", origin_server_ts: 2 }]);
+    const props = {
+      onToggle: vi.fn(),
+      roomId: "!room:example.org",
+      eventId: "$event",
+    };
+    const { rerender } = render(
+      <ReactionBar {...props} reactions={[{ key: "👍", count: 1, reacted_by_me: false }]} />,
+    );
+    const chip = screen.getByRole("button", { name: /^👍1$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+
+    rerender(
+      <ReactionBar {...props} reactions={[{ key: "👍", count: 1, reacted_by_me: false }]} />,
+    );
+
+    expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
+    expect(screen.queryByText("@alice:example.org")).not.toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
   it("closes the reactor dialog when its reaction disappears", async () => {
     getReactionDetails.mockResolvedValue([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
     const props = {

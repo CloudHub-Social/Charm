@@ -69,17 +69,11 @@ export function ReactionBar({
     tooltipKeyRef.current = key;
     setTooltipKeyState(key);
   }
-  // Records the reaction `count` the cache entry for a given key was last
-  // fetched at, so the modal-open effect below can tell "still fresh" from
-  // "a reaction arrived/left while the modal was open" without folding
-  // count into the cache key itself (see `loadDetails`'s doc comment for
-  // why that was the wrong axis to key on).
-  const fetchedAtCountRef = useRef<Record<string, number>>({});
-
   // Cache keyed by the emoji `key` alone — see `clearDetails` for why count
   // must not be part of the key. `force` bypasses the "already cached"
-  // check for the modal-open / count-changed refetch below, where a stale
-  // cached entry needs replacing rather than being treated as fresh.
+  // check when a new timeline reaction snapshot arrives while a viewer is
+  // open, where a stale cached entry needs replacing rather than being
+  // treated as fresh.
   function loadDetails(reaction: ReactionGroup, options?: { force?: boolean }) {
     if (!messageActionParityEnabled || !roomId || !eventId) return;
     const key = reaction.key;
@@ -96,12 +90,10 @@ export function ReactionBar({
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
         if (requestGenerationRef.current[key] !== generation) return;
-        fetchedAtCountRef.current[key] = reaction.count;
         setDetailsByKey((prev) => ({ ...prev, [key]: details }));
       })
       .catch(() => {
         if (requestGenerationRef.current[key] !== generation) return;
-        fetchedAtCountRef.current[key] = reaction.count;
         setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
       })
       .finally(() => {
@@ -116,7 +108,6 @@ export function ReactionBar({
     if (modalKeyRef.current === key) return;
     requestGenerationRef.current[key] = (requestGenerationRef.current[key] ?? 0) + 1;
     inFlightKeysRef.current.delete(key);
-    delete fetchedAtCountRef.current[key];
     setDetailErrorsByKey((prev) => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
@@ -142,10 +133,12 @@ export function ReactionBar({
   const modalReaction = reactions.find((reaction) => reaction.key === modalKey);
   const tooltipReaction = reactions.find((reaction) => reaction.key === tooltipKey);
 
-  // Live-refreshes every visible reactor list while it is open. A reaction
-  // arriving/leaving changes `count` without necessarily closing either the
-  // hover/focus tooltip or modal, and the emoji-keyed cache would otherwise
-  // keep showing the previous reactor set.
+  // Live-refresh every visible reactor list whenever the timeline supplies
+  // a new reaction snapshot. Count alone is not a freshness token: one
+  // reactor can leave while another joins in the same update, preserving
+  // both `count` and `reacted_by_me` while changing the actual membership.
+  // State updates from the request retain the same `reactions` prop
+  // reference, so this does not loop after the refreshed details land.
   useEffect(() => {
     const activeReactions = [modalReaction, tooltipReaction].filter(
       (reaction): reaction is ReactionGroup => reaction !== undefined,
@@ -155,21 +148,13 @@ export function ReactionBar({
       if (refreshedKeys.has(reaction.key)) continue;
       refreshedKeys.add(reaction.key);
       if (inFlightKeysRef.current.has(reaction.key)) continue;
-      if (fetchedAtCountRef.current[reaction.key] === reaction.count) continue;
       loadDetails(reaction, { force: true });
     }
     // loadDetails is stable across renders (recreated each render but with
     // the same closed-over deps as this effect); including it would just
     // re-run this effect every render without changing behavior.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    modalReaction?.key,
-    modalReaction?.count,
-    tooltipReaction?.key,
-    tooltipReaction?.count,
-    detailsByKey,
-    detailErrorsByKey,
-  ]);
+  }, [reactions]);
 
   // A focused trigger can be removed by a live timeline update without
   // emitting blur/mouseleave. Close any viewer for that vanished key and
@@ -264,7 +249,10 @@ export function ReactionBar({
           aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
           disabled={disabled}
           className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          onClick={() => setModalKey(reaction.key)}
+          onClick={() => {
+            loadDetails(reaction);
+            setModalKey(reaction.key);
+          }}
         >
           {reaction.count > TOOLTIP_NAME_LIMIT ? `View all ${reaction.count}` : "View reactors"}
         </button>

@@ -365,14 +365,17 @@ pub async fn forward_message(
 /// `/relations` failure looked identical to "there is no edit", so the
 /// forward would silently fall back to `original_message.content` and
 /// re-share content the sender had actually edited away.
+struct ServerReplacement {
+    transaction_id: Option<String>,
+    origin_server_ts: u64,
+    new_content: matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation,
+}
+
 async fn latest_replacement_content(
     room: &Room,
     event_id: &matrix_sdk::ruma::EventId,
     original_sender: &matrix_sdk::ruma::UserId,
-) -> Result<
-    Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation>,
-    String,
-> {
+) -> Result<Option<ServerReplacement>, String> {
     use matrix_sdk::room::{IncludeRelations, RelationsOptions};
     use matrix_sdk::ruma::events::relation::RelationType;
     use matrix_sdk::ruma::events::room::message::Relation;
@@ -425,12 +428,20 @@ async fn latest_replacement_content(
                 if replacement.event_id != *event_id {
                     return None;
                 }
-                Some((edit.origin_server_ts, replacement.new_content))
+                Some(ServerReplacement {
+                    transaction_id: edit
+                        .unsigned
+                        .transaction_id
+                        .as_ref()
+                        .map(ToString::to_string),
+                    origin_server_ts: edit.origin_server_ts.0.into(),
+                    new_content: replacement.new_content,
+                })
             })
             .collect();
-        candidates.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
-        if let Some((_, new_content)) = candidates.into_iter().next() {
-            return Ok(Some(new_content));
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.origin_server_ts));
+        if let Some(candidate) = candidates.into_iter().next() {
+            return Ok(Some(candidate));
         }
 
         match relations.next_batch_token {
@@ -510,6 +521,30 @@ pub(super) async fn pending_replacements(
         .collect())
 }
 
+fn latest_effective_replacement(
+    server_edit: Option<ServerReplacement>,
+    pending_edits: Vec<PendingReplacement>,
+) -> Option<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation> {
+    let acknowledged_transaction_id = server_edit
+        .as_ref()
+        .and_then(|replacement| replacement.transaction_id.as_deref());
+    let pending_edit = pending_edits
+        .into_iter()
+        .filter(|replacement| {
+            Some(replacement.transaction_id.as_str()) != acknowledged_transaction_id
+        })
+        .max_by_key(|replacement| replacement.origin_server_ts);
+
+    match (server_edit, pending_edit) {
+        (Some(server), Some(pending)) if pending.origin_server_ts > server.origin_server_ts => {
+            Some(pending.new_content)
+        }
+        (Some(server), _) => Some(server.new_content),
+        (None, Some(pending)) => Some(pending.new_content),
+        (None, None) => None,
+    }
+}
+
 /// Core logic behind [`forward_message`].
 pub async fn forward_message_impl(
     client: &Client,
@@ -556,15 +591,11 @@ pub async fn forward_message_impl(
     // falling back to `original_message.content` — see
     // `latest_replacement_content`'s doc comment for why treating "the
     // request failed" the same as "there is no edit" is unsafe here.
-    let pending_edit = pending_replacements(&source_room, &parsed_event_id)
-        .await?
-        .pop()
-        .map(|replacement| replacement.new_content);
-    let latest_edit = if pending_edit.is_some() {
-        pending_edit
-    } else {
-        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender).await?
-    };
+    let server_edit =
+        latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender)
+            .await?;
+    let pending_edits = pending_replacements(&source_room, &parsed_event_id).await?;
+    let latest_edit = latest_effective_replacement(server_edit, pending_edits);
 
     let mut content = original_message.content.clone();
     if let Some(new_content) = latest_edit {
@@ -1255,6 +1286,30 @@ mod tests {
             json.get("m.mentions").is_none(),
             "forwarded content must not carry the source event's m.mentions"
         );
+    }
+
+    #[test]
+    fn latest_effective_replacement_reconciles_server_and_pending_timestamps() {
+        let content = |body: &str| {
+            let content = RoomMessageEventContent::text_plain(body);
+            let json = serde_json::to_value(content).unwrap();
+            serde_json::from_value(json).unwrap()
+        };
+        let server = ServerReplacement {
+            transaction_id: None,
+            origin_server_ts: 200,
+            new_content: content("newer server edit"),
+        };
+        let older_pending = PendingReplacement {
+            transaction_id: "pending-old".to_string(),
+            origin_server_ts: 100,
+            new_content: content("older pending edit"),
+        };
+
+        let selected = latest_effective_replacement(Some(server), vec![older_pending])
+            .expect("one replacement should be selected");
+
+        assert_eq!(selected.msgtype.body(), "newer server edit");
     }
 
     #[test]
