@@ -876,6 +876,10 @@ pub async fn request_registration_email(
     if next_registration_stage(&current.uiaa)? != AuthType::EmailIdentity.as_str() {
         return Err("registration email is not the current authentication stage".to_string());
     }
+    // `pending_registration` itself protects the temp store from the delayed
+    // orphan sweep. Reserve the key before taking the attempt out of that
+    // slot, and keep the reservation through every network/restore path.
+    let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
     let mut pending = guard.take().expect("pending attempt checked above");
     drop(guard);
 
@@ -902,6 +906,7 @@ pub async fn request_registration_email(
                 return Err("registration cancelled".to_string());
             }
             state.pending_registration.lock().await.replace(pending);
+            reservation.defuse();
             return Err("could not send registration verification email".to_string());
         }
     };
@@ -918,6 +923,7 @@ pub async fn request_registration_email(
         Ok(url) => url,
         Err(error) => {
             state.pending_registration.lock().await.replace(pending);
+            reservation.defuse();
             return Err(error);
         }
     };
@@ -929,6 +935,7 @@ pub async fn request_registration_email(
         submitted: false,
     });
     state.pending_registration.lock().await.replace(pending);
+    reservation.defuse();
     Ok(RegistrationEmailChallenge { requires_token })
 }
 

@@ -28,12 +28,13 @@ use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::session::{CryptoStoreHandle, Session};
 
 const ATTEMPT_TTL: Duration = Duration::from_secs(20 * 60);
+const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
 
 type AuthenticatedClient = (
     LoginResponse,
@@ -50,6 +51,7 @@ struct RegistrationEmail {
 }
 
 struct PendingRegistration {
+    _capacity: OwnedSemaphorePermit,
     owner: String,
     client: Client,
     crypto: Option<CryptoStoreHandle>,
@@ -61,6 +63,7 @@ struct PendingRegistration {
 }
 
 struct PendingPasswordReset {
+    _capacity: OwnedSemaphorePermit,
     owner: String,
     client: Client,
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
@@ -69,11 +72,23 @@ struct PendingPasswordReset {
     created_at: Instant,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct PendingAuthStore {
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     password_resets: Arc<Mutex<HashMap<String, PendingPasswordReset>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
+    capacity: Arc<Semaphore>,
+}
+
+impl Default for PendingAuthStore {
+    fn default() -> Self {
+        Self {
+            registrations: Arc::default(),
+            password_resets: Arc::default(),
+            cancellations: Arc::default(),
+            capacity: Arc::new(Semaphore::new(MAX_PENDING_AUTH_ATTEMPTS)),
+        }
+    }
 }
 
 impl PendingAuthStore {
@@ -101,6 +116,7 @@ impl PendingAuthStore {
         request: RegisterRequest,
         has_persistence: bool,
     ) -> Result<BeginRegistrationResult, String> {
+        let capacity = self.reserve_capacity()?;
         let homeserver_url = request.homeserver_url.clone();
         let (client, crypto) = crate::auth::build_client(&homeserver_url, has_persistence).await?;
         let attempt_id = opaque_id();
@@ -135,6 +151,7 @@ impl PendingAuthStore {
                 self.registrations.lock().await.insert(
                     attempt_id.clone(),
                     PendingRegistration {
+                        _capacity: capacity,
                         owner,
                         client,
                         crypto,
@@ -322,6 +339,7 @@ impl PendingAuthStore {
         homeserver_url: String,
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
+        let capacity = self.reserve_capacity()?;
         let client = Client::builder()
             .server_name_or_homeserver_url(&homeserver_url)
             .build()
@@ -350,6 +368,7 @@ impl PendingAuthStore {
         self.password_resets.lock().await.insert(
             attempt_id.clone(),
             PendingPasswordReset {
+                _capacity: capacity,
                 owner,
                 client,
                 client_secret,
@@ -426,6 +445,12 @@ impl PendingAuthStore {
         guard
             .remove(attempt_id)
             .ok_or_else(|| "registration attempt is no longer current".to_string())
+    }
+
+    fn reserve_capacity(&self) -> Result<OwnedSemaphorePermit, String> {
+        self.capacity.clone().try_acquire_owned().map_err(|_| {
+            "too many authentication attempts are in progress; try again later".to_string()
+        })
     }
 
     async fn restore_registration(&self, pending: PendingRegistration) {
@@ -849,7 +874,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_submit_url, PendingAuthStore};
+    use super::{sanitize_submit_url, PendingAuthStore, MAX_PENDING_AUTH_ATTEMPTS};
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -868,6 +893,18 @@ mod tests {
             .owned_cancellation("browser-b", "attempt")
             .await
             .is_err());
+    }
+
+    #[test]
+    fn unauthenticated_pending_attempts_are_globally_bounded() {
+        let store = PendingAuthStore::default();
+        let permits = (0..MAX_PENDING_AUTH_ATTEMPTS)
+            .map(|_| store.reserve_capacity().expect("capacity available"))
+            .collect::<Vec<_>>();
+
+        assert!(store.reserve_capacity().is_err());
+        drop(permits);
+        assert!(store.reserve_capacity().is_ok());
     }
 
     #[tokio::test]

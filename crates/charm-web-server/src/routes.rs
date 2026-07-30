@@ -1558,13 +1558,18 @@ async fn login(
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    cancel_browser_preauth(&state, &jar).await;
     let homeserver_url = request.homeserver_url.clone();
     let (response, session, initial_response) =
         crate::auth::login(request, state.persistence.is_some())
             .await
             .map_err(ApiError::unauthorized)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
-    Ok((jar.add(session_cookie(token)), Json(response)))
+    Ok((
+        jar.remove(clear_preauth_cookie())
+            .add(session_cookie(token)),
+        Json(response),
+    ))
 }
 
 async fn register(
@@ -1572,13 +1577,18 @@ async fn register(
     jar: CookieJar,
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    cancel_browser_preauth(&state, &jar).await;
     let homeserver_url = request.homeserver_url.clone();
     let (response, session, initial_response) =
         crate::auth::register(request, state.persistence.is_some())
             .await
             .map_err(ApiError::bad_request)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
-    Ok((jar.add(session_cookie(token)), Json(response)))
+    Ok((
+        jar.remove(clear_preauth_cookie())
+            .add(session_cookie(token)),
+        Json(response),
+    ))
 }
 
 fn new_preauth_owner() -> String {
@@ -1613,6 +1623,12 @@ fn require_preauth_owner(jar: &CookieJar) -> Result<String, ApiError> {
     jar.get(PREAUTH_COOKIE)
         .map(|cookie| cookie.value().to_owned())
         .ok_or_else(|| ApiError::unauthorized("authentication attempt is no longer current"))
+}
+
+async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
+    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        state.pending_auth.cancel_owner(previous.value()).await;
+    }
 }
 
 async fn begin_registration(
@@ -1803,6 +1819,7 @@ async fn login_with_token(
     jar: CookieJar,
     Json(request): Json<TokenLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    cancel_browser_preauth(&state, &jar).await;
     let (response, session, initial_response, homeserver_url) =
         crate::pending_auth::login_with_token(
             request.homeserver_url,
@@ -1812,7 +1829,11 @@ async fn login_with_token(
         .await
         .map_err(ApiError::unauthorized)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
-    Ok((jar.add(session_cookie(token)), Json(response)))
+    Ok((
+        jar.remove(clear_preauth_cookie())
+            .add(session_cookie(token)),
+        Json(response),
+    ))
 }
 
 async fn logout(
