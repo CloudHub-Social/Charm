@@ -166,8 +166,9 @@ connection: the SDK owns that schema and migration lifecycle.
   the room-list header, distinct from Spec 19's existing "Search everywhere" filter
   — clarify/differentiate the two entry points so users don't confuse "find a room"
   with "find a message" during implementation).
-- Results: list of matches with room name, sender, timestamp, and a highlighted
-  snippet of matched text (standard FTS5 `snippet()`/`highlight()` output).
+- Results: list of matches with room name, sender, timestamp, and the backend-provided
+  plain-text snippet plus match ranges. The UI must not consume or render FTS-generated
+  `snippet()`/`highlight()` markup.
 - Scope toggle: "this room" vs "all rooms" — mirrors Charm 1.0's per-room vs global
   search modes.
 - Selecting a result jumps to that message in its room's timeline and highlights it
