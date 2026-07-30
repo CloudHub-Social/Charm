@@ -57,6 +57,9 @@ React frontend: {
 
 ## Related documentation
 
+- [Async reconciliation](/architecture/async-reconciliation/) defines ownership,
+  freshness, rollback, and race-test rules for frontend state that combines
+  Matrix events, IPC, caches, optimistic mutations, and timers.
 - [Product vision](/product/vision/) and [roadmap](/product/roadmap/) describe
   the outcomes this architecture supports.
 - [Spec 16: web client architecture](/specs/day-1/spec-16--web-client-via-companion-matrix-server/)

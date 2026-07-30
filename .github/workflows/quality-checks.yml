@@ -191,7 +191,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -279,7 +279,7 @@ jobs:
           # synchronously, which needs Node's synchronous vm-module APIs —
           # only available from Node v24.9 on. Node 22 fails every story
           # with "Must use import to load ES Module".
-          node-version: 24
+          node-version: 24.15.0
           cache: pnpm
 
       - if: needs.changes.outputs.frontend == 'true'
@@ -337,7 +337,7 @@ jobs:
       - if: needs.changes.outputs.frontend == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 22.22.2
           cache: pnpm
 
       - if: needs.changes.outputs.frontend == 'true'

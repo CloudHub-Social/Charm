@@ -8,7 +8,8 @@ talking to a React/TypeScript frontend (`src/`) over typed IPC.
 
 ## Prerequisites
 
-- Node.js 22 or newer (Node.js 24 is required for the Storybook test runner)
+- Node.js 22.22.2+, 24.15+, or 26+ (jsdom's supported engine range for the
+  Vitest test gate; Node.js 24 is required for the Storybook test runner)
 - [pnpm](https://pnpm.io)
 - Rust (stable toolchain)
 - Platform build tools for [Tauri](https://tauri.app/start/prerequisites/)
