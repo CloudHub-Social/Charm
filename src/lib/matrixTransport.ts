@@ -359,7 +359,15 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         topic: args.topic,
         room_alias_name: args.roomAliasName,
         public: args.public,
+        parent_space_id: args.parentSpaceId,
       });
+    case "set_space_parent":
+      return requestBytes<T>(
+        "PUT",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-parent`,
+        JSON.stringify({ parent_space_id: args.parentSpaceId }),
+        "application/json",
+      );
     case "leave_room":
       return requestBytes<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/leave`);
     case "add_existing_space_child":

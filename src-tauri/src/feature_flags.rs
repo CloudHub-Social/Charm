@@ -125,6 +125,9 @@ define_feature_flag_keys!(
         /// entries, and the per-space context menu (Invite, Add Existing,
         /// Mark/Unmark Suggested, Remove, Leave).
         SpaceRailManagement,
+        /// Spec 33 space hierarchy reorganization: create a subspace under
+        /// a parent, reparent spaces, and remove their canonical parent.
+        SpaceHierarchyReorganization,
         /// Day-2 Spec 04 message pinning: the Pin/Unpin `MessageActions` entry,
         /// the pinned-messages right-panel drawer, and the room-header
         /// pin-count badge.
@@ -164,6 +167,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => false,
             FeatureFlagKey::RoomListMessagePreview => false,
             FeatureFlagKey::SpaceRailManagement => false,
+            FeatureFlagKey::SpaceHierarchyReorganization => false,
             FeatureFlagKey::MessagePinning => false,
             FeatureFlagKey::PresencePrivacyControls => false,
             FeatureFlagKey::Bookmarks => false,
@@ -212,6 +216,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::SpaceRailManagement => {
                 "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave)."
             }
+            FeatureFlagKey::SpaceHierarchyReorganization => {
+                "Create spaces inside other spaces and reorganize their canonical hierarchy."
+            }
             FeatureFlagKey::MessagePinning => {
                 "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge."
             }
@@ -248,6 +255,9 @@ impl FeatureFlagKey {
                 "Spec 54 (room-list enrichment and filtering)"
             }
             FeatureFlagKey::SpaceRailManagement => "Spec 63 (sidebar and space management)",
+            FeatureFlagKey::SpaceHierarchyReorganization => {
+                "Spec 33 (space hierarchy reorganization)"
+            }
             FeatureFlagKey::MessagePinning => "day-2 Spec 04 (message pinning)",
             FeatureFlagKey::PresencePrivacyControls => {
                 "Spec 40 (presence and receipt privacy controls)"
@@ -276,6 +286,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
             FeatureFlagKey::SpaceRailManagement => "space_rail_management",
+            FeatureFlagKey::SpaceHierarchyReorganization => "space_hierarchy_reorganization",
             FeatureFlagKey::MessagePinning => "message_pinning",
             FeatureFlagKey::PresencePrivacyControls => "presence_privacy_controls",
             FeatureFlagKey::Bookmarks => "bookmarks",
