@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +30,7 @@ export function SpaceChildrenSettings({
   onChanged,
 }: SpaceChildrenSettingsProps) {
   const queryClient = useQueryClient();
+  const optimisticAddedIdsRef = useRef(new Set<string>());
   const [addOpen, setAddOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +41,22 @@ export function SpaceChildrenSettings({
     isFetching,
   } = useQuery({
     queryKey: queryKey(spaceId),
-    queryFn: () => listManageableSpaceChildren(spaceId),
+    queryFn: async () => {
+      const fetched = await listManageableSpaceChildren(spaceId);
+      const fetchedIds = new Set(fetched.map((child) => child.room_id));
+      for (const childId of optimisticAddedIdsRef.current) {
+        if (fetchedIds.has(childId)) optimisticAddedIdsRef.current.delete(childId);
+      }
+      const cached = queryClient.getQueryData<SpaceChild[]>(queryKey(spaceId)) ?? [];
+      return [
+        ...fetched,
+        ...cached.filter(
+          (child) =>
+            optimisticAddedIdsRef.current.has(child.room_id) && !fetchedIds.has(child.room_id),
+        ),
+      ];
+    },
+    refetchOnMount: "always",
   });
   const excludedIds = useMemo(
     () => childCandidateExclusions(spaceId, rooms, children),
@@ -58,12 +74,13 @@ export function SpaceChildrenSettings({
     const unlisten = onRoomDetailsUpdate((details) => {
       if (details.room_id === spaceId) {
         void queryClient.invalidateQueries({ queryKey: queryKey(spaceId) });
+        onChanged?.();
       }
     });
     return () => {
       void unlisten.then((stop) => stop());
     };
-  }, [queryClient, spaceId]);
+  }, [onChanged, queryClient, spaceId]);
 
   async function remove(child: SpaceChild) {
     setError(null);
@@ -145,6 +162,7 @@ export function SpaceChildrenSettings({
         excludedIds={excludedIds}
         onOpenChange={setAddOpen}
         onAdded={(childRoomId) => {
+          optimisticAddedIdsRef.current.add(childRoomId);
           const room = rooms.find((candidate) => candidate.room_id === childRoomId);
           queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) => [
             ...current.filter((candidate) => candidate.room_id !== childRoomId),
