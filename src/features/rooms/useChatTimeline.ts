@@ -423,7 +423,11 @@ export function useChatTimeline(
     };
   }, [room?.room_id]);
 
-  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
+  const latestTimelineItem = timelineItems.at(-1);
+  const latestEventId =
+    latestTimelineItem?.kind === "message"
+      ? latestTimelineItem.message.event_id
+      : (latestTimelineItem?.event_id ?? null);
 
   useEffect(() => {
     lastMarkedReadEventId.current = null;

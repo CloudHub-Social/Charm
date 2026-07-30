@@ -18,7 +18,7 @@ const joined = (id: string, label: string): TimelineItemSummary => ({
 describe("TimelineNotices", () => {
   it("buckets notices before the next message and leaves tail notices trailing", () => {
     const items: TimelineItemSummary[] = [
-      joined("alice", "Alice (@alice:example.org)"),
+      joined("alice", "Alice"),
       {
         kind: "message",
         message: makeMessageSummary({
@@ -70,11 +70,16 @@ describe("TimelineNotices", () => {
       />,
     );
 
-    const summary = screen.getByRole("button", { name: "Alice, Bob and 1 others joined" });
+    const summary = screen.getByRole("button", {
+      name: "Alice (@alice:example.org), Bob (@bob:example.org) and 1 others joined",
+    });
     fireEvent.click(summary);
-    expect(screen.getByText("Alice joined")).toBeInTheDocument();
-    expect(screen.getByText("Bob joined")).toBeInTheDocument();
-    expect(screen.getByText("Carol joined")).toBeInTheDocument();
+    const lines = screen.getByTestId("timeline-notices").querySelectorAll("p");
+    expect([...lines].map((line) => line.textContent)).toEqual([
+      "Alice (@alice:example.org) joined",
+      "Bob (@bob:example.org) joined",
+      "Carol (@carol:example.org) joined",
+    ]);
   });
 
   it("renders moderated membership reasons and room state notices", () => {
@@ -102,7 +107,10 @@ describe("TimelineNotices", () => {
         ]}
       />,
     );
-    expect(screen.getByText("Alice was kicked by @mod:example.org: spam")).toBeInTheDocument();
-    expect(screen.getByText("@mod:example.org changed the room name to New")).toBeInTheDocument();
+    const lines = screen.getByTestId("timeline-notices").querySelectorAll("p");
+    expect([...lines].map((line) => line.textContent)).toEqual([
+      "Alice (@alice:example.org) was kicked by @mod:example.org: spam",
+      "@mod:example.org changed the room name to New",
+    ]);
   });
 });

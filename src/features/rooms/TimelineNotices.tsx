@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { TimelineItemSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 
@@ -31,8 +31,34 @@ export function bucketTimelineNotices(
   return { beforeMessage, trailing: pending };
 }
 
-function targetLabel(item: Extract<TimelineNotice, { kind: "membership" }>): string {
-  return item.target_display_name ?? item.target_user_id;
+function safeRemoteText(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+}
+
+function RemoteText({ children }: { children: string }) {
+  return <bdi>{safeRemoteText(children)}</bdi>;
+}
+
+function TargetIdentity({
+  item,
+  displayName = item.target_display_name,
+}: {
+  item: Extract<TimelineNotice, { kind: "membership" }>;
+  displayName?: string | null;
+}) {
+  if (!displayName || displayName === item.target_user_id) {
+    return <RemoteText>{item.target_user_id}</RemoteText>;
+  }
+  return (
+    <>
+      <RemoteText>{displayName}</RemoteText>
+      {" ("}
+      <RemoteText>{item.target_user_id}</RemoteText>
+      {")"}
+    </>
+  );
 }
 
 function membershipVerb(item: Extract<TimelineNotice, { kind: "membership" }>): string {
@@ -72,64 +98,97 @@ function membershipVerb(item: Extract<TimelineNotice, { kind: "membership" }>): 
   return "changed membership";
 }
 
-function membershipLabel(item: Extract<TimelineNotice, { kind: "membership" }>): string {
-  const target = targetLabel(item);
+function membershipLabel(item: Extract<TimelineNotice, { kind: "membership" }>): ReactNode {
   if (item.change.type === "profile") {
     if (item.change.old_display_name !== item.change.new_display_name) {
       if (item.change.new_display_name) {
-        return `${target} changed their display name to ${item.change.new_display_name}`;
+        return (
+          <>
+            <TargetIdentity item={item} displayName={item.change.old_display_name} /> changed their
+            display name to <RemoteText>{item.change.new_display_name}</RemoteText>
+          </>
+        );
       }
-      return `${target} removed their display name`;
+      return (
+        <>
+          <TargetIdentity item={item} displayName={item.change.old_display_name} /> removed their
+          display name
+        </>
+      );
     }
     if (item.change.old_avatar_url !== item.change.new_avatar_url) {
-      return `${target} changed their avatar`;
+      return (
+        <>
+          <TargetIdentity item={item} /> changed their avatar
+        </>
+      );
     }
   }
-  const actor =
+  const showActor =
     item.sender !== item.target_user_id &&
     ["banned", "kicked", "kicked_and_banned", "invited", "invitation_revoked"].includes(
       item.change.type,
-    )
-      ? ` by ${item.sender}`
-      : "";
-  const reason = item.reason ? `: ${item.reason}` : "";
-  return `${target} ${membershipVerb(item)}${actor}${reason}`;
+    );
+  return (
+    <>
+      <TargetIdentity item={item} /> {membershipVerb(item)}
+      {showActor && (
+        <>
+          {" by "}
+          <RemoteText>{item.sender}</RemoteText>
+        </>
+      )}
+      {item.reason && (
+        <>
+          {": "}
+          <RemoteText>{item.reason}</RemoteText>
+        </>
+      )}
+    </>
+  );
 }
 
-function stateLabel(item: Extract<TimelineNotice, { kind: "state" }>): string {
+function stateLabel(item: Extract<TimelineNotice, { kind: "state" }>): ReactNode {
+  const actor = <RemoteText>{item.sender}</RemoteText>;
   switch (item.change.type) {
     case "name":
       return item.change.new_value
-        ? `${item.sender} changed the room name to ${item.change.new_value}`
-        : `${item.sender} removed the room name`;
+        ? <>{actor} changed the room name to <RemoteText>{item.change.new_value}</RemoteText></>
+        : <>{actor} removed the room name</>;
     case "topic":
       return item.change.new_value
-        ? `${item.sender} changed the topic to ${item.change.new_value}`
-        : `${item.sender} removed the room topic`;
+        ? <>{actor} changed the topic to <RemoteText>{item.change.new_value}</RemoteText></>
+        : <>{actor} removed the room topic</>;
     case "avatar":
       return item.change.new_value
-        ? `${item.sender} changed the room avatar`
-        : `${item.sender} removed the room avatar`;
+        ? <>{actor} changed the room avatar</>
+        : <>{actor} removed the room avatar</>;
     case "tombstone":
-      return item.change.body ?? "This room has been replaced by a newer room";
+      return item.change.body ? (
+        <RemoteText>{item.change.body}</RemoteText>
+      ) : (
+        "This room has been replaced by a newer room"
+      );
     case "hidden":
-      return `${item.sender} changed ${item.change.event_type}`;
+      return <>{actor} changed <RemoteText>{item.change.event_type}</RemoteText></>;
   }
-  return `${item.sender} changed room state`;
+  return <>{actor} changed room state</>;
 }
 
 function collapsedMembershipLabel(
   items: Extract<TimelineNotice, { kind: "membership" }>[],
-): string {
-  const names = items.map(targetLabel);
-  const subject =
-    names.length === 2
-      ? `${names[0]} and ${names[1]}`
-      : `${names[0]}, ${names[1]} and ${names.length - 2} others`;
-  return `${subject} ${membershipVerb(items[0])}`;
+): ReactNode {
+  return (
+    <>
+      <TargetIdentity item={items[0]} />
+      {items.length === 2 ? " and " : ", "}
+      <TargetIdentity item={items[1]} />
+      {items.length > 2 ? ` and ${items.length - 2} others` : ""} {membershipVerb(items[0])}
+    </>
+  );
 }
 
-function NoticeLine({ children, irc }: { children: string; irc: boolean }) {
+function NoticeLine({ children, irc }: { children: ReactNode; irc: boolean }) {
   return (
     <p
       className={cn(

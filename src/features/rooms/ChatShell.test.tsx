@@ -5141,10 +5141,16 @@ describe("ChatShell", () => {
     });
 
     renderChatShell();
-    const collapsed = await screen.findByRole("button", { name: "Alice and Bob joined" });
+    const collapsed = await screen.findByRole("button", {
+      name: "Alice (@alice:localhost) and Bob (@bob:localhost) joined",
+    });
     fireEvent.click(collapsed);
-    expect(screen.getByText("Alice joined")).toBeInTheDocument();
-    expect(screen.getByText("Bob joined")).toBeInTheDocument();
+    expect(screen.getByTestId("timeline-notices")).toHaveTextContent(
+      "Alice (@alice:localhost) joined",
+    );
+    expect(screen.getByTestId("timeline-notices")).toHaveTextContent(
+      "Bob (@bob:localhost) joined",
+    );
     expect(screen.getByText("hello")).toBeInTheDocument();
   });
 
@@ -5178,9 +5184,9 @@ describe("ChatShell", () => {
     });
 
     renderChatShell(store);
-    expect(
-      await screen.findByText("@mod:localhost changed com.example.custom"),
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId("timeline-notices")).toHaveTextContent(
+      "@mod:localhost changed com.example.custom",
+    );
     expect(screen.queryByText("Alice joined")).not.toBeInTheDocument();
     expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
   });

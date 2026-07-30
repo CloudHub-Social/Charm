@@ -317,7 +317,6 @@ export function ChatShell({
     if (
       !loading &&
       messages.length === 0 &&
-      !hasVisibleNotices &&
       hasMore &&
       !loadingMore &&
       !paginationError
@@ -325,7 +324,7 @@ export function ChatShell({
       loadMoreHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
-  }, [loading, messages.length, hasVisibleNotices, hasMore, loadingMore, paginationError]);
+  }, [loading, messages.length, hasMore, loadingMore, paginationError]);
   // While this is true, `messages` is empty only because the empty-first-
   // page auto-pagination above is still working toward either real content
   // or a confirmed-exhausted history — not because the room's history is

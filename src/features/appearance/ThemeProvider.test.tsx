@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hideMembershipEventsAtom, showHiddenEventsAtom } from "./atoms";
 import { ThemeProvider } from "./ThemeProvider";
 
 const storeGet = vi.fn();
@@ -64,9 +65,12 @@ describe("ThemeProvider", () => {
       fontSize: "lg",
       density: "compact",
       reducedMotion: "on",
+      hideMembershipEvents: true,
+      showHiddenEvents: true,
     });
+    const store = createStore();
     render(
-      <Provider store={createStore()}>
+      <Provider store={store}>
         <ThemeProvider>
           <div>app content</div>
         </ThemeProvider>
@@ -76,6 +80,8 @@ describe("ThemeProvider", () => {
     expect(document.documentElement.dataset.density).toBe("compact");
     expect(document.documentElement.dataset.fontSize).toBe("lg");
     expect(document.documentElement.dataset.reducedMotion).toBe("on");
+    expect(store.get(hideMembershipEventsAtom)).toBe(true);
+    expect(store.get(showHiddenEventsAtom)).toBe(true);
   });
 
   it("falls back to the localStorage mirror when the store plugin is unavailable", async () => {
