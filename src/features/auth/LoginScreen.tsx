@@ -296,7 +296,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       )}
                       <Button
                         type="button"
-                        disabled={pending || registrationStep.policies.length === 0}
+                        disabled={pending}
                         onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
                       >
                         {pending && <Loader2 className="animate-spin" />}
