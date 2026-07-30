@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
@@ -204,7 +204,17 @@ export function ReactionBar({
     const details = detailsByKey[reaction.key];
     const detailError = detailErrorsByKey[reaction.key];
     return (
-      <Fragment key={reaction.key}>
+      <span
+        key={reaction.key}
+        className="flex items-center gap-1"
+        onMouseLeave={() => clearDetails(reaction.key)}
+        onBlur={(event) => {
+          const nextTarget = event.relatedTarget;
+          if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+            clearDetails(reaction.key);
+          }
+        }}
+      >
         <Tooltip
           onOpenChange={(open) => {
             if (open) {
@@ -212,7 +222,6 @@ export function ReactionBar({
               return;
             }
             if (tooltipKeyRef.current === reaction.key) setTooltipKey(null);
-            clearDetails(reaction.key);
           }}
         >
           <TooltipTrigger asChild>{chip}</TooltipTrigger>
@@ -241,7 +250,7 @@ export function ReactionBar({
         >
           {reaction.count > TOOLTIP_NAME_LIMIT ? `View all ${reaction.count}` : "View reactors"}
         </button>
-      </Fragment>
+      </span>
     );
   });
 

@@ -153,9 +153,11 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
     expect(screen.getByText("@bob:example.org")).toBeInTheDocument();
     const viewReactors = screen.getByRole("button", { name: "View all 2 reactions for 👍" });
+    fireEvent.blur(chip, { relatedTarget: viewReactors });
     fireEvent.click(viewReactors);
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("2 reactions")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledOnce();
   });
 
   it("exposes the reactor overflow as a directly keyboard-focusable action", async () => {
