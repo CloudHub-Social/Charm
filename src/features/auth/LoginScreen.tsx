@@ -699,17 +699,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                             {pending && <Loader2 className="animate-spin" />}
                             Complete email verification
                           </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={() => {
-                              setRegistrationEmailChallenge(undefined);
-                              setRegistrationEmailToken("");
-                            }}
-                          >
-                            Use a different email
-                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            To use a different email address, cancel this registration and start
+                            again.
+                          </p>
                         </>
                       )}
                     </div>

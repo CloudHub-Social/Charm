@@ -90,6 +90,9 @@ pub(crate) struct PendingRegistration {
     attempt_id: String,
     uiaa: UiaaInfo,
     email_validation: Option<PendingRegistrationEmail>,
+    email_address_key: Option<String>,
+    email_send_attempt: u32,
+    email_retry_not_before: Option<std::time::Instant>,
     created_at: std::time::Instant,
 }
 
@@ -98,9 +101,6 @@ struct PendingRegistrationEmail {
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
     homeserver: url::Url,
-    normalized_email: String,
-    send_attempt: u32,
-    retry_not_before: std::time::Instant,
     submitted: bool,
 }
 
@@ -902,6 +902,9 @@ pub async fn begin_registration(
                 attempt_id: attempt_id.clone(),
                 uiaa,
                 email_validation: None,
+                email_address_key: None,
+                email_send_attempt: 0,
+                email_retry_not_before: None,
                 created_at: started_at,
             };
             let previous = state.pending_registration.lock().await.replace(pending);
@@ -955,61 +958,104 @@ pub async fn request_registration_email(
     let mut pending = guard.take().expect("pending attempt checked above");
     drop(guard);
 
-    let normalized_email = email.trim().to_lowercase();
-    if normalized_email.is_empty() {
-        let _ =
-            restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending)
-                .await;
+    let delivery_email = email.trim().to_owned();
+    let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("enter an email address".to_string());
+    };
+    if local_part.is_empty() || domain.is_empty() {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
         reservation.defuse();
         return Err("enter an email address".to_string());
     }
-    let (client_secret, send_attempt) = if let Some(validation) = &pending.email_validation {
-        if validation.normalized_email != normalized_email {
-            let _ = restore_pending_registration_if_current(
+    let address_key = format!("{local_part}@{}", domain.to_lowercase());
+    if let Some(previous_address) = &pending.email_address_key {
+        if previous_address != &address_key {
+            if !restore_or_discard_pending_registration(
+                &app,
                 &state,
                 &attempt_id,
                 &cancellation,
                 pending,
             )
-            .await;
+            .await
+            {
+                return Err("registration cancelled".to_string());
+            }
             reservation.defuse();
             return Err(
                 "cancel this registration and start again to use a different email address"
                     .to_string(),
             );
         }
-        if validation.send_attempt >= REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS {
-            let _ = restore_pending_registration_if_current(
-                &state,
-                &attempt_id,
-                &cancellation,
-                pending,
-            )
-            .await;
-            reservation.defuse();
-            return Err("registration email resend limit reached; start again".to_string());
-        }
-        if std::time::Instant::now() < validation.retry_not_before {
-            let _ = restore_pending_registration_if_current(
-                &state,
-                &attempt_id,
-                &cancellation,
-                pending,
-            )
-            .await;
-            reservation.defuse();
-            return Err("wait before requesting another registration email".to_string());
-        }
-        (
-            validation.client_secret.clone(),
-            validation.send_attempt + 1,
+    }
+    if pending.email_send_attempt >= REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
         )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("registration email resend limit reached; start again".to_string());
+    }
+    if pending
+        .email_retry_not_before
+        .is_some_and(|retry_at| std::time::Instant::now() < retry_at)
+    {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("wait before requesting another registration email".to_string());
+    }
+    let client_secret = if let Some(validation) = &pending.email_validation {
+        validation.client_secret.clone()
     } else {
-        (ClientSecret::new(), 1)
+        ClientSecret::new()
     };
+    let send_attempt = pending.email_send_attempt + 1;
+    pending.email_address_key = Some(address_key.clone());
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
-        normalized_email.clone(),
+        delivery_email.clone(),
         UInt::new_saturating(send_attempt.into()),
     );
     let response = tokio::select! {
@@ -1081,9 +1127,6 @@ pub async fn request_registration_email(
         sid: response.sid,
         submit_url,
         homeserver: pending.client.homeserver(),
-        normalized_email,
-        send_attempt,
-        retry_not_before: std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
         submitted: false,
     });
     if let Err(pending) =
@@ -1115,6 +1158,23 @@ async fn restore_pending_registration_if_current(
     }
     *guard = Some(pending);
     Ok(())
+}
+
+async fn restore_or_discard_pending_registration(
+    app: &AppHandle,
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingRegistration,
+) -> bool {
+    match restore_pending_registration_if_current(state, attempt_id, cancellation, pending).await {
+        Ok(()) => true,
+        Err(pending) => {
+            discard_pending_registration(app, pending);
+            clear_registration_cancellation(state, attempt_id);
+            false
+        }
+    }
 }
 
 fn registration_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
@@ -2483,9 +2543,6 @@ mod registration_uia_tests {
                     .expect("submission URL"),
             ),
             homeserver: server.uri().parse().expect("homeserver URL"),
-            normalized_email: "alice@example.org".to_owned(),
-            send_attempt: 1,
-            retry_not_before: std::time::Instant::now(),
             submitted: false,
         };
 
