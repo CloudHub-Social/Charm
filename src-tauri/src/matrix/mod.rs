@@ -107,6 +107,12 @@ pub struct MatrixState {
     /// idle challenge.
     pub(crate) pending_registration_cancel:
         std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+    /// Account key for a registration that has entered its durable
+    /// relocation/adoption phase. Tauri's exit callback is synchronous, so
+    /// it cannot wait for that future to observe cancellation; keeping the
+    /// key here lets orderly shutdown remove a session that was persisted
+    /// but not yet adopted by the UI.
+    pub(crate) finalizing_registration_account: std::sync::Mutex<Option<String>>,
     /// Process-scoped, non-raw-address quota shared by unauthenticated mail
     /// flows. It survives cancellation or replacement of an individual
     /// attempt, so a renderer cannot reset the quota by restarting the flow.
@@ -371,6 +377,7 @@ impl Default for MatrixState {
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
+            finalizing_registration_account: std::sync::Mutex::default(),
             auth_mail_quota: Mutex::default(),
             pending_password_reset: Mutex::default(),
             pending_password_reset_cancel: std::sync::Mutex::default(),
