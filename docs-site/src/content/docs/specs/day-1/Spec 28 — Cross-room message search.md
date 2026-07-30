@@ -64,9 +64,13 @@ ID. A superseding device or logout deletes the prior device's plaintext index
 before another index can be opened. The mobile build verifies this lifecycle,
 bundled SQLite FTS5/tokenizer availability, and backup exclusion before enabling
 the flag.
-Each web-companion session gets a separate index beside the session's random
-`crypto_store_key`; indexes are never shared merely because two sessions use the
-same MXID.
+Each web-companion session gets its own persisted random `search_store_key`,
+separate from `crypto_store_key`, and a matching index directory. On first
+restore of a legacy session whose persisted record predates Spec 25 and has no
+crypto key, generate and durably save this search key before enabling search;
+if that migration cannot be persisted, require re-login and do not open an
+MXID-derived fallback. Indexes are never shared merely because two sessions use
+the same MXID. Spec 25's session cleanup removes both random-key lifecycles.
 Never open matrix-sdk's database directly, add tables to its schema, or share its
 connection: the SDK owns that schema and migration lifecycle.
 
@@ -75,7 +79,11 @@ connection: the SDK owns that schema and migration lifecycle.
   `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
   stripper or index hidden/disallowed elements. Remove the descendants of
   `data-mx-spoiler` elements before extraction, so concealed text cannot appear in
-  either matches or plain snippets. Cross-spec tests must cover Spec 58 spoilers.
+  either matches or plain snippets. When normalizing an edit of a reply, carry
+  the original event's reply relation into the replacement content before
+  removing the fallback; `m.new_content` alone does not preserve that context.
+  Cross-spec tests must cover Spec 58 spoilers and edited replies whose quoted
+  fallback must not become searchable.
 - Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
   undecryptable placeholders, media filenames/captions, reactions, state events, or
   untrusted raw HTML. Index only acknowledged remote events with a server event ID;
@@ -121,9 +129,11 @@ connection: the SDK owns that schema and migration lifecycle.
   `secure_delete`, checkpoint and truncate WAL sidecars, and compact freelist pages
   before reporting cleanup complete. Tests place a unique marker in an indexed
   body and verify it is absent from the database, WAL, and SHM files after purge.
-- Leaving or forgetting a room atomically purges that room's visible rows and edit
-  provenance. Global queries also verify joined membership before returning a
-  result, so a failed purge cannot expose departed-room content.
+- Every joined-to-non-joined membership transition atomically purges that room's
+  visible rows and edit provenance, whether caused by local leave/forget or sync
+  observing a remote kick, ban, or membership change. Global queries also verify
+  joined membership before returning a result, so a failed purge cannot expose
+  departed-room content.
 
 ### Ownership, privacy, and lifecycle
 
@@ -131,8 +141,8 @@ connection: the SDK owns that schema and migration lifecycle.
   use the same core index abstraction but resolve their account roots through their
   existing, separate persistence layers.
 - Derive the desktop index directory from an opaque hash of the account store key
-  plus Matrix device ID, and the web directory from the session
-  `crypto_store_key`; never
+  plus Matrix device ID, and the web directory from the session's dedicated
+  `search_store_key`; never
   put an MXID, homeserver, access token, or raw account identifier in a filename.
   A new/superseding desktop device never reopens a previous device's plaintext
   index; supersession closes and deletes the old device index.
@@ -264,7 +274,8 @@ without the user knowing which is which.
   B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
   matrix-sdk files.
 - Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
-  ordering, stale cursors after writes, leave/forget purge, deactivation wipe, and
+  ordering, stale cursors after writes, local leave/forget and remote kick/ban
+  purge, deactivation wipe, legacy web-session search-key migration, and
   web-session isolation/cleanup. Include substring word queries within unsegmented
   Chinese and Japanese sentences, not just whole-message queries.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
