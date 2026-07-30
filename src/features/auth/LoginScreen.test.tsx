@@ -335,4 +335,31 @@ describe("LoginScreen registration UIA", () => {
     expect(cancelRegistration).toHaveBeenCalledWith("attempt-2");
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
+
+  it("clears an expired registration challenge instead of leaving stale controls", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-expired",
+      completed: [],
+      flows: [{ stages: ["m.login.terms"] }],
+      next_stage: "m.login.terms",
+      fallback_url: "",
+      policies: [],
+    });
+    continueRegistration.mockRejectedValue(
+      new Error("registration attempt is no longer current"),
+    );
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Accept and continue" }).click();
+    });
+
+    expect(screen.queryByRole("button", { name: "Accept and continue" })).not.toBeInTheDocument();
+    expect(screen.getByText(/registration attempt is no longer current/i)).toBeVisible();
+  });
 });
