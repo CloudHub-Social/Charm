@@ -10,7 +10,8 @@ sidebar:
 
 ## Implementation status
 
-**Implementation complete; closure is paired with Spec 33.** Pin/unpin, reorder (Move up/down), and a
+**Implementation is in progress; closure is paired with Spec 33 and the remaining
+`RoomList` permission gate.** Pin/unpin, reorder (Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
