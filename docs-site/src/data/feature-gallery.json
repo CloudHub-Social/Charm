@@ -3,7 +3,8 @@
   "excludedFlags": [
     "canary",
     "message_pinning",
-    "presence_privacy_controls"
+    "presence_privacy_controls",
+    "user_profile_cards"
   ],
   "features": [
     {
