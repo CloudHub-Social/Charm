@@ -341,11 +341,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     )}
 
                   {error && <p className="text-xs text-destructive">{error}</p>}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={handleCancelRegistration}
-                  >
+                  <Button type="button" variant="ghost" onClick={handleCancelRegistration}>
                     Cancel account creation
                   </Button>
                 </div>
@@ -398,9 +394,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   <Button
                     type="submit"
                     disabled={
-                      pending ||
-                      ssoPending ||
-                      (mode === "register" && !featureFlagsInitialized)
+                      pending || ssoPending || (mode === "register" && !featureFlagsInitialized)
                     }
                     className="w-full"
                   >
