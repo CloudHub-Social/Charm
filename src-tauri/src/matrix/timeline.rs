@@ -546,25 +546,33 @@ fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChan
 fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineStateChange {
     match change {
         AnyOtherStateEventContentChange::RoomName(change) => {
-            let (old_value, new_value) =
-                original_state_values(change, "name", |content| Some(content.name.clone()));
+            let (old_value, new_value) = original_state_values(
+                change,
+                |content| content.name.clone(),
+                |content| Some(content.name.clone()),
+            );
             TimelineStateChange::Name {
                 old_value,
                 new_value,
             }
         }
         AnyOtherStateEventContentChange::RoomTopic(change) => {
-            let (old_value, new_value) =
-                original_state_values(change, "topic", |content| Some(content.topic.clone()));
+            let (old_value, new_value) = original_state_values(
+                change,
+                |content| content.topic.clone(),
+                |content| Some(content.topic.clone()),
+            );
             TimelineStateChange::Topic {
                 old_value,
                 new_value,
             }
         }
         AnyOtherStateEventContentChange::RoomAvatar(change) => {
-            let (old_value, new_value) = original_state_values(change, "url", |content| {
-                content.url.as_ref().map(ToString::to_string)
-            });
+            let (old_value, new_value) = original_state_values(
+                change,
+                |content| content.url.as_ref().map(ToString::to_string),
+                |content| content.url.as_ref().map(ToString::to_string),
+            );
             TimelineStateChange::Avatar {
                 old_value,
                 new_value,
@@ -586,14 +594,14 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
     }
 }
 
-fn original_state_values<T, F>(
+fn original_state_values<T, P, F>(
     change: &StateEventContentChange<T>,
-    previous_field: &str,
+    previous_value: P,
     value: F,
 ) -> (Option<String>, Option<String>)
 where
     T: matrix_sdk::ruma::events::StaticStateEventContent + matrix_sdk::ruma::events::RedactContent,
-    T::PossiblyRedacted: Serialize,
+    P: Fn(&T::PossiblyRedacted) -> Option<String>,
     F: Fn(&T) -> Option<String>,
 {
     match change {
@@ -601,13 +609,7 @@ where
             content,
             prev_content,
         } => {
-            let old_value = prev_content.as_ref().and_then(|previous| {
-                serde_json::to_value(previous)
-                    .ok()?
-                    .get(previous_field)?
-                    .as_str()
-                    .map(ToOwned::to_owned)
-            });
+            let old_value = prev_content.as_ref().and_then(previous_value);
             (old_value, value(content))
         }
         StateEventContentChange::Redacted(_) => (None, None),
@@ -1585,7 +1587,7 @@ async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {
 mod mapping_tests {
     use futures_util::StreamExt;
     use imbl::Vector;
-    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::ruma::{event_id, mxc_uri, room_id};
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use matrix_sdk_test::event_factory::EventFactory;
     use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
@@ -1921,6 +1923,65 @@ mod mapping_tests {
                 assert_eq!(new_value.as_deref(), Some("After"));
             }
             other => panic!("expected room-name state item, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discriminated_items_preserve_room_topic_old_and_new_values() {
+        use matrix_sdk::ruma::events::room::topic::RoomTopicEventContent;
+
+        let items = timeline_items_for(vec![factory()
+            .room_topic("After")
+            .prev_content(RoomTopicEventContent::new("Before".to_owned()))
+            .sender(&ALICE)
+            .event_id(event_id!("$topic"))
+            .into_raw_sync()])
+        .await;
+
+        match &items[0] {
+            TimelineItemSummary::State {
+                change:
+                    TimelineStateChange::Topic {
+                        old_value,
+                        new_value,
+                    },
+                ..
+            } => {
+                assert_eq!(old_value.as_deref(), Some("Before"));
+                assert_eq!(new_value.as_deref(), Some("After"));
+            }
+            other => panic!("expected room-topic state item, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discriminated_items_preserve_room_avatar_old_and_new_values() {
+        use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
+
+        let mut previous = RoomAvatarEventContent::new();
+        previous.url = Some(mxc_uri!("mxc://example.org/before").to_owned());
+        let items = timeline_items_for(vec![factory()
+            .room_avatar()
+            .url(mxc_uri!("mxc://example.org/after"))
+            .prev_content(previous)
+            .sender(&ALICE)
+            .event_id(event_id!("$avatar"))
+            .into_raw_sync()])
+        .await;
+
+        match &items[0] {
+            TimelineItemSummary::State {
+                change:
+                    TimelineStateChange::Avatar {
+                        old_value,
+                        new_value,
+                    },
+                ..
+            } => {
+                assert_eq!(old_value.as_deref(), Some("mxc://example.org/before"));
+                assert_eq!(new_value.as_deref(), Some("mxc://example.org/after"));
+            }
+            other => panic!("expected room-avatar state item, got {other:?}"),
         }
     }
 
