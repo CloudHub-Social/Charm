@@ -367,11 +367,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setPending(true);
     setError(null);
     try {
-      await confirmPasswordReset(
-        attemptId,
-        passwordResetChallenge?.requires_token ? recoveryToken : undefined,
-        newPassword,
-      );
+      await confirmPasswordReset(attemptId, recoveryToken || undefined, newPassword);
       if (passwordResetOperationRef.current !== operation) return;
       passwordResetAttemptRef.current = null;
       setRecoveryToken("");
@@ -431,24 +427,19 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                 <div className="flex flex-col gap-1">
                   <h2 className="text-sm font-semibold">Set a new password</h2>
                   <p className="text-xs text-muted-foreground">
-                    {passwordResetChallenge.requires_token
-                      ? "Enter the token from your email."
-                      : "Open the link in your email, then return here."}
+                    Follow the instructions in your email. If it includes a token, enter it below.
                   </p>
                 </div>
-                {passwordResetChallenge.requires_token && (
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="recovery-token">Email token</Label>
-                    <Input
-                      id="recovery-token"
-                      value={recoveryToken}
-                      onChange={(event) => setRecoveryToken(event.currentTarget.value)}
-                      autoComplete="one-time-code"
-                      disabled={pending}
-                      required
-                    />
-                  </div>
-                )}
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-token">Email token (if provided)</Label>
+                  <Input
+                    id="recovery-token"
+                    value={recoveryToken}
+                    onChange={(event) => setRecoveryToken(event.currentTarget.value)}
+                    autoComplete="one-time-code"
+                    disabled={pending}
+                  />
+                </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="new-password">New password</Label>
                   <Input
@@ -783,21 +774,24 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         : "Create account"}
                   </Button>
 
-                  {mode === "sign-in" && registrationUiaEnabled && !showTokenLogin && (
-                    <Button
-                      type="button"
-                      variant="link"
-                      disabled={pending || ssoPending}
-                      onClick={() => {
-                        setPassword("");
-                        setShowPasswordReset(true);
-                        setError(null);
-                      }}
-                      className="w-full"
-                    >
-                      Forgot password?
-                    </Button>
-                  )}
+                  {mode === "sign-in" &&
+                    registrationUiaEnabled &&
+                    loginFlows?.password === true &&
+                    !showTokenLogin && (
+                      <Button
+                        type="button"
+                        variant="link"
+                        disabled={pending || ssoPending}
+                        onClick={() => {
+                          setPassword("");
+                          setShowPasswordReset(true);
+                          setError(null);
+                        }}
+                        className="w-full"
+                      >
+                        Forgot password?
+                      </Button>
+                    )}
 
                   {mode === "sign-in" && showNativeSignInOptions && (
                     <>

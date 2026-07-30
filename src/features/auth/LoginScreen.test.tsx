@@ -521,6 +521,7 @@ describe("LoginScreen login choices", () => {
 
 describe("LoginScreen password recovery", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
     vi.unstubAllEnvs();
     getCurrentUrls = null;
     openUrlCallback = undefined;
@@ -530,7 +531,9 @@ describe("LoginScreen password recovery", () => {
     requestPasswordReset.mockReset();
     confirmPasswordReset.mockReset();
     cancelPasswordReset.mockReset().mockResolvedValue(undefined);
-    discoverHomeserver.mockReset().mockReturnValue(new Promise(() => {}));
+    discoverHomeserver.mockReset().mockResolvedValue({
+      homeserver_url: "https://matrix.example/",
+    });
     getLoginFlows.mockReset().mockResolvedValue({
       password: true,
       token: false,
@@ -540,6 +543,10 @@ describe("LoginScreen password recovery", () => {
     featureFlags.registrationEnabled = true;
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("requests email recovery and confirms a homeserver-submitted reset", async () => {
     requestPasswordReset.mockResolvedValue({
       attempt_id: "reset-attempt",
@@ -547,6 +554,7 @@ describe("LoginScreen password recovery", () => {
     });
     confirmPasswordReset.mockResolvedValue(undefined);
     render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
 
     fireEvent.change(screen.getByLabelText("Password"), {
       target: { value: "old password" },
@@ -564,7 +572,12 @@ describe("LoginScreen password recovery", () => {
       "https://cloudhub.social",
       "alice@example.org",
     );
-    expect(screen.getByText("Open the link in your email, then return here.")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Follow the instructions in your email. If it includes a token, enter it below.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
 
     fireEvent.change(screen.getByLabelText("New password"), {
       target: { value: "new correct horse" },
@@ -584,6 +597,7 @@ describe("LoginScreen password recovery", () => {
   it("does not reveal that a homeserver rejected the recovery request", async () => {
     requestPasswordReset.mockRejectedValue(new Error("unknown email"));
     render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
 
     fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
     fireEvent.change(screen.getByLabelText("Email"), {
@@ -593,7 +607,11 @@ describe("LoginScreen password recovery", () => {
       screen.getByRole("button", { name: "Send recovery email" }).click();
     });
 
-    expect(screen.getByText("Open the link in your email, then return here.")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Follow the instructions in your email. If it includes a token, enter it below.",
+      ),
+    ).toBeVisible();
     expect(screen.queryByText(/could not be started/i)).not.toBeInTheDocument();
   });
 
@@ -605,6 +623,7 @@ describe("LoginScreen password recovery", () => {
       }),
     );
     render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
 
     fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
     fireEvent.change(screen.getByLabelText("Email"), {
@@ -627,6 +646,7 @@ describe("LoginScreen password recovery", () => {
       requires_token: true,
     });
     render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
 
     fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
     fireEvent.change(screen.getByLabelText("Email"), {
@@ -635,11 +655,25 @@ describe("LoginScreen password recovery", () => {
     await act(async () => {
       screen.getByRole("button", { name: "Send recovery email" }).click();
     });
-    expect(screen.getByLabelText("Email token")).toBeVisible();
+    expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(cancelPasswordReset).toHaveBeenCalledWith("token-attempt");
     expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+  });
+
+  it("does not offer legacy recovery when the homeserver has no password flow", async () => {
+    getLoginFlows.mockResolvedValue({
+      password: false,
+      token: false,
+      sso: true,
+      identity_providers: [{ id: "mas", name: "Account provider" }],
+    });
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    await discoverLoginChoices();
+
+    expect(screen.queryByRole("button", { name: "Forgot password?" })).not.toBeInTheDocument();
   });
 });
