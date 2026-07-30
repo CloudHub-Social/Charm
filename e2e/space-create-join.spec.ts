@@ -70,6 +70,57 @@ test("creates a new space beneath the selected parent", async ({ page }) => {
   await captureSnapshot(page, "space-hierarchy-create-subspace");
 });
 
+test("drags one space beneath another and refreshes the rail hierarchy", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { space_hierarchy_reorganization: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: {
+      room_id: "!alpha:e2e",
+      name: "Alpha",
+      unread_count: 0,
+      is_space: true,
+    },
+    extraRooms: [
+      {
+        room_id: "!beta:e2e",
+        name: "Beta",
+        unread_count: 0,
+        is_space: true,
+      },
+    ],
+  });
+  await page.goto("/");
+
+  const alpha = page.getByRole("button", { name: "Alpha", exact: true });
+  const beta = page.getByRole("button", { name: "Beta", exact: true });
+  const alphaBox = await alpha.boundingBox();
+  const betaBox = await beta.boundingBox();
+  expect(alphaBox).not.toBeNull();
+  expect(betaBox).not.toBeNull();
+  if (!alphaBox || !betaBox) throw new Error("space rail entries did not render");
+
+  await page.mouse.move(alphaBox.x + alphaBox.width / 2, alphaBox.y + alphaBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, {
+    steps: 6,
+  });
+  await page.mouse.up();
+
+  await expect(page.getByRole("button", { name: "Expand Beta" })).toBeVisible();
+  await page.getByRole("button", { name: "Expand Beta" }).click();
+  await expect(page.getByRole("button", { name: "Alpha", exact: true })).toBeVisible();
+  await captureSnapshot(page, "space-hierarchy-drag-to-nest");
+});
+
 test("joins a space by address and switches into it", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,

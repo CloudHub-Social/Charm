@@ -11,6 +11,7 @@ import { makeRoomSummary } from "./testFixtures";
 
 const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
 const setSpaceChildSuggested = vi.fn().mockResolvedValue(undefined);
+const setSpaceParent = vi.fn().mockResolvedValue(undefined);
 const addExistingSpaceChild = vi.fn().mockResolvedValue(undefined);
 const leaveRoom = vi.fn().mockResolvedValue(undefined);
 const inviteMember = vi.fn().mockResolvedValue(undefined);
@@ -31,6 +32,7 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixLib>()),
   removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   setSpaceChildSuggested: (...args: unknown[]) => setSpaceChildSuggested(...args),
+  setSpaceParent: (...args: unknown[]) => setSpaceParent(...args),
   addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
   leaveRoom: (...args: unknown[]) => leaveRoom(...args),
   inviteMember: (...args: unknown[]) => inviteMember(...args),
@@ -115,6 +117,21 @@ function expectMenuItemEnabled(name: string | RegExp) {
   expect(screen.getByRole("menuitem", { name })).not.toHaveAttribute("aria-disabled", "true");
 }
 
+function mockElementFromPoint(element: Element) {
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: vi.fn(() => element),
+  });
+}
+
+function mockPointerCapture(element: HTMLElement) {
+  Object.defineProperties(element, {
+    setPointerCapture: { configurable: true, value: vi.fn() },
+    releasePointerCapture: { configurable: true, value: vi.fn() },
+    hasPointerCapture: { configurable: true, value: vi.fn(() => true) },
+  });
+}
+
 describe("SpaceRail", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -123,6 +140,8 @@ describe("SpaceRail", () => {
     getRoomDetails.mockImplementation((roomId: string) =>
       Promise.resolve(makeRoomDetails({ room_id: roomId })),
     );
+    setSpaceParent.mockReset();
+    setSpaceParent.mockResolvedValue(undefined);
   });
 
   it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
@@ -443,6 +462,67 @@ describe("SpaceRail", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Create subspace" }));
 
     expect(onCreateUnderSpace).toHaveBeenCalledWith("!space:localhost");
+  });
+
+  it("drags a top-level space onto another space to make it the canonical parent", async () => {
+    const onSpaceChildrenChanged = vi.fn();
+    renderRail({
+      onSpaceChildrenChanged,
+      rooms: [
+        makeRoomSummary({ room_id: "!alpha:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+    const alpha = screen.getByRole("button", { name: "Alpha" });
+    const beta = screen.getByRole("button", { name: "Beta" });
+    mockPointerCapture(alpha);
+    mockElementFromPoint(beta);
+
+    fireEvent.pointerDown(alpha, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
+    fireEvent.pointerMove(alpha, { pointerId: 1, clientX: 10, clientY: 30, buttons: 1 });
+    fireEvent.pointerUp(alpha, { pointerId: 1, clientX: 10, clientY: 30 });
+
+    await waitFor(() =>
+      expect(setSpaceParent).toHaveBeenCalledWith("!alpha:localhost", "!beta:localhost"),
+    );
+    await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
+  });
+
+  it("rejects a local drag target that is the source space's descendant", async () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    const team = screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" });
+    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    mockPointerCapture(team);
+    mockElementFromPoint(product);
+
+    fireEvent.pointerDown(team, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
+    fireEvent.pointerMove(team, { pointerId: 1, clientX: 10, clientY: 30, buttons: 1 });
+    expect(product).toHaveAttribute("data-drop-invalid", "true");
+    fireEvent.pointerUp(team, { pointerId: 1, clientX: 10, clientY: 30 });
+
+    await waitFor(() => expect(setSpaceParent).not.toHaveBeenCalled());
+  });
+
+  it("drags a nested space outside the rail to un-nest it", async () => {
+    const onSpaceChildrenChanged = vi.fn();
+    renderRail({ onSpaceChildrenChanged });
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    mockPointerCapture(product);
+    const outside = document.createElement("div");
+    document.body.append(outside);
+    mockElementFromPoint(outside);
+
+    fireEvent.pointerDown(product, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
+    fireEvent.pointerMove(product, { pointerId: 1, clientX: 100, clientY: 100, buttons: 1 });
+    fireEvent.pointerUp(product, { pointerId: 1, clientX: 100, clientY: 100 });
+
+    await waitFor(() =>
+      expect(setSpaceParent).toHaveBeenCalledWith("!child-space:localhost", undefined),
+    );
+    await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
+    outside.remove();
   });
 
   it("disables Invite until the space's permissions have loaded, then re-enables it once permitted", async () => {

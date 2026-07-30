@@ -14,7 +14,8 @@ import {
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useDrag } from "@use-gesture/react";
 import { useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -30,6 +31,7 @@ import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   getRoomDetails,
   removeSpaceChild,
+  setSpaceParent,
   setSpaceChildSuggested,
   type RoomPermissions,
   type RoomSummary,
@@ -90,6 +92,14 @@ export function SpaceRail({
     name: string;
   } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [spaceDrop, setSpaceDrop] = useState<{
+    sourceId: string;
+    targetId: string | null;
+    invalid: boolean;
+  } | null>(null);
+  const spaceDropRef = useRef<typeof spaceDrop>(null);
+  const [spaceParentMutationPending, setSpaceParentMutationPending] = useState(false);
+  const railRef = useRef<HTMLElement | null>(null);
   const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return () => {
@@ -144,6 +154,52 @@ export function SpaceRail({
     if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
     actionErrorTimeoutRef.current = setTimeout(() => setActionError(null), 5000);
   }
+  const updateSpaceDrop = useCallback(
+    (sourceId: string, clientX: number, clientY: number) => {
+      const element = document.elementFromPoint(clientX, clientY);
+      const targetId =
+        element?.closest<HTMLElement>("[data-space-drop-id]")?.dataset.spaceDropId ?? null;
+      const source = rooms.find((room) => room.room_id === sourceId);
+      const insideRail = railRef.current?.contains(element) ?? false;
+      const resolvedTarget = insideRail ? targetId : null;
+      const invalid =
+        resolvedTarget === sourceId ||
+        (resolvedTarget !== null &&
+          collectDescendantSpaceIds(sourceId, rooms).has(resolvedTarget)) ||
+        (!insideRail && (source?.parent_space_ids.length ?? 0) === 0);
+      const nextDrop = { sourceId, targetId: resolvedTarget, invalid };
+      spaceDropRef.current = nextDrop;
+      setSpaceDrop(nextDrop);
+    },
+    [rooms],
+  );
+  const finishSpaceDrop = useCallback(
+    (sourceId: string) => {
+      const drop = spaceDropRef.current;
+      spaceDropRef.current = null;
+      setSpaceDrop(null);
+      if (!drop || drop.sourceId !== sourceId || drop.invalid || spaceParentMutationPending) return;
+      const source = rooms.find((room) => room.room_id === sourceId);
+      if (drop.targetId === null && (source?.parent_space_ids.length ?? 0) === 0) {
+        return;
+      }
+      // `RoomSummary.parent_space_ids` deliberately does not expose which
+      // edge is canonical. Do not skip a drop merely because the target is
+      // already one of the Matrix parents: the command may still need to
+      // promote that noncanonical relationship to Charm's canonical parent.
+      setSpaceParentMutationPending(true);
+      setSpaceParent(sourceId, drop.targetId ?? undefined)
+        .catch(reportActionError)
+        .finally(() => {
+          setSpaceParentMutationPending(false);
+          // The two Matrix state writes are not atomic. Always refetch after
+          // success or failure so a partial server-side mutation is rendered
+          // truthfully instead of leaving the pre-drag hierarchy on screen.
+          onSpaceChildrenChanged?.();
+        });
+    },
+    [onSpaceChildrenChanged, rooms, spaceParentMutationPending],
+  );
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
     useMemo(() => {
@@ -297,7 +353,7 @@ export function SpaceRail({
           <button
             type="button"
             aria-label={`${folderOpen ? "Collapse" : "Expand"} ${label}`}
-            className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="absolute left-0 z-10 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
           >
             <ChevronDown
@@ -312,6 +368,18 @@ export function SpaceRail({
           unread={counts.unread}
           highlight={counts.highlight}
           onClick={() => onSelectSpace(space.room_id)}
+          dragEnabled={hierarchyReorganizationEnabled && !spaceParentMutationPending}
+          dropState={
+            spaceDrop?.targetId === space.room_id
+              ? spaceDrop.invalid
+                ? "invalid"
+                : "valid"
+              : spaceDrop?.sourceId === space.room_id
+                ? "source"
+                : "idle"
+          }
+          onDragMove={updateSpaceDrop}
+          onDragEnd={finishSpaceDrop}
         />
       </div>
     );
@@ -459,7 +527,10 @@ export function SpaceRail({
           {actionError}
         </div>
       )}
-      <aside className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-muted/25 py-3">
+      <aside
+        ref={railRef}
+        className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-muted/25 py-3"
+      >
         <nav className="flex min-h-0 flex-1 flex-col items-center gap-2" aria-label="Spaces">
           <RailIconButton
             label="Home"
@@ -635,21 +706,72 @@ interface SpaceButtonProps {
   unread: number;
   highlight: number;
   onClick: () => void;
+  dragEnabled: boolean;
+  dropState: "idle" | "source" | "valid" | "invalid";
+  onDragMove: (spaceId: string, clientX: number, clientY: number) => void;
+  onDragEnd: (spaceId: string) => void;
 }
 
-function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonProps) {
+function SpaceButton({
+  space,
+  active,
+  unread,
+  highlight,
+  onClick,
+  dragEnabled,
+  dropState,
+  onDragMove,
+  onDragEnd,
+}: SpaceButtonProps) {
   const label = displayName(space.room_id, space.name);
   const accessibleLabel = labelWithBadge(label, unread, highlight);
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState<[number, number]>([0, 0]);
+  const draggedRef = useRef(false);
+  const bind = useDrag(
+    ({ down, first, last, movement, xy }) => {
+      if (!dragEnabled) return;
+      if (first) draggedRef.current = false;
+      if (down && (Math.abs(movement[0]) > 3 || Math.abs(movement[1]) > 3)) {
+        draggedRef.current = true;
+      }
+      setDragging(down);
+      setDragOffset(down ? [movement[0], movement[1]] : [0, 0]);
+      if (down) onDragMove(space.room_id, xy[0], xy[1]);
+      if (last && draggedRef.current) onDragEnd(space.room_id);
+    },
+    { filterTaps: true, enabled: dragEnabled },
+  );
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          {...bind()}
           type="button"
+          data-space-drop-id={space.room_id}
           aria-label={accessibleLabel}
           aria-current={active ? "page" : undefined}
-          onClick={onClick}
+          data-drop-invalid={dropState === "invalid" ? "true" : undefined}
+          onClick={() => {
+            if (!draggedRef.current) onClick();
+            draggedRef.current = false;
+          }}
+          style={{
+            transform: dragging ? `translate(${dragOffset[0]}px, ${dragOffset[1]}px)` : undefined,
+            position: dragging ? "relative" : undefined,
+            zIndex: dragging ? 20 : undefined,
+            // `@use-gesture/react` requires this on the bound target before
+            // the pointer goes down; applying it only after `dragging`
+            // becomes true is too late for touch browsers to suppress their
+            // native pan gesture.
+            touchAction: dragEnabled ? "none" : undefined,
+            pointerEvents: dragging ? "none" : undefined,
+          }}
           className={cn(
             "relative flex size-11 items-center justify-center rounded-md border border-transparent bg-background transition-colors hover:border-border hover:bg-accent/70",
+            dropState === "valid" && "border-primary bg-accent ring-2 ring-primary/40",
+            dropState === "invalid" && "border-destructive bg-destructive/10",
+            dropState === "source" && "opacity-70",
           )}
         >
           {/* Ring lives on the (rounded-full) avatar itself, not the
@@ -673,6 +795,25 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
       <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+function collectDescendantSpaceIds(spaceId: string, rooms: RoomSummary[]) {
+  const childrenByParent = new Map<string, string[]>();
+  for (const room of rooms) {
+    if (!room.is_space) continue;
+    for (const parentId of room.parent_space_ids) {
+      childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), room.room_id]);
+    }
+  }
+  const descendants = new Set<string>();
+  const stack = [...(childrenByParent.get(spaceId) ?? [])];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (!next || descendants.has(next)) continue;
+    descendants.add(next);
+    stack.push(...(childrenByParent.get(next) ?? []));
+  }
+  return descendants;
 }
 
 function labelWithBadge(label: string, unread: number, highlight: number) {
