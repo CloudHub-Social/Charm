@@ -21,7 +21,7 @@ use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use std::hash::{BuildHasher, Hasher};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
@@ -36,6 +36,9 @@ use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
 const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
 
 static RESTORE_STORE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+static REGISTRATION_MAIL_ADDRESS_HASHER: std::sync::OnceLock<
+    std::collections::hash_map::RandomState,
+> = std::sync::OnceLock::new();
 
 /// Serializes fresh client restores that open and use the persisted Matrix
 /// store before a live app client owns it. App startup and Android's
@@ -1102,11 +1105,6 @@ pub async fn request_registration_email(
     } else {
         ClientSecret::new()
     };
-    let send_attempt = pending.email_send_attempt + 1;
-    pending.email_address_key = Some(address_key.clone());
-    pending.email_send_attempt = send_attempt;
-    pending.email_retry_not_before =
-        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     if let Err(error) = check_registration_mail_quota(&state, &address_key).await {
         if !restore_or_discard_pending_registration(
             &app,
@@ -1122,6 +1120,11 @@ pub async fn request_registration_email(
         reservation.defuse();
         return Err(error);
     }
+    let send_attempt = pending.email_send_attempt + 1;
+    pending.email_address_key = Some(address_key.clone());
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
         delivery_email.clone(),
@@ -1213,16 +1216,22 @@ async fn check_registration_mail_quota(
     state: &MatrixState,
     address_key: &str,
 ) -> Result<(), String> {
-    let cutoff = std::time::Instant::now() - REGISTRATION_MAIL_QUOTA_WINDOW;
     let now = std::time::Instant::now();
-    let digest = Sha256::digest(address_key.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let cutoff = now.checked_sub(REGISTRATION_MAIL_QUOTA_WINDOW);
+    // `RandomState` carries process-random SipHash keys. Retain only this
+    // opaque, process-local digest so common addresses cannot be recovered
+    // from a diagnostic or correlated across Charm installations.
+    let mut hasher = REGISTRATION_MAIL_ADDRESS_HASHER
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .build_hasher();
+    hasher.write(address_key.as_bytes());
+    let digest = format!("{:016x}", hasher.finish());
     let mut quota = state.registration_mail_quota.lock().await;
-    quota.all.retain(|at| *at >= cutoff);
+    quota
+        .all
+        .retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
     quota.by_address.retain(|_, attempts| {
-        attempts.retain(|at| *at >= cutoff);
+        attempts.retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
         !attempts.is_empty()
     });
     if quota.all.len() >= REGISTRATION_MAILS_PER_PROCESS
