@@ -345,12 +345,10 @@ IPC commands).
 2. **Linux:** same shape of item for WebKitGTK's `permission-request` signal —
    still fully open, no fake-device/fake-UI equivalent exists for WebKitGTK the
    way it does for Chromium/WebView2.
-3. ~~**Android:** implement/confirm `WebChromeClient.onPermissionRequest` →
-   `PermissionRequest.grant(...)`~~ — **Confirmed 2026-07-07: it's not
-   implemented today**, and getUserMedia hangs indefinitely without it. This is
-   now a confirmed, required Phase 4 work item (not a hypothetical) — implement
-   the grant callback in the generated Android shell, plus the `Activity`-level
-   runtime permission flow.
+3. ~~**Android:** identify and fix the `getUserMedia` hang~~ — **Resolved in
+   PR #229:** wry already implements the `WebChromeClient` permission callback;
+   the missing manifest declarations were added without custom Kotlin. Only the
+   hardware-blocked device/emulator re-run remains.
 4. **iOS/Android screen share:** both are native-API-only (ReplayKit /
    MediaProjection) and not reachable from the webview — Phase 4 either bridges
    these natively or descopes screen share on mobile. This is an EXPECTED-GAP by
