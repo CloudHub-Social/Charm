@@ -699,9 +699,9 @@ async fn finish_registration(
         // any remaining cleanup failure instead of silently claiming success.
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+            sync::spawn_sync_task(app.clone(), previous_client);
         }
-        return clear_cancelled_registration_session(&account_key);
+        return clear_cancelled_registration_session(&app, &account_key);
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -751,9 +751,9 @@ async fn finish_registration(
             drop(client_slot);
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app, previous_client);
+                sync::spawn_sync_task(app.clone(), previous_client);
             }
-            return clear_cancelled_registration_session(&account_key);
+            return clear_cancelled_registration_session(&app, &account_key);
         }
         // This is the completion/cancellation linearization point. A cancel
         // that acquired the slot first wins above; after this removal the
@@ -767,12 +767,16 @@ async fn finish_registration(
     Ok(response)
 }
 
-fn clear_cancelled_registration_session(account_key: &str) -> Result<LoginResponse, String> {
+fn clear_cancelled_registration_session(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<LoginResponse, String> {
     let session_cleanup = match persistence::clear_session(account_key) {
         Ok(()) => Ok(()),
         Err(_) => persistence::clear_session(account_key),
     };
     let oauth_cleanup = persistence::clear_oauth_session(account_key);
+    let store_cleanup = persistence::discard_cancelled_account_store(app, account_key);
     if let Err(error) = session_cleanup {
         return Err(format!(
             "registration cancelled, but the saved session could not be removed: {error}"
@@ -781,6 +785,11 @@ fn clear_cancelled_registration_session(account_key: &str) -> Result<LoginRespon
     if let Err(error) = oauth_cleanup {
         return Err(format!(
             "registration cancelled, but OAuth session cleanup failed: {error}"
+        ));
+    }
+    if let Err(error) = store_cleanup {
+        return Err(format!(
+            "registration cancelled, but the relocated store could not be removed: {error}"
         ));
     }
     Err("registration cancelled".to_string())
@@ -1135,6 +1144,7 @@ pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &Matri
     {
         let _ = persistence::clear_session(&account_key);
         let _ = persistence::clear_oauth_session(&account_key);
+        let _ = persistence::discard_cancelled_account_store(app, &account_key);
     }
 }
 
