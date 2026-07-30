@@ -232,7 +232,12 @@ without the user knowing which is which.
   neither transport owns indexing semantics.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
-  when the flag is off.
+  when the flag is off. An enabled-to-disabled transition first closes every
+  account/session handle, securely removes the Charm-owned plaintext database
+  and its WAL/SHM files, and records no reusable quarantine. Startup also purges
+  a leftover index before serving other account work when the effective flag is
+  false. Kill-switch tests cover an active handle, restart cleanup, and failure
+  reporting without reopening the index.
 - The companion evaluates that flag in trusted server configuration on every
   indexing/search request (or through a bounded cache with explicit configuration
   invalidation), rather than binding a `true` value for the lifetime of a
