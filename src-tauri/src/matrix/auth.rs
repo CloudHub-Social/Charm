@@ -730,11 +730,29 @@ async fn finish_registration(
         return Err(e.into());
     }
     if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
-        let _ = persistence::clear_session(&account_key);
-        let _ = persistence::clear_oauth_session(&account_key);
+        // Relocation has already made this session durable. A cancellation
+        // response is only truthful if we also remove that durable session;
+        // otherwise startup can restore an account the user explicitly
+        // cancelled. Retry once for transient keychain failures and surface
+        // any remaining cleanup failure instead of silently claiming success.
+        let session_cleanup = match persistence::clear_session(&account_key) {
+            Ok(()) => Ok(()),
+            Err(_) => persistence::clear_session(&account_key),
+        };
+        let oauth_cleanup = persistence::clear_oauth_session(&account_key);
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
             sync::spawn_sync_task(app, previous_client);
+        }
+        if let Err(error) = session_cleanup {
+            return Err(format!(
+                "registration cancelled, but the saved session could not be removed: {error}"
+            ));
+        }
+        if let Err(error) = oauth_cleanup {
+            return Err(format!(
+                "registration cancelled, but OAuth session cleanup failed: {error}"
+            ));
         }
         return Err("registration cancelled".to_string());
     }

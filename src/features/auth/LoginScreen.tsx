@@ -137,6 +137,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
   const ssoOperationRef = useRef(0);
+  // Keeps cancellation from exposing the SSO buttons while the backend is
+  // still creating an attempt. Once that setup settles, its stale-operation
+  // branch cancels the exact pending attempt before allowing another start.
+  const ssoSetupInFlightRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
@@ -286,12 +290,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSsoLogin(idpId?: string) {
     const operation = ++ssoOperationRef.current;
+    ssoSetupInFlightRef.current = true;
     setSsoPending(true);
     setError(null);
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
+      ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
-        cancelSsoLogin().catch(logAndIgnore);
+        await cancelSsoLogin().catch(logAndIgnore);
+        setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = true;
@@ -300,7 +307,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
-      if (operation !== ssoOperationRef.current) return;
+      ssoSetupInFlightRef.current = false;
+      if (operation !== ssoOperationRef.current) {
+        setSsoPending(false);
+        return;
+      }
       ssoInProgressRef.current = false;
       setError(String(err));
       setSsoPending(false);
@@ -310,7 +321,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   function handleCancelSso() {
     ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
-    setSsoPending(false);
+    // If setup is still in flight, keep the controls disabled. The stale
+    // setup branch above performs a second cancellation after the backend
+    // has actually installed its pending attempt, then clears this state.
+    if (!ssoSetupInFlightRef.current) setSsoPending(false);
     setError(null);
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
