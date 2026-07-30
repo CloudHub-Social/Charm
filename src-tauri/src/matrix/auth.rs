@@ -1191,10 +1191,6 @@ pub async fn request_registration_email(
         clear_registration_cancellation(&state, &attempt_id);
         return Err("registration cancelled".to_string());
     }
-    pending.email_address_key = Some(address_key);
-    pending.email_send_attempt = send_attempt;
-    pending.email_retry_not_before =
-        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let submit_url = match sanitize_email_submit_url(
         &pending.client.homeserver(),
         response.submit_url.as_deref(),
@@ -1222,6 +1218,10 @@ pub async fn request_registration_email(
             }
         }
     };
+    pending.email_address_key = Some(address_key);
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let requires_token = submit_url.is_some();
     pending.email_validation = Some(PendingRegistrationEmail {
         client_secret,
@@ -2130,7 +2130,15 @@ pub async fn login_with_token(
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
-    let _restore_store_guard = restore_store_lock().lock().await;
+    let _restore_store_guard =
+        match tokio::time::timeout_at(deadline, restore_store_lock().lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("token login setup timed out".to_string());
+            }
+        };
     // Keep the reservation visible until the process-wide restore/sweep lock
     // is held, so cleanup cannot delete this active store in the gap.
     reservation.defuse();
