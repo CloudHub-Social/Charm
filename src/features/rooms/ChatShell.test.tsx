@@ -1661,6 +1661,45 @@ describe("ChatShell", () => {
     expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
   });
 
+  it("keeps initial timeline seeding deferred while notice-only pages auto-paginate", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [joinedMembershipItem("alice", "Alice")],
+      next_cursor: "more",
+    });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$older",
+          sender: "@alice:localhost",
+          body: "older text",
+          timestamp_ms: 2,
+        }),
+      ],
+      items: [
+        joinedMembershipItem("alice", "Alice"),
+        {
+          kind: "message",
+          message: summary({
+            event_id: "$older",
+            sender: "@alice:localhost",
+            body: "older text",
+            timestamp_ms: 2,
+          }),
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("older text");
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("New messages")).toBeInTheDocument();
+    expect(document.getElementById("message-$older")?.className).not.toMatch(/animate-in/);
+  });
+
   it("shows 'No messages yet' once an empty page's history is confirmed exhausted", async () => {
     getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: null });
     renderChatShell();
@@ -5148,9 +5187,7 @@ describe("ChatShell", () => {
     expect(screen.getByTestId("timeline-notices")).toHaveTextContent(
       "Alice (@alice:localhost) joined",
     );
-    expect(screen.getByTestId("timeline-notices")).toHaveTextContent(
-      "Bob (@bob:localhost) joined",
-    );
+    expect(screen.getByTestId("timeline-notices")).toHaveTextContent("Bob (@bob:localhost) joined");
     expect(screen.getByText("hello")).toBeInTheDocument();
   });
 

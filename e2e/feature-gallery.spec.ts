@@ -95,7 +95,7 @@ test("timeline membership changes collapse into expandable notices", async ({ pa
         sender: userId,
         timestamp_ms: 1735689600001 + index,
         target_user_id: userId,
-        target_display_name: `${name} (${userId})`,
+        target_display_name: name,
         change: { type: "joined" },
         reason: null,
       }));

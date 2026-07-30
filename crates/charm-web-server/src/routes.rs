@@ -2086,7 +2086,7 @@ async fn get_timeline_page(
                 ApiError::bad_request(e)
             }
         })?;
-    let page = get_timeline_page_impl(&session.client, &timeline, None, query.limit)
+    let page = get_timeline_page_impl(&session.client, &timeline, None, query.limit, false)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(page))

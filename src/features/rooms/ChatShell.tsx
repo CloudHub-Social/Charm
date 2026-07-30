@@ -314,13 +314,7 @@ export function ChatShell({
   // otherwise leaves every other dependency here unchanged once `loadingMore`
   // flips back to `false`, which would immediately re-trigger it again.
   useEffect(() => {
-    if (
-      !loading &&
-      messages.length === 0 &&
-      hasMore &&
-      !loadingMore &&
-      !paginationError
-    ) {
+    if (!loading && messages.length === 0 && hasMore && !loadingMore && !paginationError) {
       loadMoreHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
@@ -337,8 +331,7 @@ export function ChatShell({
   // unlikely this early) counting toward the jump-to-present pill — and
   // would freeze the unread divider's position against an empty snapshot
   // instead of the room's actual unread boundary.
-  const awaitingEmptyPagePagination =
-    messages.length === 0 && !hasVisibleNotices && hasMore && !paginationError;
+  const awaitingEmptyPagePagination = messages.length === 0 && hasMore && !paginationError;
   const {
     virtuosoRef,
     atBottom,
@@ -681,11 +674,18 @@ export function ChatShell({
               const readers = receiptsByEvent.get(message.event_id) ?? [];
               const before = noticeBuckets.beforeMessage.get(message.event_id) ?? [];
               const trailing = i === messages.length - 1 ? noticeBuckets.trailing : [];
+              const previousMessageTimestamp = messages[i - 1]?.timestamp_ms ?? null;
+              const previousTimelineTimestamp =
+                before.at(-1)?.timestamp_ms ?? previousMessageTimestamp;
 
               return (
                 <>
                   {before.length > 0 && (
-                    <TimelineNoticeList notices={before} irc={messageLayout === "irc"} />
+                    <TimelineNoticeList
+                      notices={before}
+                      irc={messageLayout === "irc"}
+                      previousTimestampMs={previousMessageTimestamp}
+                    />
                   )}
                   <TimelineMessageRow
                     index={i}
@@ -704,9 +704,14 @@ export function ChatShell({
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
+                    previousTimelineTimestampMs={previousTimelineTimestamp}
                   />
                   {trailing.length > 0 && (
-                    <TimelineNoticeList notices={trailing} irc={messageLayout === "irc"} />
+                    <TimelineNoticeList
+                      notices={trailing}
+                      irc={messageLayout === "irc"}
+                      previousTimestampMs={message.timestamp_ms}
+                    />
                   )}
                 </>
               );

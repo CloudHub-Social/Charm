@@ -6,6 +6,15 @@ function isSameDay(a: Date, b: Date): boolean {
   );
 }
 
+export function isDateDividerBetween(
+  previousTimestampMs: number | null,
+  timestampMs: number,
+): boolean {
+  return (
+    previousTimestampMs === null || !isSameDay(new Date(previousTimestampMs), new Date(timestampMs))
+  );
+}
+
 /**
  * "Today" / "Yesterday" / a full date, for the date divider above the first
  * message of a day. `locale` defaults to `undefined` (the runtime's default
@@ -38,10 +47,7 @@ export function isDateDividerBoundary(
 ): boolean {
   if (index === 0) return true;
   if (index >= messages.length) return false;
-  return !isSameDay(
-    new Date(messages[index - 1].timestamp_ms),
-    new Date(messages[index].timestamp_ms),
-  );
+  return isDateDividerBetween(messages[index - 1].timestamp_ms, messages[index].timestamp_ms);
 }
 
 /**

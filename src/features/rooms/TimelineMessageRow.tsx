@@ -1,5 +1,9 @@
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { isDateDividerBoundary, formatDateDividerLabel } from "./timelineDividers";
+import {
+  isDateDividerBetween,
+  isDateDividerBoundary,
+  formatDateDividerLabel,
+} from "./timelineDividers";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import type { MessageActionController } from "./useMessageActionController";
 
@@ -20,6 +24,7 @@ interface TimelineMessageRowProps {
   onJumpToMessage: (eventId: string) => void;
   onUserPillClick: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
+  previousTimelineTimestampMs?: number | null;
 }
 
 export function TimelineMessageRow({
@@ -39,18 +44,23 @@ export function TimelineMessageRow({
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
+  previousTimelineTimestampMs,
 }: TimelineMessageRowProps) {
   const own = message.sender === currentUserId;
   const prev = messages[index - 1];
   const next = messages[index + 1];
   const isGroupBreakAt = (candidateIndex: number) =>
     isDateDividerBoundary(messages, candidateIndex) || candidateIndex === unreadStartIndex;
+  const showDateDivider =
+    previousTimelineTimestampMs === undefined
+      ? isDateDividerBoundary(messages, index)
+      : isDateDividerBetween(previousTimelineTimestampMs, message.timestamp_ms);
 
   return (
     // Flex containment keeps layout-row top margins inside Virtuoso's measured
     // item box, preserving bottom detection and prepend anchoring.
     <div className="flex flex-col pb-1">
-      {isDateDividerBoundary(messages, index) && (
+      {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
           {formatDateDividerLabel(message.timestamp_ms)}
         </div>

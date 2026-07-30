@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import type { TimelineItemSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
+import { formatDateDividerLabel, isDateDividerBetween } from "./timelineDividers";
 
 export type TimelineNotice = Exclude<TimelineItemSummary, { kind: "message" }>;
 
@@ -100,35 +101,39 @@ function membershipVerb(item: Extract<TimelineNotice, { kind: "membership" }>): 
 
 function membershipLabel(item: Extract<TimelineNotice, { kind: "membership" }>): ReactNode {
   if (item.change.type === "profile") {
-    if (item.change.old_display_name !== item.change.new_display_name) {
-      if (item.change.new_display_name) {
-        return (
-          <>
-            <TargetIdentity item={item} displayName={item.change.old_display_name} /> changed their
-            display name to <RemoteText>{item.change.new_display_name}</RemoteText>
-          </>
-        );
-      }
+    const displayNameChanged = item.change.old_display_name !== item.change.new_display_name;
+    const avatarChanged = item.change.old_avatar_url !== item.change.new_avatar_url;
+    if (displayNameChanged || avatarChanged) {
       return (
         <>
-          <TargetIdentity item={item} displayName={item.change.old_display_name} /> removed their
-          display name
-        </>
-      );
-    }
-    if (item.change.old_avatar_url !== item.change.new_avatar_url) {
-      return (
-        <>
-          <TargetIdentity item={item} /> changed their avatar
+          <TargetIdentity item={item} displayName={item.change.old_display_name} />{" "}
+          {displayNameChanged &&
+            (item.change.new_display_name ? (
+              <>
+                changed their display name to{" "}
+                <RemoteText>{item.change.new_display_name}</RemoteText>
+              </>
+            ) : (
+              "removed their display name"
+            ))}
+          {displayNameChanged && avatarChanged && " and "}
+          {avatarChanged && "changed their avatar"}
         </>
       );
     }
   }
   const showActor =
     item.sender !== item.target_user_id &&
-    ["banned", "kicked", "kicked_and_banned", "invited", "invitation_revoked"].includes(
-      item.change.type,
-    );
+    [
+      "banned",
+      "unbanned",
+      "kicked",
+      "kicked_and_banned",
+      "invited",
+      "invitation_revoked",
+      "knock_accepted",
+      "knock_denied",
+    ].includes(item.change.type);
   return (
     <>
       <TargetIdentity item={item} /> {membershipVerb(item)}
@@ -152,25 +157,63 @@ function stateLabel(item: Extract<TimelineNotice, { kind: "state" }>): ReactNode
   const actor = <RemoteText>{item.sender}</RemoteText>;
   switch (item.change.type) {
     case "name":
-      return item.change.new_value
-        ? <>{actor} changed the room name to <RemoteText>{item.change.new_value}</RemoteText></>
-        : <>{actor} removed the room name</>;
-    case "topic":
-      return item.change.new_value
-        ? <>{actor} changed the topic to <RemoteText>{item.change.new_value}</RemoteText></>
-        : <>{actor} removed the room topic</>;
-    case "avatar":
-      return item.change.new_value
-        ? <>{actor} changed the room avatar</>
-        : <>{actor} removed the room avatar</>;
-    case "tombstone":
-      return item.change.body ? (
-        <RemoteText>{item.change.body}</RemoteText>
+      return item.change.new_value ? (
+        <>
+          {actor} changed the room name to <RemoteText>{item.change.new_value}</RemoteText>
+        </>
       ) : (
-        "This room has been replaced by a newer room"
+        <>{actor} removed the room name</>
+      );
+    case "topic":
+      return item.change.new_value ? (
+        <>
+          {actor} changed the topic to <RemoteText>{item.change.new_value}</RemoteText>
+        </>
+      ) : (
+        <>{actor} removed the room topic</>
+      );
+    case "avatar":
+      return item.change.new_value ? (
+        <>{actor} changed the room avatar</>
+      ) : (
+        <>{actor} removed the room avatar</>
+      );
+    case "tombstone":
+      return (
+        <>
+          This room was upgraded
+          {item.change.body && (
+            <>
+              {": "}
+              <RemoteText>{item.change.body}</RemoteText>
+            </>
+          )}
+          {item.change.replacement_room_id && (
+            <>
+              {" — replacement "}
+              <RemoteText>{item.change.replacement_room_id}</RemoteText>
+            </>
+          )}
+        </>
+      );
+    case "redacted":
+      return (
+        <>
+          A <RemoteText>{item.change.event_type}</RemoteText> state event was redacted
+        </>
       );
     case "hidden":
-      return <>{actor} changed <RemoteText>{item.change.event_type}</RemoteText></>;
+      return (
+        <>
+          {actor} changed <RemoteText>{item.change.event_type}</RemoteText>
+          {item.state_key && (
+            <>
+              {" for state key "}
+              <RemoteText>{item.state_key}</RemoteText>
+            </>
+          )}
+        </>
+      );
   }
   return <>{actor} changed room state</>;
 }
@@ -205,9 +248,11 @@ function NoticeLine({ children, irc }: { children: ReactNode; irc: boolean }) {
 export function TimelineNoticeList({
   notices,
   irc = false,
+  previousTimestampMs = null,
 }: {
   notices: TimelineNotice[];
   irc?: boolean;
+  previousTimestampMs?: number | null;
 }) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const groups: TimelineNotice[][] = [];
@@ -216,7 +261,8 @@ export function TimelineNoticeList({
     if (
       notice.kind === "membership" &&
       previous?.[0]?.kind === "membership" &&
-      previous[0].change.type === notice.change.type
+      previous[0].change.type === notice.change.type &&
+      !isDateDividerBetween(previous.at(-1)?.timestamp_ms ?? null, notice.timestamp_ms)
     ) {
       previous.push(notice);
     } else {
@@ -228,30 +274,51 @@ export function TimelineNoticeList({
     <div className="my-1" data-testid="timeline-notices">
       {groups.map((group) => {
         const first = group[0];
+        const groupIndex = groups.indexOf(group);
+        const previousTimestamp =
+          groupIndex === 0 ? previousTimestampMs : groups[groupIndex - 1].at(-1)!.timestamp_ms;
+        const showDateDivider = isDateDividerBetween(previousTimestamp, first.timestamp_ms);
         const collapsible = group.length > 1 && first.kind === "membership";
         const expanded = expandedGroups.has(first.event_id);
         if (collapsible && !expanded) {
           return (
-            <button
-              key={first.event_id}
-              type="button"
-              className={cn(
-                "block w-full text-xs text-muted-foreground hover:text-foreground",
-                irc ? "py-0.5 text-left font-mono" : "py-1 text-center",
+            <div key={first.event_id}>
+              {showDateDivider && (
+                <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
+                  {formatDateDividerLabel(first.timestamp_ms)}
+                </div>
               )}
-              aria-expanded="false"
-              onClick={() => setExpandedGroups((current) => new Set(current).add(first.event_id))}
-            >
-              {irc && "* "}
-              {collapsedMembershipLabel(group as Extract<TimelineNotice, { kind: "membership" }>[])}
-            </button>
+              <button
+                type="button"
+                className={cn(
+                  "block w-full text-xs text-muted-foreground hover:text-foreground",
+                  irc ? "py-0.5 text-left font-mono" : "py-1 text-center",
+                )}
+                aria-expanded="false"
+                onClick={() => setExpandedGroups((current) => new Set(current).add(first.event_id))}
+              >
+                {irc && "* "}
+                {collapsedMembershipLabel(
+                  group as Extract<TimelineNotice, { kind: "membership" }>[],
+                )}
+              </button>
+            </div>
           );
         }
-        return group.map((notice) => (
-          <NoticeLine key={notice.event_id} irc={irc}>
-            {notice.kind === "membership" ? membershipLabel(notice) : stateLabel(notice)}
-          </NoticeLine>
-        ));
+        return (
+          <div key={first.event_id}>
+            {showDateDivider && (
+              <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
+                {formatDateDividerLabel(first.timestamp_ms)}
+              </div>
+            )}
+            {group.map((notice) => (
+              <NoticeLine key={notice.event_id} irc={irc}>
+                {notice.kind === "membership" ? membershipLabel(notice) : stateLabel(notice)}
+              </NoticeLine>
+            ))}
+          </div>
+        );
       })}
     </div>
   );

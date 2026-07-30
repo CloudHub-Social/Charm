@@ -10,7 +10,7 @@ use matrix_sdk_ui::timeline::{
     MsgLikeKind, Profile, Timeline, TimelineDetails, TimelineItem, TimelineItemContent,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::{media, profiles, shell, MatrixState};
@@ -396,6 +396,9 @@ pub enum TimelineStateChange {
         body: Option<String>,
         replacement_room_id: Option<String>,
     },
+    Redacted {
+        event_type: String,
+    },
     Hidden {
         event_type: String,
     },
@@ -548,6 +551,11 @@ fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChan
 fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineStateChange {
     match change {
         AnyOtherStateEventContentChange::RoomName(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.name".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.name.clone(),
@@ -559,6 +567,11 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
             }
         }
         AnyOtherStateEventContentChange::RoomTopic(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.topic".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.topic.clone(),
@@ -570,6 +583,11 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
             }
         }
         AnyOtherStateEventContentChange::RoomAvatar(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.avatar".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.url.as_ref().map(ToString::to_string),
@@ -585,9 +603,8 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
                 body: Some(content.body.clone()),
                 replacement_room_id: Some(content.replacement_room.to_string()),
             },
-            StateEventContentChange::Redacted(_) => TimelineStateChange::Tombstone {
-                body: None,
-                replacement_room_id: None,
+            StateEventContentChange::Redacted(_) => TimelineStateChange::Redacted {
+                event_type: "m.room.tombstone".to_string(),
             },
         },
         other => TimelineStateChange::Hidden {
@@ -1089,8 +1106,6 @@ pub(crate) fn spawn_timeline_listener(
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
-    use tauri::Manager;
-
     /// How often to check whether this room's `Timeline` has been evicted
     /// from the LRU map while the diff stream is otherwise idle (no activity
     /// to wake `stream.next()` on its own).
@@ -1115,6 +1130,12 @@ pub(crate) fn spawn_timeline_listener(
         let initial_items =
             items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
         let initial_summaries = message_summaries(&initial_items);
+        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+            )
+        });
         // Seed with every event id (and the latest timestamp) already present
         // before this listener subscribed — the initial `timeline:update` for
         // a room the user just opened is existing history, never a "new
@@ -1126,7 +1147,7 @@ pub(crate) fn spawn_timeline_listener(
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages: initial_summaries,
-                items: Some(initial_items),
+                items: include_timeline_items.then_some(initial_items),
             },
         );
 
@@ -1164,7 +1185,7 @@ pub(crate) fn spawn_timeline_listener(
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
                     messages: summaries,
-                    items: Some(timeline_items),
+                    items: include_timeline_items.then_some(timeline_items),
                 },
             );
         }
@@ -1301,7 +1322,20 @@ pub async fn get_timeline_page(
             .await?;
         let media_cache = state.require_media_cache(&app).await.ok();
 
-        get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+            )
+        });
+        get_timeline_page_impl(
+            &client,
+            &timeline,
+            media_cache,
+            limit,
+            include_timeline_items,
+        )
+        .await
     })
     .await
 }
@@ -1317,6 +1351,7 @@ pub async fn get_timeline_page_impl(
     timeline: &matrix_sdk_ui::Timeline,
     media_cache: Option<&media::MediaCache>,
     limit: Option<u32>,
+    include_timeline_items: bool,
 ) -> Result<TimelinePage, String> {
     // 200 is well over any real UI need (the documented default is 30) —
     // reject rather than silently clamp, so a caller passing a bogus/huge
@@ -1346,7 +1381,7 @@ pub async fn get_timeline_page_impl(
         items_to_timeline_items(&items, own_user_id.as_deref(), client, media_cache).await;
     Ok(TimelinePage {
         messages: message_summaries(&timeline_items),
-        items: Some(timeline_items),
+        items: include_timeline_items.then_some(timeline_items),
         next_cursor: if hit_start {
             None
         } else {
