@@ -70,15 +70,21 @@ connection: the SDK owns that schema and migration lifecycle.
 - Use one visible content row per `(room_id, original_event_id)`. An `m.replace`
   may update that row only after the same validity checks used by the timeline:
   the replacement sender must match the original event sender, its target must
-  be the original message in the same room, and its `m.new_content` must be an
-  allowed decrypted text-like msgtype. A different sender's forged relation is
-  ignored.
+  be the original message in the same room, and its `m.new_content` must be
+  decrypted. A different sender's forged relation is ignored. When the newest
+  otherwise-valid replacement changes the visible content to a non-indexed
+  msgtype, delete the visible FTS row rather than retaining the original text;
+  keep that replacement in provenance so redacting it can restore the preceding
+  searchable version.
 - Track replacement provenance separately from the visible FTS row: original
-  content plus the ordered valid edit event IDs/bodies needed to determine the
-  latest non-redacted version. Redacting the original deletes its visible row;
-  redacting an edit removes that candidate and atomically recomputes the row from
-  the preceding valid edit or original content. A late edit/redaction or replay
-  therefore converges without leaving redacted replacement text searchable.
+  content plus every valid edit's event ID, `origin_server_ts`, and optional
+  searchable body/msgtype. Determine the latest non-redacted replacement with the
+  same timestamp ordering and deterministic event-ID tie-break used by the
+  timeline, never local arrival order. Redacting the original deletes its visible
+  row; redacting an edit removes that candidate and atomically recomputes the row
+  from the preceding valid edit or original content. A late edit/redaction,
+  backfill, or replay therefore converges without retaining stale or redacted
+  replacement text.
 - Backfill: on first login (or first login after this feature ships for existing
   users), index whatever history is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
@@ -154,7 +160,9 @@ without the user knowing which is which.
 ## Testing strategy
 
 - Rust unit tests: index insert/query/redact/edit-replace correctness against a
-  fixture set of events, including multi-room and multi-sender fixtures.
+  fixture set of events, including multi-room, multi-sender, text-to-non-text
+  replacements, out-of-order edits, equal-timestamp event-ID tie-breaks, and
+  redaction restoring the preceding searchable version.
 - Rust unit tests: account A cannot open, query, or consume a cursor from account
   B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
   matrix-sdk files.
