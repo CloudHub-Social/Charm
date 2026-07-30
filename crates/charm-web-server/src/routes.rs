@@ -1851,9 +1851,17 @@ async fn login_with_token(
     Json(request): Json<TokenLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    cancel_browser_preauth(&state, &jar).await;
-    let (response, session, initial_response, homeserver_url) =
-        crate::pending_auth::login_with_token(
+    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        let owner = previous.value().to_owned();
+        state.pending_auth.cancel_owner(&owner).await;
+        owner
+    } else {
+        new_preauth_owner()
+    };
+    let (response, session, initial_response, homeserver_url) = state
+        .pending_auth
+        .login_with_token(
+            owner,
             request.homeserver_url,
             request.token,
             state.persistence.is_some(),

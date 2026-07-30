@@ -53,6 +53,7 @@ struct RegistrationEmail {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    homeserver: reqwest::Url,
     normalized_email: String,
     send_attempt: u32,
     retry_not_before: Instant,
@@ -128,6 +129,27 @@ impl PendingAuthStore {
             }
             self.password_resets.lock().await.remove(&id);
         }
+    }
+
+    pub async fn login_with_token(
+        &self,
+        owner: String,
+        homeserver_url: String,
+        token: String,
+        has_persistence: bool,
+    ) -> Result<AuthenticatedClient, String> {
+        let _capacity = self.reserve_capacity()?;
+        let attempt_id = opaque_id();
+        let cancellation = CancellationToken::new();
+        self.cancellations
+            .lock()
+            .await
+            .insert(attempt_id.clone(), (owner, cancellation.clone()));
+        self.spawn_expiry(attempt_id.clone());
+        let result =
+            login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await;
+        self.cancellations.lock().await.remove(&attempt_id);
+        result
     }
 
     pub async fn begin_registration(
@@ -316,6 +338,7 @@ impl PendingAuthStore {
             client_secret,
             sid: response.sid,
             submit_url,
+            homeserver: pending.client.homeserver(),
             normalized_email,
             send_attempt,
             retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
@@ -568,14 +591,13 @@ impl PendingAuthStore {
                 Err("password reset attempt expired or was cancelled".to_string())
             }
         };
-        if result.is_err()
-            && !cancellation.is_cancelled()
-            && pending.created_at.elapsed() <= ATTEMPT_TTL
-        {
-            self.password_resets
-                .lock()
+        if result.is_err() && pending.created_at.elapsed() <= ATTEMPT_TTL {
+            if !self
+                .restore_password_reset(attempt_id.to_owned(), pending)
                 .await
-                .insert(attempt_id.to_owned(), pending);
+            {
+                self.cancellations.lock().await.remove(attempt_id);
+            }
         } else {
             self.cancellations.lock().await.remove(attempt_id);
         }
@@ -769,13 +791,27 @@ pub async fn get_login_flows(homeserver_url: &str) -> Result<LoginFlowSummary, S
     Ok(summarize_login_flows(response.flows))
 }
 
-pub async fn login_with_token(
+async fn login_with_token_inner(
     homeserver_url: String,
     token: String,
     has_persistence: bool,
+    cancellation: &CancellationToken,
 ) -> Result<AuthenticatedClient, String> {
-    let (client, crypto) = crate::auth::build_client(&homeserver_url, has_persistence).await?;
-    let flows = match client.matrix_auth().get_login_types().await {
+    let (client, crypto) = tokio::select! {
+        result = crate::auth::build_client(&homeserver_url, has_persistence) => result?,
+        () = cancellation.cancelled() => {
+            return Err("token login expired or was cancelled".to_string());
+        }
+    };
+    let matrix_auth = client.matrix_auth();
+    let flow_request = matrix_auth.get_login_types();
+    let flows = match tokio::select! {
+        result = flow_request => result,
+        () = cancellation.cancelled() => {
+            crate::auth::cleanup_failed_crypto_store(&crypto);
+            return Err("token login expired or was cancelled".to_string());
+        }
+    } {
         Ok(flows) => flows,
         Err(_) => {
             crate::auth::cleanup_failed_crypto_store(&crypto);
@@ -790,18 +826,34 @@ pub async fn login_with_token(
         crate::auth::cleanup_failed_crypto_store(&crypto);
         return Err("this homeserver does not advertise token login".to_string());
     }
-    if client
+    let login = client
         .matrix_auth()
         .login_token(&token)
         .initial_device_display_name("Charm")
-        .send()
-        .await
-        .is_err()
-    {
+        .send();
+    if tokio::select! {
+        result = login => result.is_err(),
+        () = cancellation.cancelled() => true,
+    } {
         crate::auth::cleanup_failed_crypto_store(&crypto);
-        return Err("token login failed".to_string());
+        return Err(if cancellation.is_cancelled() {
+            "token login expired or was cancelled".to_string()
+        } else {
+            "token login failed".to_string()
+        });
     }
-    let completed = crate::auth::finish_authenticated_client(client, crypto, "token login").await?;
+    let cleanup_crypto = crypto.clone();
+    let completed = tokio::select! {
+        result = crate::auth::finish_authenticated_client(client, crypto, "token login") => result,
+        () = cancellation.cancelled() => {
+            crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+            return Err("token login expired or was cancelled".to_string());
+        }
+    }?;
+    if cancellation.is_cancelled() {
+        crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+        return Err("token login expired or was cancelled".to_string());
+    }
     Ok(authenticated(completed, homeserver_url))
 }
 
@@ -879,6 +931,7 @@ async fn registration_auth_data(
                         })?;
                     submit_email(
                         submit_url,
+                        &validation.homeserver,
                         &validation.sid,
                         &validation.client_secret,
                         token,
@@ -1021,12 +1074,13 @@ fn sanitize_submit_url(
 
 async fn submit_email(
     submit_url: &reqwest::Url,
+    homeserver: &reqwest::Url,
     sid: &matrix_sdk::ruma::OwnedSessionId,
     client_secret: &matrix_sdk::ruma::OwnedClientSecret,
     token: &str,
     flow: &str,
 ) -> Result<(), String> {
-    let response = email_submission_client(submit_url)
+    let response = email_submission_client(submit_url, homeserver)
         .await
         .map_err(|_| format!("could not confirm {flow} email"))?
         .post(submit_url.clone())
@@ -1044,7 +1098,10 @@ async fn submit_email(
     Ok(())
 }
 
-async fn email_submission_client(submit_url: &reqwest::Url) -> Result<reqwest::Client, String> {
+async fn email_submission_client(
+    submit_url: &reqwest::Url,
+    homeserver: &reqwest::Url,
+) -> Result<reqwest::Client, String> {
     let host = submit_url
         .host_str()
         .ok_or_else(|| "email submission URL has no host".to_string())?;
@@ -1059,7 +1116,10 @@ async fn email_submission_client(submit_url: &reqwest::Url) -> Result<reqwest::C
     // homeserver's exact origin by `sanitize_submit_url`. Permit their
     // private/loopback address only when the companion's documented local
     // insecure mode is explicitly enabled.
+    let explicitly_local_same_origin = submit_url.origin() == homeserver.origin()
+        && (host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok());
     let allow_insecure_local = submit_url.scheme() == "http"
+        && explicitly_local_same_origin
         && std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1");
     if addresses.is_empty()
         || (!allow_insecure_local
@@ -1131,6 +1191,7 @@ async fn complete_password_reset(
                 .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
             submit_email(
                 submit_url,
+                &pending.client.homeserver(),
                 &pending.sid,
                 &pending.client_secret,
                 token,
