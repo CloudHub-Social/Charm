@@ -529,6 +529,26 @@ pub fn discard_temp_login_store(app: &AppHandle, temp_key: &str) -> Result<(), S
     Ok(())
 }
 
+/// Removes a newly-relocated account store and its passphrase after an
+/// authentication completion loses to cancellation. Unlike
+/// [`clear_session`], this is intentionally destructive: the session was
+/// never adopted, so retaining its encrypted store only strands plaintext
+/// cache state and a keychain entry with no usable session.
+pub fn discard_cancelled_account_store(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let path = store_path(app, account_key)?;
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("failed to remove cancelled account store: {error}")),
+    }
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+        .map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// One-time dev-only migration for the pre-Spec-15 layout, where
 /// `matrix_store/` *was* a single account's SQLCipher store directly (no
 /// per-account subdirectory) and its passphrase/session/oauth-session
