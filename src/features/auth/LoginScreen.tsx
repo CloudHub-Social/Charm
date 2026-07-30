@@ -237,9 +237,15 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  async function handleRegistrationStep(initialStep: RegistrationStep) {
+  async function handleRegistrationStep(initialStep: RegistrationStep, expectedOperation?: number) {
     let step = initialStep;
     for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+      if (
+        expectedOperation !== undefined &&
+        registrationEmailOperationRef.current !== expectedOperation
+      ) {
+        return;
+      }
       registrationAttemptRef.current = step.attempt_id;
       if (step.next_stage !== "m.login.dummy") break;
       if (automaticStages >= 8) {
@@ -249,6 +255,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       // must use the challenge returned by the previous request.
       // oxlint-disable-next-line no-await-in-loop
       step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
+    }
+    if (
+      expectedOperation !== undefined &&
+      registrationEmailOperationRef.current !== expectedOperation
+    ) {
+      return;
     }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
@@ -291,14 +303,22 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleRegistrationContinue(response: RegistrationAuthResponse) {
     const attemptId = registrationAttemptRef.current;
     if (!attemptId) return;
+    const operation = ++registrationEmailOperationRef.current;
     setPending(true);
     setError(null);
     try {
-      await handleRegistrationStep(await continueRegistration(attemptId, response));
+      const step = await continueRegistration(attemptId, response);
+      if (
+        registrationEmailOperationRef.current !== operation ||
+        registrationAttemptRef.current !== attemptId
+      ) {
+        return;
+      }
+      await handleRegistrationStep(step, operation);
     } catch (err) {
-      setError(String(err));
+      if (registrationEmailOperationRef.current === operation) setError(String(err));
     } finally {
-      setPending(false);
+      if (registrationEmailOperationRef.current === operation) setPending(false);
     }
   }
 
