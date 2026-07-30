@@ -614,7 +614,14 @@ export function RoomsScreen({
         }}
         onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
-      <RoomSettingsModal currentUserId={currentUserId} rooms={joinedRooms} />
+      <RoomSettingsModal
+        currentUserId={currentUserId}
+        rooms={joinedRooms}
+        onSpaceChildrenChanged={() => {
+          void refreshRooms();
+          setHierarchyRefreshToken((token) => token + 1);
+        }}
+      />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} onJumpToBookmark={handleJumpToBookmark} />
       <CrashRecoveryPrompt

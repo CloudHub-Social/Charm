@@ -48,15 +48,17 @@ describe("SpaceChildrenSettings", () => {
 
   it("lists published children and refreshes after removing one", async () => {
     listSpaceChildren.mockResolvedValueOnce([child]).mockResolvedValueOnce([]);
-    renderSettings();
+    const onChanged = vi.fn();
+    renderSettings({ onChanged });
 
     expect(await screen.findByText("Project")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Project from space" }));
 
     await waitFor(() =>
       expect(removeSpaceChild).toHaveBeenCalledWith("!space:example.org", "!child:example.org"),
     );
     await waitFor(() => expect(listSpaceChildren).toHaveBeenCalledTimes(2));
+    expect(onChanged).toHaveBeenCalledOnce();
     expect(await screen.findByText("This space has no published children.")).toBeInTheDocument();
   });
 
@@ -65,7 +67,7 @@ describe("SpaceChildrenSettings", () => {
 
     expect(await screen.findByText("Project")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add existing" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove Project from space" })).toBeDisabled();
     expect(
       screen.getByText("You need a higher power level to change this space's children."),
     ).toBeInTheDocument();

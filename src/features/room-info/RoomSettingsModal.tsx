@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useAtom } from "jotai";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -23,6 +24,7 @@ const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
 interface RoomSettingsModalProps {
   currentUserId: string;
   rooms?: RoomSummary[];
+  onSpaceChildrenChanged?: () => void;
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
@@ -36,9 +38,16 @@ const EMPTY_ROOMS: RoomSummary[] = [];
  * `SettingsScreen`, reading its target room/section from `roomSettingsAtom`
  * rather than being conditionally rendered by a parent.
  */
-export function RoomSettingsModal({ currentUserId, rooms = EMPTY_ROOMS }: RoomSettingsModalProps) {
+export function RoomSettingsModal({
+  currentUserId,
+  rooms = EMPTY_ROOMS,
+  onSpaceChildrenChanged,
+}: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
-  const { data: details, isLoading, isError } = useRoomDetails(target?.roomId ?? null);
+  const { data: details, isLoading, isError, refetch } = useRoomDetails(target?.roomId ?? null);
+  useEffect(() => {
+    if (target) void refetch();
+  }, [refetch, target]);
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -175,6 +184,7 @@ export function RoomSettingsModal({ currentUserId, rooms = EMPTY_ROOMS }: RoomSe
                       spaceName={details.name}
                       rooms={rooms}
                       canEdit={details.can.set_space_child}
+                      onChanged={onSpaceChildrenChanged}
                     />
                   </TabsContent>
                 )}

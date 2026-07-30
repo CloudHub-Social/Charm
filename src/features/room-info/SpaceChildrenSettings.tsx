@@ -14,6 +14,7 @@ interface SpaceChildrenSettingsProps {
   spaceName: string | null;
   rooms: RoomSummary[];
   canEdit: boolean;
+  onChanged?: () => void;
 }
 
 function queryKey(spaceId: string) {
@@ -25,6 +26,7 @@ export function SpaceChildrenSettings({
   spaceName,
   rooms,
   canEdit,
+  onChanged,
 }: SpaceChildrenSettingsProps) {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
@@ -53,6 +55,7 @@ export function SpaceChildrenSettings({
     try {
       await removeSpaceChild(spaceId, child.room_id);
       await refresh();
+      onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -104,6 +107,7 @@ export function SpaceChildrenSettings({
               </p>
             </div>
             <Button
+              aria-label={`Remove ${child.name ?? child.room_id} from space`}
               size="sm"
               variant="outline"
               disabled={!canEdit || pendingId !== null}
@@ -121,7 +125,10 @@ export function SpaceChildrenSettings({
         rooms={rooms}
         excludedIds={excludedIds}
         onOpenChange={setAddOpen}
-        onAdded={() => void refresh()}
+        onAdded={() => {
+          void refresh();
+          onChanged?.();
+        }}
       />
     </div>
   );

@@ -89,14 +89,44 @@ pub async fn list_space_children_impl(
 ) -> Result<Vec<SpaceChild>, String> {
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
     let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), Some(1)).await?;
-
-    Ok(chunks
+    let summaries = chunks
         .into_iter()
-        // The hierarchy response includes the space itself as the first
-        // entry (depth 0) — only its children are relevant here.
         .filter(|chunk| chunk.summary.room_id != parsed_space_id)
-        .map(chunk_to_child)
-        .collect())
+        .map(|chunk| (chunk.summary.room_id.to_owned(), chunk_to_child(chunk)))
+        .collect::<HashMap<_, _>>();
+    let response = client
+        .send(get_state_events::v3::Request::new(parsed_space_id.clone()))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut children = response
+        .room_state
+        .into_iter()
+        .filter_map(|raw| match raw.deserialize().ok()? {
+            AnyStateEvent::SpaceChild(StateEvent::Original(event))
+                if !event.content.via.is_empty() =>
+            {
+                Some(event.state_key)
+            }
+            _ => None,
+        })
+        .map(|child_id| {
+            summaries.get(&child_id).cloned().unwrap_or_else(|| {
+                let is_space = client
+                    .get_room(&child_id)
+                    .is_some_and(|room| room.is_space());
+                SpaceChild {
+                    room_id: child_id.to_string(),
+                    name: None,
+                    topic: None,
+                    num_joined_members: 0,
+                    join_rule: SpaceJoinRule::Other,
+                    is_space,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    children.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    Ok(children)
 }
 
 /// Fetches the full recursive hierarchy rooted at `space_id`.
