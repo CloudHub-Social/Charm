@@ -127,6 +127,7 @@ describe("MessagePillProfileDialog", () => {
     renderDialog({ detailed: true });
 
     expect(await screen.findByText("away")).toBeInTheDocument();
+    expect(screen.queryByText(/Global profile:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Private status/)).not.toBeInTheDocument();
     expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent(
       "Mutual rooms could not be loaded.",
@@ -194,6 +195,46 @@ describe("MessagePillProfileDialog", () => {
 
     await act(async () => {
       mocks.roomDetailsCallback?.({ room_id: "!other:example.org" });
+    });
+
+    expect(await screen.findByRole("button", { name: "New Mutual" })).toBeInTheDocument();
+  });
+
+  it("refetches mutual rooms after an update races the initial request", async () => {
+    let resolveInitial: ((rooms: []) => void) | undefined;
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([
+        {
+          room_id: "!new-mutual:example.org",
+          name: "New Mutual",
+          avatar_url: null,
+          avatar_path: null,
+          is_direct: false,
+          is_space: false,
+        },
+      ]);
+
+    renderDialog({ detailed: true, roomId: "!current:example.org" });
+    await screen.findByRole("heading", { name: "Alice" });
+    await act(async () => {
+      mocks.roomDetailsCallback?.({ room_id: "!other:example.org" });
+      resolveInitial?.([]);
     });
 
     expect(await screen.findByRole("button", { name: "New Mutual" })).toBeInTheDocument();

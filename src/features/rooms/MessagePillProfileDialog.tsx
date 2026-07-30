@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,15 @@ export function MessagePillProfileDialog({
   const queryClient = useQueryClient();
   const roomListSignatureRef = useRef<string | null>(null);
   const pendingProfileRefreshRef = useRef(false);
+  const pendingMutualRoomsRefreshRef = useRef(false);
+  const refreshMutualRooms = useCallback(() => {
+    const queryKey = ["mutual-rooms", accountId ?? null, userId] as const;
+    if (queryClient.isFetching({ queryKey, exact: true }) > 0) {
+      pendingMutualRoomsRefreshRef.current = true;
+    } else {
+      void queryClient.invalidateQueries({ queryKey });
+    }
+  }, [accountId, queryClient, userId]);
   useEffect(() => {
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
@@ -54,14 +63,12 @@ export function MessagePillProfileDialog({
           void queryClient.invalidateQueries({ queryKey: profileKey });
         }
       }
-      void queryClient.invalidateQueries({
-        queryKey: ["mutual-rooms", accountId ?? null, userId],
-      });
+      refreshMutualRooms();
     });
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
     };
-  }, [accountId, detailed, queryClient, roomId, userId]);
+  }, [accountId, detailed, queryClient, refreshMutualRooms, roomId, userId]);
   useEffect(() => {
     if (!detailed || !userId) return undefined;
     const unlisten = onRoomListUpdate((rooms) => {
@@ -75,20 +82,19 @@ export function MessagePillProfileDialog({
         .join("\u0001");
       if (roomListSignatureRef.current === signature) return;
       roomListSignatureRef.current = signature;
-      void queryClient.invalidateQueries({
-        queryKey: ["mutual-rooms", accountId ?? null, userId],
-      });
+      refreshMutualRooms();
     });
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
     };
-  }, [accountId, detailed, queryClient, userId]);
+  }, [detailed, refreshMutualRooms, userId]);
   const presenceDetailsEnabled = useFlag("presence_privacy_controls");
   const livePresence = usePresence(detailed && userId !== "" ? userId : null);
   const profileQuery = useQuery({
     queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
     queryFn: () => getUserProfile(userId, roomId),
     enabled: detailed && userId !== "",
+    refetchOnMount: "always",
   });
   useEffect(() => {
     if (!profileQuery.isFetching && pendingProfileRefreshRef.current) {
@@ -100,7 +106,14 @@ export function MessagePillProfileDialog({
     queryKey: ["mutual-rooms", accountId ?? null, userId],
     queryFn: () => getMutualRooms(userId),
     enabled: detailed && userId !== "",
+    refetchOnMount: "always",
   });
+  useEffect(() => {
+    if (!mutualRoomsQuery.isFetching && pendingMutualRoomsRefreshRef.current) {
+      pendingMutualRoomsRefreshRef.current = false;
+      void mutualRoomsQuery.refetch();
+    }
+  }, [mutualRoomsQuery.isFetching, mutualRoomsQuery.refetch]);
   const resolvedProfile = detailed ? profileQuery.data : undefined;
   const presence = livePresence ?? resolvedProfile?.presence;
   const displayName =
@@ -108,9 +121,12 @@ export function MessagePillProfileDialog({
   const avatarUrl = resolvedProfile?.room_avatar_url ?? resolvedProfile?.avatar_url ?? null;
   const avatarPath = resolvedProfile?.room_avatar_path ?? resolvedProfile?.avatar_path ?? null;
   const roomIdentityDiffers =
-    resolvedProfile?.room_display_name !== resolvedProfile?.display_name ||
-    resolvedProfile?.room_avatar_url !== resolvedProfile?.avatar_url ||
-    resolvedProfile?.room_avatar_path !== resolvedProfile?.avatar_path;
+    (resolvedProfile?.room_display_name != null &&
+      resolvedProfile.room_display_name !== resolvedProfile.display_name) ||
+    (resolvedProfile?.room_avatar_url != null &&
+      resolvedProfile.room_avatar_url !== resolvedProfile.avatar_url) ||
+    (resolvedProfile?.room_avatar_path != null &&
+      resolvedProfile.room_avatar_path !== resolvedProfile.avatar_path);
 
   return (
     <Dialog open={profile !== null} onOpenChange={(open) => !open && onClose()}>
