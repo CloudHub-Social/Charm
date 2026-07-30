@@ -1,15 +1,43 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T03:19:28.412Z",
+  "generatedAt": "2026-07-30T15:49:30.956Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 38,
-    "follow-up": 4,
-    "in-progress": 0,
-    "planned": 34
+    "shipped": 39,
+    "follow-up": 3,
+    "in-progress": 4,
+    "planned": 30
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 325,
+      "title": "Make Spec 28 local search decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/325",
+      "detail": "Day-1 Spec 28 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 324,
+      "title": "Start Spec 39 timeline state-event foundation",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
+      "detail": "Day-1 Spec 39 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 327,
+      "title": "Clarify Spec 13 hardware-blocked evidence",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
+      "detail": "Day-1 Spec 13 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 326,
+      "title": "Make Spec 55 quick switcher decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/326",
+      "detail": "Day-1 Spec 55 · ready for review"
+    },
     {
       "type": "issue",
       "number": 48,
@@ -102,10 +130,10 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 11,
-        "follow-up": 2,
-        "in-progress": 0,
-        "planned": 23
+        "shipped": 12,
+        "follow-up": 1,
+        "in-progress": 4,
+        "planned": 19
       }
     },
     {
@@ -382,6 +410,14 @@
       "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 327,
+          "title": "Clarify Spec 13 hardware-blocked evidence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/327",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-30T15:47:23Z"
+        },
         {
           "number": 230,
           "title": "fix(linux,ios): wire up in-webview getUserMedia permission grants",
@@ -849,8 +885,17 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 325,
+          "title": "Make Spec 28 local search decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/325",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-30T15:48:01Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -859,7 +904,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 299,
@@ -1022,8 +1067,17 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 323,
+          "title": "Start Spec 36 profile data foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/323",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-30T15:09:33Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1085,8 +1139,17 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 324,
+          "title": "Start Spec 39 timeline state-event foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/324",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-30T15:47:30Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1337,8 +1400,17 @@
       "number": 55,
       "title": "Command palette and quick switcher",
       "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 326,
+          "title": "Make Spec 55 quick switcher decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/326",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-30T15:28:02Z"
+        }
+      ],
       "issues": []
     },
     {
