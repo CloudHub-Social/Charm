@@ -255,6 +255,7 @@ impl PendingAuthStore {
 
     pub async fn request_registration_email(
         &self,
+        source: &str,
         owner: &str,
         attempt_id: &str,
         email: String,
@@ -303,7 +304,7 @@ impl PendingAuthStore {
         } else {
             (ClientSecret::new(), 1)
         };
-        if let Err(error) = self.check_mail_quota(owner, &address_key).await {
+        if let Err(error) = self.check_mail_quota(source, &address_key).await {
             let _ = self.restore_registration(pending).await;
             return Err(error);
         }
@@ -490,6 +491,7 @@ impl PendingAuthStore {
 
     pub async fn request_password_reset(
         &self,
+        source: String,
         owner: String,
         homeserver_url: String,
         email: String,
@@ -539,7 +541,7 @@ impl PendingAuthStore {
                 "password recovery is managed by this homeserver's identity provider".to_string(),
             );
         }
-        self.check_mail_quota(&owner, &address_key).await?;
+        self.check_mail_quota(&source, &address_key).await?;
         let client_secret = ClientSecret::new();
         let request = request_password_change_token_via_email::v3::Request::new(
             client_secret.clone(),
@@ -710,7 +712,7 @@ impl PendingAuthStore {
         }
     }
 
-    async fn check_mail_quota(&self, owner: &str, email: &str) -> Result<(), String> {
+    async fn check_mail_quota(&self, source_key: &str, email: &str) -> Result<(), String> {
         let address_key = email.trim();
         if address_key.is_empty() {
             return Err("enter an email address".to_string());
@@ -734,14 +736,15 @@ impl PendingAuthStore {
             attempts.retain(|at| *at >= cutoff);
             !attempts.is_empty()
         });
-        if (!quota.by_source.contains_key(owner) && quota.by_source.len() >= MAX_MAIL_QUOTA_KEYS)
+        if (!quota.by_source.contains_key(source_key)
+            && quota.by_source.len() >= MAX_MAIL_QUOTA_KEYS)
             || (!quota.by_address.contains_key(&address_key)
                 && quota.by_address.len() >= MAX_MAIL_QUOTA_KEYS)
         {
             return Err("too many verification emails; try again later".to_string());
         }
         {
-            let source = quota.by_source.entry(owner.to_owned()).or_default();
+            let source = quota.by_source.entry(source_key.to_owned()).or_default();
             if source.len() >= MAX_MAILS_PER_SOURCE {
                 return Err("too many verification emails; try again later".to_string());
             }
@@ -754,7 +757,7 @@ impl PendingAuthStore {
         }
         quota
             .by_source
-            .entry(owner.to_owned())
+            .entry(source_key.to_owned())
             .or_default()
             .push(now);
         quota.by_address.entry(address_key).or_default().push(now);

@@ -63,16 +63,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(persistence) = &persistence {
-        let persisted_store_keys = persistence.persisted_crypto_store_keys().await;
-        match charm_web_server::crypto_store::sweep_orphan_pending_auth_stores(
-            &persisted_store_keys,
-        ) {
-            Ok(removed) if removed > 0 => {
-                tracing::info!("removed {removed} orphaned pre-auth crypto store(s)")
+        match persistence.persisted_crypto_store_keys().await {
+            Ok(persisted_store_keys) => {
+                match charm_web_server::crypto_store::sweep_orphan_pending_auth_stores(
+                    &persisted_store_keys,
+                ) {
+                    Ok(removed) if removed > 0 => {
+                        tracing::info!("removed {removed} orphaned pre-auth crypto store(s)")
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!("failed to sweep orphaned pre-auth crypto stores: {error}")
+                    }
+                }
             }
-            Ok(_) => {}
             Err(error) => {
-                tracing::warn!("failed to sweep orphaned pre-auth crypto stores: {error}")
+                tracing::warn!(
+                    "skipping pre-auth crypto-store sweep because persisted-session enumeration was incomplete: {error}"
+                );
             }
         }
         let restored = persistence
@@ -142,14 +150,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_state = state.clone();
     let shutdown_persistence = persistence.clone();
     let app = routes::router(state);
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            if let Some(persistence) = shutdown_persistence {
-                snapshot_active_sessions(&shutdown_state, &persistence).await;
-            }
-        })
-        .await
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        if let Some(persistence) = shutdown_persistence {
+            snapshot_active_sessions(&shutdown_state, &persistence).await;
+        }
+    })
+    .await
     {
         tracing::error!("server exited with an error: {e}");
         return Err(e.into());

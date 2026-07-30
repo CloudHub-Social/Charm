@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
@@ -1726,14 +1726,16 @@ struct RegistrationEmailRequest {
 
 async fn request_registration_email(
     State(state): State<AppState>,
+    ConnectInfo(source): ConnectInfo<std::net::SocketAddr>,
     jar: CookieJar,
     Json(request): Json<RegistrationEmailRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
+    let source_key = source.ip().to_string();
     state
         .pending_auth
-        .request_registration_email(&owner, &request.attempt_id, request.email)
+        .request_registration_email(&source_key, &owner, &request.attempt_id, request.email)
         .await
         .map(Json)
         .map_err(ApiError::bad_request)
@@ -1806,6 +1808,7 @@ struct PasswordResetRequest {
 
 async fn request_password_reset(
     State(state): State<AppState>,
+    ConnectInfo(source): ConnectInfo<std::net::SocketAddr>,
     jar: CookieJar,
     Json(request): Json<PasswordResetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1819,7 +1822,12 @@ async fn request_password_reset(
     };
     let challenge = state
         .pending_auth
-        .request_password_reset(owner.clone(), request.homeserver_url, request.email)
+        .request_password_reset(
+            source.ip().to_string(),
+            owner.clone(),
+            request.homeserver_url,
+            request.email,
+        )
         .await
         .map_err(ApiError::bad_request)?;
     Ok((jar.add(preauth_cookie(owner)), Json(challenge)))
