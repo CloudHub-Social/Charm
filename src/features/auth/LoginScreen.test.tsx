@@ -656,6 +656,7 @@ describe("LoginScreen password recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+    expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
 
     await act(async () => {
       resolveRequest?.({ attempt_id: "late-attempt", requires_token: false });
