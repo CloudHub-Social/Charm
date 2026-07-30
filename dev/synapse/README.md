@@ -14,6 +14,27 @@ docker compose run --rm -e SYNAPSE_SERVER_NAME=localhost -e SYNAPSE_REPORT_STATS
 an OIDC provider (pointed at the `dex` service below) to the generated
 `homeserver.yaml` — see the script for details on why each is needed.
 
+### Existing local data
+
+If `./data/homeserver.yaml` predates the `preview-target` service, do not rerun
+`configure-homeserver.sh`: it appends the complete local override block and is
+intended for a newly generated config. Stop the stack, back up
+`./data/homeserver.yaml`, then add the `url_preview_enabled`,
+`url_preview_ip_range_blacklist`, and `url_preview_ip_range_whitelist` block
+from `configure-homeserver.sh` exactly once. Confirm that
+`url_preview_enabled:` appears only once before restarting:
+
+```bash
+docker compose down
+cp data/homeserver.yaml data/homeserver.yaml.before-url-previews
+grep -n '^url_preview_enabled:' data/homeserver.yaml
+docker compose up -d
+```
+
+An empty `grep` result before editing means the migration is needed; a single
+result means it is already applied. Restore the backup if Synapse does not
+start cleanly.
+
 ## Start
 
 ```bash
