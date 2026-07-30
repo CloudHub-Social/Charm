@@ -1705,11 +1705,7 @@ async fn begin_registration(
         } => {
             let (response, session, initial_response, homeserver_url) = *completed;
             let token = finish_login(&state, session, &homeserver_url, initial_response).await;
-            if !state
-                .pending_auth
-                .commit_registration(&owner, &attempt_id)
-                .await
-            {
+            if !state.pending_auth.commit_attempt(&owner, &attempt_id).await {
                 discard_unpublished_login(&state, &token).await;
                 return Err(ApiError::bad_request("registration cancelled"));
             }
@@ -1769,11 +1765,7 @@ async fn continue_registration(
         } => {
             let (response, session, initial_response, homeserver_url) = *completed;
             let token = finish_login(&state, session, &homeserver_url, initial_response).await;
-            if !state
-                .pending_auth
-                .commit_registration(&owner, &attempt_id)
-                .await
-            {
+            if !state.pending_auth.commit_attempt(&owner, &attempt_id).await {
                 discard_unpublished_login(&state, &token).await;
                 return Err(ApiError::bad_request("registration cancelled"));
             }
@@ -1882,12 +1874,20 @@ struct HomeserverRequest {
 
 async fn get_login_flows(
     State(state): State<AppState>,
+    jar: CookieJar,
     Json(request): Json<HomeserverRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
+    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
+        let owner = previous.value().to_owned();
+        state.pending_auth.cancel_owner(&owner).await;
+        owner
+    } else {
+        new_preauth_owner()
+    };
     crate::pending_auth::get_login_flows(&request.homeserver_url)
         .await
-        .map(Json)
+        .map(|flows| (jar.add(preauth_cookie(owner)), Json(flows)))
         .map_err(ApiError::bad_request)
 }
 
@@ -1903,24 +1903,26 @@ async fn login_with_token(
     Json(request): Json<TokenLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
-    let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
-        owner
-    } else {
-        new_preauth_owner()
-    };
-    let (response, session, initial_response, homeserver_url) = state
+    let owner = require_preauth_owner(&jar)?;
+    state.pending_auth.cancel_owner(&owner).await;
+    let (completed, attempt_id) = state
         .pending_auth
         .login_with_token(
-            owner,
+            owner.clone(),
             request.homeserver_url,
             request.token,
             state.persistence.is_some(),
         )
         .await
         .map_err(ApiError::unauthorized)?;
+    let (response, session, initial_response, homeserver_url) = completed;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+    if !state.pending_auth.commit_attempt(&owner, &attempt_id).await {
+        discard_unpublished_login(&state, &token).await;
+        return Err(ApiError::unauthorized(
+            "token login expired or was cancelled",
+        ));
+    }
     Ok((
         jar.remove(clear_preauth_cookie())
             .add(session_cookie(token)),

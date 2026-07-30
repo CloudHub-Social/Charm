@@ -40,6 +40,13 @@ pub(crate) async fn build_client(
         passphrase: crate::crypto_store::generate_passphrase(),
     };
     let store_dir = crate::crypto_store::create_store_dir(&crypto.store_key)?;
+    struct CryptoBuildGuard(Option<CryptoStoreHandle>);
+    impl Drop for CryptoBuildGuard {
+        fn drop(&mut self) {
+            cleanup_failed_crypto_store(&self.0);
+        }
+    }
+    let mut cleanup = CryptoBuildGuard(Some(crypto.clone()));
     let client = match Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
         .with_encryption_settings(client_encryption_settings())
@@ -49,17 +56,10 @@ pub(crate) async fn build_client(
     {
         Ok(client) => client,
         Err(e) => {
-            // The directory above was already created by `create_store_dir`
-            // — a `?` here without this cleanup would leak it on every
-            // failed build (e.g. an invalid homeserver URL, or a sqlite
-            // open error), the same leak `cleanup_failed_crypto_store`
-            // exists to prevent for a login/register failure *after* a
-            // successful build. Best-effort for the same reason that one is:
-            // the caller already has a real error to report.
-            cleanup_failed_crypto_store(&Some(crypto));
             return Err(e.to_string());
         }
     };
+    cleanup.0.take();
     Ok((client, Some(crypto)))
 }
 

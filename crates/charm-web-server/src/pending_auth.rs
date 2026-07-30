@@ -139,7 +139,7 @@ impl PendingAuthStore {
         homeserver_url: String,
         token: String,
         has_persistence: bool,
-    ) -> Result<AuthenticatedClient, String> {
+    ) -> Result<(AuthenticatedClient, String), String> {
         let _capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
@@ -148,10 +148,13 @@ impl PendingAuthStore {
             .await
             .insert(attempt_id.clone(), (owner, cancellation.clone()));
         self.spawn_expiry(attempt_id.clone());
-        let result =
-            login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await;
-        self.finish_attempt(&attempt_id).await;
-        result
+        match login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await {
+            Ok(completed) => Ok((completed, attempt_id)),
+            Err(error) => {
+                self.finish_attempt(&attempt_id).await;
+                Err(error)
+            }
+        }
     }
 
     pub async fn begin_registration(
@@ -268,11 +271,15 @@ impl PendingAuthStore {
             return Err("registration email is not the current authentication stage".to_string());
         }
         let delivery_email = email.trim().to_owned();
-        let address_key = delivery_email.to_lowercase();
-        if delivery_email.is_empty() {
+        let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
+            let _ = self.restore_registration(pending).await;
+            return Err("enter an email address".to_string());
+        };
+        if local_part.is_empty() || domain.is_empty() {
             let _ = self.restore_registration(pending).await;
             return Err("enter an email address".to_string());
         }
+        let address_key = format!("{local_part}@{}", domain.to_lowercase());
         let (client_secret, send_attempt) = if let Some(validation) = &pending.email {
             if validation.normalized_email != address_key {
                 let _ = self.restore_registration(pending).await;
@@ -470,7 +477,7 @@ impl PendingAuthStore {
         Ok(())
     }
 
-    pub async fn commit_registration(&self, owner: &str, attempt_id: &str) -> bool {
+    pub async fn commit_attempt(&self, owner: &str, attempt_id: &str) -> bool {
         let mut cancellations = self.cancellations.lock().await;
         let can_commit = cancellations
             .get(attempt_id)
@@ -489,7 +496,13 @@ impl PendingAuthStore {
     ) -> Result<PasswordResetChallenge, String> {
         let capacity = self.reserve_capacity()?;
         let delivery_email = email.trim().to_owned();
-        self.check_mail_quota(&owner, &delivery_email).await?;
+        let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
+            return Err("enter an email address".to_string());
+        };
+        if local_part.is_empty() || domain.is_empty() {
+            return Err("enter an email address".to_string());
+        }
+        let address_key = format!("{local_part}@{}", domain.to_lowercase());
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
@@ -526,6 +539,7 @@ impl PendingAuthStore {
                 "password recovery is managed by this homeserver's identity provider".to_string(),
             );
         }
+        self.check_mail_quota(&owner, &address_key).await?;
         let client_secret = ClientSecret::new();
         let request = request_password_change_token_via_email::v3::Request::new(
             client_secret.clone(),
@@ -538,30 +552,30 @@ impl PendingAuthStore {
                 return Err("password reset attempt expired or was cancelled".to_string());
             }
         };
-        let response = match response_result {
-            Ok(response) => response,
+        let (sid, submit_url, requires_token) = match response_result {
+            Ok(response) => {
+                let submit_url = match sanitize_submit_url(
+                    &client.homeserver(),
+                    response.submit_url.as_deref(),
+                    "password-reset",
+                ) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        self.finish_attempt(&attempt_id).await;
+                        return Err(error);
+                    }
+                };
+                let requires_token = submit_url.is_some();
+                (response.sid, submit_url, requires_token)
+            }
             Err(_) => {
-                self.finish_attempt(&attempt_id).await;
                 // Keep an unknown-address rejection indistinguishable from a
-                // sent email until the user can prove control of the address.
-                return Ok(PasswordResetChallenge {
-                    attempt_id,
-                    requires_token: false,
-                });
+                // sent email through confirmation as well as this response.
+                let sid = serde_json::from_value(serde_json::json!(opaque_id()))
+                    .map_err(|_| "could not start password reset".to_string())?;
+                (sid, None, false)
             }
         };
-        let submit_url = match sanitize_submit_url(
-            &client.homeserver(),
-            response.submit_url.as_deref(),
-            "password-reset",
-        ) {
-            Ok(url) => url,
-            Err(error) => {
-                self.finish_attempt(&attempt_id).await;
-                return Err(error);
-            }
-        };
-        let requires_token = submit_url.is_some();
         let restored = self
             .restore_password_reset(
                 attempt_id.clone(),
@@ -570,7 +584,7 @@ impl PendingAuthStore {
                     owner,
                     client,
                     client_secret,
-                    sid: response.sid,
+                    sid,
                     submit_url,
                     submitted: false,
                     created_at,
@@ -697,13 +711,13 @@ impl PendingAuthStore {
     }
 
     async fn check_mail_quota(&self, owner: &str, email: &str) -> Result<(), String> {
-        let normalized = email.trim().to_lowercase();
-        if normalized.is_empty() {
+        let address_key = email.trim();
+        if address_key.is_empty() {
             return Err("enter an email address".to_string());
         }
         let mut hasher = Sha256::new();
         hasher.update(self.mail_quota_salt.as_bytes());
-        hasher.update(normalized.as_bytes());
+        hasher.update(address_key.as_bytes());
         let address_key = hasher
             .finalize()
             .iter()
@@ -1343,21 +1357,9 @@ mod tests {
             ("browser-a".to_owned(), cancelled),
         );
 
-        assert!(
-            store
-                .commit_registration("browser-a", "winning-attempt")
-                .await
-        );
-        assert!(
-            !store
-                .commit_registration("browser-a", "cancelled-attempt")
-                .await
-        );
-        assert!(
-            !store
-                .commit_registration("browser-b", "cancelled-attempt")
-                .await
-        );
+        assert!(store.commit_attempt("browser-a", "winning-attempt").await);
+        assert!(!store.commit_attempt("browser-a", "cancelled-attempt").await);
+        assert!(!store.commit_attempt("browser-b", "cancelled-attempt").await);
         assert!(
             store
                 .owned_cancellation("browser-a", "winning-attempt")
