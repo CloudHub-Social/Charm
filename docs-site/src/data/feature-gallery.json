@@ -215,7 +215,7 @@
     {
       "slug": "space-hierarchy-reorganization",
       "title": "Space hierarchy reorganization",
-      "summary": "Create and reorganize nested spaces, then open each space in the shared settings shell while preserving valid Matrix parent relationships.",
+      "summary": "Open a space in Charm's shared settings shell to manage its identity, permissions, and hierarchy controls.",
       "status": "preview",
       "spec": "Spec 33",
       "specLinks": [
