@@ -170,12 +170,31 @@ export function SpaceRail({
   } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const railScrollRef = useRef<HTMLDivElement | null>(null);
+  const dragScrollDirectionRef = useRef(0);
+  const dragScrollFrameRef = useRef<number | null>(null);
   const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopDragScroll = useCallback(() => {
+    dragScrollDirectionRef.current = 0;
+    if (dragScrollFrameRef.current !== null) {
+      cancelAnimationFrame(dragScrollFrameRef.current);
+      dragScrollFrameRef.current = null;
+    }
+  }, []);
+  const continueDragScroll = useCallback(() => {
+    const direction = dragScrollDirectionRef.current;
+    if (direction === 0) {
+      dragScrollFrameRef.current = null;
+      return;
+    }
+    railScrollRef.current?.scrollBy({ top: direction * 8 });
+    dragScrollFrameRef.current = requestAnimationFrame(continueDragScroll);
+  }, []);
   useEffect(() => {
     return () => {
       if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
+      stopDragScroll();
     };
-  }, []);
+  }, [stopDragScroll]);
   // Keyed by room_id. Fetched on every context-menu open (rather than for
   // every rail entry up front, and rather than cached for the component's
   // lifetime) — `RoomPermissions` isn't part of `RoomSummary`/the sync
@@ -248,18 +267,23 @@ export function SpaceRail({
         (insideRail && resolvedTarget === null) ||
         (!insideRail && !sourceHasParent);
       const scrollBounds = railScrollRef.current?.getBoundingClientRect();
-      const scrollContainer = railScrollRef.current;
-      if (scrollBounds && typeof scrollContainer?.scrollBy === "function") {
-        if (clientY < scrollBounds.top + 32) scrollContainer.scrollBy({ top: -16 });
-        if (clientY > scrollBounds.bottom - 32) {
-          scrollContainer.scrollBy({ top: 16 });
-        }
+      const direction =
+        scrollBounds && clientY < scrollBounds.top + 32
+          ? -1
+          : scrollBounds && clientY > scrollBounds.bottom - 32
+            ? 1
+            : 0;
+      dragScrollDirectionRef.current = direction;
+      if (direction === 0) {
+        stopDragScroll();
+      } else if (dragScrollFrameRef.current === null) {
+        dragScrollFrameRef.current = requestAnimationFrame(continueDragScroll);
       }
       const nextDrop = { sourceId, targetId: resolvedTarget, invalid };
       spaceDropRef.current = nextDrop;
       setSpaceDrop(nextDrop);
     },
-    [canonicalParentOverrides, rooms],
+    [canonicalParentOverrides, continueDragScroll, rooms, stopDragScroll],
   );
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
@@ -287,6 +311,7 @@ export function SpaceRail({
   );
   const finishSpaceDrop = useCallback(
     (sourceId: string) => {
+      stopDragScroll();
       const drop = spaceDropRef.current;
       spaceDropRef.current = null;
       setSpaceDrop(null);
@@ -299,7 +324,7 @@ export function SpaceRail({
       if (drop.targetId === null && effectiveParent === null) return;
       mutateSpaceParent(sourceId, drop.targetId);
     },
-    [canonicalParentOverrides, mutateSpaceParent, rooms],
+    [canonicalParentOverrides, mutateSpaceParent, rooms, stopDragScroll],
   );
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
