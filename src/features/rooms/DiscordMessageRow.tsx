@@ -45,6 +45,7 @@ export function DiscordMessageRow({
   onResend,
   onDiscard,
   onJumpToMessage,
+  onSenderClick,
   onUserPillClick,
   onRoomPillClick,
   isPending,
@@ -73,18 +74,42 @@ export function DiscordMessageRow({
       onTouchMove={() => getActionsHandle(rowKey)?.cancelLongPress()}
     >
       {showHeader ? (
-        <Avatar size="sm">
-          <AvatarImage
-            src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
-            alt=""
-          />
-          <AvatarFallback
-            style={{ background: avatarColor(message.sender) }}
-            className="font-bold text-white"
+        onSenderClick ? (
+          <button
+            type="button"
+            className="h-fit rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`Open profile for ${message.sender_display_name ?? message.sender}`}
+            onClick={() =>
+              onSenderClick(message.sender, message.sender_display_name ?? message.sender)
+            }
           >
-            {initials(message.sender, message.sender_display_name)}
-          </AvatarFallback>
-        </Avatar>
+            <Avatar size="sm">
+              <AvatarImage
+                src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
+                alt=""
+              />
+              <AvatarFallback
+                style={{ background: avatarColor(message.sender) }}
+                className="font-bold text-white"
+              >
+                {initials(message.sender, message.sender_display_name)}
+              </AvatarFallback>
+            </Avatar>
+          </button>
+        ) : (
+          <Avatar size="sm">
+            <AvatarImage
+              src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
+              alt=""
+            />
+            <AvatarFallback
+              style={{ background: avatarColor(message.sender) }}
+              className="font-bold text-white"
+            >
+              {initials(message.sender, message.sender_display_name)}
+            </AvatarFallback>
+          </Avatar>
+        )
       ) : (
         <div className="relative w-6 shrink-0">
           <span className="absolute left-0 top-0.5 hidden w-6 text-center font-mono text-[10px] text-muted-foreground group-hover:block">
@@ -95,9 +120,21 @@ export function DiscordMessageRow({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         {showHeader && (
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="min-w-0 truncate text-sm font-semibold text-secondary-foreground">
-              {message.sender_display_name ?? message.sender}
-            </span>
+            {onSenderClick ? (
+              <button
+                type="button"
+                className="min-w-0 truncate text-sm font-semibold text-secondary-foreground hover:underline"
+                onClick={() =>
+                  onSenderClick(message.sender, message.sender_display_name ?? message.sender)
+                }
+              >
+                {message.sender_display_name ?? message.sender}
+              </button>
+            ) : (
+              <span className="min-w-0 truncate text-sm font-semibold text-secondary-foreground">
+                {message.sender_display_name ?? message.sender}
+              </span>
+            )}
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
               {formatTime(message.timestamp_ms)}
               {message.edited && " (edited)"}

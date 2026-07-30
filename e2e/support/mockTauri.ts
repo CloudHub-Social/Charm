@@ -366,6 +366,34 @@ export function installMockTauri(seed: {
       avatar_path: null,
       presence: "online",
     }),
+    get_user_profile: (args) => {
+      const userId = args.userId as string;
+      const member = seed.members?.find((candidate) => candidate.user_id === userId);
+      return {
+        user_id: userId,
+        display_name: member?.display_name ?? null,
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: member?.display_name ?? null,
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: {
+          user_id: userId,
+          presence: "online",
+          status_msg: "Available",
+          last_active_ago_ms: null,
+        },
+      };
+    },
+    get_mutual_rooms: () =>
+      allRooms.map((candidate) => ({
+        room_id: candidate.room_id,
+        name: candidate.name ?? null,
+        avatar_url: candidate.avatar_url ?? null,
+        avatar_path: candidate.avatar_path ?? null,
+        is_direct: Boolean(candidate.is_direct),
+        is_space: Boolean(candidate.is_space),
+      })),
     get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
     set_account_data: (args) => {
       accountData.set(args.eventType as string, args.content);

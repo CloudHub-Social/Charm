@@ -10,9 +10,10 @@ status: in-progress
 which shipped **own-profile** editing but no way to view or act on *other* users.
 
 The first slice establishes the desktop/web read contracts and default-off
-`user_profile_cards` flag. Later slices add the card surface and entry points,
-then actions and room-scoped profile writes. This keeps the Matrix read boundary
-reviewable before it is connected to multiple interactive surfaces.
+`user_profile_cards` flag. The second slice upgrades the existing mention-pill
+dialog into a profile card and adds message-sender entry points across all three
+timeline layouts. Later slices add member-list entry, actions, and room-scoped
+profile writes.
 
 ## Problem & why now
 
@@ -132,6 +133,10 @@ helper before hand-rolling.
 - In progress: canonical `UserProfile` and privacy-minimal
   `MutualRoomSummary` contracts, desktop commands, web routes, and the
   default-off feature flag.
-- Remaining: migrate the two legacy own-profile DTO consumers, add the card UI
-  and its three entry points, wire DM/block/moderation actions, and implement
-  `set_room_profile`.
+- In review: the profile card renders room-aware identity, presence/status,
+  account-isolated mutual-room queries and navigation; mentions retain their
+  existing entry point, while sender avatars/names/nicks become keyboard
+  accessible entry points only when `user_profile_cards` is enabled.
+- Remaining: migrate the two legacy own-profile DTO consumers, add member-list
+  entry, render last-active time and identity copy actions, wire
+  DM/block/moderation actions, and implement `set_room_profile`.

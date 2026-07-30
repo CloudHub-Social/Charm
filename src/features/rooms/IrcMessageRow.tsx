@@ -40,6 +40,7 @@ export function IrcMessageRow({
   onResend,
   onDiscard,
   onJumpToMessage,
+  onSenderClick,
   onUserPillClick,
   onRoomPillClick,
   isPending,
@@ -69,13 +70,25 @@ export function IrcMessageRow({
       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
         {formatTime(message.timestamp_ms)}
       </span>
-      <span
-        className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
-        style={{ color: nickColor(message.sender) }}
-        title={nick}
-      >
-        &lt;{nick}&gt;
-      </span>
+      {onSenderClick ? (
+        <button
+          type="button"
+          className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
+          style={{ color: nickColor(message.sender) }}
+          title={nick}
+          onClick={() => onSenderClick(message.sender, nick)}
+        >
+          &lt;{nick}&gt;
+        </button>
+      ) : (
+        <span
+          className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
+          style={{ color: nickColor(message.sender) }}
+          title={nick}
+        >
+          &lt;{nick}&gt;
+        </span>
+      )}
       <div className="min-w-0 flex-1 break-words text-[13px] text-foreground">
         {message.redacted ? (
           <span className="italic text-muted-foreground">* message deleted</span>
