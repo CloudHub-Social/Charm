@@ -591,10 +591,14 @@ pub async fn forward_message_impl(
     // falling back to `original_message.content` — see
     // `latest_replacement_content`'s doc comment for why treating "the
     // request failed" the same as "there is no edit" is unsafe here.
+    // Snapshot the queue first. If an edit is acknowledged while the
+    // relations request is in flight, it remains represented by this local
+    // snapshot; taking the server snapshot first could miss it in both
+    // places when the queue removes the echo between the two reads.
+    let pending_edits = pending_replacements(&source_room, &parsed_event_id).await?;
     let server_edit =
         latest_replacement_content(&source_room, &parsed_event_id, &original_message.sender)
             .await?;
-    let pending_edits = pending_replacements(&source_room, &parsed_event_id).await?;
     let latest_edit = latest_effective_replacement(server_edit, pending_edits);
 
     let mut content = original_message.content.clone();

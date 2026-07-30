@@ -438,6 +438,57 @@ describe("ReactionBar", () => {
     expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
 
+  it("supersedes an in-flight detail request when a new reaction snapshot arrives", async () => {
+    let resolveFirst!: (details: Array<{ sender: string; origin_server_ts: number }>) => void;
+    getReactionDetails
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([{ sender: "@bob:example.org", origin_server_ts: 2 }]);
+    const props = {
+      onToggle: vi.fn(),
+      roomId: "!room:example.org",
+      eventId: "$event",
+    };
+    const reaction: ReactionGroup = { key: "👍", count: 1, reacted_by_me: false };
+    const { rerender } = render(<ReactionBar {...props} reactions={[reaction]} />);
+    const chip = screen.getByRole("button", { name: /^👍1$/ });
+    fireEvent.mouseEnter(chip);
+    fireEvent.focus(chip);
+    expect(getReactionDetails).toHaveBeenCalledTimes(1);
+
+    rerender(<ReactionBar {...props} reactions={[{ ...reaction }]} />);
+
+    expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
+    resolveFirst([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
+    await Promise.resolve();
+    expect(screen.queryByText("@alice:example.org")).not.toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the read-only reactor viewer enabled when reaction mutations are disabled", async () => {
+    getReactionDetails.mockResolvedValueOnce([
+      { sender: "@alice:example.org", origin_server_ts: 1 },
+    ]);
+    render(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 1, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        disabled
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+
+    const viewer = screen.getByRole("button", { name: "View all 1 reactions for 👍" });
+    expect(viewer).toBeEnabled();
+    fireEvent.click(viewer);
+
+    expect(await screen.findByText("@alice:example.org")).toBeInTheDocument();
+  });
+
   it("closes the reactor dialog when its reaction disappears", async () => {
     getReactionDetails.mockResolvedValue([{ sender: "@alice:example.org", origin_server_ts: 1 }]);
     const props = {

@@ -147,7 +147,9 @@ export function ReactionBar({
     for (const reaction of activeReactions) {
       if (refreshedKeys.has(reaction.key)) continue;
       refreshedKeys.add(reaction.key);
-      if (inFlightKeysRef.current.has(reaction.key)) continue;
+      // `force` deliberately supersedes an in-flight request. loadDetails
+      // advances the per-key generation, so a response for the older
+      // reaction snapshot is discarded instead of overwriting this refresh.
       loadDetails(reaction, { force: true });
     }
     // loadDetails is stable across renders (recreated each render but with
@@ -247,7 +249,6 @@ export function ReactionBar({
         <button
           type="button"
           aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
-          disabled={disabled}
           className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
           onClick={() => {
             loadDetails(reaction);
