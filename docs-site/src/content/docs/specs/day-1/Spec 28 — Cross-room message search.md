@@ -57,13 +57,18 @@ search will silently not work in any encrypted room, which is most rooms.
 ### Indexing
 
 Build a local full-text index in Rust, populated only after an event is available
-to Charm as decrypted timeline content. Each account gets a dedicated
+to Charm as decrypted timeline content. Each desktop account gets a dedicated
 `message-search.sqlite3` database in that account's Charm-owned data directory.
+Each web-companion session gets a separate index beside the session's random
+`crypto_store_key`; indexes are never shared merely because two sessions use the
+same MXID.
 Never open matrix-sdk's database directly, add tables to its schema, or share its
 connection: the SDK owns that schema and migration lifecycle.
 
-- Index fields: room ID, event ID, sender, plain-text body (HTML-stripped from
-  `formatted_body` where present), origin timestamp.
+- Index fields: room ID, event ID, sender, plain-text body, origin timestamp.
+  Normalize formatted Matrix content with Ruma's sanitizer and
+  `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
+  stripper or index hidden/disallowed elements.
 - Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
   undecryptable placeholders, media filenames/captions, reactions, state events, or
   untrusted raw HTML.
@@ -91,24 +96,36 @@ connection: the SDK owns that schema and migration lifecycle.
   organically as the user scrolls/syncs, same behavior as Seshat.
 - Redaction/edit handling follows the provenance rules above; replacement events
   never become independent search results.
+- Leaving or forgetting a room atomically purges that room's visible rows and edit
+  provenance. Global queries also verify joined membership before returning a
+  result, so a failed purge cannot expose departed-room content.
 
 ### Ownership, privacy, and lifecycle
 
 - The index handle belongs to the authenticated account session. Desktop and web
   use the same core index abstraction but resolve their account roots through their
   existing, separate persistence layers.
-- Derive the index directory from the existing opaque per-account store key; never
+- Derive the index directory from the existing opaque desktop account store key or
+  web session `crypto_store_key`; never
   put an MXID, homeserver, access token, or raw account identifier in a filename.
 - Create the directory and database with owner-only permissions where the platform
   supports Unix modes. The database contains decrypted message text, so the privacy
   model and docs must state that local search expands the plaintext-at-rest surface
   beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
   initial boundary; SQLCipher is not silently implied.
-- Close the connection before account removal and delete the account's index as
-  part of the same explicit remove-account lifecycle. Logging out without removing
-  the account preserves the index for that retained account. A failed/corrupt
-  migration quarantines and rebuilds only Charm's search database, never an SDK
-  store.
+- Desktop logout continues to preserve a retained account index, but account
+  deactivation must close and delete it. The account-management surface must also
+  expose an explicit local-data wipe that removes both the retained SDK store and
+  search index; its confirmation and Spec 08 documentation disclose the plaintext
+  index separately from the encrypted SDK store. Web logout, session expiry, and
+  administrative session removal close and delete that session's index. A
+  failed/corrupt migration quarantines and rebuilds only Charm's search database,
+  never an SDK store.
+- Web indexes are intentionally session-ephemeral in the first slice. They are not
+  copied into the crypto-store backup and may be rebuilt only from decrypted
+  history available to that same session after restart. The UI must disclose
+  incomplete results after a deployment/restart; durable plaintext search backup
+  is out of scope until an encrypted, session-bound backup design exists.
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
   threads. Sync/timeline delivery must not wait on SQLite I/O.
 
@@ -132,11 +149,20 @@ New Tauri/web-server command:
 
 `search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
 
-The cursor is opaque and binds to the normalized query, optional room scope, and
-account. A cursor must be rejected if reused with a different query, room, or
-account. Results contain event ID, room ID, sender, origin timestamp, a plain-text
-snippet with match ranges, and the next cursor; they never contain FTS-generated
-HTML markup.
+The user query is literal text, not raw FTS5 syntax. The backend applies Unicode
+normalization, tokenizes it with the index tokenizer, and safely quotes each token;
+unmatched quotes and FTS operators are searched as text. Empty-token queries are
+rejected with a typed invalid-query error. Requests are capped server-side at 512
+UTF-8 bytes and `limit` is clamped to 1–100.
+
+The cursor is opaque and binds to the normalized query, optional room scope,
+account/session, and an index generation. Results use the total order
+`bm25 rank ASC, origin_server_ts DESC, room_id ASC, event_id ASC`; the cursor
+contains the last tuple and generation. Any index mutation increments the
+generation, so a cursor from before an edit/index write is rejected as stale
+rather than duplicating or skipping results. Results contain event ID, room ID,
+sender, origin timestamp, a plain-text snippet with match ranges, and the next
+cursor; they never contain FTS-generated HTML markup.
 
 No new Matrix protocol traffic occurs for local-index hits. If a homeserver-side fallback is desired for rooms
 the local index hasn't caught up on yet (freshly joined room, unencrypted room with
@@ -166,6 +192,9 @@ without the user knowing which is which.
 - Rust unit tests: account A cannot open, query, or consume a cursor from account
   B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
   matrix-sdk files.
+- Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
+  ordering, stale cursors after writes, leave/forget purge, deactivation wipe, and
+  web-session isolation/cleanup.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
   indexed; confirm a never-decrypted (e.g. undecryptable/UTD) event is not indexed
   with garbage ciphertext.
