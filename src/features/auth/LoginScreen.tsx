@@ -144,6 +144,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const registrationAttemptRef = useRef<string | null>(null);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
+  const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
 
   useEffect(
     () => () => {
@@ -338,6 +339,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleRequestPasswordReset(e: React.FormEvent) {
     e.preventDefault();
     const operation = ++passwordResetOperationRef.current;
+    if (passwordResetCancellationRef.current) {
+      await passwordResetCancellationRef.current;
+    }
+    if (passwordResetOperationRef.current !== operation) return;
     setPending(true);
     setError(null);
     let challenge: PasswordResetChallenge;
@@ -396,7 +401,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
-    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    passwordResetCancellationRef.current = cancellation;
+    void cancellation.finally(() => {
+      if (passwordResetCancellationRef.current === cancellation) {
+        passwordResetCancellationRef.current = undefined;
+      }
+    });
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
