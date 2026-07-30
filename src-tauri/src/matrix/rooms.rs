@@ -584,6 +584,7 @@ pub async fn snapshot_rooms(
     const SNAPSHOT_CONCURRENCY: usize = 16;
     let snapshots = futures_util::stream::iter(rooms.into_iter().map(|room| {
         let parents = &parents;
+        let canonical_space_parents = &canonical_space_parents;
         async move {
             let membership = match room.state() {
                 RoomState::Joined => RoomMembershipKind::Join,
