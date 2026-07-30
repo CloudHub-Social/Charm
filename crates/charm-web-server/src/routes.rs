@@ -1586,6 +1586,7 @@ async fn register(
     jar: CookieJar,
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     cancel_browser_preauth(&state, &jar).await;
     let homeserver_url = request.homeserver_url.clone();
     let (response, session, initial_response) =
@@ -1598,6 +1599,13 @@ async fn register(
             .add(session_cookie(token)),
         Json(response),
     ))
+}
+
+fn require_registration_and_recovery(state: &AppState) -> Result<(), ApiError> {
+    state
+        .registration_and_recovery_enabled
+        .then_some(())
+        .ok_or_else(|| ApiError::not_found("registration and recovery is not enabled"))
 }
 
 fn new_preauth_owner() -> String {
@@ -1645,6 +1653,7 @@ async fn begin_registration(
     jar: CookieJar,
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         state.pending_auth.cancel_owner(previous.value()).await;
     }
@@ -1681,6 +1690,7 @@ async fn request_registration_email(
     jar: CookieJar,
     Json(request): Json<RegistrationEmailRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
     state
         .pending_auth
@@ -1701,6 +1711,7 @@ async fn continue_registration(
     jar: CookieJar,
     Json(request): Json<ContinueRegistrationRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
     match state
         .pending_auth
@@ -1731,6 +1742,7 @@ async fn cancel_registration(
     jar: CookieJar,
     Json(request): Json<AttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
     state
         .pending_auth
@@ -1751,6 +1763,7 @@ async fn request_password_reset(
     jar: CookieJar,
     Json(request): Json<PasswordResetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         state.pending_auth.cancel_owner(previous.value()).await;
     }
@@ -1775,6 +1788,7 @@ async fn confirm_password_reset(
     jar: CookieJar,
     Json(request): Json<ConfirmPasswordResetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
     state
         .pending_auth
@@ -1794,6 +1808,7 @@ async fn cancel_password_reset(
     jar: CookieJar,
     Json(request): Json<AttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
     state
         .pending_auth
@@ -1809,8 +1824,10 @@ struct HomeserverRequest {
 }
 
 async fn get_login_flows(
+    State(state): State<AppState>,
     Json(request): Json<HomeserverRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     crate::pending_auth::get_login_flows(&request.homeserver_url)
         .await
         .map(Json)
@@ -1828,6 +1845,7 @@ async fn login_with_token(
     jar: CookieJar,
     Json(request): Json<TokenLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
     cancel_browser_preauth(&state, &jar).await;
     let (response, session, initial_response, homeserver_url) =
         crate::pending_auth::login_with_token(

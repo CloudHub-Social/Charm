@@ -24,6 +24,7 @@ use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, AuthType, Dummy, EmailIdentity, LoginTermsParams, Terms, ThirdpartyIdCredentials,
     UiaaInfo,
 };
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
@@ -69,6 +70,7 @@ struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    submitted: bool,
     created_at: Instant,
 }
 
@@ -117,15 +119,56 @@ impl PendingAuthStore {
         has_persistence: bool,
     ) -> Result<BeginRegistrationResult, String> {
         let capacity = self.reserve_capacity()?;
-        let homeserver_url = request.homeserver_url.clone();
-        let (client, crypto) = crate::auth::build_client(&homeserver_url, has_persistence).await?;
+        let created_at = Instant::now();
         let attempt_id = opaque_id();
+        let cancellation = CancellationToken::new();
+        self.cancellations.lock().await.insert(
+            attempt_id.clone(),
+            (owner.clone(), cancellation.clone()),
+        );
+        self.spawn_expiry(attempt_id.clone());
+        let homeserver_url = request.homeserver_url.clone();
+        let build_result = tokio::select! {
+            result = crate::auth::build_client(&homeserver_url, has_persistence) => result,
+            () = cancellation.cancelled() => {
+                return Err("registration attempt expired or was cancelled".to_string());
+            }
+        };
+        let (client, crypto) = match build_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.cancellations.lock().await.remove(&attempt_id);
+                return Err(error);
+            }
+        };
         let registration_request = registration_request(&request, None);
-        match client.matrix_auth().register(registration_request).await {
+        let matrix_auth = client.matrix_auth();
+        let registration_result = tokio::select! {
+            result = matrix_auth.register(registration_request) => result,
+            () = cancellation.cancelled() => {
+                crate::auth::cleanup_failed_crypto_store(&crypto);
+                return Err("registration attempt expired or was cancelled".to_string());
+            }
+        };
+        match registration_result {
             Ok(_) => {
-                let completed =
-                    crate::auth::finish_authenticated_client(client, crypto, "registration")
-                        .await?;
+                let cleanup_crypto = crypto.clone();
+                let completed = tokio::select! {
+                    completed = crate::auth::finish_authenticated_client(
+                        client,
+                        crypto,
+                        "registration",
+                    ) => completed,
+                    () = cancellation.cancelled() => {
+                        crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                        return Err("registration attempt expired or was cancelled".to_string());
+                    }
+                }?;
+                if cancellation.is_cancelled() {
+                    crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                    return Err("registration attempt expired or was cancelled".to_string());
+                }
+                self.cancellations.lock().await.remove(&attempt_id);
                 Ok(BeginRegistrationResult::Complete(Box::new(authenticated(
                     completed,
                     homeserver_url,
@@ -133,21 +176,18 @@ impl PendingAuthStore {
             }
             Err(error) => {
                 let Some(uiaa) = error.as_uiaa_response().cloned() else {
+                    self.cancellations.lock().await.remove(&attempt_id);
                     crate::auth::cleanup_failed_crypto_store(&crypto);
                     return Err("registration request failed".to_string());
                 };
                 let step = match registration_challenge(&attempt_id, &client, &uiaa) {
                     Ok(step) => step,
                     Err(error) => {
+                        self.cancellations.lock().await.remove(&attempt_id);
                         crate::auth::cleanup_failed_crypto_store(&crypto);
                         return Err(error);
                     }
                 };
-                let cancellation = CancellationToken::new();
-                self.cancellations
-                    .lock()
-                    .await
-                    .insert(attempt_id.clone(), (owner.clone(), cancellation));
                 self.registrations.lock().await.insert(
                     attempt_id.clone(),
                     PendingRegistration {
@@ -159,10 +199,9 @@ impl PendingAuthStore {
                         attempt_id: attempt_id.clone(),
                         uiaa,
                         email: None,
-                        created_at: Instant::now(),
+                        created_at,
                     },
                 );
-                self.spawn_expiry(attempt_id);
                 Ok(BeginRegistrationResult::Challenge(step))
             }
         }
@@ -281,14 +320,26 @@ impl PendingAuthStore {
         };
         match result {
             Ok(_) => {
-                self.cancellations.lock().await.remove(attempt_id);
                 let homeserver_url = pending.request.homeserver_url.clone();
-                let completed = crate::auth::finish_authenticated_client(
+                let cleanup_crypto = pending.crypto.clone();
+                let completed = tokio::select! {
+                    completed = crate::auth::finish_authenticated_client(
                     pending.client,
                     pending.crypto,
                     "registration",
-                )
-                .await?;
+                    ) => completed,
+                    () = cancellation.cancelled() => {
+                        crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                        self.cancellations.lock().await.remove(attempt_id);
+                        return Err("registration cancelled".to_string());
+                    }
+                }?;
+                if cancellation.is_cancelled() {
+                    crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                    self.cancellations.lock().await.remove(attempt_id);
+                    return Err("registration cancelled".to_string());
+                }
+                self.cancellations.lock().await.remove(attempt_id);
                 Ok(ContinueRegistrationResult::Complete(Box::new(
                     authenticated(completed, homeserver_url),
                 )))
@@ -316,9 +367,16 @@ impl PendingAuthStore {
                     };
                     self.restore_registration(pending).await;
                     Ok(ContinueRegistrationResult::Challenge(step))
-                } else {
+                } else if registration_error_allows_retry(&error) {
                     self.restore_registration(pending).await;
                     Err("registration request failed; retry this stage".to_string())
+                } else {
+                    self.finish_cancelled_registration(attempt_id, pending)
+                        .await;
+                    Err(
+                        "registration was rejected; restart and review the account details"
+                            .to_string(),
+                    )
                 }
             }
         }
@@ -340,31 +398,72 @@ impl PendingAuthStore {
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
         let capacity = self.reserve_capacity()?;
-        let client = Client::builder()
-            .server_name_or_homeserver_url(&homeserver_url)
-            .build()
-            .await
-            .map_err(|_| "could not start password reset".to_string())?;
+        let created_at = Instant::now();
+        let attempt_id = opaque_id();
+        let cancellation = CancellationToken::new();
+        self.cancellations.lock().await.insert(
+            attempt_id.clone(),
+            (owner.clone(), cancellation.clone()),
+        );
+        self.spawn_expiry(attempt_id.clone());
+        let client_result = tokio::select! {
+            result = Client::builder()
+                .server_name_or_homeserver_url(&homeserver_url)
+                .build() => result,
+            () = cancellation.cancelled() => {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+        };
+        let client = match client_result {
+            Ok(client) => client,
+            Err(_) => {
+                self.cancellations.lock().await.remove(&attempt_id);
+                return Err("could not start password reset".to_string());
+            }
+        };
+        let oauth = client.oauth();
+        let delegated = tokio::select! {
+            result = oauth.server_metadata() => result.is_ok(),
+            () = cancellation.cancelled() => {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+        };
+        if delegated {
+            self.cancellations.lock().await.remove(&attempt_id);
+            return Err(
+                "password recovery is managed by this homeserver's identity provider".to_string(),
+            );
+        }
         let client_secret = ClientSecret::new();
         let request = request_password_change_token_via_email::v3::Request::new(
             client_secret.clone(),
             email,
             UInt::new_saturating(1),
         );
-        let response = client
-            .send(request)
-            .await
-            .map_err(|_| "could not start password reset".to_string())?;
-        let submit_url = sanitize_submit_url(
+        let response_result = tokio::select! {
+            result = client.send(request) => result,
+            () = cancellation.cancelled() => {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+        };
+        let response = match response_result {
+            Ok(response) => response,
+            Err(_) => {
+                self.cancellations.lock().await.remove(&attempt_id);
+                return Err("could not start password reset".to_string());
+            }
+        };
+        let submit_url = match sanitize_submit_url(
             &client.homeserver(),
             response.submit_url.as_deref(),
             "password-reset",
-        )?;
-        let attempt_id = opaque_id();
-        self.cancellations.lock().await.insert(
-            attempt_id.clone(),
-            (owner.clone(), CancellationToken::new()),
-        );
+        ) {
+            Ok(url) => url,
+            Err(error) => {
+                self.cancellations.lock().await.remove(&attempt_id);
+                return Err(error);
+            }
+        };
         self.password_resets.lock().await.insert(
             attempt_id.clone(),
             PendingPasswordReset {
@@ -374,10 +473,10 @@ impl PendingAuthStore {
                 client_secret,
                 sid: response.sid,
                 submit_url,
-                created_at: Instant::now(),
+                submitted: false,
+                created_at,
             },
         );
-        self.spawn_expiry(attempt_id.clone());
         Ok(PasswordResetChallenge {
             attempt_id,
             requires_token: response.submit_url.is_some(),
@@ -399,12 +498,12 @@ impl PendingAuthStore {
         if current.owner != owner || current.created_at.elapsed() > ATTEMPT_TTL {
             return Err("password reset attempt expired or was cancelled".to_string());
         }
-        let pending = guard
+        let mut pending = guard
             .remove(attempt_id)
             .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
         drop(guard);
         let result = tokio::select! {
-            result = complete_password_reset(&pending, token.as_deref(), new_password) => result,
+            result = complete_password_reset(&mut pending, token.as_deref(), new_password) => result,
             () = cancellation.cancelled() => {
                 Err("password reset attempt expired or was cancelled".to_string())
             }
@@ -509,6 +608,13 @@ impl PendingAuthStore {
             store.password_resets.lock().await.remove(&attempt_id);
         });
     }
+}
+
+fn registration_error_allows_retry(error: &matrix_sdk::Error) -> bool {
+    matches!(
+        error.client_api_error_kind(),
+        None | Some(ErrorKind::LimitExceeded(_))
+    )
 }
 
 pub enum BeginRegistrationResult {
@@ -626,19 +732,15 @@ async fn registration_auth_data(
     uiaa: &UiaaInfo,
     email: Option<&mut RegistrationEmail>,
 ) -> Result<AuthData, String> {
-    let session = uiaa
-        .session
-        .clone()
-        .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
     match response {
         RegistrationAuthResponse::AcceptTerms if expected_stage == AuthType::Terms.as_str() => {
             let mut terms = Terms::new();
-            terms.session = Some(session);
+            terms.session = uiaa.session.clone();
             Ok(AuthData::Terms(terms))
         }
         RegistrationAuthResponse::CompleteDummy if expected_stage == AuthType::Dummy.as_str() => {
             let mut dummy = Dummy::new();
-            dummy.session = Some(session);
+            dummy.session = uiaa.session.clone();
             Ok(AuthData::Dummy(dummy))
         }
         RegistrationAuthResponse::CompleteEmail { token }
@@ -673,10 +775,14 @@ async fn registration_auth_data(
                 "threepid_creds": credentials,
             }))
             .map_err(|_| "could not confirm registration email".to_string())?;
-            identity.session = Some(session);
+            identity.session = uiaa.session.clone();
             Ok(AuthData::EmailIdentity(identity))
         }
         RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
+            let session = uiaa
+                .session
+                .clone()
+                .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
             Ok(AuthData::fallback_acknowledgement(session))
         }
         _ => Err(format!(
@@ -690,12 +796,18 @@ fn registration_challenge(
     client: &Client,
     uiaa: &UiaaInfo,
 ) -> Result<RegistrationStep, String> {
-    let session = uiaa
-        .session
-        .clone()
-        .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
     let next_stage = next_registration_stage(uiaa)?;
-    let fallback_url = registration_fallback_url(client, &next_stage, &session)?;
+    let fallback_url = match uiaa.session.as_deref() {
+        Some(session) => registration_fallback_url(client, &next_stage, session)?,
+        None if matches!(
+            next_stage.as_str(),
+            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+        ) =>
+        {
+            String::new()
+        }
+        None => return Err("homeserver omitted the registration UIA session".to_string()),
+    };
     Ok(RegistrationStep::Challenge {
         attempt_id: attempt_id.to_owned(),
         completed: uiaa
@@ -820,8 +932,15 @@ async fn email_submission_client(submit_url: &reqwest::Url) -> Result<reqwest::C
         .await
         .map_err(|_| "could not resolve email submission host".to_string())?
         .collect::<Vec<_>>();
+    // Plain HTTP submission URLs were already constrained to the
+    // homeserver's exact origin by `sanitize_submit_url`. Permit their
+    // private/loopback address only when the companion's documented local
+    // insecure mode is explicitly enabled.
+    let allow_insecure_local = submit_url.scheme() == "http"
+        && std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1");
     if addresses.is_empty()
-        || (!cfg!(test)
+        || (!allow_insecure_local
+            && !cfg!(test)
             && addresses
                 .iter()
                 .any(|address| !is_public_network_ip(address.ip())))
@@ -834,6 +953,7 @@ async fn email_submission_client(submit_url: &reqwest::Url) -> Result<reqwest::C
         // addresses so a controlled hostname cannot rebind between this
         // check and reqwest's connection.
         .resolve_to_addrs(host, &addresses)
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
         .build()
@@ -875,23 +995,28 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
 }
 
 async fn complete_password_reset(
-    pending: &PendingPasswordReset,
+    pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
-        let token = token
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
-        submit_email(
-            submit_url,
-            &pending.sid,
-            &pending.client_secret,
-            token,
-            "password-reset",
-        )
-        .await
-        .map_err(|_| "could not confirm password reset".to_string())?;
+        // The token may be single-use. A retry after the password-change
+        // request fails must not submit it again.
+        if !pending.submitted {
+            let token = token
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
+            submit_email(
+                submit_url,
+                &pending.sid,
+                &pending.client_secret,
+                token,
+                "password-reset",
+            )
+            .await
+            .map_err(|_| "could not confirm password reset".to_string())?;
+            pending.submitted = true;
+        }
     }
     let credentials =
         ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());

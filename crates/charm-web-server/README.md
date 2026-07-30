@@ -325,3 +325,7 @@ and lifecycle setup is documented at the top of `.do/app.yaml`.
   `src-tauri/tests/common`). The WebSocket tests bind a real ephemeral TCP
   listener (`oneshot` can't drive a protocol upgrade) and use
   `tokio-tungstenite` as a real client.
+`CHARM_WEB_REGISTRATION_AND_RECOVERY=1` enables the server-side half of the
+default-off `registration_and_recovery` feature flag. Without it, registration,
+password recovery, login-flow discovery, and token-login endpoints return 404
+even if a browser has stale frontend flag state.

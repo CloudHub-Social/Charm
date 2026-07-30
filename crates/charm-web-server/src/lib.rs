@@ -23,6 +23,10 @@ pub struct AppState {
     /// behave exactly like sub-PR A (in-memory only, dropped on restart).
     /// See `persistence.rs`'s module doc comment.
     pub persistence: Option<Arc<PersistenceStore>>,
+    /// Server-side half of the `registration_and_recovery` kill switch.
+    /// Defaults off; the companion enables it explicitly from its deployment
+    /// environment.
+    pub registration_and_recovery_enabled: bool,
 }
 
 /// Test-only, crate-wide lock for tests that read/write process env vars

@@ -151,6 +151,16 @@ async fn repersist_if_token_changed(
         tracing::warn!("failed to re-persist refreshed session: {e}");
         return last_saved_access_token;
     }
+    if mode == crate::persistence::SaveMode::RetryInitialSave {
+        if let Some(crypto) = &persist.crypto {
+            if let Err(error) = crate::crypto_store::mark_store_committed(&crypto.store_key) {
+                tracing::error!(
+                    "session retry persisted but crypto store could not be marked committed: {error}"
+                );
+                return last_saved_access_token;
+            }
+        }
+    }
     // Proof the object now exists — clears the same flag
     // `routes::refresh_session_cookie`'s own successful touch clears, so a
     // `RetryInitialSave` that lands here isn't left waiting for that

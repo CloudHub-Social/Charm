@@ -38,6 +38,18 @@ import { isWebBuild } from "@/lib/platform";
 // can't slip past a plain `startsWith` check.
 const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
 
+function syntheticPasswordResetAttemptId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `unavailable-${globalThis.crypto.randomUUID()}`;
+  }
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return `unavailable-${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `unavailable-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
 }
@@ -345,7 +357,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       // The synthetic attempt advances through the same UI and only fails at
       // confirmation, after the user would need access to the mailbox.
       challenge = {
-        attempt_id: `unavailable-${crypto.randomUUID()}`,
+        attempt_id: syntheticPasswordResetAttemptId(),
         requires_token: false,
       };
     } finally {
