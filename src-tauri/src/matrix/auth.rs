@@ -6,6 +6,7 @@ use matrix_sdk::config::RequestConfig;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::{
     change_password, register, request_password_change_token_via_email,
+    request_registration_token_via_email,
 };
 use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
@@ -84,6 +85,8 @@ pub struct RegisterRequest {
 }
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const AUTH_MAILS_PER_ADDRESS: usize = 3;
@@ -96,7 +99,20 @@ pub(crate) struct PendingRegistration {
     request: RegisterRequest,
     attempt_id: String,
     uiaa: UiaaInfo,
+    email_validation: Option<PendingRegistrationEmail>,
+    email_client_secret: Option<matrix_sdk::ruma::OwnedClientSecret>,
+    email_address_key: Option<String>,
+    email_send_attempt: u32,
+    email_retry_not_before: Option<std::time::Instant>,
     created_at: std::time::Instant,
+}
+
+struct PendingRegistrationEmail {
+    client_secret: matrix_sdk::ruma::OwnedClientSecret,
+    sid: matrix_sdk::ruma::OwnedSessionId,
+    submit_url: Option<url::Url>,
+    homeserver: url::Url,
+    submitted: bool,
 }
 
 pub(crate) struct PendingPasswordReset {
@@ -155,13 +171,20 @@ pub enum RegistrationStep {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RegistrationAuthResponse {
     AcceptTerms,
     CompleteDummy,
+    CompleteEmail { token: Option<String> },
     AcknowledgeFallback { stage: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RegistrationEmailChallenge {
+    pub requires_token: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -992,20 +1015,349 @@ pub async fn begin_registration(
                 request,
                 attempt_id: attempt_id.clone(),
                 uiaa,
+                email_validation: None,
+                email_client_secret: None,
+                email_address_key: None,
+                email_send_attempt: 0,
+                email_retry_not_before: None,
                 created_at: started_at,
             };
-            restore_pending_registration_if_current(
+            if !restore_or_discard_pending_registration(
                 &app,
                 &state,
                 &attempt_id,
                 &cancellation,
                 pending,
             )
-            .await?;
+            .await
+            {
+                return Err("registration cancelled".to_string());
+            }
             reservation.defuse();
             Ok(step)
         }
     }
+}
+
+/// Starts the email-validation sub-flow for the active registration attempt.
+/// The homeserver `sid` and client secret remain backend-owned; the frontend
+/// only learns whether it must prompt for a token.
+#[tauri::command]
+pub async fn request_registration_email(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+    email: String,
+) -> Result<RegistrationEmailChallenge, String> {
+    if let Err(error) = ensure_registration_feature_enabled(&app) {
+        let cancellation = state
+            .pending_registration_cancel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|(current_id, _)| current_id == &attempt_id)
+            .map(|(_, cancellation)| cancellation.clone());
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+            clear_registration_cancellation(&state, &attempt_id);
+        }
+        let mut guard = state.pending_registration.lock().await;
+        let discarded = if guard
+            .as_ref()
+            .is_some_and(|pending| pending.attempt_id == attempt_id)
+        {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(discarded) = discarded {
+            discard_pending_registration(&app, discarded);
+        }
+        return Err(error);
+    }
+    let cancellation = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|(current_id, _)| current_id == &attempt_id)
+        .map(|(_, cancellation)| cancellation.clone())
+        .ok_or_else(|| "registration attempt is no longer current".to_string())?;
+    let mut guard = state.pending_registration.lock().await;
+    let Some(current) = guard.as_ref() else {
+        return Err("no registration is in progress".to_string());
+    };
+    if current.attempt_id != attempt_id {
+        return Err("registration attempt is no longer current".to_string());
+    }
+    if current.created_at.elapsed() > REGISTRATION_ATTEMPT_TTL {
+        let expired = guard.take().expect("pending attempt checked above");
+        drop(guard);
+        cancellation.cancel();
+        clear_registration_cancellation(&state, &attempt_id);
+        discard_pending_registration(&app, expired);
+        return Err("registration attempt expired; start again".to_string());
+    }
+    if next_registration_stage(&current.uiaa)? != AuthType::EmailIdentity.as_str() {
+        return Err("registration email is not the current authentication stage".to_string());
+    }
+    let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
+    let mut pending = guard.take().expect("pending attempt checked above");
+    drop(guard);
+
+    let delivery_email = email.trim().to_owned();
+    let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("enter an email address".to_string());
+    };
+    if local_part.is_empty() || domain.is_empty() {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("enter an email address".to_string());
+    }
+    let address_key = format!("{local_part}@{}", domain.to_lowercase());
+    if let Some(previous_address) = &pending.email_address_key {
+        if previous_address != &address_key {
+            if !restore_or_discard_pending_registration(
+                &app,
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                return Err("registration cancelled".to_string());
+            }
+            reservation.defuse();
+            return Err(
+                "cancel this registration and start again to use a different email address"
+                    .to_string(),
+            );
+        }
+    }
+    if pending.email_send_attempt >= REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("registration email resend limit reached; start again".to_string());
+    }
+    if pending
+        .email_retry_not_before
+        .is_some_and(|retry_at| std::time::Instant::now() < retry_at)
+    {
+        if !restore_or_discard_pending_registration(
+            &app,
+            &state,
+            &attempt_id,
+            &cancellation,
+            pending,
+        )
+        .await
+        {
+            return Err("registration cancelled".to_string());
+        }
+        reservation.defuse();
+        return Err("wait before requesting another registration email".to_string());
+    }
+    let client_secret = pending
+        .email_client_secret
+        .get_or_insert_with(ClientSecret::new)
+        .clone();
+    let homeserver_scope = pending.client.homeserver().origin().ascii_serialization();
+    let quota_reservation =
+        match check_auth_mail_quota(&state, &address_key, &homeserver_scope).await {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if !restore_or_discard_pending_registration(
+                    &app,
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    return Err("registration cancelled".to_string());
+                }
+                reservation.defuse();
+                return Err(error);
+            }
+        };
+    if cancellation.is_cancelled() {
+        refund_auth_mail_quota(&state, quota_reservation).await;
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    let send_attempt = pending.email_send_attempt + 1;
+    let request = request_registration_token_via_email::v3::Request::new(
+        client_secret.clone(),
+        delivery_email.clone(),
+        UInt::new_saturating(send_attempt.into()),
+    );
+    let response = tokio::select! {
+        result = pending.client.send(request) => result,
+        () = cancellation.cancelled() => {
+            discard_pending_registration(&app, pending);
+            clear_registration_cancellation(&state, &attempt_id);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => {
+            refund_auth_mail_quota(&state, quota_reservation).await;
+            match restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    return Err("could not send registration verification email".to_string());
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    return Err("registration cancelled".to_string());
+                }
+            }
+        }
+    };
+    if cancellation.is_cancelled() {
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    pending.email_address_key = Some(address_key);
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
+    let submit_url = match sanitize_email_submit_url(
+        &pending.client.homeserver(),
+        response.submit_url.as_deref(),
+        "registration",
+    ) {
+        Ok(url) => url,
+        Err(error) => {
+            match restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    return Err(error);
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    return Err("registration cancelled".to_string());
+                }
+            }
+        }
+    };
+    let requires_token = submit_url.is_some();
+    pending.email_validation = Some(PendingRegistrationEmail {
+        client_secret,
+        sid: response.sid,
+        submit_url,
+        homeserver: pending.client.homeserver(),
+        submitted: false,
+    });
+    if let Err(pending) =
+        restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending).await
+    {
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    reservation.defuse();
+    Ok(RegistrationEmailChallenge { requires_token })
+}
+
+async fn restore_pending_registration_if_current(
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingRegistration,
+) -> Result<(), PendingRegistration> {
+    if cancellation.is_cancelled() || !registration_cancellation_is_current(state, attempt_id) {
+        return Err(pending);
+    }
+    let mut guard = state.pending_registration.lock().await;
+    if guard.is_some()
+        || cancellation.is_cancelled()
+        || !registration_cancellation_is_current(state, attempt_id)
+    {
+        return Err(pending);
+    }
+    *guard = Some(pending);
+    Ok(())
+}
+
+async fn restore_or_discard_pending_registration(
+    app: &AppHandle,
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingRegistration,
+) -> bool {
+    match restore_pending_registration_if_current(state, attempt_id, cancellation, pending).await {
+        Ok(()) => true,
+        Err(pending) => {
+            discard_pending_registration(app, pending);
+            clear_registration_cancellation(state, attempt_id);
+            false
+        }
+    }
+}
+
+fn registration_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
+    state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
 }
 
 /// Continues exactly the active registration attempt and Matrix UIA session.
@@ -1055,11 +1407,46 @@ pub async fn continue_registration(
     }
 
     let expected_stage = next_registration_stage(&current.uiaa)?;
-    let auth = registration_auth_data(response, &expected_stage, &current.uiaa)?;
     let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
     let mut pending = pending_guard.take().expect("pending attempt checked above");
     drop(pending_guard);
 
+    let auth_result = tokio::select! {
+        result = registration_auth_data(
+            response,
+            &expected_stage,
+            &pending.uiaa,
+            pending.email_validation.as_mut(),
+        ) => result,
+        () = cancellation.cancelled() => {
+            discard_pending_registration(&app, pending);
+            clear_registration_cancellation(&state, &attempt_id);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let auth = match auth_result {
+        Ok(auth) => auth,
+        Err(error) => {
+            return match restore_pending_registration_if_current(
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                Ok(()) => {
+                    reservation.defuse();
+                    Err(error)
+                }
+                Err(pending) => {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Err("registration cancelled".to_string())
+                }
+            };
+        }
+    };
     let request = registration_request(&pending.request, Some(auth));
     let registration_result = tokio::select! {
         result = async { pending.client.matrix_auth().register(request).await } => result,
@@ -1102,6 +1489,12 @@ pub async fn continue_registration(
         Err(error) => {
             if let Some(uiaa) = error.as_uiaa_response().cloned() {
                 pending.uiaa = uiaa;
+                if !matches!(
+                    next_registration_stage(&pending.uiaa).as_deref(),
+                    Ok(stage) if stage == AuthType::EmailIdentity.as_str()
+                ) {
+                    pending.email_validation = None;
+                }
                 let step = match registration_challenge(
                     &pending.attempt_id,
                     &pending.client,
@@ -1114,28 +1507,42 @@ pub async fn continue_registration(
                         return Err(error);
                     }
                 };
-                restore_pending_registration_if_current(
-                    &app,
+                match restore_pending_registration_if_current(
                     &state,
                     &attempt_id,
                     &cancellation,
                     pending,
                 )
-                .await?;
-                reservation.defuse();
-                Ok(step)
+                .await
+                {
+                    Ok(()) => {
+                        reservation.defuse();
+                        Ok(step)
+                    }
+                    Err(pending) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        Err("registration cancelled".to_string())
+                    }
+                }
             } else {
                 let message = safe_registration_error(&error);
                 if registration_error_allows_retry(&error) {
-                    restore_pending_registration_if_current(
-                        &app,
+                    match restore_pending_registration_if_current(
                         &state,
                         &attempt_id,
                         &cancellation,
                         pending,
                     )
-                    .await?;
-                    reservation.defuse();
+                    .await
+                    {
+                        Ok(()) => reservation.defuse(),
+                        Err(pending) => {
+                            discard_pending_registration(&app, pending);
+                            clear_registration_cancellation(&state, &attempt_id);
+                            return Err("registration cancelled".to_string());
+                        }
+                    }
                 } else {
                     discard_pending_registration(&app, pending);
                     clear_registration_cancellation(&state, &attempt_id);
@@ -1339,7 +1746,7 @@ async fn check_auth_mail_quota(
             .get(&digest)
             .is_some_and(|attempts| attempts.len() >= AUTH_MAILS_PER_ADDRESS)
     {
-        return Err("too many recovery emails; try again later".to_string());
+        return Err("too many authentication emails; try again later".to_string());
     }
     quota.all.push(now);
     quota
@@ -1493,20 +1900,66 @@ fn sanitize_password_reset_submit_url(
     homeserver: &url::Url,
     submit_url: Option<&str>,
 ) -> Result<Option<url::Url>, String> {
+    sanitize_email_submit_url(homeserver, submit_url, "password-reset")
+}
+
+fn sanitize_email_submit_url(
+    homeserver: &url::Url,
+    submit_url: Option<&str>,
+    flow: &str,
+) -> Result<Option<url::Url>, String> {
     let Some(submit_url) = submit_url else {
         return Ok(None);
     };
     let parsed = homeserver
         .join(submit_url)
-        .map_err(|_| "this homeserver returned an unsupported password-reset flow".to_string())?;
+        .map_err(|_| format!("this homeserver returned an unsupported {flow} flow"))?;
     if !(matches!(parsed.scheme(), "https")
         || parsed.scheme() == "http" && parsed.origin() == homeserver.origin())
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("this homeserver returned an unsupported password-reset flow".to_string());
+        return Err(format!(
+            "this homeserver returned an unsupported {flow} flow"
+        ));
     }
     Ok(Some(parsed))
+}
+
+async fn submit_email_validation(
+    submit_url: &url::Url,
+    homeserver: &url::Url,
+    sid: &matrix_sdk::ruma::OwnedSessionId,
+    client_secret: &matrix_sdk::ruma::OwnedClientSecret,
+    token: &str,
+    flow: &str,
+) -> Result<(), String> {
+    let client = email_validation_submission_client(submit_url, homeserver)
+        .await
+        .map_err(|_| format!("could not confirm {flow} email"))?;
+    let response = client
+        .post(submit_url.clone())
+        .json(&serde_json::json!({
+            "sid": sid,
+            "client_secret": client_secret,
+            "token": token,
+        }))
+        .send()
+        .await
+        .map_err(|_| format!("could not confirm {flow} email"))?;
+    if !response.status().is_success() {
+        return Err(format!("could not confirm {flow} email"));
+    }
+    let accepted = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|body| body.get("success").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    if !accepted {
+        return Err(format!("could not confirm {flow} email"));
+    }
+    Ok(())
 }
 
 async fn complete_password_reset(
@@ -1521,21 +1974,16 @@ async fn complete_password_reset(
         let token = token
             .filter(|token| !token.is_empty())
             .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
-        let client =
-            password_reset_submission_client(submit_url, &pending.client.homeserver()).await?;
-        let response = client
-            .post(submit_url.clone())
-            .json(&serde_json::json!({
-                "sid": pending.sid,
-                "client_secret": pending.client_secret,
-                "token": token,
-            }))
-            .send()
-            .await
-            .map_err(|_| "could not confirm password reset".to_string())?;
-        if !response.status().is_success() {
-            return Err("could not confirm password reset".to_string());
-        }
+        submit_email_validation(
+            submit_url,
+            &pending.client.homeserver(),
+            &pending.sid,
+            &pending.client_secret,
+            token,
+            "password-reset",
+        )
+        .await
+        .map_err(|_| "could not confirm password reset".to_string())?;
         pending.token_submitted = true;
     }
 
@@ -1563,7 +2011,7 @@ async fn complete_password_change(
         .map_err(|_| "could not confirm password reset".to_string())
 }
 
-async fn password_reset_submission_client(
+async fn email_validation_submission_client(
     submit_url: &url::Url,
     homeserver: &url::Url,
 ) -> Result<reqwest::Client, String> {
@@ -1802,25 +2250,24 @@ pub async fn login_with_token(
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
-    let _restore_store_guard = match tokio::time::timeout_at(deadline, restore_store_lock().lock())
-        .await
-    {
-        Ok(guard) => guard,
-        Err(_) => {
-            let revoked =
-                tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
-            drop(client);
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return if matches!(revoked, Ok(Ok(_))) {
-                Err("token login setup timed out".to_string())
-            } else {
-                Err(
+    let _restore_store_guard =
+        match tokio::time::timeout_at(deadline, restore_store_lock().lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                let revoked =
+                    tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return if matches!(revoked, Ok(Ok(_))) {
+                    Err("token login setup timed out".to_string())
+                } else {
+                    Err(
                     "token login setup timed out and the authenticated device could not be revoked"
                         .to_string(),
                 )
-            };
-        }
-    };
+                };
+            }
+        };
     // Keep the reservation visible until the process-wide restore/sweep lock
     // is held, so cleanup cannot delete this active store in the gap.
     reservation.defuse();
@@ -2000,41 +2447,6 @@ fn clear_registration_cancellation(state: &MatrixState, attempt_id: &str) {
     }
 }
 
-fn registration_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
-    state
-        .pending_registration_cancel
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .is_some_and(|(current_id, _)| current_id == attempt_id)
-}
-
-async fn restore_pending_registration_if_current(
-    app: &AppHandle,
-    state: &MatrixState,
-    attempt_id: &str,
-    cancellation: &tokio_util::sync::CancellationToken,
-    pending: PendingRegistration,
-) -> Result<(), String> {
-    if cancellation.is_cancelled() || !registration_cancellation_is_current(state, attempt_id) {
-        discard_pending_registration(app, pending);
-        clear_registration_cancellation(state, attempt_id);
-        return Err("registration cancelled".to_string());
-    }
-    let mut guard = state.pending_registration.lock().await;
-    if guard.is_some()
-        || cancellation.is_cancelled()
-        || !registration_cancellation_is_current(state, attempt_id)
-    {
-        drop(guard);
-        discard_pending_registration(app, pending);
-        clear_registration_cancellation(state, attempt_id);
-        return Err("registration cancelled".to_string());
-    }
-    *guard = Some(pending);
-    Ok(())
-}
-
 fn spawn_registration_expiry(
     app: AppHandle,
     attempt_id: String,
@@ -2174,10 +2586,11 @@ fn next_registration_stage(uiaa: &UiaaInfo) -> Result<String, String> {
         .ok_or_else(|| "homeserver returned no incomplete registration stage".to_string())
 }
 
-fn registration_auth_data(
+async fn registration_auth_data(
     response: RegistrationAuthResponse,
     expected_stage: &str,
     uiaa: &UiaaInfo,
+    email_validation: Option<&mut PendingRegistrationEmail>,
 ) -> Result<AuthData, String> {
     match response {
         RegistrationAuthResponse::AcceptTerms if expected_stage == AuthType::Terms.as_str() => {
@@ -2189,6 +2602,42 @@ fn registration_auth_data(
             let mut dummy = Dummy::new();
             dummy.session = uiaa.session.clone();
             Ok(AuthData::Dummy(dummy))
+        }
+        RegistrationAuthResponse::CompleteEmail { token }
+            if expected_stage == AuthType::EmailIdentity.as_str() =>
+        {
+            let validation = email_validation
+                .ok_or_else(|| "request a registration verification email first".to_string())?;
+            if !validation.submitted {
+                if let Some(submit_url) = &validation.submit_url {
+                    let token = token
+                        .as_deref()
+                        .filter(|token| !token.is_empty())
+                        .ok_or_else(|| {
+                            "enter the token from your registration email".to_string()
+                        })?;
+                    submit_email_validation(
+                        submit_url,
+                        &validation.homeserver,
+                        &validation.sid,
+                        &validation.client_secret,
+                        token,
+                        "registration",
+                    )
+                    .await?;
+                    validation.submitted = true;
+                }
+            }
+            let credentials = ThirdpartyIdCredentials::new(
+                validation.sid.clone(),
+                validation.client_secret.clone(),
+            );
+            let mut email_identity: EmailIdentity = serde_json::from_value(serde_json::json!({
+                "threepid_creds": credentials,
+            }))
+            .map_err(|_| "could not confirm registration email".to_string())?;
+            email_identity.session = uiaa.session.clone();
+            Ok(AuthData::EmailIdentity(email_identity))
         }
         RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
             let session = uiaa
@@ -2213,7 +2662,9 @@ fn registration_challenge(
         Some(session) => registration_fallback_url(client, &next_stage, session)?,
         None if matches!(
             next_stage.as_str(),
-            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+            stage if stage == AuthType::Terms.as_str()
+                || stage == AuthType::Dummy.as_str()
+                || stage == AuthType::EmailIdentity.as_str()
         ) =>
         {
             String::new()
@@ -2563,8 +3014,8 @@ mod registration_uia_tests {
         is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
         registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
         sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
-        PasswordResetChallenge, PendingPasswordReset, RegistrationAuthResponse,
-        AUTH_MAILS_PER_ADDRESS,
+        PasswordResetChallenge, PendingPasswordReset, PendingRegistrationEmail,
+        RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
     };
     use crate::matrix::MatrixState;
 
@@ -2593,8 +3044,8 @@ mod registration_uia_tests {
         );
     }
 
-    #[test]
-    fn rejects_a_response_for_a_different_stage() {
+    #[tokio::test]
+    async fn rejects_a_response_for_a_different_stage() {
         let info = uiaa(json!({
             "flows": [{"stages": ["m.login.terms"]}],
             "session": "uia-session"
@@ -2604,13 +3055,15 @@ mod registration_uia_tests {
             RegistrationAuthResponse::CompleteDummy,
             AuthType::Terms.as_str(),
             &info,
+            None,
         )
+        .await
         .expect_err("dummy must not satisfy terms");
         assert!(error.contains(AuthType::Terms.as_str()));
     }
 
-    #[test]
-    fn threads_the_homeserver_session_into_terms_auth() {
+    #[tokio::test]
+    async fn threads_the_homeserver_session_into_terms_auth() {
         let info = uiaa(json!({
             "flows": [{"stages": ["m.login.terms"]}],
             "session": "uia-session"
@@ -2620,7 +3073,9 @@ mod registration_uia_tests {
             RegistrationAuthResponse::AcceptTerms,
             AuthType::Terms.as_str(),
             &info,
+            None,
         )
+        .await
         .expect("terms auth");
         assert!(matches!(
             auth,
@@ -2628,8 +3083,71 @@ mod registration_uia_tests {
         ));
     }
 
-    #[test]
-    fn accepts_sessionless_direct_terms_and_dummy_auth() {
+    #[tokio::test]
+    async fn registration_email_submits_the_token_and_threads_owned_credentials() {
+        let server = MatrixMockServer::new().await;
+        let client_secret = matrix_sdk::ruma::ClientSecret::new();
+        let sid =
+            serde_json::from_value(json!("registration-email-session")).expect("valid session id");
+        Mock::given(method("POST"))
+            .and(path("/validate/email/submitToken"))
+            .and(body_partial_json(json!({
+                "sid": "registration-email-session",
+                "client_secret": client_secret,
+                "token": "654321",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        let info = uiaa(json!({
+            "flows": [{"stages": ["m.login.email.identity"]}],
+            "session": "uia-session"
+        }));
+        let mut validation = PendingRegistrationEmail {
+            client_secret: client_secret.clone(),
+            sid,
+            submit_url: Some(
+                url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
+                    .expect("submission URL"),
+            ),
+            homeserver: server.uri().parse().expect("homeserver URL"),
+            submitted: false,
+        };
+
+        let auth = registration_auth_data(
+            RegistrationAuthResponse::CompleteEmail {
+                token: Some("654321".to_owned()),
+            },
+            AuthType::EmailIdentity.as_str(),
+            &info,
+            Some(&mut validation),
+        )
+        .await
+        .expect("email auth");
+        let serialized = serde_json::to_value(auth).expect("serialize email auth");
+        assert_eq!(serialized["session"], "uia-session");
+        assert_eq!(
+            serialized["threepid_creds"]["sid"],
+            "registration-email-session"
+        );
+        assert_eq!(
+            serialized["threepid_creds"]["client_secret"],
+            client_secret.as_str()
+        );
+
+        registration_auth_data(
+            RegistrationAuthResponse::CompleteEmail { token: None },
+            AuthType::EmailIdentity.as_str(),
+            &info,
+            Some(&mut validation),
+        )
+        .await
+        .expect("a retry reuses the completed email validation");
+    }
+
+    #[tokio::test]
+    async fn accepts_sessionless_direct_terms_and_dummy_auth() {
         let terms_info = uiaa(json!({"flows": [{"stages": ["m.login.terms"]}]}));
         let dummy_info = uiaa(json!({"flows": [{"stages": ["m.login.dummy"]}]}));
 
@@ -2638,7 +3156,9 @@ mod registration_uia_tests {
                 RegistrationAuthResponse::AcceptTerms,
                 AuthType::Terms.as_str(),
                 &terms_info,
-            ),
+                None,
+            )
+            .await,
             Ok(AuthData::Terms(terms)) if terms.session.is_none()
         ));
         assert!(matches!(
@@ -2646,7 +3166,9 @@ mod registration_uia_tests {
                 RegistrationAuthResponse::CompleteDummy,
                 AuthType::Dummy.as_str(),
                 &dummy_info,
-            ),
+                None,
+            )
+            .await,
             Ok(AuthData::Dummy(dummy)) if dummy.session.is_none()
         ));
     }
@@ -2914,7 +3436,7 @@ mod registration_uia_tests {
                 "client_secret": client_secret,
                 "token": "123456",
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
             .expect(1)
             .mount(server.server())
             .await;
