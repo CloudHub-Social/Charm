@@ -1223,12 +1223,10 @@ pub async fn request_password_reset(
     let response = tokio::select! {
         result = client.send(request) => result,
         () = cancellation.cancelled() => {
-            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             clear_password_reset_cancellation(&state, &attempt_id);
             return Err("password reset attempt was superseded".to_string());
         },
         () = tokio::time::sleep_until(deadline) => {
-            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             clear_password_reset_cancellation(&state, &attempt_id);
             return Err("password reset attempt expired; start again".to_string());
         }
@@ -1241,8 +1239,11 @@ pub async fn request_password_reset(
             );
             match submit_url {
                 Ok(submit_url) => {
-                    let requires_token = submit_url.is_some();
-                    (response.sid, submit_url, requires_token)
+                    // Keep the public challenge shape independent of whether
+                    // this address produced a real homeserver session or the
+                    // synthetic anti-enumeration path below. The UI already
+                    // renders the token field as optional for both flows.
+                    (response.sid, submit_url, false)
                 }
                 Err(_) => synthetic_password_reset_challenge()?,
             }
@@ -1421,12 +1422,14 @@ pub async fn confirm_password_reset(
         .filter(|(current_id, _)| current_id == &attempt_id)
         .map(|(_, cancellation)| cancellation.clone())
         .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
-    let result = tokio::select! {
-        result = complete_password_reset(&mut pending, token.as_deref(), new_password) => result,
-        () = cancellation.cancelled() => {
-            Err("password reset attempt expired or was cancelled".to_string())
-        }
-    };
+    if cancellation.is_cancelled() {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
+    // Once confirmation begins it may dispatch the password mutation. Do
+    // not race that irreversible request against cancellation and then
+    // report that nothing happened; the frontend operation token will
+    // ignore this result if the user has already closed the surface.
+    let result = complete_password_reset(&mut pending, token.as_deref(), new_password).await;
     if result.is_err() {
         let mut guard = state.pending_password_reset.lock().await;
         if !cancellation.is_cancelled()
@@ -1617,13 +1620,25 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // RFC 6052's well-known NAT64 prefix is public when the embedded
+            // IPv4 destination is public. Blocking the whole /96 breaks
+            // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
+            // prefix remains denied below.
+            if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+                let v4 = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(v4.into());
+            }
             !(ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
                 || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
