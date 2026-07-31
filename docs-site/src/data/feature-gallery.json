@@ -256,7 +256,7 @@
     {
       "slug": "space-hierarchy-reorganization",
       "title": "Space hierarchy reorganization",
-      "summary": "Create spaces beneath an existing parent and reorganize the hierarchy while preserving valid Matrix parent relationships.",
+      "summary": "Open a space in Charm's shared settings shell to manage its identity and permissions.",
       "status": "preview",
       "spec": "Spec 33",
       "specLinks": [
@@ -268,9 +268,9 @@
       "flag": "space_hierarchy_reorganization",
       "snapshot": {
         "suite": "e2e",
-        "name": "space-hierarchy-create-subspace",
-        "alt": "Charm space rail showing Research nested beneath the Team space",
-        "caption": "Playwright creates a subspace from the parent space context menu and verifies the nested result."
+        "name": "space-settings-general",
+        "alt": "Charm space settings open from the space rail",
+        "caption": "Playwright opens a space from the rail in the shared settings shell."
       }
     },
     {
