@@ -108,6 +108,12 @@
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
+    "key": "user_profile_cards",
+    "default": false,
+    "description": "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms.",
+    "owner": "Spec 36 (user profile cards)"
+  },
+  {
     "key": "registration_and_recovery",
     "default": false,
     "description": "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login.",
