@@ -103,7 +103,8 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
         ),
     )
     .await;
-    let badge = shell::compute_badge_state(&snapshot);
+    let badge =
+        shell::compute_badge_state_for_presentation(&snapshot, include_canonical_space_hierarchy);
     let _ = app.emit("room_list:update", snapshot);
     let _ = app.emit("badge:update", &badge);
     let _ = shell::apply_native_badge(app, badge.total_unread);
