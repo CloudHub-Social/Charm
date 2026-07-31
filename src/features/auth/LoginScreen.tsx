@@ -306,12 +306,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
       throw registrationError;
     }
-    if (
-      expectedOperation !== undefined &&
-      registrationEmailOperationRef.current !== expectedOperation
-    ) {
-      return;
-    }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
@@ -319,6 +313,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setRegistrationEmailToken("");
       setPassword("");
       onSignedIn(step.session);
+      return;
+    }
+    if (
+      expectedOperation !== undefined &&
+      registrationEmailOperationRef.current !== expectedOperation
+    ) {
       return;
     }
     if (step.next_stage !== "m.login.email.identity") {
@@ -370,8 +370,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       const step = await continueRegistration(attemptId, response);
       if (
-        registrationEmailOperationRef.current !== operation ||
-        registrationAttemptRef.current !== attemptId
+        step.state !== "complete" &&
+        (registrationEmailOperationRef.current !== operation ||
+          registrationAttemptRef.current !== attemptId)
       ) {
         return;
       }
