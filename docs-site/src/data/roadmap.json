@@ -12,6 +12,20 @@
   "attention": [
     {
       "type": "issue",
+      "number": 382,
+      "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/382",
+      "detail": "follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 350,
+      "title": "Follow-up: align Spec 33 child-list reconciliation wording",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/350",
+      "detail": ""
+    },
+    {
+      "type": "issue",
       "number": 48,
       "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
       "url": "https://github.com/CloudHub-Social/Charm/issues/48",
@@ -125,13 +139,14 @@
         "day-2-10",
         "day-2-11",
         "day-2-12",
-        "day-2-13"
+        "day-2-13",
+        "day-2-14"
       ],
       "counts": {
         "shipped": 2,
         "follow-up": 0,
         "in-progress": 0,
-        "planned": 11
+        "planned": 12
       }
     }
   ],
@@ -382,6 +397,14 @@
       "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 327,
+          "title": "Clarify Spec 13 hardware-blocked evidence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/327",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:44:04Z"
+        },
         {
           "number": 230,
           "title": "fix(linux,ios): wire up in-webview getUserMedia permission grants",
@@ -849,9 +872,28 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "planned",
-      "pullRequests": [],
-      "issues": []
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 325,
+          "title": "Make Spec 28 local search decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/325",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:43:05Z"
+        }
+      ],
+      "issues": [
+        {
+          "number": 382,
+          "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/382",
+          "updatedAt": "2026-07-31T17:32:11Z",
+          "labels": [
+            "follow-up"
+          ]
+        }
+      ]
     },
     {
       "id": "day-1-29",
@@ -859,7 +901,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 299,
@@ -950,9 +992,17 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 350,
+          "title": "Follow-up: align Spec 33 child-list reconciliation wording",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/350",
+          "updatedAt": "2026-07-30T21:41:37Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-34",
@@ -1085,8 +1135,17 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 324,
+          "title": "Start Spec 39 timeline state-event foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/324",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:42:30Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1187,8 +1246,17 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 322,
+          "title": "Spec 45: Make registration and recovery decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/322",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:41:18Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1337,8 +1405,17 @@
       "number": 55,
       "title": "Command palette and quick switcher",
       "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 326,
+          "title": "Make Spec 55 quick switcher decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/326",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:43:35Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1600,6 +1677,16 @@
       "number": 13,
       "title": "Scheduled and delayed send",
       "route": "/specs/day-2/spec-13--scheduled-and-delayed-send/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-14",
+      "tier": "day-2",
+      "number": 14,
+      "title": "Guest room previews",
+      "route": "/specs/day-2/spec-14--guest-room-previews/",
       "status": "planned",
       "pullRequests": [],
       "issues": []

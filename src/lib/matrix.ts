@@ -56,6 +56,9 @@ import type { SpaceHierarchyNode } from "@bindings/SpaceHierarchyNode";
 import type { SpaceJoinRule } from "@bindings/SpaceJoinRule";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
+import type { TimelineItemSummary } from "@bindings/TimelineItemSummary";
+import type { TimelineMembershipChange } from "@bindings/TimelineMembershipChange";
+import type { TimelineStateChange } from "@bindings/TimelineStateChange";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { UrlPreview } from "@bindings/UrlPreview";
@@ -183,7 +186,10 @@ export type {
   SpaceHierarchyNode,
   SpaceJoinRule,
   SyncStateEvent,
+  TimelineItemSummary,
+  TimelineMembershipChange,
   TimelinePage,
+  TimelineStateChange,
   TypingUpdate,
   UploadProgress,
   UrlPreview,
@@ -820,12 +826,22 @@ export function createSpace(
   topic?: string,
   roomAliasName?: string,
   isPublic = false,
+  parentSpaceId?: string,
 ): Promise<string> {
   return invoke("create_space", {
     name,
     topic: topic ?? null,
     roomAliasName: roomAliasName ?? null,
     public: isPublic,
+    parentSpaceId: parentSpaceId ?? null,
+  });
+}
+
+/** Makes `parentSpaceId` canonical, or removes the current canonical parent. */
+export function setSpaceParent(spaceId: string, parentSpaceId?: string): Promise<void> {
+  return invoke("set_space_parent", {
+    spaceId,
+    parentSpaceId: parentSpaceId ?? null,
   });
 }
 

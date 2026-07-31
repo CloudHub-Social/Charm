@@ -3,8 +3,21 @@ title: Charm 2.0 Spec — Timeline state and membership events
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The first implementation slice adds an additive, ts-rs-exported
+`TimelineItemSummary` union and maps matrix-sdk-ui's existing membership,
+member-profile, room name, topic, avatar, tombstone, and hidden-state
+classifications into it. The existing message-only page/update payload remains
+unchanged so this foundation can land without destabilizing timeline anchoring,
+message actions, receipts, or virtualized row identity.
+
+The next slice must migrate the wire payload and renderer behind a default-off
+feature flag, then add membership collapsing and appearance controls. This spec
+must not be marked shipped until those surfaces and real-room evidence exist.
 
 **Workstream:** one PR / one agent. Extends Spec 14/26 (timeline). Likely the
 single most-noticeable omission found in the whole parity audit.
@@ -79,6 +92,9 @@ existing timeline IPC/stream into `ChatShell`. No new *fetch* path — the event
 already synced and already reach the SDK Timeline; the fix is to stop discarding
 them in the mapping layer and to carry enough fields (actor, target, membership
 transition, old/new value) to render a friendly string frontend-side.
+Membership/profile-change DTOs keep the remote-controlled display name separate
+from the authoritative MXID. Renderers must isolate the display-name fragment and
+show the MXID without concatenating both into a single untrusted string.
 
 ## API/contract changes
 

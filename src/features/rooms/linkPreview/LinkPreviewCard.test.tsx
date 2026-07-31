@@ -38,6 +38,28 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("LinkPreviewCard", () => {
+  it("reuses one query-cache fetch for duplicate consumers", async () => {
+    getUrlPreview.mockResolvedValue({
+      title: "Cached preview",
+      description: null,
+      imageUrl: null,
+      imageWidth: null,
+      imageHeight: null,
+      siteName: null,
+    });
+
+    render(
+      <>
+        <LinkPreviewCard roomId="!room:localhost" url="https://example.com/cached" />
+        <LinkPreviewCard roomId="!room:localhost" url="https://example.com/cached" />
+      </>,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Cached preview")).toHaveLength(2));
+    expect(getUrlPreview).toHaveBeenCalledTimes(1);
+  });
+
   it("renders title, description, and a resolved thumbnail", async () => {
     getUrlPreview.mockResolvedValueOnce({
       title: "Example Domain",
