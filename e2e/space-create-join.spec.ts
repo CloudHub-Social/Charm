@@ -99,9 +99,17 @@ test("drags one space beneath another and refreshes the rail hierarchy", async (
     ],
   });
   await page.goto("/");
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eListenerCount("room_list:update")))
+    .toBeGreaterThan(0);
 
   const alpha = page.getByRole("button", { name: "Alpha", exact: true });
   const beta = page.getByRole("button", { name: "Beta", exact: true });
+  for (const space of [alpha, beta]) {
+    await space.click({ button: "right" });
+    await expect(page.getByRole("menuitem", { name: "Move to space…" })).toBeEnabled();
+    await page.keyboard.press("Escape");
+  }
   const alphaBox = await alpha.boundingBox();
   const betaBox = await beta.boundingBox();
   expect(alphaBox).not.toBeNull();
@@ -113,7 +121,26 @@ test("drags one space beneath another and refreshes the rail hierarchy", async (
   await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, {
     steps: 6,
   });
+  await expect(beta).toHaveClass(/ring-2/);
   await page.mouse.up();
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eSetSpaceParentCalls))
+    .toEqual([{ spaceId: "!alpha:e2e", parentSpaceId: "!beta:e2e" }]);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const rooms = (await window.__TAURI_INTERNALS__.invoke("list_rooms")) as Array<{
+          room_id: string;
+          parent_space_ids: string[];
+        }>;
+        return rooms.find((room) => room.room_id === "!alpha:e2e")?.parent_space_ids;
+      }),
+    )
+    .toEqual(["!beta:e2e"]);
+  await page.evaluate(async () => {
+    const rooms = await window.__TAURI_INTERNALS__.invoke("list_rooms");
+    window.__e2eEmit("room_list:update", rooms);
+  });
 
   await expect(page.getByRole("button", { name: "Expand Beta" })).toBeVisible();
   await page.getByRole("button", { name: "Expand Beta" }).click();
