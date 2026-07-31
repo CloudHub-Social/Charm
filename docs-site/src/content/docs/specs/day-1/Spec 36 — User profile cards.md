@@ -3,11 +3,16 @@ title: Charm 2.0 Spec — User profile cards
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
-**Workstream:** one PR / one agent. Extends Spec 01 (timeline identity & profiles),
+**Workstream:** staged delivery. Extends Spec 01 (timeline identity & profiles),
 which shipped **own-profile** editing but no way to view or act on *other* users.
+
+The first slice establishes the desktop/web read contracts and default-off
+`user_profile_cards` flag. Later slices add the card surface and entry points,
+then actions and room-scoped profile writes. This keeps the Matrix read boundary
+reviewable before it is connected to multiple interactive surfaces.
 
 ## Problem & why now
 
@@ -74,18 +79,26 @@ reuse its crop tool rather than building a second one.
 ## Data flow
 
 New IPC read: `get_user_profile(user_id, room_id?) -> UserProfile` returning global
-+ optional room-specific display name/avatar, and `get_mutual_rooms(user_id) ->
-RoomSummary[]`. Ignore/DM/per-room-profile-set reuse existing commands where they
-exist (`BlockedUsersCard` already has an ignore mutation to reuse; DM creation
-already exists). Per-room nick/avatar is a state-event send of the user's own
-`m.room.member` content — confirm the SDK helper before hand-rolling.
++ optional room-specific display name/avatar and best-effort presence, and
+`get_mutual_rooms(user_id) -> MutualRoomSummary[]`. The mutual-room shape is
+deliberately narrower than the room-list `RoomSummary`: profile cards do not need
+notification counts, tags, or message previews. Ignore/DM/per-room-profile-set
+reuse existing commands where they exist (`BlockedUsersCard` already has an
+ignore mutation to reuse; DM creation already exists). Per-room nick/avatar is a
+state-event send of the user's own `m.room.member` content — confirm the SDK
+helper before hand-rolling.
 
 ## API/contract changes
 
 - New `get_user_profile` / `get_mutual_rooms` IPC commands (ts-rs bindings).
+- Matching authenticated web-companion routes; browser clients never receive
+  another account's session or SDK store.
 - Surface `status_msg` / `last_active_ago_ms` (already in the DTO) to the card.
 - New `set_room_profile(room_id, display_name?, avatar?)` command for per-room
   identity.
+- `UserProfile` is the canonical profile-card DTO. The older own-account
+  `OwnProfile` and settings-only `ProfileSummary` remain compatibility shapes
+  until the card surface migrates their consumers in the next slice.
 
 ## Testing strategy
 
@@ -103,8 +116,22 @@ already exists). Per-room nick/avatar is a state-event send of the user's own
   one profile surface matches Charm 1.0 and avoids two competing "click a user"
   affordances; the existing `MemberRow` admin menu becomes a section of the card
   rather than a parallel path.
+- **Global profile lookup can fail while room membership is readable**: when a
+  caller supplies a shared room, Charm still returns its room-scoped membership
+  profile and leaves unavailable global fields empty. With no readable room
+  membership, a failed global lookup remains an error rather than fabricating an
+  empty user.
 
 ## What I'd revisit as this grows
 
 - Shared-media / shared-files-with-this-user view if requested (Charm 1.0 doesn't
   strongly have this, so not built now).
+
+## Implementation status
+
+- In progress: canonical `UserProfile` and privacy-minimal
+  `MutualRoomSummary` contracts, desktop commands, web routes, and the
+  default-off feature flag.
+- Remaining: migrate the two legacy own-profile DTO consumers, add the card UI
+  and its three entry points, wire DM/block/moderation actions, and implement
+  `set_room_profile`.
