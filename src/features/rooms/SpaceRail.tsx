@@ -107,6 +107,8 @@ export function SpaceRail({
   } | null>(null);
   const spaceDropRef = useRef<typeof spaceDrop>(null);
   const [spaceParentMutationPending, setSpaceParentMutationPending] = useState(false);
+  const moveSelectionPendingRef = useRef(false);
+  const [moveSelectionPending, setMoveSelectionPending] = useState(false);
   // Holds the canonical placement selected through Charm until the next
   // sync snapshot observes it. This prevents a stale in-memory room list
   // from snapping the rail back immediately after a successful write.
@@ -253,7 +255,12 @@ export function SpaceRail({
       const resolvedTarget = insideRail ? targetId : null;
       if (resolvedTarget && !dragPermissionRequestsRef.current.has(resolvedTarget)) {
         dragPermissionRequestsRef.current.add(resolvedTarget);
-        ensurePermissionsLoaded(resolvedTarget, true);
+        void ensurePermissionsLoaded(resolvedTarget, true).then((permissions) => {
+          if (!permissions) {
+            dragPermissionRequestsRef.current.delete(resolvedTarget);
+            recomputeDropRef.current?.();
+          }
+        });
       }
       const invalid =
         resolvedTarget === sourceId ||
@@ -325,6 +332,8 @@ export function SpaceRail({
     dragPermissionRequestsRef.current.clear();
     setSpaceDrop(null);
     setCanonicalParentOverrides({});
+    moveSelectionPendingRef.current = false;
+    setMoveSelectionPending(false);
   }, [hierarchyReorganizationEnabled, stopDragScroll]);
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
@@ -335,6 +344,15 @@ export function SpaceRail({
       // promote that noncanonical relationship to Charm's canonical parent.
       setSpaceParentMutationPending(true);
       setSpaceParent(sourceId, targetId ?? undefined)
+        .then(() => {
+          // This is reconciliation after the server accepted both state
+          // writes, not an optimistic guess. Keep the returned canonical
+          // placement visible until the next room snapshot observes it.
+          setCanonicalParentOverrides((current) => ({
+            ...current,
+            [sourceId]: targetId,
+          }));
+        })
         .catch(async (error) => {
           reportActionError(error);
           await listRooms().catch(() => null);
@@ -381,11 +399,14 @@ export function SpaceRail({
           space.room_id,
         );
         const overriddenParent = canonicalParentOverrides[space.room_id];
-        const parentIds = hasOverride
-          ? overriddenParent
-            ? [overriddenParent]
-            : []
-          : space.parent_space_ids.slice(0, 1);
+        const parentIds =
+          hierarchyReorganizationEnabled && hasOverride
+            ? overriddenParent
+              ? [overriddenParent]
+              : []
+            : hierarchyReorganizationEnabled
+              ? space.parent_space_ids.slice(0, 1)
+              : space.parent_space_ids;
         for (const parentId of parentIds) {
           parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
           if (knownSpaceIds.has(parentId)) {
@@ -411,7 +432,7 @@ export function SpaceRail({
         parentSpaceIdsByChild: parents,
         directRooms: rooms.filter((room) => room.is_direct),
       };
-    }, [canonicalParentOverrides, rooms]);
+    }, [canonicalParentOverrides, hierarchyReorganizationEnabled, rooms]);
   // Behind the `space_rail_management` flag: with it off, every top-level
   // space stays pinned in its natural (room-list) order, matching this
   // component's pre-Spec-63 behavior exactly — `prefs` never influences
@@ -865,6 +886,7 @@ export function SpaceRail({
                     key={room.room_id}
                     type="button"
                     aria-disabled={
+                      moveSelectionPending ||
                       permissionsRefreshing.has(room.room_id) ||
                       permissionsById[room.room_id]?.set_space_child !== true
                     }
@@ -872,11 +894,19 @@ export function SpaceRail({
                     onPointerEnter={() => void ensurePermissionsLoaded(room.room_id)}
                     onFocus={() => void ensurePermissionsLoaded(room.room_id)}
                     onClick={() => {
-                      void ensurePermissionsLoaded(room.room_id).then((permissions) => {
-                        if (permissions?.set_space_child !== true) return;
-                        mutateSpaceParent(moveTarget.spaceId, room.room_id);
-                        setMoveTarget(null);
-                      });
+                      if (moveSelectionPendingRef.current) return;
+                      moveSelectionPendingRef.current = true;
+                      setMoveSelectionPending(true);
+                      void ensurePermissionsLoaded(room.room_id)
+                        .then((permissions) => {
+                          if (permissions?.set_space_child !== true) return;
+                          mutateSpaceParent(moveTarget.spaceId, room.room_id);
+                          setMoveTarget(null);
+                        })
+                        .finally(() => {
+                          moveSelectionPendingRef.current = false;
+                          setMoveSelectionPending(false);
+                        });
                     }}
                   >
                     {displayName(room.room_id, room.name)}
