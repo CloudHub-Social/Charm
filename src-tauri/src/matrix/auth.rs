@@ -2255,25 +2255,24 @@ pub async fn login_with_token(
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
-    let _restore_store_guard = match tokio::time::timeout_at(deadline, restore_store_lock().lock())
-        .await
-    {
-        Ok(guard) => guard,
-        Err(_) => {
-            let revoked =
-                tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
-            drop(client);
-            let _ = persistence::discard_temp_login_store(&app, &store_key);
-            return if matches!(revoked, Ok(Ok(_))) {
-                Err("token login setup timed out".to_string())
-            } else {
-                Err(
+    let _restore_store_guard =
+        match tokio::time::timeout_at(deadline, restore_store_lock().lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                let revoked =
+                    tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return if matches!(revoked, Ok(Ok(_))) {
+                    Err("token login setup timed out".to_string())
+                } else {
+                    Err(
                     "token login setup timed out and the authenticated device could not be revoked"
                         .to_string(),
                 )
-            };
-        }
-    };
+                };
+            }
+        };
     // Keep the reservation visible until the process-wide restore/sweep lock
     // is held, so cleanup cannot delete this active store in the gap.
     reservation.defuse();
