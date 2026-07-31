@@ -397,6 +397,11 @@ export function ChatShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.room_id, timelineStateEventsEnabled, timelineStateEventsPersistenceVersion]);
   const trailingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  const leadingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  useEffect(() => {
+    trailingNoticeInitialScrollRoomRef.current = null;
+    leadingNoticeInitialScrollRoomRef.current = null;
+  }, [room?.room_id]);
   useEffect(() => {
     if (
       room &&
@@ -413,7 +418,6 @@ export function ChatShell({
     }
     return undefined;
   }, [atBottom, messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
-  const leadingNoticeInitialScrollRoomRef = useRef<string | null>(null);
   const finalLeadingNoticeCount =
     messages.length > 0
       ? (noticeBuckets.beforeMessage.get(messages.at(-1)?.event_id ?? "")?.length ?? 0)
