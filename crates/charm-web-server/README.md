@@ -163,6 +163,12 @@ cargo run -p charm-web-server
 
 Listens on `CHARM_WEB_SERVER_ADDR` (default `0.0.0.0:8787`).
 
+Registration UIA, password recovery, login-flow discovery, and advertised token
+login are exposed through `/api/auth/*`. Pending registration and recovery state
+is server-owned and bound to a short-lived, opaque `charm_preauth` cookie; Matrix
+UIA sessions, email validation credentials, passwords, and access tokens are
+never returned to the browser.
+
 The session cookie is `Secure` by default, which browsers refuse to store or
 send over plain HTTP — `main.rs` itself only ever serves plain HTTP (TLS is
 expected to terminate in front of it, e.g. a reverse proxy in production).
@@ -319,3 +325,7 @@ and lifecycle setup is documented at the top of `.do/app.yaml`.
   `src-tauri/tests/common`). The WebSocket tests bind a real ephemeral TCP
   listener (`oneshot` can't drive a protocol upgrade) and use
   `tokio-tungstenite` as a real client.
+`CHARM_WEB_REGISTRATION_AND_RECOVERY=1` enables the server-side half of the
+default-off `registration_and_recovery` feature flag. Without it, registration,
+password recovery, login-flow discovery, and token-login endpoints return 404
+even if a browser has stale frontend flag state.

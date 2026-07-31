@@ -265,6 +265,10 @@ export function confirmPasswordReset(
   );
 }
 
+export function resendPasswordReset(attemptId: string): Promise<PasswordResetChallenge> {
+  return invoke("resend_password_reset", { attemptId }, { captureOnError: false });
+}
+
 export function cancelPasswordReset(attemptId?: string): Promise<void> {
   return invoke(
     "cancel_password_reset",

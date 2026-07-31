@@ -18,6 +18,7 @@ import {
   loginWithToken,
   requestRegistrationEmail,
   requestPasswordReset,
+  resendPasswordReset,
   register,
   startSsoLogin,
   type LoginResponse,
@@ -113,7 +114,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
-  const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
+  const registrationUiaEnabled = useFlag("registration_and_recovery");
+  const showAlternativeSignInOptions =
+    showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
   const passwordLoginAvailable =
     !registrationUiaEnabled || loginFlows === undefined || loginFlowsFailed || loginFlows.password;
   const showGenericSso =
@@ -545,6 +548,34 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
+  async function handleResendPasswordReset() {
+    const attemptId = passwordResetAttemptRef.current;
+    if (!attemptId || !isWebBuild()) return;
+    const operation = ++passwordResetOperationRef.current;
+    setPending(true);
+    setError(null);
+    try {
+      const challenge = await resendPasswordReset(attemptId);
+      if (
+        passwordResetOperationRef.current !== operation ||
+        passwordResetAttemptRef.current !== attemptId
+      ) {
+        return;
+      }
+      setPasswordResetChallenge(challenge);
+      setRecoveryToken("");
+    } catch {
+      if (
+        passwordResetOperationRef.current === operation &&
+        passwordResetAttemptRef.current === attemptId
+      ) {
+        setError("Could not resend the recovery email yet. Wait a moment, then try again.");
+      }
+    } finally {
+      if (passwordResetOperationRef.current === operation) setPending(false);
+    }
+  }
+
   function closePasswordReset() {
     passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
@@ -623,6 +654,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
                 </Button>
+                {isWebBuild() && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={handleResendPasswordReset}
+                  >
+                    Resend recovery email
+                  </Button>
+                )}
                 <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
@@ -980,8 +1021,26 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         Forgot password?
                       </Button>
                     )}
+                  {mode === "sign-in" && loginFlows?.delegated_auth && (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Password recovery is managed by your identity provider.
+                      {loginFlows.account_management_url && (
+                        <>
+                          {" "}
+                          <a
+                            className="underline"
+                            href={loginFlows.account_management_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Manage account
+                          </a>
+                        </>
+                      )}
+                    </p>
+                  )}
 
-                  {mode === "sign-in" && showNativeSignInOptions && (
+                  {mode === "sign-in" && showAlternativeSignInOptions && (
                     <>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
                         <div className="h-px flex-1 bg-border" />
@@ -1004,7 +1063,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-2">
-                          {showGenericSso && (
+                          {showNativeSignInOptions && showGenericSso && (
                             <Button
                               type="button"
                               variant="outline"
@@ -1015,7 +1074,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               Continue with SSO
                             </Button>
                           )}
-                          {registrationUiaEnabled &&
+                          {showNativeSignInOptions &&
+                            registrationUiaEnabled &&
                             loginFlows?.identity_providers.map((provider) => (
                               <Button
                                 key={provider.id}
@@ -1043,15 +1103,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               {showTokenLogin ? "Use password instead" : "Use a login token"}
                             </Button>
                           )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={() => setShowQrLogin(true)}
-                            className="w-full"
-                          >
-                            Sign in with QR code
-                          </Button>
+                          {showNativeSignInOptions && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={pending}
+                              onClick={() => setShowQrLogin(true)}
+                              className="w-full"
+                            >
+                              Sign in with QR code
+                            </Button>
+                          )}
                         </div>
                       )}
                     </>

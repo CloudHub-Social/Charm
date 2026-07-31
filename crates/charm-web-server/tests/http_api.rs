@@ -64,6 +64,7 @@ fn app() -> Router {
     routes::router(AppState {
         sessions: SessionStore::new(),
         persistence: None,
+        registration_and_recovery_enabled: true,
         ..AppState::default()
     })
 }

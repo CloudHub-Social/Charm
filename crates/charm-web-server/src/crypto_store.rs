@@ -26,7 +26,10 @@
 
 use rand::distr::Alphanumeric;
 use rand::RngExt;
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+const PENDING_AUTH_MARKER: &str = ".charm-pending-auth";
 
 /// Fresh, unique key for a session's crypto-store directory — generated once
 /// per login/registration and persisted (see `persistence.rs`'s
@@ -82,7 +85,54 @@ pub(crate) fn store_dir_path(store_key: &str) -> Result<PathBuf, String> {
 pub fn create_store_dir(store_key: &str) -> Result<PathBuf, String> {
     let dir = store_dir_path(store_key)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(PENDING_AUTH_MARKER), b"pending\n").map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Marks a newly-authenticated store as durably owned by a persisted
+/// session. Until this succeeds, startup treats the directory as an
+/// abandoned pre-auth/login attempt and reclaims it after a hard restart.
+pub fn mark_store_committed(store_key: &str) -> Result<(), String> {
+    let marker = store_dir_path(store_key)?.join(PENDING_AUTH_MARKER);
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Reclaims stores created by authentication attempts that never reached a
+/// successful persisted-session save. Called before startup restore; no
+/// pending auth attempt survives a process restart, while committed stores
+/// have had their marker removed and are left untouched.
+pub fn sweep_orphan_pending_auth_stores(
+    persisted_store_keys: &HashSet<String>,
+) -> Result<usize, String> {
+    let base =
+        std::env::var(crate::persistence::DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
+    let crypto_root = PathBuf::from(base).join("crypto");
+    let entries = match std::fs::read_dir(&crypto_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let store_key = entry.file_name().to_string_lossy().into_owned();
+        if persisted_store_keys.contains(&store_key)
+            || !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            || !entry.path().join(PENDING_AUTH_MARKER).is_file()
+        {
+            continue;
+        }
+        std::fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// The directory for a previously-established session's crypto store —
@@ -143,6 +193,37 @@ mod tests {
         let found = existing_store_dir("somepresentstorekey").unwrap();
 
         assert_eq!(found, Some(created));
+        assert!(found
+            .as_ref()
+            .expect("store exists")
+            .join(PENDING_AUTH_MARKER)
+            .is_file());
+        std::env::remove_var(crate::persistence::DATA_DIR_ENV);
+    }
+
+    #[test]
+    fn startup_sweep_removes_only_uncommitted_auth_stores() {
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
+        let data_dir = scratch_data_dir("startup-sweep");
+        std::env::set_var(crate::persistence::DATA_DIR_ENV, data_dir.to_str().unwrap());
+
+        let orphan = create_store_dir("orphanstorekey").unwrap();
+        let committed = create_store_dir("committedstorekey").unwrap();
+        let crash_after_save = create_store_dir("savedbutmarkedstorekey").unwrap();
+        mark_store_committed("committedstorekey").unwrap();
+
+        assert_eq!(
+            sweep_orphan_pending_auth_stores(&HashSet::from([
+                "committedstorekey".to_string(),
+                "savedbutmarkedstorekey".to_string(),
+            ]))
+            .unwrap(),
+            1
+        );
+        assert!(!orphan.exists());
+        assert!(committed.exists());
+        assert!(crash_after_save.exists());
+        assert!(crash_after_save.join(PENDING_AUTH_MARKER).is_file());
         std::env::remove_var(crate::persistence::DATA_DIR_ENV);
     }
 
