@@ -78,6 +78,7 @@ export interface MessageRowLayoutProps {
    * isn't in the currently-loaded `messages` (e.g. further back than
    * backward pagination has loaded). */
   onJumpToMessage: (eventId: string) => void;
+  onSenderClick?: (userId: string, label: string) => void;
   onUserPillClick?: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
   isPending: boolean;
