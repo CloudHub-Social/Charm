@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
@@ -378,6 +378,47 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   });
+  const noticeSignature = useMemo(
+    () =>
+      timelineItems
+        .filter((item) => item.kind !== "message")
+        .map((item) => item.event_id)
+        .join("\u0000"),
+    [timelineItems],
+  );
+  const noticeAnchorRef = useRef<{
+    roomId: string;
+    eventId: string;
+    top: number;
+    signature: string;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-message-event-id]")].filter(
+      (row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > 0 && rect.top < window.innerHeight;
+      },
+    );
+    const previous = noticeAnchorRef.current;
+    if (previous?.roomId === roomId && previous.signature !== noticeSignature) {
+      const anchored = rows.find((row) => row.dataset.messageEventId === previous.eventId);
+      if (anchored) {
+        const delta = anchored.getBoundingClientRect().top - previous.top;
+        if (Math.abs(delta) > 0.5) {
+          virtuosoRef.current?.scrollBy({ top: delta, behavior: "auto" });
+        }
+      }
+    }
+    const firstVisible = rows[0];
+    noticeAnchorRef.current = firstVisible
+      ? {
+          roomId,
+          eventId: firstVisible.dataset.messageEventId ?? "",
+          top: firstVisible.getBoundingClientRect().top,
+          signature: noticeSignature,
+        }
+      : null;
+  }, [messages, noticeSignature, roomId, virtuosoRef]);
   const previousTimelineStateEventsPersistenceVersionRef = useRef(
     timelineStateEventsPersistenceVersion,
   );

@@ -59,6 +59,19 @@ describe("TimelineNotices", () => {
     ).toHaveLength(2);
   });
 
+  it("suppresses redundant room state updates", () => {
+    const unchanged: TimelineItemSummary = {
+      kind: "state",
+      event_id: "$unchanged-topic",
+      sender: "@bot:example.org",
+      timestamp_ms: 2,
+      state_key: "",
+      change: { type: "topic", old_value: "Planning", new_value: "Planning" },
+    };
+
+    expect(bucketTimelineNotices([unchanged], false, false).trailing).toEqual([]);
+  });
+
   it("collapses consecutive matching membership changes and expands them", () => {
     render(
       <TimelineNoticeList

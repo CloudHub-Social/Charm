@@ -63,7 +63,7 @@ export function TimelineMessageRow({
   return (
     // Flex containment keeps layout-row top margins inside Virtuoso's measured
     // item box, preserving bottom detection and prepend anchoring.
-    <div className="flex flex-col pb-1">
+    <div className="flex flex-col pb-1" data-message-event-id={message.event_id}>
       {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
           {formatDateDividerLabel(message.timestamp_ms)}

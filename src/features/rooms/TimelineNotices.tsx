@@ -26,6 +26,15 @@ export function bucketTimelineNotices(
     }
     if (item.kind === "membership" && hideMembershipEvents) continue;
     if (item.kind === "state" && item.change.type === "hidden" && !showHiddenEvents) continue;
+    if (
+      item.kind === "state" &&
+      (item.change.type === "name" ||
+        item.change.type === "topic" ||
+        item.change.type === "avatar") &&
+      item.change.old_value === item.change.new_value
+    ) {
+      continue;
+    }
     pending.push(item);
   }
 
@@ -275,9 +284,8 @@ export function TimelineNoticeList({
 
   return (
     <div className="my-1" data-testid="timeline-notices">
-      {groups.map((group) => {
+      {groups.map((group, groupIndex) => {
         const first = group[0];
-        const groupIndex = groups.indexOf(group);
         const previousTimestamp =
           groupIndex === 0 ? previousTimestampMs : groups[groupIndex - 1].at(-1)!.timestamp_ms;
         const showDateDivider = isDateDividerBetween(previousTimestamp, first.timestamp_ms);

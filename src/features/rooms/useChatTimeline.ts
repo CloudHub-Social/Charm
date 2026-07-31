@@ -26,6 +26,10 @@ const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
 // aren't required to move in lockstep.
 const MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS = 5000;
 
+function timelineItemKey(item: TimelineItemSummary): string {
+  return item.kind === "message" ? item.message.event_id : item.event_id;
+}
+
 export function useChatTimeline(
   room: RoomSummary | null,
   roomSettingsOpen: boolean,
@@ -133,6 +137,7 @@ export function useChatTimeline(
   // variable, which doesn't update until next render.
   const prependedCountRef = useRef(0);
   const liveTimelineRevisionRef = useRef(0);
+  const previousTimelineItemKeysRef = useRef(new Set<string>());
   // Tracks the room id these refs were last reset for — `undefined` (not
   // `null`) as the initial sentinel, since `null` ("no room active") is
   // itself a valid target state distinct from "never reset yet".
@@ -162,6 +167,7 @@ export function useChatTimeline(
     previousMessagesRef.current = [];
     prependedCountRef.current = 0;
     firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
+    previousTimelineItemKeysRef.current.clear();
   }
 
   // Applies a fresh full message snapshot (from either the initial/backward-
@@ -277,10 +283,14 @@ export function useChatTimeline(
     newMessages: RoomMessageSummary[],
     newItems: TimelineItemSummary[] | null | undefined,
   ): number {
-    setTimelineItems(
-      newItems ?? newMessages.map((message) => ({ kind: "message" as const, message })),
-    );
-    return applyMessages(newMessages);
+    const items = newItems ?? newMessages.map((message) => ({ kind: "message" as const, message }));
+    const newlyAddedNotices = items.filter(
+      (item) =>
+        item.kind !== "message" && !previousTimelineItemKeysRef.current.has(timelineItemKey(item)),
+    ).length;
+    previousTimelineItemKeysRef.current = new Set(items.map(timelineItemKey));
+    setTimelineItems(items);
+    return Math.max(applyMessages(newMessages), newlyAddedNotices);
   }
 
   useEffect(() => {
@@ -308,6 +318,7 @@ export function useChatTimeline(
     }
     setLoading(true);
     let cancelled = false;
+    const roomOpenLiveRevision = liveTimelineRevisionRef.current;
     // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
     // which holds items in their natural oldest-to-newest order — unlike the
     // old `room.messages()` backward-pagination page, which was newest-first
@@ -321,7 +332,7 @@ export function useChatTimeline(
     // context would snap back to the live tail mid-scroll.
     getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
-        if (cancelled) return;
+        if (cancelled || liveTimelineRevisionRef.current !== roomOpenLiveRevision) return;
         applyTimelineItems(page.messages, page.items);
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
@@ -669,7 +680,7 @@ export function useChatTimeline(
         const madeProgress =
           firstItemIndexRef.current < initialFirstItemIndex ||
           prependedByThisPage > 0 ||
-          (wasEmpty && page.messages.length > 0);
+          (wasEmpty && (page.items?.length ?? page.messages.length) > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
