@@ -1936,16 +1936,38 @@ async fn resend_password_reset(
 async fn cancel_password_reset(
     State(state): State<AppState>,
     jar: CookieJar,
-    Json(request): Json<AttemptRequest>,
+    Json(request): Json<CancelAttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
-    state
-        .pending_auth
-        .cancel_password_reset(&owner, &request.attempt_id)
-        .await
-        .map_err(ApiError::bad_request)?;
+    if let Some(attempt_id) = request.attempt_id {
+        state
+            .pending_auth
+            .cancel_password_reset(&owner, &attempt_id)
+            .await
+            .map_err(ApiError::bad_request)?;
+    } else {
+        state.pending_auth.cancel_owner(&owner).await;
+    }
     Ok((jar.remove(clear_preauth_cookie()), Json(())))
+}
+
+#[derive(Deserialize)]
+struct CancelAttemptRequest {
+    attempt_id: Option<String>,
+}
+
+#[cfg(test)]
+mod cancel_attempt_request_tests {
+    use super::CancelAttemptRequest;
+
+    #[test]
+    fn accepts_owner_only_password_reset_cancellation() {
+        let request: CancelAttemptRequest =
+            serde_json::from_value(serde_json::json!({ "attempt_id": null }))
+                .expect("a null attempt id should cancel the pre-auth owner");
+        assert!(request.attempt_id.is_none());
+    }
 }
 
 #[derive(Deserialize)]

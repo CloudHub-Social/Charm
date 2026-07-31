@@ -70,26 +70,84 @@ pub(crate) async fn build_client(
 pub(crate) async fn validated_homeserver_client(
     homeserver_url: &str,
 ) -> Result<(reqwest::Url, reqwest::Client), String> {
-    let homeserver = match reqwest::Url::parse(homeserver_url) {
-        Ok(url) => url,
-        Err(_) => {
-            // The UI intentionally accepts a Matrix server name such as
-            // `matrix.org`. Let matrix-sdk perform `.well-known` discovery,
-            // then apply the same DNS pinning and public-address policy to
-            // the resolved homeserver URL used for authentication.
-            tokio::time::timeout(
-                Duration::from_secs(30),
-                Client::builder()
-                    .server_name_or_homeserver_url(homeserver_url)
-                    .build(),
-            )
-            .await
-            .map_err(|_| "homeserver discovery timed out".to_string())?
+    let homeserver = if homeserver_url.contains("://") {
+        reqwest::Url::parse(homeserver_url)
             .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?
-            .homeserver()
-            .clone()
-        }
+    } else {
+        discover_homeserver(homeserver_url).await?
     };
+    validated_url_client(homeserver).await
+}
+
+#[derive(serde::Deserialize)]
+struct ClientWellKnown {
+    #[serde(rename = "m.homeserver")]
+    homeserver: ClientWellKnownHomeserver,
+}
+
+#[derive(serde::Deserialize)]
+struct ClientWellKnownHomeserver {
+    base_url: String,
+}
+
+async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> {
+    let origin = reqwest::Url::parse(&format!("https://{server_name}"))
+        .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
+    if origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+    {
+        return Err("enter a valid Matrix server name or HTTPS homeserver URL".to_string());
+    }
+
+    let mut target = origin
+        .join("/.well-known/matrix/client")
+        .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
+    for redirect_count in 0..=3 {
+        let (_, client) = validated_url_client(target.clone()).await?;
+        let response = match client.get(target.clone()).send().await {
+            Ok(response) => response,
+            Err(_) => return Ok(origin),
+        };
+        if response.status().is_redirection() {
+            if redirect_count == 3 {
+                return Err("homeserver discovery used too many redirects".to_string());
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "homeserver discovery returned an invalid redirect".to_string())?;
+            target = target
+                .join(location)
+                .map_err(|_| "homeserver discovery returned an invalid redirect".to_string())?;
+            continue;
+        }
+        if !response.status().is_success() {
+            return Ok(origin);
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
+        if body.len() > 64 * 1024 {
+            return Err("homeserver discovery response was too large".to_string());
+        }
+        let discovered: ClientWellKnown = match serde_json::from_slice(&body) {
+            Ok(discovered) => discovered,
+            Err(_) => return Ok(origin),
+        };
+        return reqwest::Url::parse(&discovered.homeserver.base_url)
+            .map_err(|_| "homeserver discovery returned an invalid base URL".to_string());
+    }
+    unreachable!("the bounded discovery loop always returns")
+}
+
+async fn validated_url_client(
+    homeserver: reqwest::Url,
+) -> Result<(reqwest::Url, reqwest::Client), String> {
     if !homeserver.username().is_empty() || homeserver.password().is_some() {
         return Err("enter a valid HTTPS homeserver URL".to_string());
     }
@@ -233,8 +291,8 @@ pub(crate) async fn finish_authenticated_client(
 }
 
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
-/// or full URL — matrix-rust-sdk's `.well-known` discovery handles both, same
-/// as `charm_lib::matrix::auth::build_client`) and logs in with a password.
+/// or full URL). Bare server-name discovery is performed above with Charm's
+/// pinned, no-proxy HTTP policy before the SDK client is built.
 ///
 /// Also returns the `SyncResponse` from the initial `sync_once` below, so
 /// `sync_loop::spawn` can use it directly as its *own* "initial state"
@@ -283,4 +341,18 @@ pub async fn register(
     }
 
     finish_authenticated_client(client, crypto, "registration").await
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn bare_server_names_reject_paths_before_discovery() {
+        let error = super::discover_homeserver("example.org/not-a-server-name")
+            .await
+            .expect_err("a Matrix server name cannot contain a URL path");
+        assert_eq!(
+            error,
+            "enter a valid Matrix server name or HTTPS homeserver URL"
+        );
+    }
 }
