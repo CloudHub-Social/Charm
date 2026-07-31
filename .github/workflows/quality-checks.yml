@@ -723,6 +723,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Web companion live-homeserver API
+        env:
+          # This test deliberately targets the ephemeral localhost Synapse
+          # above. Production web deployments remain HTTPS-only by default.
+          CHARM_WEB_SERVER_INSECURE_COOKIES: "1"
         run: cargo test -p charm-web-server --test http_api authenticated_web_preview_round_trips_through_synapse
 
       - name: Stop Synapse, Dex, and preview target

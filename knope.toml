@@ -1,5 +1,19 @@
 [package]
-versioned_files = ["package.json"]
+versioned_files = [
+  "package.json",
+  "Cargo.lock",
+  "src-tauri/Cargo.toml",
+  "src-tauri/Cargo.lock",
+  "src-tauri/tauri.conf.json",
+  { path = "src-tauri/gen/apple/project.yml", regex = [
+    'CFBundleShortVersionString: (?<version>\d+\.\d+\.\d+)',
+    'CFBundleVersion: "(?<version>\d+\.\d+\.\d+)"',
+  ] },
+  { path = "src-tauri/gen/apple/charm_iOS/Info.plist", regex = [
+    '<key>CFBundleShortVersionString</key>\s*<string>(?<version>\d+\.\d+\.\d+)</string>',
+    '<key>CFBundleVersion</key>\s*<string>(?<version>\d+\.\d+\.\d+)</string>',
+  ] },
+]
 changelog = "CHANGELOG.md"
 extra_changelog_sections = [
   { name = "Documentation", types = [
@@ -23,6 +37,10 @@ command = "git switch -c release"
 
 [[workflows.steps]]
 type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "node scripts/sync-android-version-code.mjs && git add src-tauri/tauri.conf.json"
 
 [[workflows.steps]]
 type = "Command"

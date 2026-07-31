@@ -12,6 +12,8 @@ function readRepoFile(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
+const packageVersion = (JSON.parse(readRepoFile("package.json")) as { version: string }).version;
+
 function configureSentryReleaseEnv(env: Record<string, string | undefined> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "charm-sentry-release-env-"));
   const githubEnv = join(dir, "github-env");
@@ -143,9 +145,9 @@ describeWithBash("configure-sentry-release-env.sh", () => {
     });
 
     expect(tagResult.status).toBe(0);
-    expect(tagResult.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+abc1234");
+    expect(tagResult.githubEnvContents).toContain(`SENTRY_RELEASE=${packageVersion}+abc1234`);
     expect(shaResult.status).toBe(0);
-    expect(shaResult.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+def4567");
+    expect(shaResult.githubEnvContents).toContain(`SENTRY_RELEASE=${packageVersion}+def4567`);
   });
 
   it("computes a PR-preview build id via BUILD_ID_KIND/BUILD_ID_SHA/BUILD_ID_PR_NUMBER", () => {
@@ -157,7 +159,7 @@ describeWithBash("configure-sentry-release-env.sh", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+pr187.a1b2c3d");
+    expect(result.githubEnvContents).toContain(`SENTRY_RELEASE=${packageVersion}+pr187.a1b2c3d`);
   });
 
   it("writes both BUILD_ID and VITE_BUILD_ID when WRITE_RUST_DEBUG_ENV is set", () => {
@@ -174,8 +176,8 @@ describeWithBash("configure-sentry-release-env.sh", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.githubEnvContents).toContain("BUILD_ID=0.1.0+abc1234");
-    expect(result.githubEnvContents).toContain("VITE_BUILD_ID=0.1.0+abc1234");
+    expect(result.githubEnvContents).toContain(`BUILD_ID=${packageVersion}+abc1234`);
+    expect(result.githubEnvContents).toContain(`VITE_BUILD_ID=${packageVersion}+abc1234`);
   });
 
   it("fails before upload when required Sentry secrets are missing", () => {
