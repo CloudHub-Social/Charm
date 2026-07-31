@@ -3,13 +3,34 @@ title: Charm 2.0 Spec — Space nesting and hierarchy reorganization
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 sidebar:
   label: "Space nesting & hierarchy"
 ---
 
-**Workstream:** one PR / one agent. Addendum to Spec 19 (space hierarchy and
+**Workstream:** staged delivery. Addendum to Spec 19 (space hierarchy and
 room-list rebuild) — closes a sub-feature that spec's 4 phases scoped out.
+
+## Implementation status
+
+The first delivery slice is in progress:
+
+- `create_space` accepts an optional parent and creates the canonical
+  `m.space.parent` state together with the parent's `m.space.child` edge.
+- `set_space_parent(space_id, parent_space_id | null)` promotes, replaces, or
+  removes Charm's canonical parent while preserving unrelated noncanonical parent
+  relationships.
+- Parent/child candidates are re-read from the homeserver before mutation; writes
+  reject non-spaces, self-parenting, and hierarchy cycles.
+- The space rail exposes a permission-gated **Create subspace** action behind the
+  default-off `space_hierarchy_reorganization` feature flag.
+- The same commands are available through desktop IPC and the authenticated web
+  companion transport.
+
+Drag-to-nest/un-nest, failure reconciliation UI, and the space-settings surface
+remain follow-up slices. Matrix state writes span two rooms and are not atomic:
+clients must surface partial failures and refresh the live hierarchy rather than
+pretending a failed multi-event update rolled back.
 
 ## Problem & why now
 
@@ -62,6 +83,9 @@ client.
   whichever exact event shape Spec 19's existing hierarchy walk already expects,
   since this write path needs to produce state that walk can immediately read back
   correctly.
+- The parent selected through Charm is the canonical parent. Reparenting replaces
+  existing canonical relationships but does not delete unrelated noncanonical
+  relationships, which remain valid Matrix state.
 - If "Create space" is invoked from the top-level (not from within a space
   context), no parent is set — unchanged existing behavior.
 
@@ -97,6 +121,11 @@ spaces/rooms — no new sync-side machinery, since Spec 19's hierarchy walk alre
 consumes `m.space.child`/`m.space.parent` state, this spec just adds write paths
 for that same state.
 
+The event model follows the current Matrix Client-Server API definitions for
+[`m.space.child`](https://spec.matrix.org/latest/client-server-api/#mspacechild)
+and
+[`m.space.parent`](https://spec.matrix.org/latest/client-server-api/#mspaceparent).
+
 ## API/contract changes
 
 - Extend `create_space` (introduced in Spec 19 phase 4, PR #153) with an optional
@@ -127,6 +156,24 @@ for that same state.
   the existing room-list drag implementation's dependency choice, avoiding a
   second drag-and-drop library in the codebase for what is conceptually a similar
   interaction (reordering/reparenting items in a list-like UI).
+- **Canonical parent, noncanonical preservation**: Charm offers one primary
+  placement, but Matrix permits additional noncanonical parents. Reparenting
+  therefore clears only canonical relationships it replaces.
+- **Two-room write boundary**: `m.space.child` and `m.space.parent` cannot be
+  committed transactionally. The mutation orders writes to avoid deleting the
+  current canonical placement before the new one exists. The drag/settings
+  interaction slices must explicitly refresh the hierarchy after success or
+  failure.
+
+## Delivery slices
+
+1. Parent-aware creation, canonical-parent API, web transport, and create-under
+   UI.
+2. Drag-to-nest and un-nest with fresh source/target permissions, cycle feedback,
+   and failure reconciliation.
+3. Space settings in the existing room-settings shell: name, topic, avatar, join
+   rules, permissions, and child management. This slice also exposes **Settings**
+   from `SpaceRail` and closes Spec 63.
 
 ## UI-parity addition (from the 2026-07-13 UI deep-dive)
 

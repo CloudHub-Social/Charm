@@ -49,12 +49,14 @@ entry), refetches on every open rather than caching for the component's
 lifetime — dropping the prior value first so a stale permission from an
 earlier open never stays visible mid-refetch — and disables the gated menu
 item until a fresh, permitted result lands — so a member without the
-required power level never sees this action in the rail's context menu.
-`RoomList`'s own hierarchy-row `Remove from space` action (a separate
-surface, gated only behind the `space_rail_management` flag) is
-intentionally *not* covered by this pass — it stays reachable and
-server-validates on click, surfacing a rejection message rather than hiding
-the row. Gating that surface too is left for a follow-up.
+required power level cannot invoke it from the rail's context menu.
+`RoomList`'s hierarchy-row and tagged-row `Remove from space` actions now use
+the same fail-closed rule. Opening a row menu refreshes the immediate parent
+space's permissions, discards any older value while that read is pending, and
+keeps removal disabled unless the fresh result permits `m.space.child`.
+Generation checks prevent an older request from overwriting a newer menu-open
+result. The server remains authoritative, so a concurrent rejection is still
+surfaced as an inline error.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy

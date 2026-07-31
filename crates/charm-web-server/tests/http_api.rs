@@ -63,6 +63,7 @@ fn app() -> Router {
     routes::router(AppState {
         sessions: SessionStore::new(),
         persistence: None,
+        ..AppState::default()
     })
 }
 
