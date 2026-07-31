@@ -213,9 +213,8 @@ export function ChatShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
-  const timelineStateEventsPersistenceVersion = useFeatureFlagPersistenceVersion(
-    "timeline_state_events",
-  );
+  const timelineStateEventsPersistenceVersion =
+    useFeatureFlagPersistenceVersion("timeline_state_events");
   const messageLayout = useAtomValue(messageLayoutAtom);
   const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
   const showHiddenEvents = useAtomValue(showHiddenEventsAtom);

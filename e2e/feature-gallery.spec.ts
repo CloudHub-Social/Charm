@@ -87,47 +87,56 @@ test("timeline membership changes collapse into expandable notices", async ({ pa
     media: null,
     is_undecrypted: false,
   };
-  await page.evaluate(
-    ({ roomId, message: timelineMessage }) => {
-      const memberships = [
-        ["Alice", "@alice:cloudhub.social"],
-        ["Bob", "@bob:cloudhub.social"],
-        ["Carol", "@carol:cloudhub.social"],
-      ].map(([name, userId], index) => ({
-        kind: "membership",
-        event_id: `$join-${index + 1}`,
-        sender: userId,
-        timestamp_ms: 1735689600001 + index,
-        target_user_id: userId,
-        target_display_name: name,
-        change: { type: "joined" },
-        reason: null,
-      }));
-      window.__e2eEmit("timeline:update", {
-        room_id: roomId,
-        messages: [timelineMessage],
-        items: [
-          ...memberships,
-          {
-            kind: "state",
-            event_id: "$topic",
-            sender: "@alice:cloudhub.social",
-            timestamp_ms: 1735689600004,
-            state_key: "",
-            change: { type: "topic", old_value: null, new_value: "Daily-driver parity" },
-          },
-          { kind: "message", message: timelineMessage },
-        ],
-      });
-    },
-    { roomId: ROOM.room_id, message },
-  );
+  const emitTimeline = () =>
+    page.evaluate(
+      ({ roomId, message: timelineMessage }) => {
+        const memberships = [
+          ["Alice", "@alice:cloudhub.social"],
+          ["Bob", "@bob:cloudhub.social"],
+          ["Carol", "@carol:cloudhub.social"],
+        ].map(([name, userId], index) => ({
+          kind: "membership",
+          event_id: `$join-${index + 1}`,
+          sender: userId,
+          timestamp_ms: 1735689600001 + index,
+          target_user_id: userId,
+          target_display_name: name,
+          change: { type: "joined" },
+          reason: null,
+        }));
+        window.__e2eEmit("timeline:update", {
+          room_id: roomId,
+          messages: [timelineMessage],
+          items: [
+            ...memberships,
+            {
+              kind: "state",
+              event_id: "$topic",
+              sender: "@alice:cloudhub.social",
+              timestamp_ms: 1735689600004,
+              state_key: "",
+              change: { type: "topic", old_value: null, new_value: "Daily-driver parity" },
+            },
+            { kind: "message", message: timelineMessage },
+          ],
+        });
+      },
+      { roomId: ROOM.room_id, message },
+    );
 
-  await expect(
-    page.getByRole("button", {
-      name: "Alice (@alice:cloudhub.social), Bob (@bob:cloudhub.social) and 1 others joined",
-    }),
-  ).toBeVisible();
+  const collapsedMemberships = page.getByRole("button", {
+    name: "Alice (@alice:cloudhub.social), Bob (@bob:cloudhub.social) and 1 other joined",
+  });
+  // The room-open page request and listener subscription settle
+  // independently. Re-emitting the full snapshot is idempotent and avoids
+  // racing a late initial page response that would otherwise replace it.
+  await expect
+    .poll(async () => {
+      await emitTimeline();
+      return collapsedMemberships.count();
+    })
+    .toBe(1);
+  await expect(collapsedMemberships).toBeVisible();
   await expect(
     page.getByText("@alice:cloudhub.social changed the topic to Daily-driver parity"),
   ).toBeVisible();
