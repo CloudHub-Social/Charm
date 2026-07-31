@@ -1297,6 +1297,15 @@ async fn submit_email(
     if !response.status().is_success() {
         return Err(format!("could not confirm {flow} email"));
     }
+    let accepted = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|body| body.get("success").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    if !accepted {
+        return Err(format!("could not confirm {flow} email"));
+    }
     Ok(())
 }
 
