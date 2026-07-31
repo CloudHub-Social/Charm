@@ -332,10 +332,16 @@ export function useChatTimeline(
     // context would snap back to the live tail mid-scroll.
     getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
-        if (cancelled || liveTimelineRevisionRef.current !== roomOpenLiveRevision) return;
-        applyTimelineItems(page.messages, page.items);
+        if (cancelled) return;
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
+        // A timeline update can beat the room-open response (including the
+        // listener's initial snapshot). Keep that fresher item snapshot, but
+        // retain the response's pagination metadata: timeline updates do not
+        // carry a cursor, and dropping it would permanently disable backward
+        // pagination for this visit.
+        if (liveTimelineRevisionRef.current !== roomOpenLiveRevision) return;
+        applyTimelineItems(page.messages, page.items);
       })
       .catch(logAndIgnore)
       .finally(() => {

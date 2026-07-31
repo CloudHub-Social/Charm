@@ -1546,6 +1546,69 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledWith(room.room_id);
   });
 
+  it("preserves room-open pagination when a live snapshot wins the item race", async () => {
+    let resolveInitialPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInitialPage = resolve;
+      }),
+    );
+    renderChatShell();
+    await waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$live",
+            sender: "@alice:localhost",
+            body: "fresher live snapshot",
+            timestamp_ms: 2,
+          }),
+        ],
+      });
+      resolveInitialPage?.({
+        messages: [
+          summary({
+            event_id: "$stale",
+            sender: "@alice:localhost",
+            body: "stale room-open snapshot",
+            timestamp_ms: 1,
+          }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("fresher live snapshot");
+    expect(screen.queryByText("stale room-open snapshot")).not.toBeInTheDocument();
+
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$older",
+          sender: "@alice:localhost",
+          body: "older history",
+          timestamp_ms: 0,
+        }),
+        summary({
+          event_id: "$live",
+          sender: "@alice:localhost",
+          body: "fresher live snapshot",
+          timestamp_ms: 2,
+        }),
+      ],
+      next_cursor: null,
+    });
+    fireStartReached();
+
+    await screen.findByText("older history");
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
   it("does not animate history prepended by a live update racing an in-flight pagination request, and shifts firstItemIndex exactly once", async () => {
     // Regression test: if a `timeline:update` pushes the same
     // paginate_backwards diff before `loadMoreHistory`'s own await resolves,
