@@ -131,9 +131,9 @@ connection: the SDK owns that schema and migration lifecycle.
   body and verify it is absent from the database, WAL, and SHM files after purge.
 - Every joined-to-non-joined membership transition atomically purges that room's
   visible rows and edit provenance, whether caused by local leave/forget or sync
-  observing a remote kick, ban, or membership change. Global queries also verify
-  joined membership before returning a result, so a failed purge cannot expose
-  departed-room content.
+  observing a remote kick, ban, or membership change. Both global and explicitly
+  room-scoped queries verify joined membership before reading or returning results,
+  so a failed purge cannot expose departed-room content through either API shape.
 
 ### Ownership, privacy, and lifecycle
 
@@ -151,9 +151,11 @@ connection: the SDK owns that schema and migration lifecycle.
   model and docs must state that local search expands the plaintext-at-rest surface
   beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
   initial boundary; SQLCipher is not silently implied.
-- Desktop logout may retain only the current Matrix device's index for that same
-  device to reopen; creating a superseding device closes and deletes the prior
-  device index. Account deactivation must close and delete every retained index.
+- Desktop logout closes and deletes the current device's index, because Charm's
+  logout flow revokes and removes that session and a later interactive login creates
+  a new device that cannot safely reopen the old device-keyed plaintext. Creating a
+  superseding device likewise closes and deletes the prior device index. Account
+  deactivation must close and delete every retained index.
   PR 1 owns an explicit account-management "Forget local data" control that closes
   the account, removes both the retained SDK store and every search index, and
   tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
@@ -227,16 +229,19 @@ unmatched quotes and FTS operators are searched as text. Empty-token queries are
 rejected with a typed invalid-query error. Requests are capped server-side at 512
 UTF-8 bytes and `limit` is clamped to 1–100.
 
-The cursor is opaque and binds to the normalized query, optional room scope,
-account/session, a random per-process index-incarnation nonce, and an index
-generation. Results use the total order
+The first page creates a bounded, TTL-limited search snapshot containing only the
+ordered result identifiers and ranks (never message plaintext) under a random
+per-account search ID. The opaque cursor binds to that snapshot, normalized query,
+optional room scope, account/session, and a random per-process index-incarnation
+nonce. Results use the total order
 `bm25 rank ASC, origin_server_ts DESC, room_id ASC, event_id ASC`; the cursor
-contains the last tuple, incarnation, and generation. Any index mutation
-increments the generation, so a cursor from before an edit/index write is rejected
-as stale rather than duplicating or skipping results. A page routed to another
-web process during a rolling deployment is likewise rejected as stale, never
-replayed against an independently rebuilt index that happens to share a numeric
-generation. The UI restarts pagination from page one on this typed response.
+contains the search ID, last tuple, and incarnation. Live indexing does not mutate
+that snapshot, so pagination progresses on active accounts without duplicating,
+skipping, or repeatedly restarting. Room purge and membership checks still suppress
+departed-room results before return. Expired snapshots and pages routed to another
+web process during a rolling deployment are rejected as stale, never replayed
+against an independently rebuilt index. The UI restarts pagination from page one
+on this typed response.
 Rolling-deploy integration tests alternate requests between old and new companion
 processes. Results contain event ID, room ID, sender, origin timestamp, a plain-text
 snippet with match ranges, and the next cursor; they never contain FTS-generated
