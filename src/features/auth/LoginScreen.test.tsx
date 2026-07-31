@@ -350,6 +350,36 @@ describe("LoginScreen registration UIA", () => {
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
 
+  it("keeps a retryable automatic stage available without cancelling the attempt", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-dummy",
+      completed: [],
+      flows: [{ stages: ["m.login.dummy"] }],
+      next_stage: "m.login.dummy",
+      fallback_url: "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web",
+      policies: [],
+    });
+    continueRegistration
+      .mockRejectedValueOnce(new Error("Too many registration attempts. Wait and try again."))
+      .mockResolvedValueOnce({ state: "complete", session: fakeSession() });
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(cancelRegistration).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Retry account creation" })).toBeVisible();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry account creation" }).click();
+    });
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
   it("opens the homeserver fallback and cancels an unfinished challenge", async () => {
     beginRegistration.mockResolvedValue({
       state: "challenge",
@@ -391,9 +421,7 @@ describe("LoginScreen registration UIA", () => {
       fallback_url: "",
       policies: [],
     });
-    continueRegistration.mockRejectedValue(
-      new Error("registration attempt is no longer current"),
-    );
+    continueRegistration.mockRejectedValue(new Error("registration attempt is no longer current"));
     render(<LoginScreen onSignedIn={vi.fn()} />);
     fillRegistrationForm();
 
