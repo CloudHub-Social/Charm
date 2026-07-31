@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:1420";
+
 /**
  * Runs against the plain Vite dev server (`pnpm dev`), not the native Tauri
  * webview — there's no `tauri-driver`/WebDriver harness here. The app's
@@ -19,7 +21,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "html",
   use: {
-    baseURL: "http://localhost:1420",
+    baseURL,
     trace: "on-first-retry",
   },
   projects: [
@@ -32,7 +34,7 @@ export default defineConfig({
     ? undefined
     : {
         command: "pnpm dev",
-        url: "http://localhost:1420",
+        url: baseURL,
         reuseExistingServer: !process.env.CI,
         timeout: 30_000,
       },

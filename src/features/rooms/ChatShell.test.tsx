@@ -11,12 +11,17 @@ import type {
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
+  TimelineItemSummary,
   TypingUpdate,
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { messageRowKey } from "./messageRowShared";
 import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
-import { messageLayoutAtom } from "@/features/appearance/atoms";
+import {
+  hideMembershipEventsAtom,
+  messageLayoutAtom,
+  showHiddenEventsAtom,
+} from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // LinkPreviewForMessage (Spec 29) reads the room-details query cache via
@@ -42,7 +47,10 @@ const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
-vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => mockUseFlag(),
+  useFeatureFlagPersistenceVersion: () => 0,
+}));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -336,6 +344,19 @@ function summary(
     media: null,
     is_undecrypted: false,
     ...overrides,
+  };
+}
+
+function joinedMembershipItem(id: string, name: string): TimelineItemSummary {
+  return {
+    kind: "membership",
+    event_id: `$${id}`,
+    sender: `@${id}:localhost`,
+    timestamp_ms: 1,
+    target_user_id: `@${id}:localhost`,
+    target_display_name: name,
+    change: { type: "joined" },
+    reason: null,
   };
 }
 
@@ -1525,6 +1546,69 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledWith(room.room_id);
   });
 
+  it("preserves room-open pagination when a live snapshot wins the item race", async () => {
+    let resolveInitialPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInitialPage = resolve;
+      }),
+    );
+    renderChatShell();
+    await waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$live",
+            sender: "@alice:localhost",
+            body: "fresher live snapshot",
+            timestamp_ms: 2,
+          }),
+        ],
+      });
+      resolveInitialPage?.({
+        messages: [
+          summary({
+            event_id: "$stale",
+            sender: "@alice:localhost",
+            body: "stale room-open snapshot",
+            timestamp_ms: 1,
+          }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("fresher live snapshot");
+    expect(screen.queryByText("stale room-open snapshot")).not.toBeInTheDocument();
+
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$older",
+          sender: "@alice:localhost",
+          body: "older history",
+          timestamp_ms: 0,
+        }),
+        summary({
+          event_id: "$live",
+          sender: "@alice:localhost",
+          body: "fresher live snapshot",
+          timestamp_ms: 2,
+        }),
+      ],
+      next_cursor: null,
+    });
+    fireStartReached();
+
+    await screen.findByText("older history");
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
   it("does not animate history prepended by a live update racing an in-flight pagination request, and shifts firstItemIndex exactly once", async () => {
     // Regression test: if a `timeline:update` pushes the same
     // paginate_backwards diff before `loadMoreHistory`'s own await resolves,
@@ -1641,6 +1725,45 @@ describe("ChatShell", () => {
     await screen.findByText("older text");
     expect(getTimelinePage).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
+  });
+
+  it("keeps initial timeline seeding deferred while notice-only pages auto-paginate", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [joinedMembershipItem("alice", "Alice")],
+      next_cursor: "more",
+    });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$older",
+          sender: "@alice:localhost",
+          body: "older text",
+          timestamp_ms: 2,
+        }),
+      ],
+      items: [
+        joinedMembershipItem("alice", "Alice"),
+        {
+          kind: "message",
+          message: summary({
+            event_id: "$older",
+            sender: "@alice:localhost",
+            body: "older text",
+            timestamp_ms: 2,
+          }),
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("older text");
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("New messages")).toBeInTheDocument();
+    expect(document.getElementById("message-$older")?.className).not.toMatch(/animate-in/);
   });
 
   it("shows 'No messages yet' once an empty page's history is confirmed exhausted", async () => {
@@ -5104,5 +5227,129 @@ describe("ChatShell", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("renders and expands collapsed membership notices before the next message", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [
+        joinedMembershipItem("alice", "Alice"),
+        joinedMembershipItem("bob", "Bob"),
+        { kind: "message", message },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+    const collapsed = await screen.findByRole("button", {
+      name: "Alice (@alice:localhost) and Bob (@bob:localhost) joined",
+    });
+    fireEvent.click(collapsed);
+    expect(screen.getByTestId("timeline-notices")).toHaveTextContent(
+      "Alice (@alice:localhost) joined",
+    );
+    expect(screen.getByTestId("timeline-notices")).toHaveTextContent("Bob (@bob:localhost) joined");
+    expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+
+  it("does not jump to the live tail when the first trailing notice arrives while scrolled up", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+      timestamp_ms: 1,
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [{ kind: "message", message }],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("hello");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [message],
+        items: [{ kind: "message", message }, joinedMembershipItem("bob", "Bob")],
+      });
+    });
+
+    expect(await screen.findByTestId("timeline-notices")).toHaveTextContent(
+      "Bob (@bob:localhost) joined",
+    );
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("aligns an oversized final notice row to its message on initial load", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+      timestamp_ms: 20,
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [
+        ...Array.from({ length: 20 }, (_, index) =>
+          joinedMembershipItem(`member-${index}`, `Member ${index}`),
+        ),
+        { kind: "message", message },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+    await screen.findByText("hello");
+    await waitFor(() =>
+      expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith({
+        index: "LAST",
+        align: "end",
+      }),
+    );
+  });
+
+  it("renders state-only timelines and respects membership and hidden-event settings", async () => {
+    const store = createStore();
+    store.set(hideMembershipEventsAtom, true);
+    store.set(showHiddenEventsAtom, true);
+    getTimelinePage.mockResolvedValue({
+      messages: [],
+      items: [
+        {
+          kind: "membership",
+          event_id: "$join",
+          sender: "@alice:localhost",
+          timestamp_ms: 1,
+          target_user_id: "@alice:localhost",
+          target_display_name: "Alice",
+          change: { type: "joined" },
+          reason: null,
+        },
+        {
+          kind: "state",
+          event_id: "$custom",
+          sender: "@mod:localhost",
+          timestamp_ms: 2,
+          state_key: "",
+          change: { type: "hidden", event_type: "com.example.custom" },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell(store);
+    expect(await screen.findByTestId("timeline-notices")).toHaveTextContent(
+      "@mod:localhost changed com.example.custom",
+    );
+    expect(screen.queryByText("Alice joined")).not.toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
   });
 });

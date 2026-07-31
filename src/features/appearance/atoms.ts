@@ -28,6 +28,10 @@ export interface AppearanceState {
    * otherwise, since sharing a photo would silently share where it was
    * taken. */
   stripExifOnUpload: boolean;
+  /** Hide membership/profile notices while retaining other room-state notices. */
+  hideMembershipEvents: boolean;
+  /** Reveal unknown/custom state events that are hidden by default. */
+  showHiddenEvents: boolean;
 }
 
 /**
@@ -64,6 +68,8 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
   showUnreadCounts: false,
   autoplayGifs: true,
   stripExifOnUpload: true,
+  hideMembershipEvents: false,
+  showHiddenEvents: false,
 };
 
 /**
@@ -81,3 +87,5 @@ export const jumboEmojiSizeAtom = atom<JumboEmojiSize>(DEFAULT_APPEARANCE.jumboE
 export const showUnreadCountsAtom = atom<boolean>(DEFAULT_APPEARANCE.showUnreadCounts);
 export const autoplayGifsAtom = atom<boolean>(DEFAULT_APPEARANCE.autoplayGifs);
 export const stripExifOnUploadAtom = atom<boolean>(DEFAULT_APPEARANCE.stripExifOnUpload);
+export const hideMembershipEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.hideMembershipEvents);
+export const showHiddenEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.showHiddenEvents);

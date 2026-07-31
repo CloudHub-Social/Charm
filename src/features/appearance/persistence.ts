@@ -59,6 +59,10 @@ function isValid<T extends string>(value: unknown, allowed: readonly T[]): value
 export const LOCAL_STORAGE_KEY = "charm:appearance";
 const STORE_FILENAME = "appearance.json";
 const STORE_KEY = "appearance";
+// Store writes are asynchronous (the plugin is lazy-loaded), so two quick
+// control changes can otherwise complete out of order and leave the older
+// snapshot on disk. Keep them FIFO while localStorage remains immediate.
+let storeWriteQueue: Promise<void> = Promise.resolve();
 
 /** What's actually persisted at each location — the appearance state plus
  * the epoch-ms time it was written, so reconciliation can prefer whichever
@@ -94,7 +98,7 @@ export function readLocalMirror(): PersistedEnvelope | null {
     const parsed: unknown = JSON.parse(raw);
     if (isPersistedEnvelope(parsed)) return parsed;
     if (typeof parsed === "object" && parsed !== null) {
-      return { state: parsed as Partial<AppearanceState>, updatedAt: 0 };
+      return { state: parsed, updatedAt: 0 };
     }
     return null;
   } catch {
@@ -127,7 +131,7 @@ export async function readPersistedAppearance(): Promise<PersistedEnvelope | nul
     if (value == null) return null;
     if (isPersistedEnvelope(value)) return value;
     if (typeof value === "object") {
-      return { state: value as Partial<AppearanceState>, updatedAt: 0 };
+      return { state: value, updatedAt: 0 };
     }
     return null;
   } catch {
@@ -145,13 +149,15 @@ export async function persistAppearance(
   updatedAt: number = Date.now(),
 ): Promise<void> {
   writeLocalMirror(state, updatedAt);
-  try {
+  const write = storeWriteQueue.then(async () => {
     const store = await getStore();
     const envelope: PersistedEnvelope = { state, updatedAt };
     await store.set(STORE_KEY, envelope);
-  } catch {
+  });
+  storeWriteQueue = write.catch(() => {
     // Best-effort — see module doc. The localStorage mirror already landed.
-  }
+  });
+  await storeWriteQueue;
 }
 
 /** Picks whichever of the store/localStorage envelopes is newer (by
@@ -207,5 +213,13 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
       typeof partial.stripExifOnUpload === "boolean"
         ? partial.stripExifOnUpload
         : DEFAULT_APPEARANCE.stripExifOnUpload,
+    hideMembershipEvents:
+      typeof partial.hideMembershipEvents === "boolean"
+        ? partial.hideMembershipEvents
+        : DEFAULT_APPEARANCE.hideMembershipEvents,
+    showHiddenEvents:
+      typeof partial.showHiddenEvents === "boolean"
+        ? partial.showHiddenEvents
+        : DEFAULT_APPEARANCE.showHiddenEvents,
   };
 }

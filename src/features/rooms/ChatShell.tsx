@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
@@ -7,7 +7,7 @@ import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
-import { useFlag } from "@/featureFlags";
+import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
@@ -41,6 +41,12 @@ import { useMessagePinning } from "./useMessagePinning";
 import { useMessageActionController } from "./useMessageActionController";
 import { MessageActionDialogs } from "./MessageActionDialogs";
 import { TimelineMessageRow } from "./TimelineMessageRow";
+import {
+  hideMembershipEventsAtom,
+  messageLayoutAtom,
+  showHiddenEventsAtom,
+} from "@/features/appearance/atoms";
+import { bucketTimelineNotices, TimelineNoticeList } from "./TimelineNotices";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -207,6 +213,12 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const timelineStateEventsEnabled = useFlag("timeline_state_events");
+  const timelineStateEventsPersistenceVersion =
+    useFeatureFlagPersistenceVersion("timeline_state_events");
+  const messageLayout = useAtomValue(messageLayoutAtom);
+  const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
+  const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
   const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
@@ -285,6 +297,7 @@ export function ChatShell({
   const roomSettingsOpen = roomSettingsTarget !== null;
   const {
     messages,
+    timelineItems,
     loading,
     loadingMore,
     hasMore,
@@ -293,8 +306,42 @@ export function ChatShell({
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    hydrateCurrentTimeline,
     resetToLive,
-  } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
+  } = useChatTimeline(
+    room,
+    roomSettingsOpen,
+    jumpToEventId !== null,
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  );
+  const noticeBuckets = useMemo(
+    () =>
+      timelineStateEventsEnabled
+        ? bucketTimelineNotices(timelineItems, hideMembershipEvents, showHiddenEvents)
+        : { beforeMessage: new Map(), trailing: [] },
+    [hideMembershipEvents, showHiddenEvents, timelineItems, timelineStateEventsEnabled],
+  );
+  const hasVisibleNotices =
+    noticeBuckets.beforeMessage.size > 0 || noticeBuckets.trailing.length > 0;
+  const noticeOnlyScrollerRef = useRef<HTMLDivElement>(null);
+  const noticeOnlyPinnedRef = useRef(true);
+  useEffect(() => {
+    noticeOnlyPinnedRef.current = true;
+  }, [roomId]);
+  useEffect(() => {
+    const scroller = noticeOnlyScrollerRef.current;
+    if (messages.length === 0 && hasVisibleNotices && scroller && noticeOnlyPinnedRef.current) {
+      scroller.scrollTop = scroller.scrollHeight;
+      handleAtBottomStateChange(true);
+    }
+  }, [
+    handleAtBottomStateChange,
+    hasVisibleNotices,
+    messages.length,
+    noticeBuckets.trailing.length,
+  ]);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of
@@ -351,6 +398,106 @@ export function ChatShell({
     handleAtBottomStateChange,
     resetToLive,
   });
+  const noticeSignature = useMemo(
+    () =>
+      [...[...noticeBuckets.beforeMessage.values()].flat(), ...noticeBuckets.trailing]
+        .map((item) => item.event_id)
+        .join("\u0000"),
+    [noticeBuckets],
+  );
+  const noticeAnchorRef = useRef<{
+    roomId: string;
+    eventId: string;
+    top: number;
+    signature: string;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-message-event-id]")].filter(
+      (row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > 0 && rect.top < window.innerHeight;
+      },
+    );
+    const previous = noticeAnchorRef.current;
+    if (previous?.roomId === roomId && previous.signature !== noticeSignature) {
+      const anchored = rows.find((row) => row.dataset.messageEventId === previous.eventId);
+      if (anchored) {
+        const delta = anchored.getBoundingClientRect().top - previous.top;
+        if (Math.abs(delta) > 0.5) {
+          virtuosoRef.current?.scrollBy({ top: delta, behavior: "auto" });
+        }
+      }
+    }
+    const firstVisible = rows[0];
+    noticeAnchorRef.current = firstVisible
+      ? {
+          roomId,
+          eventId: firstVisible.dataset.messageEventId ?? "",
+          top: firstVisible.getBoundingClientRect().top,
+          signature: noticeSignature,
+        }
+      : null;
+  }, [messages, noticeSignature, roomId, virtuosoRef]);
+  const previousTimelineStateEventsPersistenceVersionRef = useRef(
+    timelineStateEventsPersistenceVersion,
+  );
+  useEffect(() => {
+    const previousVersion = previousTimelineStateEventsPersistenceVersionRef.current;
+    previousTimelineStateEventsPersistenceVersionRef.current =
+      timelineStateEventsPersistenceVersion;
+    if (
+      timelineStateEventsPersistenceVersion !== previousVersion &&
+      timelineStateEventsEnabled &&
+      room
+    ) {
+      void hydrateCurrentTimeline();
+    }
+    // hydrateCurrentTimeline closes over the current room visit generation; the flag
+    // transition and room id are the only activation inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.room_id, timelineStateEventsEnabled, timelineStateEventsPersistenceVersion]);
+  const trailingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  const leadingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  useEffect(() => {
+    trailingNoticeInitialScrollRoomRef.current = null;
+    leadingNoticeInitialScrollRoomRef.current = null;
+  }, [room?.room_id]);
+  useEffect(() => {
+    if (
+      room &&
+      messages.length > 0 &&
+      noticeBuckets.trailing.length > 0 &&
+      trailingNoticeInitialScrollRoomRef.current !== room.room_id
+    ) {
+      trailingNoticeInitialScrollRoomRef.current = room.room_id;
+      if (!atBottom) return undefined;
+      const frame = requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [atBottom, messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
+  const finalLeadingNoticeCount =
+    messages.length > 0
+      ? (noticeBuckets.beforeMessage.get(messages.at(-1)?.event_id ?? "")?.length ?? 0)
+      : 0;
+  useEffect(() => {
+    if (
+      room &&
+      messages.length > 0 &&
+      finalLeadingNoticeCount > 0 &&
+      leadingNoticeInitialScrollRoomRef.current !== room.room_id
+    ) {
+      leadingNoticeInitialScrollRoomRef.current = room.room_id;
+      if (!atBottom) return undefined;
+      const frame = requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [atBottom, finalLeadingNoticeCount, messages.length, room, virtuosoRef]);
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).
@@ -599,7 +746,7 @@ export function ChatShell({
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
-        {!loading && messages.length === 0 && !hasMore && mobile && (
+        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && mobile && (
           <div className="flex flex-1 items-center justify-center px-6 text-center">
             <div className="flex max-w-xs flex-col items-center">
               <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
@@ -612,8 +759,23 @@ export function ChatShell({
             </div>
           </div>
         )}
-        {!loading && messages.length === 0 && !hasMore && !mobile && (
+        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && !mobile && (
           <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
+        )}
+        {!loading && messages.length === 0 && hasVisibleNotices && (
+          <div
+            ref={noticeOnlyScrollerRef}
+            className="flex-1 overflow-y-auto p-4"
+            onScroll={(event) => {
+              const scroller = event.currentTarget;
+              const pinned =
+                scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+              noticeOnlyPinnedRef.current = pinned;
+              handleAtBottomStateChange(pinned);
+            }}
+          >
+            <TimelineNoticeList notices={noticeBuckets.trailing} irc={messageLayout === "irc"} />
+          </div>
         )}
         {!loading && messages.length === 0 && hasMore && paginationError && (
           <p className="p-4 text-sm text-muted-foreground">Couldn't load messages</p>
@@ -656,34 +818,63 @@ export function ChatShell({
             // row-local UI state could all end up attached to the wrong
             // message.
             computeItemKey={(_index, message) => messageRowKey(message)}
+            // eslint-disable-next-line react/no-unstable-nested-components -- Virtuoso's row render prop intentionally closes over the active room/controller snapshot.
             itemContent={(index, message) => {
               const i = index - firstItemIndex;
               const readers = receiptsByEvent.get(message.event_id) ?? [];
+              const before = noticeBuckets.beforeMessage.get(message.event_id) ?? [];
+              const nextMessage = messages[i + 1];
+              const hasNoticesBeforeNext =
+                nextMessage !== undefined &&
+                (noticeBuckets.beforeMessage.get(nextMessage.event_id)?.length ?? 0) > 0;
+              const trailing = i === messages.length - 1 ? noticeBuckets.trailing : [];
+              const previousMessageTimestamp = messages[i - 1]?.timestamp_ms ?? null;
+              const previousTimelineTimestamp =
+                before.at(-1)?.timestamp_ms ?? previousMessageTimestamp;
 
               return (
-                <TimelineMessageRow
-                  index={i}
-                  messages={messages}
-                  message={message}
-                  roomId={room.room_id}
-                  currentUserId={currentUserId}
-                  unreadStartIndex={unreadStartIdx}
-                  canRedact={canRedactBySender[message.sender] ?? false}
-                  canPin={canPinMessages}
-                  isPinned={pinnedEventIds.includes(message.event_id)}
-                  readers={readers}
-                  senderNameByUserId={senderNameByUserId}
-                  newMessageKeys={newMessageKeys}
-                  controller={messageActionController}
-                  onJumpToMessage={handleJumpToMessage}
-                  onSenderClick={
-                    userProfileCardsEnabled
-                      ? (userId, label) => openProfile(userId, label, "message-sender")
-                      : undefined
-                  }
-                  onUserPillClick={(userId, label) => openProfile(userId, label, "mention")}
-                  onRoomPillClick={onNavigateToRoom}
-                />
+                <>
+                  {before.length > 0 && (
+                    <TimelineNoticeList
+                      notices={before}
+                      irc={messageLayout === "irc"}
+                      previousTimestampMs={previousMessageTimestamp}
+                    />
+                  )}
+                  <TimelineMessageRow
+                    index={i}
+                    messages={messages}
+                    message={message}
+                    roomId={room.room_id}
+                    currentUserId={currentUserId}
+                    unreadStartIndex={unreadStartIdx}
+                    canRedact={canRedactBySender[message.sender] ?? false}
+                    canPin={canPinMessages}
+                    isPinned={pinnedEventIds.includes(message.event_id)}
+                    readers={readers}
+                    senderNameByUserId={senderNameByUserId}
+                    newMessageKeys={newMessageKeys}
+                    controller={messageActionController}
+                    onJumpToMessage={handleJumpToMessage}
+                    onSenderClick={
+                      userProfileCardsEnabled
+                        ? (userId, label) => openProfile(userId, label, "message-sender")
+                        : undefined
+                    }
+                    onUserPillClick={(userId, label) => openProfile(userId, label, "mention")}
+                    onRoomPillClick={onNavigateToRoom}
+                    previousTimelineTimestampMs={previousTimelineTimestamp}
+                    hasNoticesBefore={before.length > 0}
+                    hasNoticesBeforeNext={hasNoticesBeforeNext}
+                  />
+                  {trailing.length > 0 && (
+                    <TimelineNoticeList
+                      notices={trailing}
+                      irc={messageLayout === "irc"}
+                      previousTimestampMs={message.timestamp_ms}
+                    />
+                  )}
+                </>
               );
             }}
           />

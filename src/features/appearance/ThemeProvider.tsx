@@ -4,10 +4,12 @@ import {
   autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
+  hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   showUnreadCountsAtom,
+  showHiddenEventsAtom,
   stripExifOnUploadAtom,
   themeAtom,
 } from "./atoms";
@@ -46,6 +48,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setShowUnreadCounts = useSetAtom(showUnreadCountsAtom);
   const setAutoplayGifs = useSetAtom(autoplayGifsAtom);
   const setStripExifOnUpload = useSetAtom(stripExifOnUploadAtom);
+  const setHideMembershipEvents = useSetAtom(hideMembershipEventsAtom);
+  const setShowHiddenEvents = useSetAtom(showHiddenEventsAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +74,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setShowUnreadCounts(state.showUnreadCounts);
       setAutoplayGifs(state.autoplayGifs);
       setStripExifOnUpload(state.stripExifOnUpload);
+      setHideMembershipEvents(state.hideMembershipEvents);
+      setShowHiddenEvents(state.showHiddenEvents);
       applyAppearanceToDom(state);
     }
 
@@ -81,10 +87,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setAutoplayGifs,
     setDensity,
     setFontSize,
+    setHideMembershipEvents,
     setJumboEmojiSize,
     setMessageLayout,
     setReducedMotion,
     setShowUnreadCounts,
+    setShowHiddenEvents,
     setStripExifOnUpload,
     setTheme,
   ]);

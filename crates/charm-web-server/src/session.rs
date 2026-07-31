@@ -771,16 +771,26 @@ fn spawn_timeline_listener(
         // page on request, but a frontend that treats the WebSocket as its
         // single source of live room state (again, matching desktop's own
         // contract) would otherwise see an empty room until then.
-        let initial_messages = charm_lib::matrix::timeline::items_to_summaries(
+        let initial_items = charm_lib::matrix::timeline::items_to_timeline_items(
             &items,
             own_user_id.as_deref(),
             &client,
             None,
         )
         .await;
+        let initial_messages = initial_items
+            .iter()
+            .filter_map(|item| match item {
+                charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
+                    Some((**message).clone())
+                }
+                _ => None,
+            })
+            .collect();
         let initial_event = ServerEvent::Timeline(RoomTimelineUpdate {
             room_id: room_id.to_string(),
             messages: initial_messages,
+            items: Some(initial_items),
         });
         room_snapshots
             .lock()
@@ -816,16 +826,26 @@ fn spawn_timeline_listener(
             // `items_to_summaries`/`snapshot_rooms` call site here) — media
             // metadata is still carried, just without a locally resolved
             // thumbnail path.
-            let messages = charm_lib::matrix::timeline::items_to_summaries(
+            let timeline_items = charm_lib::matrix::timeline::items_to_timeline_items(
                 &items,
                 own_user_id.as_deref(),
                 &client,
                 None,
             )
             .await;
+            let messages = timeline_items
+                .iter()
+                .filter_map(|item| match item {
+                    charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
+                        Some((**message).clone())
+                    }
+                    _ => None,
+                })
+                .collect();
             let event = ServerEvent::Timeline(RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages,
+                items: Some(timeline_items),
             });
             room_snapshots
                 .lock()

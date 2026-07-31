@@ -2075,6 +2075,7 @@ async fn get_room_member_list(
 #[derive(Deserialize)]
 struct TimelineQuery {
     limit: Option<u32>,
+    paginate: Option<bool>,
 }
 
 async fn get_timeline_page(
@@ -2101,9 +2102,19 @@ async fn get_timeline_page(
                 ApiError::bad_request(e)
             }
         })?;
-    let page = get_timeline_page_impl(&session.client, &timeline, None, query.limit)
-        .await
-        .map_err(ApiError::bad_request)?;
+    // The companion transports the authoritative union. The browser-side
+    // flag controls presentation; omitting it here would let pagination
+    // overwrite a notice-bearing live snapshot with message-only data.
+    let page = get_timeline_page_impl(
+        &session.client,
+        &timeline,
+        None,
+        query.limit,
+        true,
+        query.paginate.unwrap_or(true),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(page))
 }
 

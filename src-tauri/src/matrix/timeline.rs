@@ -10,7 +10,7 @@ use matrix_sdk_ui::timeline::{
     MsgLikeKind, Profile, Timeline, TimelineDetails, TimelineItem, TimelineItemContent,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::{media, profiles, shell, MatrixState};
@@ -396,6 +396,9 @@ pub enum TimelineStateChange {
         body: Option<String>,
         replacement_room_id: Option<String>,
     },
+    Redacted {
+        event_type: String,
+    },
     Hidden {
         event_type: String,
     },
@@ -457,10 +460,7 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 timestamp_ms,
                 target_user_id: target_user_id.to_string(),
                 target_display_name: membership.display_name(),
-                change: membership
-                    .change()
-                    .map(membership_change_summary)
-                    .unwrap_or(TimelineMembershipChange::Unknown),
+                change: membership.change().and_then(membership_change_summary)?,
                 reason,
             })
         }
@@ -496,13 +496,22 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 reason: None,
             })
         }
-        TimelineItemContent::OtherState(state) => Some(TimelineItemSummary::State {
-            event_id,
-            sender,
-            timestamp_ms,
-            state_key: state.state_key().to_owned(),
-            change: state_change_summary(state.content()),
-        }),
+        TimelineItemContent::OtherState(state) => {
+            let state_key = state.state_key().to_owned();
+            Some(TimelineItemSummary::State {
+                event_id,
+                sender,
+                timestamp_ms,
+                state_key: state_key.clone(),
+                change: if state_key.is_empty() {
+                    state_change_summary(state.content())
+                } else {
+                    TimelineStateChange::Hidden {
+                        event_type: state.content().event_type().to_string(),
+                    }
+                },
+            })
+        }
         TimelineItemContent::FailedToParseState {
             event_type,
             state_key,
@@ -523,8 +532,8 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
     }
 }
 
-fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChange {
-    match change {
+fn membership_change_summary(change: MembershipChange) -> Option<TimelineMembershipChange> {
+    Some(match change {
         MembershipChange::Joined => TimelineMembershipChange::Joined,
         MembershipChange::Left => TimelineMembershipChange::Left,
         MembershipChange::Banned => TimelineMembershipChange::Banned,
@@ -539,15 +548,21 @@ fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChan
         MembershipChange::KnockAccepted => TimelineMembershipChange::KnockAccepted,
         MembershipChange::KnockRetracted => TimelineMembershipChange::KnockRetracted,
         MembershipChange::KnockDenied => TimelineMembershipChange::KnockDenied,
-        MembershipChange::None | MembershipChange::Error | MembershipChange::NotImplemented => {
+        MembershipChange::None => return None,
+        MembershipChange::Error | MembershipChange::NotImplemented => {
             TimelineMembershipChange::Unknown
         }
-    }
+    })
 }
 
 fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineStateChange {
     match change {
         AnyOtherStateEventContentChange::RoomName(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.name".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.name.clone(),
@@ -559,6 +574,11 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
             }
         }
         AnyOtherStateEventContentChange::RoomTopic(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.topic".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.topic.clone(),
@@ -570,6 +590,11 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
             }
         }
         AnyOtherStateEventContentChange::RoomAvatar(change) => {
+            if matches!(change, StateEventContentChange::Redacted(_)) {
+                return TimelineStateChange::Redacted {
+                    event_type: "m.room.avatar".to_string(),
+                };
+            }
             let (old_value, new_value) = original_state_values(
                 change,
                 |content| content.url.as_ref().map(ToString::to_string),
@@ -585,9 +610,8 @@ fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineSta
                 body: Some(content.body.clone()),
                 replacement_room_id: Some(content.replacement_room.to_string()),
             },
-            StateEventContentChange::Redacted(_) => TimelineStateChange::Tombstone {
-                body: None,
-                replacement_room_id: None,
+            StateEventContentChange::Redacted(_) => TimelineStateChange::Redacted {
+                event_type: "m.room.tombstone".to_string(),
             },
         },
         other => TimelineStateChange::Hidden {
@@ -622,6 +646,11 @@ where
 #[ts(export, export_to = "../src/bindings/")]
 pub struct TimelinePage {
     pub messages: Vec<RoomMessageSummary>,
+    /// Full message/state/membership stream for Spec 39 consumers. Kept
+    /// alongside `messages` so existing message-only surfaces remain stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Vec<TimelineItemSummary>>,
     /// Spec 14 tweak (the one allowed IPC-contract change): with a
     /// `matrix-sdk-ui` `Timeline` backing pagination, there's no opaque
     /// server-side cursor to resume from any more — `Timeline::paginate_backwards`
@@ -648,6 +677,20 @@ pub struct TimelinePage {
 pub struct RoomTimelineUpdate {
     pub room_id: String,
     pub messages: Vec<RoomMessageSummary>,
+    /// Full message/state/membership snapshot matching `TimelinePage::items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Vec<TimelineItemSummary>>,
+}
+
+fn message_summaries(items: &[TimelineItemSummary]) -> Vec<RoomMessageSummary> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TimelineItemSummary::Message { message } => Some((**message).clone()),
+            TimelineItemSummary::Membership { .. } | TimelineItemSummary::State { .. } => None,
+        })
+        .collect()
 }
 
 /// Re-snapshots a `Timeline`'s current items into `RoomMessageSummary`s,
@@ -1070,8 +1113,6 @@ pub(crate) fn spawn_timeline_listener(
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
-    use tauri::Manager;
-
     /// How often to check whether this room's `Timeline` has been evicted
     /// from the LRU map while the diff stream is otherwise idle (no activity
     /// to wake `stream.next()` on its own).
@@ -1093,8 +1134,15 @@ pub(crate) fn spawn_timeline_listener(
         // task otherwise only holds the `'static` `AppHandle`/`Client`.
         let state = app.state::<MatrixState>();
         let media_cache = state.require_media_cache(&app).await.ok();
-        let initial_summaries =
-            items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+        let initial_items =
+            items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
+        let initial_summaries = message_summaries(&initial_items);
+        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+            )
+        });
         // Seed with every event id (and the latest timestamp) already present
         // before this listener subscribed — the initial `timeline:update` for
         // a room the user just opened is existing history, never a "new
@@ -1106,6 +1154,7 @@ pub(crate) fn spawn_timeline_listener(
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages: initial_summaries,
+                items: include_timeline_items.then_some(initial_items),
             },
         );
 
@@ -1126,8 +1175,18 @@ pub(crate) fn spawn_timeline_listener(
             }
             let state = app.state::<MatrixState>();
             let media_cache = state.require_media_cache(&app).await.ok();
-            let summaries =
-                items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+            let timeline_items =
+                items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
+            let summaries = message_summaries(&timeline_items);
+            // Labs and remote-rollout changes apply to an already-open room.
+            // Capturing the initial value would make the next live diff erase
+            // notices after the flag changes until this Timeline is evicted.
+            let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+                crate::feature_flags::flag(
+                    &dir,
+                    crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+                )
+            });
 
             let new_messages: Vec<&RoomMessageSummary> =
                 summaries.iter().filter(|m| dedup.is_new(m)).collect();
@@ -1142,6 +1201,7 @@ pub(crate) fn spawn_timeline_listener(
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
                     messages: summaries,
+                    items: include_timeline_items.then_some(timeline_items),
                 },
             );
         }
@@ -1241,6 +1301,7 @@ pub async fn get_timeline_page(
     cursor: Option<String>,
     limit: Option<u32>,
     force_live: bool,
+    paginate: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
     let client = state.require_client().await?;
@@ -1278,7 +1339,21 @@ pub async fn get_timeline_page(
             .await?;
         let media_cache = state.require_media_cache(&app).await.ok();
 
-        get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+            )
+        });
+        get_timeline_page_impl(
+            &client,
+            &timeline,
+            media_cache,
+            limit,
+            include_timeline_items,
+            paginate,
+        )
+        .await
     })
     .await
 }
@@ -1294,6 +1369,8 @@ pub async fn get_timeline_page_impl(
     timeline: &matrix_sdk_ui::Timeline,
     media_cache: Option<&media::MediaCache>,
     limit: Option<u32>,
+    include_timeline_items: bool,
+    paginate: bool,
 ) -> Result<TimelinePage, String> {
     // 200 is well over any real UI need (the documented default is 30) —
     // reject rather than silently clamp, so a caller passing a bogus/huge
@@ -1307,10 +1384,14 @@ pub async fn get_timeline_page_impl(
         ));
     }
     let num_events = u16::try_from(requested).map_err(|e| e.to_string())?;
-    let hit_start = timeline
-        .paginate_backwards(num_events)
-        .await
-        .map_err(|e| e.to_string())?;
+    let hit_start = if paginate {
+        timeline
+            .paginate_backwards(num_events)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        false
+    };
 
     let own_user_id = client.user_id().map(ToOwned::to_owned);
     // A fresh subscription just to read the current snapshot — the
@@ -1319,9 +1400,12 @@ pub async fn get_timeline_page_impl(
     // this second subscription's stream half is dropped immediately below.
     let (items, _stream) = timeline.subscribe().await;
 
+    let timeline_items =
+        items_to_timeline_items(&items, own_user_id.as_deref(), client, media_cache).await;
     Ok(TimelinePage {
-        messages: items_to_summaries(&items, own_user_id.as_deref(), client, media_cache).await,
-        next_cursor: if hit_start {
+        messages: message_summaries(&timeline_items),
+        items: include_timeline_items.then_some(timeline_items),
+        next_cursor: if paginate && hit_start {
             None
         } else {
             Some("more".to_string())

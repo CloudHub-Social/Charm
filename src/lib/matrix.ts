@@ -372,8 +372,9 @@ export function getTimelinePage(
   cursor?: string,
   limit?: number,
   forceLive = false,
+  paginate = true,
 ): Promise<TimelinePage> {
-  return invoke("get_timeline_page", { roomId, cursor, limit, forceLive });
+  return invoke("get_timeline_page", { roomId, cursor, limit, forceLive, paginate });
 }
 
 /**

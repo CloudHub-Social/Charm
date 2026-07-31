@@ -5,6 +5,7 @@ import { fetchRemoteFlags, isRemoteConfigured } from "./ofrep";
 import { resolveFlag, type FeatureFlagOverrides, type FeatureFlagRemote } from "./resolve";
 import { reportFlagEvaluation } from "./sentry";
 import { persistOverrides, persistRemoteFlags, readOverrides, readRemoteFlags } from "./store";
+import { FEATURE_FLAG_KEYS } from "./catalog";
 
 export type { FeatureFlagOverrides } from "./resolve";
 export { FEATURE_FLAG_CATALOG, FEATURE_FLAG_KEYS } from "./catalog";
@@ -26,6 +27,7 @@ let persistedOverridesCache: FeatureFlagOverrides = {};
 let remoteCache: FeatureFlagRemote = {};
 let initialized = false;
 let cacheMutationId = 0;
+const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -37,6 +39,19 @@ function subscribe(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+function recordPersistedOverrides(next: FeatureFlagOverrides): void {
+  const keys = new Set<FeatureFlagKey>([
+    ...(Object.keys(persistedOverridesCache) as FeatureFlagKey[]),
+    ...(Object.keys(next) as FeatureFlagKey[]),
+  ]);
+  for (const changedKey of keys) {
+    if (persistedOverridesCache[changedKey] !== next[changedKey]) {
+      persistedFlagVersions[changedKey] = (persistedFlagVersions[changedKey] ?? 0) + 1;
+    }
+  }
+  persistedOverridesCache = next;
 }
 
 /**
@@ -114,6 +129,16 @@ export function useFlag(key: FeatureFlagKey): boolean {
   return value;
 }
 
+/**
+ * Increments after this key's local override reaches durable storage. Native
+ * consumers whose Rust side reads the on-disk envelope can react to this
+ * signal without racing the optimistic JS update.
+ */
+export function useFeatureFlagPersistenceVersion(key: FeatureFlagKey): number {
+  const snapshot = () => persistedFlagVersions[key] ?? 0;
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
 /** True once persisted/remote cached flag state has been reconciled. */
 export function useFeatureFlagsInitialized(): boolean {
   const snapshot = () => initialized;
@@ -128,7 +153,8 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
   emit();
   try {
     if (await persistOverrides(next)) {
-      persistedOverridesCache = next;
+      recordPersistedOverrides(next);
+      emit();
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -148,7 +174,8 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
   emit();
   try {
     if (await persistOverrides(next)) {
-      persistedOverridesCache = next;
+      recordPersistedOverrides(next);
+      emit();
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -192,12 +219,20 @@ export async function refreshRemoteFlags(): Promise<void> {
   try {
     const result = await fetchRemoteFlags(getInstallId());
     if (result) {
+      const changedKeys = FEATURE_FLAG_KEYS.filter(
+        (key) =>
+          resolveFlag(key, overridesCache, remoteCache) !==
+          resolveFlag(key, overridesCache, result),
+      );
       // Persist to the shared durable file first, then apply to the UI — so the
       // frontend never enables a rolled-out feature that the Rust core (which
       // reads only that file) hasn't seen yet. If the durable write fails, keep
       // the previous cache; the next tick retries.
       if (await persistRemoteFlags(result, getInstallId())) {
         remoteCache = result;
+        for (const key of changedKeys) {
+          persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+        }
         emit();
       }
     }

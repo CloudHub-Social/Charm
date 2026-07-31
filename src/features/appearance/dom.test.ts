@@ -93,6 +93,8 @@ describe("applyAppearanceToDom", () => {
       showUnreadCounts: false,
       autoplayGifs: true,
       stripExifOnUpload: true,
+      hideMembershipEvents: false,
+      showHiddenEvents: false,
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");

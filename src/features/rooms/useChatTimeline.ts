@@ -5,9 +5,11 @@ import {
   onTimelineUpdate,
   type RoomMessageSummary,
   type RoomSummary,
+  type TimelineItemSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { messageRowKey } from "./messageRowShared";
+import { bucketTimelineNotices } from "./TimelineNotices";
 
 // `react-virtuoso`'s prepend recipe: `firstItemIndex` is the logical index of
 // `messages[0]` in an unbounded conceptual list that grows *backwards* as
@@ -25,12 +27,31 @@ const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
 // aren't required to move in lockstep.
 const MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS = 5000;
 
+function timelineItemKey(item: TimelineItemSummary): string {
+  return item.kind === "message" ? item.message.event_id : item.event_id;
+}
+
+function visibleTimelineNotices(
+  items: TimelineItemSummary[],
+  enabled: boolean,
+  hideMembershipEvents: boolean,
+  showHiddenEvents: boolean,
+) {
+  if (!enabled) return [];
+  const buckets = bucketTimelineNotices(items, hideMembershipEvents, showHiddenEvents);
+  return [...[...buckets.beforeMessage.values()].flat(), ...buckets.trailing];
+}
+
 export function useChatTimeline(
   room: RoomSummary | null,
   roomSettingsOpen: boolean,
   hasPendingJump = false,
+  timelineStateEventsEnabled = false,
+  hideMembershipEvents = false,
+  showHiddenEvents = false,
 ) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
+  const [timelineItems, setTimelineItems] = useState<TimelineItemSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
@@ -67,6 +88,16 @@ export function useChatTimeline(
   // every time `loadingMore` flips back to `false`). Cleared on room switch
   // and on any subsequent successful page.
   const [paginationError, setPaginationError] = useState(false);
+  const timelineVisibilityRef = useRef({
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  });
+  timelineVisibilityRef.current = {
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  };
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   // Mirrors Virtuoso's own `atBottomStateChange` callback — the single
@@ -130,6 +161,8 @@ export function useChatTimeline(
   // function's own comment) without racing the `prependedCount` state
   // variable, which doesn't update until next render.
   const prependedCountRef = useRef(0);
+  const liveTimelineRevisionRef = useRef(0);
+  const previousTimelineItemKeysRef = useRef(new Set<string>());
   // Tracks the room id these refs were last reset for — `undefined` (not
   // `null`) as the initial sentinel, since `null` ("no room active") is
   // itself a valid target state distinct from "never reset yet".
@@ -159,6 +192,7 @@ export function useChatTimeline(
     previousMessagesRef.current = [];
     prependedCountRef.current = 0;
     firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
+    previousTimelineItemKeysRef.current.clear();
   }
 
   // Applies a fresh full message snapshot (from either the initial/backward-
@@ -270,6 +304,37 @@ export function useChatTimeline(
     return newPrependedCount;
   }
 
+  function applyTimelineItems(
+    newMessages: RoomMessageSummary[],
+    newItems: TimelineItemSummary[] | null | undefined,
+  ): number {
+    const items = newItems ?? newMessages.map((message) => ({ kind: "message" as const, message }));
+    const visibility = timelineVisibilityRef.current;
+    const visibleNotices = visibleTimelineNotices(
+      items,
+      visibility.timelineStateEventsEnabled,
+      visibility.hideMembershipEvents,
+      visibility.showHiddenEvents,
+    );
+    const newlyAddedNotices = visibleNotices.filter(
+      (item) => !previousTimelineItemKeysRef.current.has(timelineItemKey(item)),
+    ).length;
+    previousTimelineItemKeysRef.current = new Set(visibleNotices.map(timelineItemKey));
+    setTimelineItems(items);
+    return Math.max(applyMessages(newMessages), newlyAddedNotices);
+  }
+
+  useEffect(() => {
+    previousTimelineItemKeysRef.current = new Set(
+      visibleTimelineNotices(
+        timelineItems,
+        timelineStateEventsEnabled,
+        hideMembershipEvents,
+        showHiddenEvents,
+      ).map(timelineItemKey),
+    );
+  }, [hideMembershipEvents, showHiddenEvents, timelineItems, timelineStateEventsEnabled]);
+
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
     // this a fresh `room` reference on every `room_list:update`, and
@@ -289,11 +354,13 @@ export function useChatTimeline(
     setPrependedCount(0);
     if (!timelineRoomId) {
       setMessages([]);
+      setTimelineItems([]);
       setLoading(false);
       return undefined;
     }
     setLoading(true);
     let cancelled = false;
+    const roomOpenLiveRevision = liveTimelineRevisionRef.current;
     // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
     // which holds items in their natural oldest-to-newest order — unlike the
     // old `room.messages()` backward-pagination page, which was newest-first
@@ -308,9 +375,15 @@ export function useChatTimeline(
     getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
         if (cancelled) return;
-        applyMessages(page.messages);
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
+        // A timeline update can beat the room-open response (including the
+        // listener's initial snapshot). Keep that fresher item snapshot, but
+        // retain the response's pagination metadata: timeline updates do not
+        // carry a cursor, and dropping it would permanently disable backward
+        // pagination for this visit.
+        if (liveTimelineRevisionRef.current !== roomOpenLiveRevision) return;
+        applyTimelineItems(page.messages, page.items);
       })
       .catch(logAndIgnore)
       .finally(() => {
@@ -366,7 +439,7 @@ export function useChatTimeline(
     try {
       const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
       if (visitGenerationRef.current !== generation) return false;
-      applyMessages(page.messages);
+      applyTimelineItems(page.messages, page.items);
       nextCursorRef.current = page.next_cursor;
       setHasMore(page.next_cursor !== null);
       return true;
@@ -381,11 +454,44 @@ export function useChatTimeline(
     }
   }
 
+  async function hydrateCurrentTimeline(): Promise<boolean> {
+    if (!room) return false;
+    const targetRoomId = room.room_id;
+    const generation = visitGenerationRef.current;
+    const liveRevision = liveTimelineRevisionRef.current;
+    try {
+      // Deliberately preserve the backend's current live/focused timeline and
+      // the viewport anchors. This refresh only asks that current snapshot to
+      // include newly enabled item kinds; it must not behave like Jump to
+      // Present.
+      const page = await getTimelinePage(targetRoomId, undefined, undefined, false, false);
+      if (
+        visitGenerationRef.current !== generation ||
+        liveTimelineRevisionRef.current !== liveRevision
+      ) {
+        return false;
+      }
+      applyTimelineItems(page.messages, page.items);
+      return true;
+    } catch (err) {
+      if (visitGenerationRef.current === generation) logAndIgnore(err);
+      return false;
+    }
+  }
+
   useEffect(() => {
     const listenerRoomId = room?.room_id;
     if (!listenerRoomId) return undefined;
+    const listenerVisitGeneration = visitGenerationRef.current;
     const unlisten = onTimelineUpdate((update) => {
       if (update.room_id !== listenerRoomId) return;
+      if (
+        currentRoomIdRef.current !== listenerRoomId ||
+        visitGenerationRef.current !== listenerVisitGeneration
+      ) {
+        return;
+      }
+      liveTimelineRevisionRef.current += 1;
       // `update.messages` is a full re-snapshot of the room's live Timeline
       // (Spec 14) — every call to `timeline:update` carries the complete
       // current item list, not a delta to merge onto existing state. Merging
@@ -403,14 +509,18 @@ export function useChatTimeline(
       // `setMessages`) detects that via identity, not just an appended tail,
       // and shifts `firstItemIndex` if so, without double-shifting once
       // `loadMoreHistory`'s own response lands afterward for the same change.
-      applyMessages(update.messages);
+      applyTimelineItems(update.messages, update.items);
     });
     return () => {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [room?.room_id]);
 
-  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
+  const latestTimelineItem = timelineItems.at(-1);
+  const latestEventId =
+    latestTimelineItem?.kind === "message"
+      ? latestTimelineItem.message.event_id
+      : (latestTimelineItem?.event_id ?? null);
 
   useEffect(() => {
     lastMarkedReadEventId.current = null;
@@ -620,12 +730,12 @@ export function useChatTimeline(
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
         const wasEmpty = previousMessagesRef.current.length === 0;
-        const prependedByThisPage = applyMessages(page.messages);
+        const prependedByThisPage = applyTimelineItems(page.messages, page.items);
         setPaginationError(false);
         const madeProgress =
           firstItemIndexRef.current < initialFirstItemIndex ||
           prependedByThisPage > 0 ||
-          (wasEmpty && page.messages.length > 0);
+          (wasEmpty && (page.items?.length ?? page.messages.length) > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
@@ -654,6 +764,7 @@ export function useChatTimeline(
 
   return {
     messages,
+    timelineItems,
     loading,
     loadingMore,
     hasMore,
@@ -662,6 +773,7 @@ export function useChatTimeline(
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    hydrateCurrentTimeline,
     resetToLive,
   };
 }

@@ -1,5 +1,9 @@
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { isDateDividerBoundary, formatDateDividerLabel } from "./timelineDividers";
+import {
+  isDateDividerBetween,
+  isDateDividerBoundary,
+  formatDateDividerLabel,
+} from "./timelineDividers";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import type { MessageActionController } from "./useMessageActionController";
 
@@ -21,6 +25,9 @@ interface TimelineMessageRowProps {
   onSenderClick?: (userId: string, label: string) => void;
   onUserPillClick: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
+  previousTimelineTimestampMs?: number | null;
+  hasNoticesBefore?: boolean;
+  hasNoticesBeforeNext?: boolean;
 }
 
 export function TimelineMessageRow({
@@ -41,18 +48,25 @@ export function TimelineMessageRow({
   onSenderClick,
   onUserPillClick,
   onRoomPillClick,
+  previousTimelineTimestampMs,
+  hasNoticesBefore = false,
+  hasNoticesBeforeNext = false,
 }: TimelineMessageRowProps) {
   const own = message.sender === currentUserId;
   const prev = messages[index - 1];
   const next = messages[index + 1];
   const isGroupBreakAt = (candidateIndex: number) =>
     isDateDividerBoundary(messages, candidateIndex) || candidateIndex === unreadStartIndex;
+  const showDateDivider =
+    previousTimelineTimestampMs === undefined
+      ? isDateDividerBoundary(messages, index)
+      : isDateDividerBetween(previousTimelineTimestampMs, message.timestamp_ms);
 
   return (
     // Flex containment keeps layout-row top margins inside Virtuoso's measured
     // item box, preserving bottom detection and prepend anchoring.
-    <div className="flex flex-col pb-1">
-      {isDateDividerBoundary(messages, index) && (
+    <div className="flex flex-col pb-1" data-message-event-id={message.event_id}>
+      {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
           {formatDateDividerLabel(message.timestamp_ms)}
         </div>
@@ -69,8 +83,12 @@ export function TimelineMessageRow({
         roomId={roomId}
         currentUserId={currentUserId}
         own={own}
-        sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(index)}
-        sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(index + 1)}
+        sameSenderAsPrev={
+          prev?.sender === message.sender && !hasNoticesBefore && !isGroupBreakAt(index)
+        }
+        sameSenderAsNext={
+          next?.sender === message.sender && !hasNoticesBeforeNext && !isGroupBreakAt(index + 1)
+        }
         canRedact={own || canRedact}
         canPin={canPin}
         isPinned={isPinned}

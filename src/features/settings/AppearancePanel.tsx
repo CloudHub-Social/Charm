@@ -168,6 +168,7 @@ export function AppearancePanel() {
   const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const roomListEnrichmentEnabled = useFlag("room_list_unread_filter");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const {
     theme,
     fontSize,
@@ -178,6 +179,8 @@ export function AppearancePanel() {
     showUnreadCounts,
     autoplayGifs,
     stripExifOnUpload,
+    hideMembershipEvents,
+    showHiddenEvents,
     setTheme,
     setFontSize,
     setDensity,
@@ -187,6 +190,8 @@ export function AppearancePanel() {
     setShowUnreadCounts,
     setAutoplayGifs,
     setStripExifOnUpload,
+    setHideMembershipEvents,
+    setShowHiddenEvents,
   } = useAppearance();
 
   return (
@@ -279,6 +284,32 @@ export function AppearancePanel() {
               />
             }
           />
+        )}
+        {timelineStateEventsEnabled && (
+          <>
+            <SettingTile
+              title="Membership events"
+              description="Show joins, leaves, invitations, moderation, and profile changes in room timelines."
+              control={
+                <Switch
+                  aria-label="Show membership events"
+                  checked={!hideMembershipEvents}
+                  onCheckedChange={(checked) => setHideMembershipEvents(!checked)}
+                />
+              }
+            />
+            <SettingTile
+              title="Hidden state events"
+              description="Show otherwise unsupported room-state changes for troubleshooting."
+              control={
+                <Switch
+                  aria-label="Show hidden state events"
+                  checked={showHiddenEvents}
+                  onCheckedChange={setShowHiddenEvents}
+                />
+              }
+            />
+          </>
         )}
         {mediaSendPolishEnabled && (
           <SettingTile
