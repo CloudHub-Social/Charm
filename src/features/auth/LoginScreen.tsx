@@ -505,9 +505,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       if (passwordResetOperationRef.current === operation) setPending(false);
     }
     if (passwordResetOperationRef.current !== operation) {
-      if (!challenge.attempt_id.startsWith("unavailable-")) {
-        cancelPasswordReset(challenge.attempt_id).catch(logAndIgnore);
-      }
+      cancelPasswordReset(challenge.attempt_id).catch(logAndIgnore);
       return;
     }
     passwordResetAttemptRef.current = challenge.attempt_id;
