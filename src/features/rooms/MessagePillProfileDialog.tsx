@@ -96,24 +96,28 @@ export function MessagePillProfileDialog({
     enabled: detailed && userId !== "",
     refetchOnMount: "always",
   });
+  const profileIsFetching = profileQuery.isFetching;
+  const refetchProfile = profileQuery.refetch;
   useEffect(() => {
-    if (!profileQuery.isFetching && pendingProfileRefreshRef.current) {
+    if (!profileIsFetching && pendingProfileRefreshRef.current) {
       pendingProfileRefreshRef.current = false;
-      void profileQuery.refetch();
+      void refetchProfile();
     }
-  }, [profileQuery.isFetching, profileQuery.refetch]);
+  }, [profileIsFetching, refetchProfile]);
   const mutualRoomsQuery = useQuery({
     queryKey: ["mutual-rooms", accountId ?? null, userId],
     queryFn: () => getMutualRooms(userId),
     enabled: detailed && userId !== "",
     refetchOnMount: "always",
   });
+  const mutualRoomsAreFetching = mutualRoomsQuery.isFetching;
+  const refetchMutualRooms = mutualRoomsQuery.refetch;
   useEffect(() => {
-    if (!mutualRoomsQuery.isFetching && pendingMutualRoomsRefreshRef.current) {
+    if (!mutualRoomsAreFetching && pendingMutualRoomsRefreshRef.current) {
       pendingMutualRoomsRefreshRef.current = false;
-      void mutualRoomsQuery.refetch();
+      void refetchMutualRooms();
     }
-  }, [mutualRoomsQuery.isFetching, mutualRoomsQuery.refetch]);
+  }, [mutualRoomsAreFetching, refetchMutualRooms]);
   const resolvedProfile = detailed ? profileQuery.data : undefined;
   const presence = livePresence ?? resolvedProfile?.presence;
   const displayName =
