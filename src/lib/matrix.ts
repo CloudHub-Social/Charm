@@ -843,6 +843,10 @@ export function listSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
   return invoke("list_space_children", { spaceId });
 }
 
+export function listManageableSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
+  return invoke("list_manageable_space_children", { spaceId });
+}
+
 export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[]> {
   return invoke("list_space_hierarchy", { spaceId });
 }
@@ -1169,6 +1173,11 @@ export function removeAltAlias(roomId: string, alias: string): Promise<void> {
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
 export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
+}
+
+/** Fires only when a joined space receives an m.space.child state update. */
+export function onSpaceChildrenUpdate(callback: (spaceId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("space_children:update", (e) => callback(e.payload));
 }
 
 /**

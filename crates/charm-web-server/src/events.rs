@@ -49,6 +49,8 @@ pub enum ServerEvent {
     Typing(TypingUpdate),
     #[serde(rename = "room_details:update")]
     RoomDetails(RoomDetails),
+    #[serde(rename = "space_children:update")]
+    SpaceChildren(String),
     #[serde(rename = "timeline:update")]
     Timeline(RoomTimelineUpdate),
     #[serde(rename = "presence:update")]
@@ -70,3 +72,23 @@ pub enum ServerEvent {
 /// fatal error (a missed `room_list:update`/`timeline:update` is superseded
 /// by the next one anyway).
 pub const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn space_children_event_matches_the_frontend_listener_contract() {
+        let value =
+            serde_json::to_value(ServerEvent::SpaceChildren("!space:example.org".to_string()))
+                .expect("space child update should serialize");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "event": "space_children:update",
+                "data": "!space:example.org"
+            })
+        );
+    }
+}

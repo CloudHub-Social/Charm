@@ -12,6 +12,8 @@ import { useRoomDetails } from "./useRoomDetails";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
+import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
+import type { RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
   { value: "general", label: "General" },
@@ -21,7 +23,11 @@ const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
 
 interface RoomSettingsModalProps {
   currentUserId: string;
+  rooms?: RoomSummary[];
+  onSpaceChildrenChanged?: () => void;
 }
+
+const EMPTY_ROOMS: RoomSummary[] = [];
 
 /**
  * Room settings as a modal — full-screen on mobile, a centered card on
@@ -32,9 +38,19 @@ interface RoomSettingsModalProps {
  * `SettingsScreen`, reading its target room/section from `roomSettingsAtom`
  * rather than being conditionally rendered by a parent.
  */
-export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
+export function RoomSettingsModal({
+  currentUserId,
+  rooms = EMPTY_ROOMS,
+  onSpaceChildrenChanged,
+}: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
-  const { data: details, isLoading, isError } = useRoomDetails(target?.roomId ?? null);
+  const targetRoomId = target?.roomId ?? null;
+  const {
+    data: details,
+    isLoading,
+    isError,
+    isFetching,
+  } = useRoomDetails(targetRoomId, target?.kind === "space");
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -143,6 +159,9 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                       {section.label}
                     </TabsTrigger>
                   ))}
+                  {spaceHierarchyEnabled && target.kind === "space" && (
+                    <TabsTrigger value="children">Children</TabsTrigger>
+                  )}
                 </TabsList>
               </div>
 
@@ -172,6 +191,17 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                 >
                   <PowerLevelThresholdsEditor details={details} />
                 </TabsContent>
+                {spaceHierarchyEnabled && target.kind === "space" && (
+                  <TabsContent value="children">
+                    <SpaceChildrenSettings
+                      spaceId={details.room_id}
+                      spaceName={details.name}
+                      rooms={rooms}
+                      canEdit={details.can.set_space_child && !isFetching && !isError}
+                      onChanged={onSpaceChildrenChanged}
+                    />
+                  </TabsContent>
+                )}
               </div>
             </Tabs>
           </TooltipProvider>

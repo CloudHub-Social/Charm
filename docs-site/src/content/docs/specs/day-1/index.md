@@ -66,7 +66,7 @@ here.
 | 30 | [Focus mode and DND](/specs/day-1/spec-30--focus-mode-and-do-not-disturb/) | **Shipped** | [#249](https://github.com/CloudHub-Social/Charm/pull/249), default-off flag; manual tray verification remains non-blocking |
 | 31 | [Room upgrades](/specs/day-1/spec-31--room-upgrades/) | **Planned** | No matching merged implementation found |
 | 32 | [Room alias management](/specs/day-1/spec-32--room-alias-management/) | **Shipped** | Desktop [#251](https://github.com/CloudHub-Social/Charm/pull/251); web transport commands shipped, default-off `room_alias_management` flag |
-| 33 | [Space nesting and reorganization](/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/) | **In progress** | Canonical-parent APIs, create-under-space, drag-to-nest/un-nest, and the shared space-settings shell are in review; settings child management remains |
+| 33 | [Space nesting and reorganization](/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/) | **In progress** | Canonical-parent APIs, create-under-space, drag-to-nest/un-nest, and the complete shared space-settings shell including child management are in review |
 | 34 | [Labs settings](/specs/day-1/spec-34--labs-and-experimental-settings-panel/) | **Shipped** | [#253](https://github.com/CloudHub-Social/Charm/pull/253) |
 | 35 | [Feature flags](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/) | **Shipped** | [#241](https://github.com/CloudHub-Social/Charm/pull/241), [#255](https://github.com/CloudHub-Social/Charm/pull/255), [#256](https://github.com/CloudHub-Social/Charm/pull/256), [#259](https://github.com/CloudHub-Social/Charm/pull/259) |
 | 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **In progress** | Profile and mutual-room read foundation implemented; card UI and actions remain |
@@ -96,7 +96,7 @@ here.
 | 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
-| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Pin/unpin, synced reorder, Leave, Remove, Suggested, Add Existing, and a SpaceRail Settings entry are implemented or in review; the RoomList hierarchy-row removal gate remains explicitly in PR #320, and closure is paired with Spec 33's settings child-management slice |
+| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | All implementation scope is shipped or in review: the remaining RoomList removal gate is explicitly in PR #320, and SpaceRail Settings plus child management are in the stacked Spec 33 PRs |
 
 ## Cross-cutting rules
 

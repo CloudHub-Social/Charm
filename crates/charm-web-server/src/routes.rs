@@ -56,8 +56,8 @@ use charm_lib::matrix::send::{
 };
 use charm_lib::matrix::spaces::{
     add_existing_space_child_impl, create_space_impl, join_room_impl, knock_room_impl,
-    list_space_hierarchy_impl, remove_space_child_impl, set_space_child_suggested_impl,
-    set_space_parent_impl,
+    list_manageable_space_children_impl, list_space_children_impl, list_space_hierarchy_impl,
+    remove_space_child_impl, set_space_child_suggested_impl, set_space_parent_impl,
 };
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
@@ -120,6 +120,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/{room_id}/invite/accept", post(accept_invite))
         .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
+        .route(
+            "/api/rooms/{room_id}/space-children",
+            get(list_space_children),
+        )
+        .route(
+            "/api/rooms/{room_id}/space-children/manageable",
+            get(list_manageable_space_children),
+        )
         .route("/api/rooms/{room_id}/leave", post(leave_room))
         .route("/api/rooms/{room_id}/space-parent", put(set_space_parent))
         .route(
@@ -2128,6 +2136,30 @@ async fn list_space_hierarchy(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(hierarchy))
+}
+
+async fn list_space_children(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let children = list_space_children_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(children))
+}
+
+async fn list_manageable_space_children(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let children = list_manageable_space_children_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(children))
 }
 
 #[derive(Debug, Deserialize)]

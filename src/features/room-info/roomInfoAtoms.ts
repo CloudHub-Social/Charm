@@ -4,7 +4,7 @@ import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
 /** Distinct rooms tracked at once — see `boundedAtomFamily`'s doc comment. */
 const MAX_TRACKED_ROOMS = 100;
 
-export type RoomSettingsSection = "general" | "members" | "permissions";
+export type RoomSettingsSection = "general" | "members" | "permissions" | "children";
 
 export interface RoomSettingsTarget {
   roomId: string;
