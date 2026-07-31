@@ -1215,7 +1215,6 @@ pub async fn request_registration_email(
     let response = tokio::select! {
         result = pending.client.send(request) => result,
         () = cancellation.cancelled() => {
-            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
