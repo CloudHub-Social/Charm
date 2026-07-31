@@ -573,7 +573,10 @@ fn discard_cancelled_account_store_locked(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<(), String> {
-    let path = store_path(app, account_key)?;
+    // Resolve without `store_path`: its create-on-access contract is useful
+    // for live stores but would manufacture an empty directory while cleanup
+    // is trying to prove the cancelled store is absent.
+    let path = matrix_store_root(app)?.join(account_key);
     match std::fs::remove_dir_all(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
