@@ -405,7 +405,7 @@ export function useChatTimeline(
       // the viewport anchors. This refresh only asks that current snapshot to
       // include newly enabled item kinds; it must not behave like Jump to
       // Present.
-      const page = await getTimelinePage(targetRoomId);
+      const page = await getTimelinePage(targetRoomId, undefined, undefined, false, false);
       if (
         visitGenerationRef.current !== generation ||
         liveTimelineRevisionRef.current !== liveRevision
@@ -413,8 +413,6 @@ export function useChatTimeline(
         return false;
       }
       applyTimelineItems(page.messages, page.items);
-      nextCursorRef.current = page.next_cursor;
-      setHasMore(page.next_cursor !== null);
       return true;
     } catch (err) {
       if (visitGenerationRef.current === generation) logAndIgnore(err);

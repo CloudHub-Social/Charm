@@ -460,10 +460,7 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 timestamp_ms,
                 target_user_id: target_user_id.to_string(),
                 target_display_name: membership.display_name(),
-                change: membership
-                    .change()
-                    .map(membership_change_summary)
-                    .unwrap_or(TimelineMembershipChange::Unknown),
+                change: membership.change().and_then(membership_change_summary)?,
                 reason,
             })
         }
@@ -499,13 +496,22 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
                 reason: None,
             })
         }
-        TimelineItemContent::OtherState(state) => Some(TimelineItemSummary::State {
-            event_id,
-            sender,
-            timestamp_ms,
-            state_key: state.state_key().to_owned(),
-            change: state_change_summary(state.content()),
-        }),
+        TimelineItemContent::OtherState(state) => {
+            let state_key = state.state_key().to_owned();
+            Some(TimelineItemSummary::State {
+                event_id,
+                sender,
+                timestamp_ms,
+                state_key: state_key.clone(),
+                change: if state_key.is_empty() {
+                    state_change_summary(state.content())
+                } else {
+                    TimelineStateChange::Hidden {
+                        event_type: state.content().event_type().to_string(),
+                    }
+                },
+            })
+        }
         TimelineItemContent::FailedToParseState {
             event_type,
             state_key,
@@ -526,8 +532,8 @@ fn timeline_state_item_to_summary(item: &EventTimelineItem) -> Option<TimelineIt
     }
 }
 
-fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChange {
-    match change {
+fn membership_change_summary(change: MembershipChange) -> Option<TimelineMembershipChange> {
+    Some(match change {
         MembershipChange::Joined => TimelineMembershipChange::Joined,
         MembershipChange::Left => TimelineMembershipChange::Left,
         MembershipChange::Banned => TimelineMembershipChange::Banned,
@@ -542,10 +548,11 @@ fn membership_change_summary(change: MembershipChange) -> TimelineMembershipChan
         MembershipChange::KnockAccepted => TimelineMembershipChange::KnockAccepted,
         MembershipChange::KnockRetracted => TimelineMembershipChange::KnockRetracted,
         MembershipChange::KnockDenied => TimelineMembershipChange::KnockDenied,
-        MembershipChange::None | MembershipChange::Error | MembershipChange::NotImplemented => {
+        MembershipChange::None => return None,
+        MembershipChange::Error | MembershipChange::NotImplemented => {
             TimelineMembershipChange::Unknown
         }
-    }
+    })
 }
 
 fn state_change_summary(change: &AnyOtherStateEventContentChange) -> TimelineStateChange {
@@ -1294,6 +1301,7 @@ pub async fn get_timeline_page(
     cursor: Option<String>,
     limit: Option<u32>,
     force_live: bool,
+    paginate: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
     let client = state.require_client().await?;
@@ -1343,6 +1351,7 @@ pub async fn get_timeline_page(
             media_cache,
             limit,
             include_timeline_items,
+            paginate,
         )
         .await
     })
@@ -1361,6 +1370,7 @@ pub async fn get_timeline_page_impl(
     media_cache: Option<&media::MediaCache>,
     limit: Option<u32>,
     include_timeline_items: bool,
+    paginate: bool,
 ) -> Result<TimelinePage, String> {
     // 200 is well over any real UI need (the documented default is 30) —
     // reject rather than silently clamp, so a caller passing a bogus/huge
@@ -1374,10 +1384,14 @@ pub async fn get_timeline_page_impl(
         ));
     }
     let num_events = u16::try_from(requested).map_err(|e| e.to_string())?;
-    let hit_start = timeline
-        .paginate_backwards(num_events)
-        .await
-        .map_err(|e| e.to_string())?;
+    let hit_start = if paginate {
+        timeline
+            .paginate_backwards(num_events)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        false
+    };
 
     let own_user_id = client.user_id().map(ToOwned::to_owned);
     // A fresh subscription just to read the current snapshot — the
@@ -1391,7 +1405,7 @@ pub async fn get_timeline_page_impl(
     Ok(TimelinePage {
         messages: message_summaries(&timeline_items),
         items: include_timeline_items.then_some(timeline_items),
-        next_cursor: if hit_start {
+        next_cursor: if paginate && hit_start {
             None
         } else {
             Some("more".to_string())

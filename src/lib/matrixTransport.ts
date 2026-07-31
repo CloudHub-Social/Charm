@@ -340,6 +340,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         "GET",
         `/api/rooms/${encodeSegment(String(args.roomId))}/timeline${query({
           limit: args.limit as number | undefined,
+          paginate: args.paginate as boolean | undefined,
         })}`,
       );
     case "list_space_hierarchy":
