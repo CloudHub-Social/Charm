@@ -178,20 +178,20 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         // oxlint-disable-next-line no-await-in-loop
         step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
-    } catch (error) {
-      const message = String(error);
+    } catch (registrationError) {
+      const message = String(registrationError);
       if (!isTerminalRegistrationError(message) && step.state === "challenge") {
         // The backend deliberately preserves retryable UIA failures (for
         // example a temporary rate limit). Keep the opaque attempt and expose
         // the automatic stage so the user can retry it without starting over.
         setRegistrationStep(step);
-        throw error;
+        throw registrationError;
       }
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
       if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
-      throw error;
+      throw registrationError;
     }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
