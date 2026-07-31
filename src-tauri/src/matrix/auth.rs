@@ -1132,21 +1132,24 @@ pub async fn request_registration_email(
         .email_client_secret
         .get_or_insert_with(ClientSecret::new)
         .clone();
-    if let Err(error) = check_auth_mail_quota(&state, &address_key).await {
-        if !restore_or_discard_pending_registration(
-            &app,
-            &state,
-            &attempt_id,
-            &cancellation,
-            pending,
-        )
-        .await
-        {
-            return Err("registration cancelled".to_string());
+    let quota_reservation = match check_auth_mail_quota(&state, &address_key).await {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            if !restore_or_discard_pending_registration(
+                &app,
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await
+            {
+                return Err("registration cancelled".to_string());
+            }
+            reservation.defuse();
+            return Err(error);
         }
-        reservation.defuse();
-        return Err(error);
-    }
+    };
     let send_attempt = pending.email_send_attempt + 1;
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
@@ -1164,6 +1167,7 @@ pub async fn request_registration_email(
     let response = match response {
         Ok(response) => response,
         Err(_) => {
+            refund_auth_mail_quota(&state, quota_reservation).await;
             match restore_pending_registration_if_current(
                 &state,
                 &attempt_id,
