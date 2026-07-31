@@ -11,10 +11,13 @@ import {
   cancelSsoLogin,
   completeSsoLogin,
   continueRegistration,
+  getLoginFlows,
   login,
+  loginWithToken,
   register,
   startSsoLogin,
   type LoginResponse,
+  type LoginFlowSummary,
   type RegistrationAuthResponse,
   type RegistrationStep,
 } from "@/lib/matrix";
@@ -67,6 +70,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [registrationStep, setRegistrationStep] = useState<
     Extract<RegistrationStep, { state: "challenge" }> | undefined
   >();
+  const [loginFlows, setLoginFlows] = useState<LoginFlowSummary>();
+  const [loginFlowsFailed, setLoginFlowsFailed] = useState(false);
+  const [showTokenLogin, setShowTokenLogin] = useState(false);
+  const [loginToken, setLoginToken] = useState("");
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
@@ -79,14 +86,63 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
+  const passwordLoginAvailable =
+    !registrationUiaEnabled || loginFlows === undefined || loginFlowsFailed || loginFlows.password;
+  const showGenericSso =
+    !registrationUiaEnabled ||
+    loginFlows === undefined ||
+    loginFlowsFailed ||
+    (loginFlows.sso && loginFlows.identity_providers.length === 0);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
+
+  useEffect(() => {
+    if (!registrationUiaEnabled || mode !== "sign-in" || discovery.state !== "resolved") {
+      setLoginFlows(undefined);
+      setLoginFlowsFailed(discovery.state === "failed");
+      return undefined;
+    }
+    let current = true;
+    setLoginFlows(undefined);
+    setLoginFlowsFailed(false);
+    getLoginFlows(discovery.homeserverUrl)
+      .then((flows) => {
+        if (current) {
+          setLoginFlows(flows);
+          setLoginFlowsFailed(false);
+        }
+      })
+      .catch(() => {
+        if (current) {
+          setLoginFlows(undefined);
+          setLoginFlowsFailed(true);
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [discovery, mode, registrationUiaEnabled]);
+
+  useEffect(() => {
+    // A token is a homeserver-scoped bearer credential. Clear it as soon as
+    // discovery restarts so a value entered for server A can never be sent
+    // to server B while B's capabilities are still loading.
+    if (!registrationUiaEnabled || !loginFlows?.token) {
+      setShowTokenLogin(false);
+      setLoginToken("");
+    }
+  }, [loginFlows, registrationUiaEnabled]);
 
   // Guards against acting on the same charm://sso-callback URL twice (the
   // deep-link plugin can, in principle, deliver it more than once) and
   // against completing a callback that doesn't belong to an SSO attempt this
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
+  const ssoOperationRef = useRef(0);
+  // Keeps cancellation from exposing the SSO buttons while the backend is
+  // still creating an attempt. Once that setup settles, its stale-operation
+  // branch cancels the exact pending attempt before allowing another start.
+  const ssoSetupInFlightRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
 
   useEffect(
@@ -149,7 +205,18 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setError(null);
     try {
       if (mode === "sign-in") {
-        onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));
+        if (showTokenLogin) {
+          if (discovery.state !== "resolved" || !loginFlows?.token) {
+            throw new Error("Token login options changed; re-enter the token.");
+          }
+          onSignedIn(await loginWithToken(discovery.homeserverUrl, loginToken));
+          setLoginToken("");
+        } else {
+          if (discovery.state === "resolved" && loginFlows && !loginFlows.password) {
+            throw new Error("This homeserver does not offer password sign-in.");
+          }
+          onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));
+        }
       } else if (registrationUiaEnabled) {
         await handleRegistrationStep(
           await beginRegistration({ homeserver_url: homeserverUrl, username, password }),
@@ -240,17 +307,30 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  async function handleSsoLogin() {
+  async function handleSsoLogin(idpId?: string) {
+    const operation = ++ssoOperationRef.current;
+    ssoSetupInFlightRef.current = true;
     setSsoPending(true);
     setError(null);
     try {
-      const ssoUrl = await startSsoLogin(homeserverUrl);
+      const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
+      ssoSetupInFlightRef.current = false;
+      if (operation !== ssoOperationRef.current) {
+        await cancelSsoLogin().catch(logAndIgnore);
+        setSsoPending(false);
+        return;
+      }
       ssoInProgressRef.current = true;
       await openExternalUrl(ssoUrl);
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
+      ssoSetupInFlightRef.current = false;
+      if (operation !== ssoOperationRef.current) {
+        setSsoPending(false);
+        return;
+      }
       ssoInProgressRef.current = false;
       setError(String(err));
       setSsoPending(false);
@@ -258,8 +338,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   function handleCancelSso() {
+    ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
-    setSsoPending(false);
+    // If setup is still in flight, keep the controls disabled. The stale
+    // setup branch above performs a second cancellation after the backend
+    // has actually installed its pending attempt, then clears this state.
+    if (!ssoSetupInFlightRef.current) setSsoPending(false);
     setError(null);
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
@@ -288,6 +372,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
               void (async () => {
                 if (registrationStep) await handleCancelRegistration();
                 setMode(value as Mode);
+                setShowTokenLogin(false);
+                setLoginToken("");
                 setError(null);
                 if (ssoPending) handleCancelSso();
               })();
@@ -414,42 +500,78 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     </p>
                   </div>
 
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="username">Username</Label>
-                    <Input
-                      id="username"
-                      value={username}
-                      onChange={(e) => setUsername(e.currentTarget.value)}
-                      placeholder="Username"
-                      aria-invalid={Boolean(error)}
-                      disabled={pending || ssoPending}
-                    />
-                  </div>
+                  {mode === "sign-in" && showTokenLogin ? (
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="login-token">Login token</Label>
+                      <Input
+                        id="login-token"
+                        type="password"
+                        value={loginToken}
+                        onChange={(e) => setLoginToken(e.currentTarget.value)}
+                        placeholder="Paste login token"
+                        autoComplete="off"
+                        aria-invalid={Boolean(error)}
+                        disabled={pending || ssoPending}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Tokens are used once and are never saved by Charm.
+                      </p>
+                    </div>
+                  ) : passwordLoginAvailable || mode === "register" ? (
+                    <>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="username">Username</Label>
+                        <Input
+                          id="username"
+                          value={username}
+                          onChange={(e) => setUsername(e.currentTarget.value)}
+                          placeholder="Username"
+                          aria-invalid={Boolean(error)}
+                          disabled={pending || ssoPending}
+                        />
+                      </div>
 
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="password">Password</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.currentTarget.value)}
-                      placeholder="Password"
-                      aria-invalid={Boolean(error)}
-                      disabled={pending || ssoPending}
-                    />
-                    {error && <p className="text-xs text-destructive">{error}</p>}
-                  </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="password">Password</Label>
+                        <Input
+                          id="password"
+                          type="password"
+                          value={password}
+                          onChange={(e) => setPassword(e.currentTarget.value)}
+                          placeholder="Password"
+                          aria-invalid={Boolean(error)}
+                          disabled={pending || ssoPending}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      This homeserver does not offer password sign-in. Choose one of its sign-in
+                      options below.
+                    </p>
+                  )}
+                  {error && <p className="text-xs text-destructive">{error}</p>}
 
-                  <Button type="submit" disabled={pending || ssoPending} className="w-full">
-                    {pending && <Loader2 className="animate-spin" />}
-                    {pending
-                      ? mode === "sign-in"
-                        ? "Signing in…"
-                        : "Creating account…"
-                      : mode === "sign-in"
-                        ? "Sign in"
-                        : "Create account"}
-                  </Button>
+                  {(mode === "register" || showTokenLogin || passwordLoginAvailable) && (
+                    <Button
+                      type="submit"
+                      disabled={pending || ssoPending}
+                      className="w-full"
+                    >
+                      {pending && <Loader2 className="animate-spin" />}
+                      {pending
+                        ? mode === "sign-in"
+                          ? showTokenLogin
+                            ? "Using token…"
+                            : "Signing in…"
+                          : "Creating account…"
+                        : mode === "sign-in"
+                          ? showTokenLogin
+                            ? "Use login token"
+                            : "Sign in"
+                          : "Create account"}
+                    </Button>
+                  )}
 
                   {mode === "sign-in" && showNativeSignInOptions && (
                     <>
@@ -474,15 +596,45 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={pending}
-                            onClick={handleSsoLogin}
-                            className="w-full"
-                          >
-                            Continue with SSO
-                          </Button>
+                          {showGenericSso && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={pending}
+                              onClick={() => void handleSsoLogin()}
+                              className="w-full"
+                            >
+                              Continue with SSO
+                            </Button>
+                          )}
+                          {registrationUiaEnabled &&
+                            loginFlows?.identity_providers.map((provider) => (
+                              <Button
+                                key={provider.id}
+                                type="button"
+                                variant="outline"
+                                disabled={pending}
+                                onClick={() => void handleSsoLogin(provider.id)}
+                                className="w-full"
+                              >
+                                Continue with {provider.name}
+                              </Button>
+                            ))}
+                          {registrationUiaEnabled && loginFlows?.token && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={pending}
+                              onClick={() => {
+                                setShowTokenLogin((current) => !current);
+                                setLoginToken("");
+                                setError(null);
+                              }}
+                              className="w-full"
+                            >
+                              {showTokenLogin ? "Use password instead" : "Use a login token"}
+                            </Button>
+                          )}
                           <Button
                             type="button"
                             variant="outline"

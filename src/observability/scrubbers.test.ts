@@ -22,6 +22,11 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText("not_a_secret_container=fine")).toBe("not_a_secret_container=fine");
   });
 
+  it("redacts generic one-time token fields from IPC diagnostics", () => {
+    expect(scrubSensitiveText("token=abc123")).toBe("token=[redacted]");
+    expect(scrubSentryValue({ token: "abc123" })).toEqual({ token: "[redacted]" });
+  });
+
   it("redacts hyphenated field-name variants (access-token, recovery-key, ...), not just snake_case/camelCase", () => {
     expect(scrubSensitiveText("access-token=abc123")).toBe("access-token=[redacted]");
     expect(scrubSensitiveText("refresh-token=abc123")).toBe("refresh-token=[redacted]");

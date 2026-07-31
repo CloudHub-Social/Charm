@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LoginScreen } from "./LoginScreen";
 import type { LoginResponse } from "@/lib/matrix";
 
@@ -18,6 +18,13 @@ const register = vi.fn();
 const beginRegistration = vi.fn();
 const continueRegistration = vi.fn();
 const cancelRegistration = vi.fn().mockResolvedValue(undefined);
+const getLoginFlows = vi.fn().mockResolvedValue({
+  password: true,
+  token: false,
+  sso: true,
+  identity_providers: [],
+});
+const loginWithToken = vi.fn();
 const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso");
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
@@ -39,6 +46,8 @@ vi.mock("@/lib/matrix", () => ({
   beginRegistration: (...args: unknown[]) => beginRegistration(...args),
   continueRegistration: (...args: unknown[]) => continueRegistration(...args),
   cancelRegistration: (...args: unknown[]) => cancelRegistration(...args),
+  getLoginFlows: (...args: unknown[]) => getLoginFlows(...args),
+  loginWithToken: (...args: unknown[]) => loginWithToken(...args),
   startSsoLogin: (...args: unknown[]) => startSsoLogin(...args),
   completeSsoLogin: (...args: unknown[]) => completeSsoLogin(...args),
   cancelSsoLogin: (...args: unknown[]) => cancelSsoLogin(...args),
@@ -66,6 +75,15 @@ function fillRegistrationForm() {
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse" } });
 }
 
+async function discoverLoginChoices() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 describe("LoginScreen SSO callback handling", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
@@ -79,6 +97,13 @@ describe("LoginScreen SSO callback handling", () => {
     beginRegistration.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
+    getLoginFlows.mockReset().mockResolvedValue({
+      password: true,
+      token: false,
+      sso: true,
+      identity_providers: [],
+    });
+    loginWithToken.mockReset();
     featureFlags.registrationEnabled = false;
     featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
@@ -198,6 +223,13 @@ describe("LoginScreen default homeserver URL", () => {
     beginRegistration.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
+    getLoginFlows.mockReset().mockResolvedValue({
+      password: true,
+      token: false,
+      sso: true,
+      identity_providers: [],
+    });
+    loginWithToken.mockReset();
     featureFlags.registrationEnabled = false;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
@@ -240,6 +272,13 @@ describe("LoginScreen registration UIA", () => {
     beginRegistration.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
+    getLoginFlows.mockReset().mockResolvedValue({
+      password: true,
+      token: false,
+      sso: true,
+      identity_providers: [],
+    });
+    loginWithToken.mockReset();
     startSsoLogin.mockReset().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockReset();
     cancelSsoLogin.mockReset().mockResolvedValue(undefined);
@@ -418,5 +457,119 @@ describe("LoginScreen registration UIA", () => {
     expect(screen.getByRole("button", { name: "Accept and continue" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent(/did not provide terms/i);
     expect(continueRegistration).not.toHaveBeenCalled();
+  });
+});
+
+describe("LoginScreen login choices", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.unstubAllEnvs();
+    getCurrentUrls = null;
+    openUrlCallback = undefined;
+    getCurrent.mockClear();
+    onOpenUrl.mockClear();
+    openUrl.mockReset().mockResolvedValue(undefined);
+    login.mockReset();
+    loginWithToken.mockReset().mockResolvedValue(fakeSession());
+    register.mockReset();
+    beginRegistration.mockReset();
+    continueRegistration.mockReset();
+    cancelRegistration.mockReset().mockResolvedValue(undefined);
+    discoverHomeserver.mockReset().mockResolvedValue({
+      homeserver_url: "https://matrix.example/",
+    });
+    getLoginFlows.mockReset().mockResolvedValue({
+      password: true,
+      token: true,
+      sso: true,
+      identity_providers: [{ id: "company", name: "Company SSO", brand: null }],
+    });
+    startSsoLogin.mockReset().mockResolvedValue("https://homeserver.example/sso/company");
+    completeSsoLogin.mockReset();
+    cancelSsoLogin.mockReset().mockResolvedValue(undefined);
+    featureFlags.registrationEnabled = true;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("starts SSO with a homeserver-advertised identity provider", async () => {
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
+    await act(async () => {
+      screen.getByRole("button", { name: "Continue with Company SSO" }).click();
+    });
+
+    expect(startSsoLogin).toHaveBeenCalledWith("https://cloudhub.social", "company");
+    expect(openUrl).toHaveBeenCalledWith("https://homeserver.example/sso/company");
+  });
+
+  it("uses an advertised standalone login token without persisting it in the form", async () => {
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use a login token" }));
+    fireEvent.change(screen.getByLabelText("Login token"), {
+      target: { value: "one-time-secret" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Use login token" }).click();
+    });
+
+    expect(loginWithToken).toHaveBeenCalledWith("https://matrix.example/", "one-time-secret");
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("falls back to generic SSO when login-flow discovery fails", async () => {
+    getLoginFlows.mockRejectedValue(new Error("unavailable"));
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
+  });
+
+  it("keeps generic SSO available when homeserver resolution fails", async () => {
+    discoverHomeserver.mockRejectedValue(new Error("offline"));
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeVisible();
+  });
+
+  it("hides password submission when the homeserver does not advertise it", async () => {
+    getLoginFlows.mockResolvedValue({
+      password: false,
+      token: false,
+      sso: true,
+      identity_providers: [{ id: "company", name: "Company SSO", brand: null }],
+    });
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.queryByLabelText("Username")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue with Company SSO" })).toBeVisible();
+  });
+
+  it("clears a homeserver-scoped token while login flows reload", async () => {
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use a login token" }));
+    fireEvent.change(screen.getByLabelText("Login token"), {
+      target: { value: "one-time-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("Homeserver"), {
+      target: { value: "https://other.example" },
+    });
+
+    expect(screen.queryByLabelText("Login token")).not.toBeInTheDocument();
   });
 });

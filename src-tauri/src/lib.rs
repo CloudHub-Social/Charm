@@ -1446,6 +1446,8 @@ pub fn run() {
             matrix::auth::begin_registration,
             matrix::auth::continue_registration,
             matrix::auth::cancel_registration,
+            matrix::auth::get_login_flows,
+            matrix::auth::login_with_token,
             matrix::auth::discover_homeserver,
             matrix::auth::start_sso_login,
             matrix::auth::complete_sso_login,
