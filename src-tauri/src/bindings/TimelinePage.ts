@@ -2,12 +2,12 @@
 import type { RoomMessageSummary } from "./RoomMessageSummary";
 import type { TimelineItemSummary } from "./TimelineItemSummary";
 
-export type TimelinePage = { messages: Array<RoomMessageSummary>,
+export type TimelinePage = { messages: Array<RoomMessageSummary>, 
 /**
  * Full message/state/membership stream for Spec 39 consumers. Kept
  * alongside `messages` so existing message-only surfaces remain stable.
  */
-items?: Array<TimelineItemSummary>,
+items?: Array<TimelineItemSummary>, 
 /**
  * Spec 14 tweak (the one allowed IPC-contract change): with a
  * `matrix-sdk-ui` `Timeline` backing pagination, there's no opaque

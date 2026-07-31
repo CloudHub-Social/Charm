@@ -12,7 +12,7 @@ import type { TimelineItemSummary } from "./TimelineItemSummary";
  * message in place instead of being silently dropped (the bug `events_to_summaries`
  * had prior to Spec 14).
  */
-export type RoomTimelineUpdate = { room_id: string, messages: Array<RoomMessageSummary>,
+export type RoomTimelineUpdate = { room_id: string, messages: Array<RoomMessageSummary>, 
 /**
  * Full message/state/membership snapshot matching `TimelinePage::items`.
  */
