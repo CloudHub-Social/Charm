@@ -2,19 +2,25 @@
 //! and session restore. QR login is its own module (`qr_login`) — its
 //! multi-stage device-code flow doesn't fit this file's shape.
 
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
-use matrix_sdk::ruma::api::client::account::register;
+use matrix_sdk::ruma::api::client::account::{
+    change_password, register, request_password_change_token_via_email,
+};
 use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
-    AuthData, AuthType, Dummy, LoginTermsParams, Terms, UiaaInfo,
+    AuthData, AuthType, Dummy, EmailIdentity, LoginTermsParams, Terms, ThirdpartyIdCredentials,
+    UiaaInfo,
 };
 use matrix_sdk::ruma::api::error::ErrorKind;
+use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use std::hash::{BuildHasher, Hasher};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
@@ -29,6 +35,8 @@ use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
 const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
 
 static RESTORE_STORE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+static AUTH_MAIL_ADDRESS_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+    std::sync::OnceLock::new();
 
 /// Serializes fresh client restores that open and use the persisted Matrix
 /// store before a live app client owns it. App startup and Android's
@@ -76,6 +84,10 @@ pub struct RegisterRequest {
 }
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const AUTH_MAILS_PER_ADDRESS: usize = 3;
+const AUTH_MAILS_PER_PROCESS: usize = 12;
 const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) struct PendingRegistration {
@@ -85,6 +97,29 @@ pub(crate) struct PendingRegistration {
     attempt_id: String,
     uiaa: UiaaInfo,
     created_at: std::time::Instant,
+}
+
+pub(crate) struct PendingPasswordReset {
+    client: Client,
+    client_secret: matrix_sdk::ruma::OwnedClientSecret,
+    sid: matrix_sdk::ruma::OwnedSessionId,
+    submit_url: Option<url::Url>,
+    token_submitted: bool,
+    attempt_id: String,
+    created_at: std::time::Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct AuthMailQuota {
+    by_address: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    all: Vec<std::time::Instant>,
+    upstream_retry_until_by_homeserver: std::collections::HashMap<String, std::time::Instant>,
+}
+
+#[derive(Clone)]
+struct AuthMailQuotaReservation {
+    address_digest: String,
+    at: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -144,6 +179,13 @@ pub struct LoginFlowSummary {
     pub token: bool,
     pub sso: bool,
     pub identity_providers: Vec<LoginIdentityProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PasswordResetChallenge {
+    pub attempt_id: String,
+    pub requires_token: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1147,6 +1189,530 @@ pub async fn cancel_registration(
 }
 
 #[tauri::command]
+pub async fn request_password_reset(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    homeserver_url: String,
+    email: String,
+) -> Result<PasswordResetChallenge, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let delivery_email = email.trim().to_owned();
+    let started_at = std::time::Instant::now();
+    let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
+    state.pending_password_reset.lock().await.take();
+    let attempt_id = generate_attempt_id();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let previous_cancellation = state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .replace((attempt_id.clone(), cancellation.clone()));
+    if let Some((_, cancellation)) = previous_cancellation {
+        cancellation.cancel();
+    }
+    let client = tokio::select! {
+        result = tokio::time::timeout(
+            AUTH_NETWORK_TIMEOUT,
+            Client::builder()
+                .server_name_or_homeserver_url(&homeserver_url)
+                .build(),
+        ) => result
+            .map_err(|_| "could not start password reset".to_string())?
+            .map_err(|_| "could not start password reset".to_string()),
+        () = cancellation.cancelled() => {
+            Err("password reset attempt was superseded".to_string())
+        },
+        () = tokio::time::sleep_until(deadline) => {
+            Err("password reset attempt expired; start again".to_string())
+        }
+    }?;
+    let homeserver_scope = client.homeserver().origin().ascii_serialization();
+    let quota_reservation =
+        check_auth_mail_quota(&state, &delivery_email, &homeserver_scope).await?;
+    let client_secret = ClientSecret::new();
+    let request = request_password_change_token_via_email::v3::Request::new(
+        client_secret.clone(),
+        delivery_email,
+        UInt::new_saturating(1),
+    );
+    let response = tokio::select! {
+        result = client.send(request) => result,
+        () = cancellation.cancelled() => {
+            clear_password_reset_cancellation(&state, &attempt_id);
+            return Err("password reset attempt was superseded".to_string());
+        },
+        () = tokio::time::sleep_until(deadline) => {
+            clear_password_reset_cancellation(&state, &attempt_id);
+            return Err("password reset attempt expired; start again".to_string());
+        }
+    };
+    let (sid, submit_url, requires_token) = match response {
+        Ok(response) => {
+            let submit_url = sanitize_password_reset_submit_url(
+                &client.homeserver(),
+                response.submit_url.as_deref(),
+            );
+            match submit_url {
+                Ok(submit_url) => {
+                    // Keep the public challenge shape independent of whether
+                    // this address produced a real homeserver session or the
+                    // synthetic anti-enumeration path below. The UI already
+                    // renders the token field as optional for both flows.
+                    (response.sid, submit_url, false)
+                }
+                Err(_) => synthetic_password_reset_challenge()?,
+            }
+        }
+        Err(error) => {
+            if error.client_api_error_kind().is_none() {
+                refund_auth_mail_quota(&state, quota_reservation).await;
+            }
+            retain_password_reset_retry_after(&state, &homeserver_scope, &error).await;
+            // Matrix deliberately permits homeservers to reject an unknown
+            // address here. Retain a synthetic pending validation session so
+            // confirmation also behaves like a real but unverified attempt;
+            // otherwise the missing pending entry becomes an account oracle.
+            synthetic_password_reset_challenge()?
+        }
+    };
+    if cancellation.is_cancelled() || !password_reset_cancellation_is_current(&state, &attempt_id) {
+        return Err("password reset attempt was superseded".to_string());
+    }
+    let pending = PendingPasswordReset {
+        client,
+        client_secret,
+        sid,
+        submit_url,
+        token_submitted: false,
+        attempt_id: attempt_id.clone(),
+        created_at: started_at,
+    };
+    let mut pending_guard = state.pending_password_reset.lock().await;
+    if cancellation.is_cancelled()
+        || !password_reset_cancellation_is_current(&state, &attempt_id)
+        || pending_guard.is_some()
+    {
+        return Err("password reset attempt was superseded".to_string());
+    }
+    pending_guard.replace(pending);
+    drop(pending_guard);
+    spawn_password_reset_expiry(app, attempt_id.clone(), started_at);
+    Ok(PasswordResetChallenge {
+        attempt_id,
+        requires_token,
+    })
+}
+
+async fn check_auth_mail_quota(
+    state: &MatrixState,
+    address: &str,
+    homeserver_scope: &str,
+) -> Result<AuthMailQuotaReservation, String> {
+    let now = std::time::Instant::now();
+    let cutoff = now.checked_sub(AUTH_MAIL_QUOTA_WINDOW);
+    let mut hasher = AUTH_MAIL_ADDRESS_HASHER
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .build_hasher();
+    hasher.write(address.to_lowercase().as_bytes());
+    let digest = format!("{:016x}", hasher.finish());
+    let mut quota = state.auth_mail_quota.lock().await;
+    if quota
+        .upstream_retry_until_by_homeserver
+        .get(homeserver_scope)
+        .is_some_and(|retry_until| *retry_until > now)
+    {
+        return Err("too many recovery emails; try again later".to_string());
+    }
+    quota
+        .upstream_retry_until_by_homeserver
+        .retain(|_, retry_until| *retry_until > now);
+    quota
+        .all
+        .retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
+    quota.by_address.retain(|_, attempts| {
+        attempts.retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
+        !attempts.is_empty()
+    });
+    if quota.all.len() >= AUTH_MAILS_PER_PROCESS
+        || quota
+            .by_address
+            .get(&digest)
+            .is_some_and(|attempts| attempts.len() >= AUTH_MAILS_PER_ADDRESS)
+    {
+        return Err("too many recovery emails; try again later".to_string());
+    }
+    quota.all.push(now);
+    quota
+        .by_address
+        .entry(digest.clone())
+        .or_default()
+        .push(now);
+    Ok(AuthMailQuotaReservation {
+        address_digest: digest,
+        at: now,
+    })
+}
+
+async fn refund_auth_mail_quota(state: &MatrixState, reservation: AuthMailQuotaReservation) {
+    let mut quota = state.auth_mail_quota.lock().await;
+    if let Some(index) = quota.all.iter().rposition(|at| *at == reservation.at) {
+        quota.all.remove(index);
+    }
+    let remove_address =
+        if let Some(attempts) = quota.by_address.get_mut(&reservation.address_digest) {
+            if let Some(index) = attempts.iter().rposition(|at| *at == reservation.at) {
+                attempts.remove(index);
+            }
+            attempts.is_empty()
+        } else {
+            false
+        };
+    if remove_address {
+        quota.by_address.remove(&reservation.address_digest);
+    }
+}
+
+fn synthetic_password_reset_challenge(
+) -> Result<(matrix_sdk::ruma::OwnedSessionId, Option<url::Url>, bool), String> {
+    let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
+        .map_err(|_| "could not start password reset".to_string())?;
+    Ok((sid, None, false))
+}
+
+async fn retain_password_reset_retry_after(
+    state: &MatrixState,
+    homeserver_scope: &str,
+    error: &matrix_sdk::HttpError,
+) {
+    use matrix_sdk::ruma::api::error::RetryAfter;
+
+    let Some(ErrorKind::LimitExceeded(data)) = error.client_api_error_kind() else {
+        return;
+    };
+    let Some(retry_after) = data.retry_after else {
+        return;
+    };
+    let delay = match retry_after {
+        RetryAfter::Delay(delay) => delay,
+        RetryAfter::DateTime(deadline) => deadline
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or_default(),
+    };
+    let retry_until = std::time::Instant::now() + delay;
+    let mut quota = state.auth_mail_quota.lock().await;
+    quota
+        .upstream_retry_until_by_homeserver
+        .entry(homeserver_scope.to_owned())
+        .and_modify(|current| *current = (*current).max(retry_until))
+        .or_insert(retry_until);
+}
+
+#[tauri::command]
+pub async fn confirm_password_reset(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+    token: Option<String>,
+    new_password: String,
+) -> Result<(), String> {
+    ensure_registration_feature_enabled(&app)?;
+    let mut guard = state.pending_password_reset.lock().await;
+    let Some(current) = guard.as_ref() else {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    };
+    if current.attempt_id != attempt_id || current.created_at.elapsed() > PASSWORD_RESET_ATTEMPT_TTL
+    {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
+    let mut pending = guard
+        .take()
+        .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
+    drop(guard);
+
+    let cancellation = state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|(current_id, _)| current_id == &attempt_id)
+        .map(|(_, cancellation)| cancellation.clone())
+        .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
+    if cancellation.is_cancelled() {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
+    // Once confirmation begins it may dispatch the password mutation. Do
+    // not race that irreversible request against cancellation and then
+    // report that nothing happened; the frontend operation token will
+    // ignore this result if the user has already closed the surface.
+    let result = complete_password_reset(&mut pending, token.as_deref(), new_password).await;
+    if result.is_err() {
+        let mut guard = state.pending_password_reset.lock().await;
+        if !cancellation.is_cancelled()
+            && guard.is_none()
+            && pending.created_at.elapsed() <= PASSWORD_RESET_ATTEMPT_TTL
+        {
+            *guard = Some(pending);
+        }
+    } else {
+        clear_password_reset_cancellation(&state, &attempt_id);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn cancel_password_reset(
+    _app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: Option<String>,
+) -> Result<(), String> {
+    let mut guard = state.pending_password_reset.lock().await;
+    let target_id = attempt_id
+        .or_else(|| guard.as_ref().map(|pending| pending.attempt_id.clone()))
+        .or_else(|| {
+            state
+                .pending_password_reset_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|(attempt_id, _)| attempt_id.clone())
+        });
+    let Some(attempt_id) = target_id else {
+        return Ok(());
+    };
+    if guard
+        .as_ref()
+        .is_some_and(|pending| pending.attempt_id == attempt_id)
+    {
+        guard.take();
+    }
+    cancel_password_reset_cancellation(&state, &attempt_id);
+    Ok(())
+}
+
+fn sanitize_password_reset_submit_url(
+    homeserver: &url::Url,
+    submit_url: Option<&str>,
+) -> Result<Option<url::Url>, String> {
+    let Some(submit_url) = submit_url else {
+        return Ok(None);
+    };
+    let parsed = homeserver
+        .join(submit_url)
+        .map_err(|_| "this homeserver returned an unsupported password-reset flow".to_string())?;
+    if !(matches!(parsed.scheme(), "https")
+        || parsed.scheme() == "http" && parsed.origin() == homeserver.origin())
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("this homeserver returned an unsupported password-reset flow".to_string());
+    }
+    Ok(Some(parsed))
+}
+
+async fn complete_password_reset(
+    pending: &mut PendingPasswordReset,
+    token: Option<&str>,
+    new_password: String,
+) -> Result<(), String> {
+    if let Some(submit_url) = &pending.submit_url {
+        if pending.token_submitted {
+            return complete_password_change(pending, new_password).await;
+        }
+        let token = token
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| "enter the token from your password-reset email".to_string())?;
+        let client =
+            password_reset_submission_client(submit_url, &pending.client.homeserver()).await?;
+        let response = client
+            .post(submit_url.clone())
+            .json(&serde_json::json!({
+                "sid": pending.sid,
+                "client_secret": pending.client_secret,
+                "token": token,
+            }))
+            .send()
+            .await
+            .map_err(|_| "could not confirm password reset".to_string())?;
+        if !response.status().is_success() {
+            return Err("could not confirm password reset".to_string());
+        }
+        pending.token_submitted = true;
+    }
+
+    complete_password_change(pending, new_password).await
+}
+
+async fn complete_password_change(
+    pending: &PendingPasswordReset,
+    new_password: String,
+) -> Result<(), String> {
+    let thirdparty_id_creds =
+        ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());
+    let email_identity: EmailIdentity = serde_json::from_value(serde_json::json!({
+        "threepid_creds": thirdparty_id_creds,
+    }))
+    .map_err(|_| "could not confirm password reset".to_string())?;
+    let mut request = change_password::v3::Request::new(new_password);
+    request.auth = Some(AuthData::EmailIdentity(email_identity));
+    pending
+        .client
+        .send(request)
+        .with_request_config(RequestConfig::new().skip_auth())
+        .await
+        .map(|_| ())
+        .map_err(|_| "could not confirm password reset".to_string())
+}
+
+async fn password_reset_submission_client(
+    submit_url: &url::Url,
+    homeserver: &url::Url,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15));
+
+    // Resolve every submission host exactly once and pin that result into
+    // reqwest. Origin equality does not prevent a configured hostname from
+    // being rebound between the homeserver request and token submission.
+    let host = submit_url
+        .host_str()
+        .ok_or_else(|| "could not confirm password reset".to_string())?;
+    let port = submit_url
+        .port_or_known_default()
+        .ok_or_else(|| "could not confirm password reset".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "could not confirm password reset".to_string())?
+        .collect::<Vec<_>>();
+    let explicitly_local_same_origin = submit_url.origin() == homeserver.origin()
+        && (host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok());
+    if addresses.is_empty()
+        || (!explicitly_local_same_origin
+            && addresses
+                .iter()
+                .any(|address| !is_public_network_ip(address.ip())))
+    {
+        return Err("could not confirm password reset".to_string());
+    }
+    builder = builder.resolve_to_addrs(host, &addresses);
+
+    builder
+        .build()
+        .map_err(|_| "could not confirm password reset".to_string())
+}
+
+fn password_reset_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
+    state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
+}
+
+fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_network_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            // RFC 6052's well-known NAT64 prefix is public when the embedded
+            // IPv4 destination is public. Blocking the whole /96 breaks
+            // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
+            // prefix remains denied below.
+            if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+                let v4 = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(v4.into());
+            }
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || segments[0] == 0x2002
+                || segments[0] == 0x5f00
+                || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
+                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
+        }
+    }
+}
+
+fn spawn_password_reset_expiry(app: AppHandle, attempt_id: String, started_at: std::time::Instant) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(
+            started_at + PASSWORD_RESET_ATTEMPT_TTL,
+        ))
+        .await;
+        let state = app.state::<MatrixState>();
+        let mut guard = state.pending_password_reset.lock().await;
+        if guard
+            .as_ref()
+            .is_some_and(|pending| pending.attempt_id == attempt_id)
+        {
+            guard.take();
+        }
+        drop(guard);
+        cancel_password_reset_cancellation(&state, &attempt_id);
+    });
+}
+
+fn clear_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
+    let mut guard = state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if guard
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
+    {
+        guard.take();
+    }
+}
+
+fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
+    let mut guard = state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if guard
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
+    {
+        if let Some((_, cancellation)) = guard.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn get_login_flows(
     app: AppHandle,
     homeserver_url: String,
@@ -1987,13 +2553,20 @@ fn extract_sso_callback_state(callback_url: &str) -> Option<String> {
 mod registration_uia_tests {
     use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
     use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, UiaaInfo};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use serde_json::json;
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, ResponseTemplate};
 
     use super::{
-        identity_provider_is_advertised, next_registration_stage, registration_auth_data,
-        registration_fallback_url, sanitized_provider_name, sanitized_registration_policies,
-        summarize_login_flows, RegistrationAuthResponse,
+        check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
+        is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
+        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
+        sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
+        PasswordResetChallenge, PendingPasswordReset, RegistrationAuthResponse,
+        AUTH_MAILS_PER_ADDRESS,
     };
+    use crate::matrix::MatrixState;
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
         serde_json::from_value(value).expect("valid UIA fixture")
@@ -2197,6 +2770,186 @@ mod registration_uia_tests {
 
         assert!(identity_provider_is_advertised(&flows, "company"));
         assert!(!identity_provider_is_advertised(&flows, "forged"));
+    }
+
+    #[test]
+    fn accepts_https_password_reset_submission_urls() {
+        let homeserver = url::Url::parse("https://matrix.example/base/").expect("valid URL");
+
+        assert_eq!(
+            sanitize_password_reset_submit_url(
+                &homeserver,
+                Some("/_matrix/client/v3/validate/email/submitToken")
+            )
+            .expect("same-origin URL")
+            .expect("submission URL")
+            .as_str(),
+            "https://matrix.example/_matrix/client/v3/validate/email/submitToken"
+        );
+        assert_eq!(
+            sanitize_password_reset_submit_url(
+                &homeserver,
+                Some("https://identity.example/validate/email/submitToken")
+            )
+            .expect("delegated HTTPS URL")
+            .expect("submission URL")
+            .host_str(),
+            Some("identity.example")
+        );
+        assert!(
+            sanitize_password_reset_submit_url(&homeserver, Some("http://127.0.0.1/internal"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_non_public_password_reset_submission_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "192.168.1.2",
+            "192.88.99.1",
+            "198.51.100.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "64:ff9b:1::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                !is_public_network_ip(address.parse().expect("valid IP")),
+                "{address} must not be treated as public"
+            );
+        }
+        assert!(is_public_network_ip(
+            "1.1.1.1".parse().expect("valid public IP")
+        ));
+        assert!(is_public_network_ip(
+            "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
+    }
+
+    #[test]
+    fn password_reset_challenge_exposes_no_matrix_session_or_client_secret() {
+        let challenge = PasswordResetChallenge {
+            attempt_id: "opaque-attempt".to_owned(),
+            requires_token: true,
+        };
+        let json = serde_json::to_value(challenge).expect("serialize challenge");
+
+        assert_eq!(json["attempt_id"], "opaque-attempt");
+        assert_eq!(json["requires_token"], true);
+        assert!(json.get("sid").is_none());
+        assert!(json.get("client_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn password_reset_mail_quota_survives_individual_attempts() {
+        let state = MatrixState::default();
+        for _ in 0..AUTH_MAILS_PER_ADDRESS {
+            check_auth_mail_quota(&state, "Alice@Example.org", "https://example.org")
+                .await
+                .expect("within address quota");
+        }
+        assert!(
+            check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
+                .await
+                .is_err(),
+            "normalized address quota must not reset with a new attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn password_reset_mail_quota_refunds_unsent_requests() {
+        let state = MatrixState::default();
+        let reservation = check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
+            .await
+            .expect("initial reservation");
+        refund_auth_mail_quota(&state, reservation).await;
+
+        for _ in 0..AUTH_MAILS_PER_ADDRESS {
+            check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
+                .await
+                .expect("refunded reservation must not consume capacity");
+        }
+    }
+
+    #[tokio::test]
+    async fn password_reset_upstream_retry_deadline_is_homeserver_scoped() {
+        let state = MatrixState::default();
+        state
+            .auth_mail_quota
+            .lock()
+            .await
+            .upstream_retry_until_by_homeserver
+            .insert(
+                "https://server-a.example".to_owned(),
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            );
+
+        assert!(
+            check_auth_mail_quota(&state, "alice@example.org", "https://server-a.example",)
+                .await
+                .is_err(),
+            "the rate-limited homeserver must retain its deadline"
+        );
+        check_auth_mail_quota(&state, "alice@example.org", "https://server-b.example")
+            .await
+            .expect("an unrelated homeserver must remain available");
+    }
+
+    #[tokio::test]
+    async fn password_reset_submits_the_email_token_then_changes_the_password() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let client_secret = matrix_sdk::ruma::ClientSecret::new();
+        let sid = serde_json::from_value(json!("email-session")).expect("valid session id");
+
+        Mock::given(method("POST"))
+            .and(path("/validate/email/submitToken"))
+            .and(body_partial_json(json!({
+                "sid": "email-session",
+                "client_secret": client_secret,
+                "token": "123456",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .and(body_partial_json(json!({
+                "new_password": "new correct horse",
+                "auth": {
+                    "type": "m.login.email.identity",
+                    "threepid_creds": {
+                        "sid": "email-session",
+                        "client_secret": client_secret,
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret,
+            sid,
+            submit_url: Some(
+                url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
+                    .expect("submit URL"),
+            ),
+            token_submitted: false,
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        complete_password_reset(&mut pending, Some("123456"), "new correct horse".to_owned())
+            .await
+            .expect("password reset completes");
     }
 }
 

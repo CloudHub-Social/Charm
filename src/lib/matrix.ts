@@ -16,6 +16,7 @@ import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { LoginFlowSummary } from "@bindings/LoginFlowSummary";
 import type { LoginIdentityProvider } from "@bindings/LoginIdentityProvider";
+import type { PasswordResetChallenge } from "@bindings/PasswordResetChallenge";
 import type { MediaContent } from "@bindings/MediaContent";
 import type { MembershipKind } from "@bindings/MembershipKind";
 import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
@@ -155,6 +156,7 @@ export type {
   LoginResponse,
   LoginFlowSummary,
   LoginIdentityProvider,
+  PasswordResetChallenge,
   MediaContent,
   MembershipKind,
   MutualRoomSummary,
@@ -233,6 +235,33 @@ export function continueRegistration(
 
 export function cancelRegistration(attemptId: string): Promise<void> {
   return invoke("cancel_registration", { attemptId }, { captureOnError: false });
+}
+
+export function requestPasswordReset(
+  homeserverUrl: string,
+  email: string,
+): Promise<PasswordResetChallenge> {
+  return invoke("request_password_reset", { homeserverUrl, email }, { captureOnError: false });
+}
+
+export function confirmPasswordReset(
+  attemptId: string,
+  token: string | undefined,
+  newPassword: string,
+): Promise<void> {
+  return invoke(
+    "confirm_password_reset",
+    { attemptId, token: token ?? null, newPassword },
+    { captureOnError: false },
+  );
+}
+
+export function cancelPasswordReset(attemptId?: string): Promise<void> {
+  return invoke(
+    "cancel_password_reset",
+    { attemptId: attemptId ?? null },
+    { captureOnError: false },
+  );
 }
 
 export function getLoginFlows(homeserverUrl: string): Promise<LoginFlowSummary> {

@@ -21,11 +21,12 @@ and lands successful registration in the existing onboarding flow. The
 continuation validates both the opaque Charm attempt ID and the next advertised
 stage, while policy links are restricted to HTTP(S).
 
-This does not yet complete Spec 45. The web companion attempt boundary, direct
-email request-token path, password-recovery slice, provider icon resolution,
-and real-homeserver verification remain open. Provider-aware SSO and one-time
-token login are implemented in the slice below. Repository and Playwright tests for DTO mapping,
-stage/session validation, and UI navigation are not live-homeserver evidence.
+This does not yet complete Spec 45. The web companion authentication
+equivalents, direct registration email request-token path, provider icon
+resolution, and real-homeserver verification remain open. Provider-aware SSO,
+one-time token login, and desktop password recovery are implemented in the
+slices below. Repository and Playwright tests for DTO mapping, stage/session
+validation, and UI navigation are not live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
@@ -33,8 +34,21 @@ selected provider against a fresh homeserver response before building its SSO
 redirect; and supports one-time token login only when the server advertises it.
 Token values remain request-only and the desktop flow uses the same encrypted
 temporary-store relocation as password and SSO login. Provider icon resolution,
-password reset, the web companion equivalents, and live verification remain
-open.
+the web companion equivalents, and live verification remain open.
+
+Desktop password recovery now generates its email-validation client secret in
+Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
+twenty-minute attempt, supports both email-link and homeserver-hosted token
+submission, and completes `/account/password` with `m.login.email.identity`.
+Cancellation, expiry, and superseding requests cancel in-flight confirmation;
+the challenge DTO exposes neither the `sid` nor client secret. A returned
+submission URL may use the homeserver origin or a delegated identity-service
+HTTPS origin. Charm resolves it once, rejects non-public delegated addresses,
+pins the approved addresses, and disables redirects; explicitly configured
+same-origin localhost or literal-IP development servers remain supported.
+Request failures remain deliberately generic in the UI.
+The desktop resend lifecycle remains open: until `resend_password_reset` is
+implemented for Tauri, retrying delivery starts a new superseding reset attempt.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and

@@ -7,17 +7,21 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   beginRegistration,
+  cancelPasswordReset,
   cancelRegistration,
   cancelSsoLogin,
+  confirmPasswordReset,
   completeSsoLogin,
   continueRegistration,
   getLoginFlows,
   login,
   loginWithToken,
+  requestPasswordReset,
   register,
   startSsoLogin,
   type LoginResponse,
   type LoginFlowSummary,
+  type PasswordResetChallenge,
   type RegistrationAuthResponse,
   type RegistrationStep,
 } from "@/lib/matrix";
@@ -39,10 +43,22 @@ const TERMINAL_REGISTRATION_ERRORS = [
   "registration cancelled",
   "registration and recovery is not enabled",
 ];
+const TERMINAL_PASSWORD_RESET_ERRORS = [
+  "password reset attempt expired",
+  "password reset attempt was superseded",
+  "password reset attempt is no longer current",
+  "password reset attempt expired or was cancelled",
+  "no password reset is in progress",
+];
 
 function isTerminalRegistrationError(message: string): boolean {
   const normalized = message.toLowerCase();
   return TERMINAL_REGISTRATION_ERRORS.some((terminalError) => normalized.includes(terminalError));
+}
+
+function isTerminalPasswordResetError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_PASSWORD_RESET_ERRORS.some((terminalError) => normalized.includes(terminalError));
 }
 
 interface LoginScreenProps {
@@ -74,6 +90,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [loginFlowsFailed, setLoginFlowsFailed] = useState(false);
   const [showTokenLogin, setShowTokenLogin] = useState(false);
   const [loginToken, setLoginToken] = useState("");
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [passwordResetChallenge, setPasswordResetChallenge] = useState<PasswordResetChallenge>();
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryToken, setRecoveryToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordResetComplete, setPasswordResetComplete] = useState(false);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
@@ -144,12 +166,35 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // branch cancels the exact pending attempt before allowing another start.
   const ssoSetupInFlightRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
+  const passwordResetAttemptRef = useRef<string | null>(null);
+  const passwordResetOperationRef = useRef(0);
+  const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
+
+  useEffect(() => {
+    if (registrationUiaEnabled) return;
+    passwordResetOperationRef.current += 1;
+    const attemptId = passwordResetAttemptRef.current;
+    passwordResetAttemptRef.current = null;
+    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    setShowPasswordReset(false);
+    setPasswordResetChallenge(undefined);
+    setPasswordResetComplete(false);
+    setRecoveryEmail("");
+    setRecoveryToken("");
+    setNewPassword("");
+    setPending(false);
+  }, [registrationUiaEnabled]);
 
   useEffect(
     () => () => {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
+      passwordResetAttemptRef.current = null;
+      passwordResetOperationRef.current += 1;
+      // `undefined` also cancels a backend request that is still in discovery
+      // and has not returned its opaque attempt id to this component yet.
+      cancelPasswordReset(undefined).catch(logAndIgnore);
     },
     [],
   );
@@ -351,6 +396,96 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     cancelSsoLogin().catch(logAndIgnore);
   }
 
+  async function handleRequestPasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    const operation = ++passwordResetOperationRef.current;
+    if (passwordResetCancellationRef.current) {
+      await passwordResetCancellationRef.current;
+    }
+    if (passwordResetOperationRef.current !== operation) return;
+    setPending(true);
+    setError(null);
+    let challenge: PasswordResetChallenge;
+    try {
+      challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
+    } catch {
+      // The backend deliberately maps homeserver responses to a single
+      // account-independent error. Preserve that privacy boundary while
+      // still surfacing connection/configuration failures as actionable.
+      if (passwordResetOperationRef.current === operation) {
+        setError(
+          "Could not start password reset. Check your connection and homeserver settings, then try again.",
+        );
+      }
+      return;
+    } finally {
+      if (passwordResetOperationRef.current === operation) setPending(false);
+    }
+    if (passwordResetOperationRef.current !== operation) {
+      if (!challenge.attempt_id.startsWith("unavailable-")) {
+        cancelPasswordReset(challenge.attempt_id).catch(logAndIgnore);
+      }
+      return;
+    }
+    passwordResetAttemptRef.current = challenge.attempt_id;
+    setPasswordResetChallenge(challenge);
+  }
+
+  async function handleConfirmPasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    const attemptId = passwordResetAttemptRef.current;
+    if (!attemptId) return;
+    const operation = ++passwordResetOperationRef.current;
+    setPending(true);
+    setError(null);
+    try {
+      await confirmPasswordReset(attemptId, recoveryToken || undefined, newPassword);
+      if (passwordResetOperationRef.current !== operation) return;
+      passwordResetAttemptRef.current = null;
+      setRecoveryToken("");
+      setNewPassword("");
+      setPassword("");
+      setPasswordResetComplete(true);
+    } catch (resetError) {
+      if (passwordResetOperationRef.current === operation) {
+        if (isTerminalPasswordResetError(String(resetError))) {
+          passwordResetAttemptRef.current = null;
+          setPasswordResetChallenge(undefined);
+          setRecoveryToken("");
+          setNewPassword("");
+          setError("Password reset expired. Request a new recovery email.");
+        } else {
+          setError(
+            "Password reset could not be confirmed. Verify the email step and new password, then try again.",
+          );
+        }
+      }
+    } finally {
+      if (passwordResetOperationRef.current === operation) setPending(false);
+    }
+  }
+
+  function closePasswordReset() {
+    passwordResetOperationRef.current += 1;
+    const attemptId = passwordResetAttemptRef.current;
+    passwordResetAttemptRef.current = null;
+    const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    passwordResetCancellationRef.current = cancellation;
+    void cancellation.finally(() => {
+      if (passwordResetCancellationRef.current === cancellation) {
+        passwordResetCancellationRef.current = undefined;
+      }
+    });
+    setShowPasswordReset(false);
+    setPasswordResetChallenge(undefined);
+    setPasswordResetComplete(false);
+    setRecoveryEmail("");
+    setRecoveryToken("");
+    setNewPassword("");
+    setPending(false);
+    setError(null);
+  }
+
   return (
     <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
       <div className="flex w-full max-w-90 flex-col gap-5">
@@ -359,7 +494,105 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           <p className="text-sm text-muted-foreground">Sign in to your homeserver</p>
         </div>
 
-        {showQrLogin ? (
+        {showPasswordReset ? (
+          <div className="flex flex-col gap-5">
+            {passwordResetComplete ? (
+              <div className="flex flex-col gap-4" aria-live="polite">
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Password updated</h2>
+                  <p className="text-xs text-muted-foreground">
+                    You can now sign in with your new password.
+                  </p>
+                </div>
+                <Button type="button" onClick={closePasswordReset}>
+                  Return to sign in
+                </Button>
+              </div>
+            ) : passwordResetChallenge ? (
+              <form className="flex flex-col gap-4" onSubmit={handleConfirmPasswordReset}>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Set a new password</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Follow the instructions in your email. If it includes a token, enter it below.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-token">Email token (if provided)</Label>
+                  <Input
+                    id="recovery-token"
+                    value={recoveryToken}
+                    onChange={(event) => setRecoveryToken(event.currentTarget.value)}
+                    autoComplete="one-time-code"
+                    disabled={pending}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-password">New password</Label>
+                  <Input
+                    id="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.currentTarget.value)}
+                    autoComplete="new-password"
+                    disabled={pending}
+                    required
+                  />
+                </div>
+                {error && <p className="text-xs text-destructive">{error}</p>}
+                <Button type="submit" disabled={pending}>
+                  {pending && <Loader2 className="animate-spin" />}
+                  Reset password
+                </Button>
+                <Button type="button" variant="ghost" onClick={closePasswordReset}>
+                  Cancel
+                </Button>
+              </form>
+            ) : (
+              <form className="flex flex-col gap-4" onSubmit={handleRequestPasswordReset}>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-sm font-semibold">Reset your password</h2>
+                  <p className="text-xs text-muted-foreground">
+                    We’ll ask your homeserver to send recovery instructions. The response stays
+                    deliberately generic.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-homeserver">Homeserver</Label>
+                  <Input
+                    id="recovery-homeserver"
+                    value={homeserverUrl}
+                    readOnly
+                    disabled={pending}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Cancel recovery to choose a different homeserver.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="recovery-email">Email</Label>
+                  <Input
+                    id="recovery-email"
+                    type="email"
+                    value={recoveryEmail}
+                    onChange={(event) => setRecoveryEmail(event.currentTarget.value)}
+                    autoComplete="email"
+                    disabled={pending}
+                    required
+                  />
+                </div>
+                {error && <p className="text-xs text-destructive">{error}</p>}
+                <Button type="submit" disabled={pending}>
+                  {pending && <Loader2 className="animate-spin" />}
+                  Send recovery email
+                </Button>
+                <Button type="button" variant="ghost" onClick={closePasswordReset}>
+                  Cancel
+                </Button>
+              </form>
+            )}
+          </div>
+        ) : showQrLogin ? (
           <QrLoginScreen
             homeserverUrl={homeserverUrl}
             onSignedIn={onSignedIn}
@@ -553,11 +786,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {error && <p className="text-xs text-destructive">{error}</p>}
 
                   {(mode === "register" || showTokenLogin || passwordLoginAvailable) && (
-                    <Button
-                      type="submit"
-                      disabled={pending || ssoPending}
-                      className="w-full"
-                    >
+                    <Button type="submit" disabled={pending || ssoPending} className="w-full">
                       {pending && <Loader2 className="animate-spin" />}
                       {pending
                         ? mode === "sign-in"
@@ -572,6 +801,25 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                           : "Create account"}
                     </Button>
                   )}
+
+                  {mode === "sign-in" &&
+                    registrationUiaEnabled &&
+                    loginFlows?.password === true &&
+                    !showTokenLogin && (
+                      <Button
+                        type="button"
+                        variant="link"
+                        disabled={pending || ssoPending}
+                        onClick={() => {
+                          setPassword("");
+                          setShowPasswordReset(true);
+                          setError(null);
+                        }}
+                        className="w-full"
+                      >
+                        Forgot password?
+                      </Button>
+                    )}
 
                   {mode === "sign-in" && showNativeSignInOptions && (
                     <>
