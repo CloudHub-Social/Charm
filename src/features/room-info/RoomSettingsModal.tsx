@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -60,7 +60,19 @@ export function RoomSettingsModal({
   const isMobile = layout === "mobile";
   const roomAliasManagementEnabled = useFlag("room_alias_management");
   const spaceHierarchyEnabled = useFlag("space_hierarchy_reorganization");
-  const targetLabel = target?.kind === "space" ? "space" : "room";
+  const activeTargetLabel = target?.kind === "space" ? "space" : "room";
+  const [lastTargetLabel, setLastTargetLabel] = useState<"room" | "space">(activeTargetLabel);
+
+  useEffect(() => {
+    if (target) {
+      setLastTargetLabel(activeTargetLabel);
+    }
+  }, [activeTargetLabel, target]);
+
+  // Radix keeps the dialog mounted while its exit animation runs. Preserve
+  // the last concrete target so its accessible name does not briefly change
+  // from "Space settings" to "Room settings" after the atom is cleared.
+  const targetLabel = target ? activeTargetLabel : lastTargetLabel;
 
   useEffect(() => {
     if (target?.kind === "space" && !spaceHierarchyEnabled) {

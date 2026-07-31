@@ -153,6 +153,46 @@ describe("RoomSettingsModal", () => {
     expect(screen.getByRole("button", { name: "Close space settings" })).toBeInTheDocument();
   });
 
+  it("preserves the space accessible name while the modal closes", async () => {
+    const nativeGetComputedStyle = window.getComputedStyle.bind(window);
+    const styleSpy = vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      const styles = nativeGetComputedStyle(element);
+      if (element instanceof HTMLElement && element.dataset.slot === "dialog-content") {
+        return new Proxy(styles, {
+          get(target, property, receiver) {
+            if (property === "animationName") {
+              return element.dataset.state === "closed" ? "keep-settings-mounted" : "none";
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      }
+      return styles;
+    });
+    const details = makeRoomDetails({ name: "Community" });
+    getRoomDetails.mockResolvedValue(details);
+    const { store } = renderModal({
+      roomId: details.room_id,
+      section: "general",
+      kind: "space",
+    });
+
+    const closeButton = await screen.findByRole("button", { name: "Close space settings" });
+    fireEvent.click(closeButton);
+
+    try {
+      expect(store.get(roomSettingsAtom)).toBeNull();
+      expect(
+        screen.getByRole("dialog", { name: "Space settings", hidden: true }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("dialog", { name: "Room settings", hidden: true }),
+      ).not.toBeInTheDocument();
+    } finally {
+      styleSpy.mockRestore();
+    }
+  });
+
   it("closes an open space modal when the hierarchy kill switch turns off", async () => {
     const details = makeRoomDetails({ name: "Community" });
     getRoomDetails.mockResolvedValue(details);
