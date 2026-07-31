@@ -289,6 +289,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
     } catch (error) {
+      const message = String(error);
+      if (!isTerminalRegistrationError(message) && step.state === "challenge") {
+        // The backend deliberately preserves retryable UIA failures (for
+        // example a temporary rate limit). Keep the opaque attempt and expose
+        // the automatic stage so the user can retry it without starting over.
+        setRegistrationStep(step);
+        throw error;
+      }
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
@@ -796,6 +804,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </>
                       )}
                     </div>
+                  )}
+
+                  {registrationStep.next_stage === "m.login.dummy" && (
+                    <Button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => void handleRegistrationContinue({ kind: "complete_dummy" })}
+                    >
+                      {pending && <Loader2 className="animate-spin" />}
+                      Retry account creation
+                    </Button>
                   )}
 
                   {registrationStep.next_stage !== "m.login.terms" &&

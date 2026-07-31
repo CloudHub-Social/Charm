@@ -785,6 +785,7 @@ async fn finish_registration(
             *state.client.lock().await = Some(previous_client.clone());
             sync::spawn_sync_task(app.clone(), previous_client);
         }
+        drop(client);
         return clear_cancelled_registration_session(&app, &account_key);
     }
 
@@ -795,8 +796,18 @@ async fn finish_registration(
         // See `login`'s identical restore-on-failure step.
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+            sync::spawn_sync_task(app.clone(), previous_client);
         }
+        // The temp store has already been relocated by this point. The
+        // completion lock prevents another interactive login from installing
+        // a replacement store concurrently, so leaving this unadopted store
+        // behind would strand both the directory and its keychain entry.
+        drop(client);
+        persistence::discard_cancelled_account_store(&app, &account_key).map_err(|error| {
+            format!(
+                "registration was superseded, but its relocated store could not be removed: {error}"
+            )
+        })?;
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -837,6 +848,7 @@ async fn finish_registration(
                 *state.client.lock().await = Some(previous_client.clone());
                 sync::spawn_sync_task(app.clone(), previous_client);
             }
+            drop(client);
             return clear_cancelled_registration_session(&app, &account_key);
         }
         // This is the completion/cancellation linearization point. A cancel
@@ -855,25 +867,13 @@ fn clear_cancelled_registration_session(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<LoginResponse, String> {
-    let session_cleanup = match persistence::clear_session(account_key) {
+    let cleanup = match persistence::discard_cancelled_account_session(app, account_key) {
         Ok(()) => Ok(()),
-        Err(_) => persistence::clear_session(account_key),
+        Err(_) => persistence::discard_cancelled_account_session(app, account_key),
     };
-    let oauth_cleanup = persistence::clear_oauth_session(account_key);
-    let store_cleanup = persistence::discard_cancelled_account_store(app, account_key);
-    if let Err(error) = session_cleanup {
+    if let Err(error) = cleanup {
         return Err(format!(
-            "registration cancelled, but the saved session could not be removed: {error}"
-        ));
-    }
-    if let Err(error) = oauth_cleanup {
-        return Err(format!(
-            "registration cancelled, but OAuth session cleanup failed: {error}"
-        ));
-    }
-    if let Err(error) = store_cleanup {
-        return Err(format!(
-            "registration cancelled, but the relocated store could not be removed: {error}"
+            "registration cancelled, but its durable state could not be removed: {error}"
         ));
     }
     Err("registration cancelled".to_string())
@@ -2296,9 +2296,7 @@ pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &Matri
         .unwrap_or_else(|error| error.into_inner())
         .take()
     {
-        let _ = persistence::clear_session(&account_key);
-        let _ = persistence::clear_oauth_session(&account_key);
-        let _ = persistence::discard_cancelled_account_store(app, &account_key);
+        let _ = persistence::discard_cancelled_account_session(app, &account_key);
     }
 }
 

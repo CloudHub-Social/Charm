@@ -535,6 +535,14 @@ pub fn discard_temp_login_store(app: &AppHandle, temp_key: &str) -> Result<(), S
 /// never adopted, so retaining its encrypted store only strands plaintext
 /// cache state and a keychain entry with no usable session.
 pub fn discard_cancelled_account_store(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    discard_cancelled_account_store_locked(app, account_key)
+}
+
+fn discard_cancelled_account_store_locked(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
     let path = store_path(app, account_key)?;
     match std::fs::remove_dir_all(&path) {
         Ok(()) => {}
@@ -547,6 +555,17 @@ pub fn discard_cancelled_account_store(app: &AppHandle, account_key: &str) -> Re
         Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// Atomically removes every durable artifact for a registration that was
+/// relocated but never adopted. Sharing [`RELOCATE_LOCK`] with relocation
+/// prevents synchronous shutdown cleanup from deleting the store before the
+/// relocation commit writes its session credentials.
+pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_session(account_key)?;
+    clear_oauth_session(account_key)?;
+    discard_cancelled_account_store_locked(app, account_key)
 }
 
 /// One-time dev-only migration for the pre-Spec-15 layout, where
