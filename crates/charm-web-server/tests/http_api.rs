@@ -20,6 +20,7 @@ use tower::ServiceExt;
 const HOMESERVER: &str = "http://localhost:8008";
 const ALLOWED_ORIGIN_ENV: &str = "CHARM_WEB_SERVER_ALLOWED_ORIGIN";
 const TEST_ALLOWED_ORIGIN: &str = "https://charm.example.test";
+const PREVIEW_TARGET_URL: &str = "http://preview-target/";
 static ALLOWED_ORIGIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvVarGuard {
@@ -217,6 +218,62 @@ async fn preview_url_requires_the_non_simple_web_transport_header() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn authenticated_web_preview_round_trips_through_synapse() {
+    let app = app();
+    let cookie = login_and_get_cookie(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/preview_url")
+                .header("cookie", &cookie)
+                .header("x-charm-operation-id", "spec-29-live-preview")
+                .header("origin", TEST_ALLOWED_ORIGIN)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "url": PREVIEW_TARGET_URL }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["title"].as_str(),
+        Some("Charm link preview integration target")
+    );
+    assert_eq!(
+        body["description"].as_str(),
+        Some("Deterministic OpenGraph data served only inside the local Synapse test network.")
+    );
+    assert_eq!(body["siteName"].as_str(), Some("Charm test harness"));
+
+    let missing_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/preview_url")
+                .header("cookie", cookie)
+                .header("x-charm-operation-id", "spec-29-live-preview-missing")
+                .header("origin", TEST_ALLOWED_ORIGIN)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "url": format!("{PREVIEW_TARGET_URL}missing") }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(missing_response).await,
+        Value::Null,
+        "a real homeserver target failure must remain a successful null response"
+    );
 }
 
 #[tokio::test]

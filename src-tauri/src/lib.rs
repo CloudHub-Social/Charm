@@ -1486,6 +1486,8 @@ pub fn run() {
             matrix::privacy_settings::get_privacy_settings,
             matrix::privacy_settings::set_privacy_settings,
             matrix::profiles::get_own_profile,
+            matrix::profiles::get_user_profile,
+            matrix::profiles::get_mutual_rooms,
             matrix::rooms::set_room_favourite,
             matrix::rooms::set_room_low_priority,
             matrix::rooms::set_room_muted,
