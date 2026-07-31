@@ -52,8 +52,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
     }
   }, [setTarget, spaceHierarchyEnabled, target?.kind]);
 
-  const visibleTarget =
-    target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
+  const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
 
   return (
     <Dialog open={visibleTarget !== null} onOpenChange={(open) => !open && setTarget(null)}>
