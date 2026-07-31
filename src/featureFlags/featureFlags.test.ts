@@ -309,4 +309,17 @@ describe("feature-flag client", () => {
     });
     expect(result.current).toBe(true);
   });
+
+  it("versions every flag included in the durable aggregate override snapshot", async () => {
+    const mod = await import("./index");
+    const timelineVersion = renderHook(() =>
+      mod.useFeatureFlagPersistenceVersion("timeline_state_events"),
+    );
+
+    const first = mod.setFeatureFlagOverride("timeline_state_events", true);
+    const second = mod.setFeatureFlagOverride("canary", true);
+    await Promise.all([first, second]);
+
+    expect(timelineVersion.result.current).toBe(1);
+  });
 });

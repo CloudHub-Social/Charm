@@ -295,7 +295,14 @@ export function ChatShell({
     handleAtBottomStateChange,
     hydrateCurrentTimeline,
     resetToLive,
-  } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
+  } = useChatTimeline(
+    room,
+    roomSettingsOpen,
+    jumpToEventId !== null,
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  );
   const noticeBuckets = useMemo(
     () =>
       timelineStateEventsEnabled
@@ -380,11 +387,10 @@ export function ChatShell({
   });
   const noticeSignature = useMemo(
     () =>
-      timelineItems
-        .filter((item) => item.kind !== "message")
+      [...[...noticeBuckets.beforeMessage.values()].flat(), ...noticeBuckets.trailing]
         .map((item) => item.event_id)
         .join("\u0000"),
-    [timelineItems],
+    [noticeBuckets],
   );
   const noticeAnchorRef = useRef<{
     roomId: string;

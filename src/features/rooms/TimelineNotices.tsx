@@ -28,9 +28,15 @@ export function bucketTimelineNotices(
     if (item.kind === "state" && item.change.type === "hidden" && !showHiddenEvents) continue;
     if (
       item.kind === "state" &&
-      (item.change.type === "name" ||
-        item.change.type === "topic" ||
-        item.change.type === "avatar") &&
+      (item.change.type === "name" || item.change.type === "topic") &&
+      item.change.old_value === item.change.new_value
+    ) {
+      continue;
+    }
+    if (
+      item.kind === "state" &&
+      item.change.type === "avatar" &&
+      item.change.old_value !== null &&
       item.change.old_value === item.change.new_value
     ) {
       continue;

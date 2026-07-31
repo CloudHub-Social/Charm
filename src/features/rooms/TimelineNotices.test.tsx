@@ -72,6 +72,19 @@ describe("TimelineNotices", () => {
     expect(bucketTimelineNotices([unchanged], false, false).trailing).toEqual([]);
   });
 
+  it("preserves an avatar removal when the previous value is unknown", () => {
+    const removal: TimelineItemSummary = {
+      kind: "state",
+      event_id: "$avatar-removal",
+      sender: "@bot:example.org",
+      timestamp_ms: 2,
+      state_key: "",
+      change: { type: "avatar", old_value: null, new_value: null },
+    };
+
+    expect(bucketTimelineNotices([removal], false, false).trailing).toEqual([removal]);
+  });
+
   it("collapses consecutive matching membership changes and expands them", () => {
     render(
       <TimelineNoticeList

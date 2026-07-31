@@ -9,6 +9,7 @@ import {
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { messageRowKey } from "./messageRowShared";
+import { bucketTimelineNotices } from "./TimelineNotices";
 
 // `react-virtuoso`'s prepend recipe: `firstItemIndex` is the logical index of
 // `messages[0]` in an unbounded conceptual list that grows *backwards* as
@@ -30,10 +31,24 @@ function timelineItemKey(item: TimelineItemSummary): string {
   return item.kind === "message" ? item.message.event_id : item.event_id;
 }
 
+function visibleTimelineNotices(
+  items: TimelineItemSummary[],
+  enabled: boolean,
+  hideMembershipEvents: boolean,
+  showHiddenEvents: boolean,
+) {
+  if (!enabled) return [];
+  const buckets = bucketTimelineNotices(items, hideMembershipEvents, showHiddenEvents);
+  return [...[...buckets.beforeMessage.values()].flat(), ...buckets.trailing];
+}
+
 export function useChatTimeline(
   room: RoomSummary | null,
   roomSettingsOpen: boolean,
   hasPendingJump = false,
+  timelineStateEventsEnabled = false,
+  hideMembershipEvents = false,
+  showHiddenEvents = false,
 ) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [timelineItems, setTimelineItems] = useState<TimelineItemSummary[]>([]);
@@ -73,6 +88,16 @@ export function useChatTimeline(
   // every time `loadingMore` flips back to `false`). Cleared on room switch
   // and on any subsequent successful page.
   const [paginationError, setPaginationError] = useState(false);
+  const timelineVisibilityRef = useRef({
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  });
+  timelineVisibilityRef.current = {
+    timelineStateEventsEnabled,
+    hideMembershipEvents,
+    showHiddenEvents,
+  };
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   // Mirrors Virtuoso's own `atBottomStateChange` callback — the single
@@ -284,14 +309,31 @@ export function useChatTimeline(
     newItems: TimelineItemSummary[] | null | undefined,
   ): number {
     const items = newItems ?? newMessages.map((message) => ({ kind: "message" as const, message }));
-    const newlyAddedNotices = items.filter(
-      (item) =>
-        item.kind !== "message" && !previousTimelineItemKeysRef.current.has(timelineItemKey(item)),
+    const visibility = timelineVisibilityRef.current;
+    const visibleNotices = visibleTimelineNotices(
+      items,
+      visibility.timelineStateEventsEnabled,
+      visibility.hideMembershipEvents,
+      visibility.showHiddenEvents,
+    );
+    const newlyAddedNotices = visibleNotices.filter(
+      (item) => !previousTimelineItemKeysRef.current.has(timelineItemKey(item)),
     ).length;
-    previousTimelineItemKeysRef.current = new Set(items.map(timelineItemKey));
+    previousTimelineItemKeysRef.current = new Set(visibleNotices.map(timelineItemKey));
     setTimelineItems(items);
     return Math.max(applyMessages(newMessages), newlyAddedNotices);
   }
+
+  useEffect(() => {
+    previousTimelineItemKeysRef.current = new Set(
+      visibleTimelineNotices(
+        timelineItems,
+        timelineStateEventsEnabled,
+        hideMembershipEvents,
+        showHiddenEvents,
+      ).map(timelineItemKey),
+    );
+  }, [hideMembershipEvents, showHiddenEvents, timelineItems, timelineStateEventsEnabled]);
 
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
@@ -440,8 +482,15 @@ export function useChatTimeline(
   useEffect(() => {
     const listenerRoomId = room?.room_id;
     if (!listenerRoomId) return undefined;
+    const listenerVisitGeneration = visitGenerationRef.current;
     const unlisten = onTimelineUpdate((update) => {
       if (update.room_id !== listenerRoomId) return;
+      if (
+        currentRoomIdRef.current !== listenerRoomId ||
+        visitGenerationRef.current !== listenerVisitGeneration
+      ) {
+        return;
+      }
       liveTimelineRevisionRef.current += 1;
       // `update.messages` is a full re-snapshot of the room's live Timeline
       // (Spec 14) — every call to `timeline:update` carries the complete

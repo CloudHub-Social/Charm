@@ -40,6 +40,19 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+function recordPersistedOverrides(next: FeatureFlagOverrides): void {
+  const keys = new Set<FeatureFlagKey>([
+    ...(Object.keys(persistedOverridesCache) as FeatureFlagKey[]),
+    ...(Object.keys(next) as FeatureFlagKey[]),
+  ]);
+  for (const changedKey of keys) {
+    if (persistedOverridesCache[changedKey] !== next[changedKey]) {
+      persistedFlagVersions[changedKey] = (persistedFlagVersions[changedKey] ?? 0) + 1;
+    }
+  }
+  persistedOverridesCache = next;
+}
+
 /**
  * Loads persisted overrides + the last-known-good remote cache, then starts the
  * OFREP refresh loop. Call once, early (main.tsx).
@@ -131,8 +144,7 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
   emit();
   try {
     if (await persistOverrides(next)) {
-      persistedOverridesCache = next;
-      persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+      recordPersistedOverrides(next);
       emit();
     }
   } catch (error) {
@@ -153,8 +165,7 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
   emit();
   try {
     if (await persistOverrides(next)) {
-      persistedOverridesCache = next;
-      persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+      recordPersistedOverrides(next);
       emit();
     }
   } catch (error) {
