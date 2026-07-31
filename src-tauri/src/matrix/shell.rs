@@ -59,6 +59,19 @@ pub struct SpaceBadgeState {
 /// any `AppHandle` so it's directly unit-testable against a fixture
 /// `Vec<RoomSummary>`.
 pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
+    compute_badge_state_for_presentation(rooms, false)
+}
+
+/// Computes badges against the hierarchy the rail presents. When canonical
+/// space hierarchy is enabled, a nested space contributes through its first
+/// (canonical) parent only; unrelated Matrix parent edges remain in the room
+/// summary for settings and cycle validation but do not inflate hidden
+/// presentation branches. Non-space rooms still roll up through every space
+/// they belong to.
+pub fn compute_badge_state_for_presentation(
+    rooms: &[RoomSummary],
+    canonical_space_hierarchy: bool,
+) -> BadgeState {
     let mut total_unread: u32 = 0;
     let mut total_highlight: u32 = 0;
     for room in rooms {
@@ -68,7 +81,7 @@ pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
         total_highlight =
             total_highlight.saturating_add(u32::try_from(room.unread_count).unwrap_or(u32::MAX));
     }
-    let spaces = compute_space_badge_states(rooms);
+    let spaces = compute_space_badge_states(rooms, canonical_space_hierarchy);
     BadgeState {
         total_unread,
         total_highlight,
@@ -78,11 +91,19 @@ pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
 
 fn compute_space_badge_states(
     rooms: &[RoomSummary],
+    canonical_space_hierarchy: bool,
 ) -> std::collections::HashMap<String, SpaceBadgeState> {
     let mut badges = std::collections::HashMap::new();
     let parents_by_room = rooms
         .iter()
-        .map(|room| (room.room_id.as_str(), room.parent_space_ids.as_slice()))
+        .map(|room| {
+            let parents = if canonical_space_hierarchy && room.is_space {
+                &room.parent_space_ids[..room.parent_space_ids.len().min(1)]
+            } else {
+                room.parent_space_ids.as_slice()
+            };
+            (room.room_id.as_str(), parents)
+        })
         .collect::<std::collections::HashMap<_, _>>();
 
     for room in rooms {
@@ -653,6 +674,38 @@ mod tests {
                 total_highlight: 1
             })
         );
+    }
+
+    #[test]
+    fn canonical_space_badges_ignore_preserved_noncanonical_parents() {
+        let mut nested_room = room(1, 1, false, false);
+        nested_room.room_id = "!nested-room:example.org".to_string();
+        nested_room.parent_space_ids = vec!["!subspace:example.org".to_string()];
+
+        let mut subspace = room(0, 0, false, false);
+        subspace.room_id = "!subspace:example.org".to_string();
+        subspace.is_space = true;
+        subspace.parent_space_ids = vec![
+            "!canonical:example.org".to_string(),
+            "!preserved:example.org".to_string(),
+        ];
+
+        let mut canonical = room(0, 0, false, false);
+        canonical.room_id = "!canonical:example.org".to_string();
+        canonical.is_space = true;
+
+        let mut preserved = room(0, 0, false, false);
+        preserved.room_id = "!preserved:example.org".to_string();
+        preserved.is_space = true;
+
+        let badge = compute_badge_state_for_presentation(
+            &[canonical, preserved, subspace, nested_room],
+            true,
+        );
+
+        assert!(badge.spaces.contains_key("!subspace:example.org"));
+        assert!(badge.spaces.contains_key("!canonical:example.org"));
+        assert!(!badge.spaces.contains_key("!preserved:example.org"));
     }
 
     #[test]

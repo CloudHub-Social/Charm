@@ -390,6 +390,60 @@ pub(crate) async fn parent_space_ids(
     parents
 }
 
+/// Returns the canonical parent relationships advertised by joined spaces
+/// themselves. The rail uses this narrower view for space nesting: Charm
+/// preserves unrelated noncanonical Matrix relationships during reparenting,
+/// but they must not create additional visual placements.
+async fn canonical_space_parent_ids(
+    client: &Client,
+    confirmed_parents: &std::collections::HashMap<String, Vec<String>>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    use matrix_sdk::ruma::events::space::parent::SpaceParentEventContent;
+
+    const MAX_PARENT_STATE_REQUESTS: usize = 8;
+    let mut parent_stream = futures_util::stream::iter(client.joined_space_rooms())
+        .map(|room| async move {
+            let room_id = room.room_id().to_string();
+            let parent_events = room
+                .get_state_events_static::<SpaceParentEventContent>()
+                .await
+                .ok()?;
+            Some((room_id, parent_events))
+        })
+        .buffer_unordered(MAX_PARENT_STATE_REQUESTS);
+    let mut canonical = std::collections::HashMap::new();
+    while let Some(Some((room_id, parent_events))) = parent_stream.next().await {
+        for raw_event in parent_events {
+            let Ok(event) = raw_event.deserialize() else {
+                continue;
+            };
+            let is_canonical = matches!(
+                &event,
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(original)
+                ) if original.content.canonical && !original.content.via.is_empty()
+            );
+            let parent_id = event.state_key().to_string();
+            if is_canonical
+                && confirmed_parents
+                    .get(&room_id)
+                    .is_some_and(|parents| parents.contains(&parent_id))
+            {
+                canonical
+                    .entry(room_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(parent_id);
+            }
+        }
+    }
+    for parent_ids in canonical.values_mut() {
+        parent_ids.sort();
+        parent_ids.dedup();
+        parent_ids.truncate(1);
+    }
+    canonical
+}
+
 /// Sort key for the room list: section (Favourite -> Rooms -> Low priority),
 /// then `manual_order` ascending (`None` last), then alphabetical by
 /// display name — see Spec 06 "Ordering strategy". Computed once here so
@@ -512,11 +566,17 @@ pub async fn snapshot_rooms(
     media_cache: Option<&media::MediaCache>,
     include_message_preview: bool,
     include_activity_sort: bool,
+    include_canonical_space_hierarchy: bool,
     preview_registered_rooms: &std::sync::Mutex<
         std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
     >,
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
+    let canonical_space_parents = if include_canonical_space_hierarchy {
+        canonical_space_parent_ids(client, &parents).await
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let rooms: Vec<Room> = client
         .joined_rooms()
@@ -538,6 +598,7 @@ pub async fn snapshot_rooms(
     const SNAPSHOT_CONCURRENCY: usize = 16;
     let snapshots = futures_util::stream::iter(rooms.into_iter().map(|room| {
         let parents = &parents;
+        let canonical_space_parents = &canonical_space_parents;
         async move {
             let membership = match room.state() {
                 RoomState::Joined => RoomMembershipKind::Join,
@@ -639,7 +700,28 @@ pub async fn snapshot_rooms(
                     is_low_priority,
                     manual_order,
                     is_space,
-                    parent_space_ids: parents.get(&room_id).cloned().unwrap_or_default(),
+                    parent_space_ids: if is_space && include_canonical_space_hierarchy {
+                        // Preserve every confirmed Matrix relationship for
+                        // cycle checks and settings. Canonicalization is only
+                        // presentation ordering: the selected Charm parent is
+                        // first, followed by unrelated noncanonical edges.
+                        let all = parents.get(&room_id).cloned().unwrap_or_default();
+                        let canonical = canonical_space_parents
+                            .get(&room_id)
+                            .and_then(|ids| ids.first())
+                            .cloned();
+                        canonical
+                            .into_iter()
+                            .chain(all.into_iter().filter(|id| {
+                                canonical_space_parents
+                                    .get(&room_id)
+                                    .and_then(|ids| ids.first())
+                                    != Some(id)
+                            }))
+                            .collect()
+                    } else {
+                        parents.get(&room_id).cloned().unwrap_or_default()
+                    },
                     is_direct,
                     has_unread: has_unread_flag,
                     avatar_url: identity.avatar_url,
@@ -747,11 +829,18 @@ pub async fn list_rooms(
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
     });
+    let include_canonical_space_hierarchy = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::SpaceHierarchyReorganization,
+        )
+    });
     Ok(snapshot_rooms(
         &client,
         media_cache,
         include_message_preview,
         include_activity_sort,
+        include_canonical_space_hierarchy,
         &state.preview_registered_rooms,
     )
     .await)

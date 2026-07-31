@@ -26,6 +26,8 @@ declare global {
       convertFileSrc: (filePath: string) => string;
     };
     __e2eEmit: (event: string, payload: unknown) => void;
+    __e2eListenerCount: (event: string) => number;
+    __e2eSetSpaceParentCalls: Array<{ spaceId: string; parentSpaceId?: string }>;
   }
 }
 
@@ -188,6 +190,8 @@ export function installMockTauri(seed: {
   // don't already emit as a side effect.
   // oxlint-disable-next-line no-underscore-dangle
   window.__e2eEmit = emit;
+  window.__e2eListenerCount = (event) => listenersByEvent.get(event)?.size ?? 0;
+  window.__e2eSetSpaceParentCalls = [];
 
   let nextTxnId = 1;
   let nextEventId = 1;
@@ -283,6 +287,7 @@ export function installMockTauri(seed: {
       ban: true,
       set_canonical_alias: true,
       set_space_child: true,
+      set_space_parent: true,
     },
     canonical_alias: null,
     alt_aliases: [],
@@ -656,6 +661,10 @@ export function installMockTauri(seed: {
       return roomId;
     },
     set_space_parent: (args) => {
+      window.__e2eSetSpaceParentCalls.push({
+        spaceId: args.spaceId as string,
+        parentSpaceId: args.parentSpaceId as string | undefined,
+      });
       const target = findRoom(args.spaceId as string);
       if (!target) throw new Error("space not found");
       target.parent_space_ids = typeof args.parentSpaceId === "string" ? [args.parentSpaceId] : [];

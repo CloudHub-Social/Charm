@@ -24,13 +24,18 @@ The first delivery slice is in progress:
   reject non-spaces, self-parenting, and hierarchy cycles.
 - The space rail exposes a permission-gated **Create subspace** action behind the
   default-off `space_hierarchy_reorganization` feature flag.
+- Space rail entries can be dragged onto another space to make it the canonical
+  parent, or outside the rail to remove their canonical parent. Descendant and
+  self targets are rejected locally before the command's authoritative live
+  hierarchy and power-level checks run.
+- After every reparent attempt, including a partial two-room write failure, the
+  rail refreshes its hierarchy rather than retaining a stale pre-drag view.
 - The same commands are available through desktop IPC and the authenticated web
   companion transport.
 
-Drag-to-nest/un-nest, failure reconciliation UI, and the space-settings surface
-remain follow-up slices. Matrix state writes span two rooms and are not atomic:
-clients must surface partial failures and refresh the live hierarchy rather than
-pretending a failed multi-event update rolled back.
+The space-settings surface remains a follow-up slice. Matrix state writes span
+two rooms and are not atomic: failures are surfaced and the hierarchy is
+refetched rather than pretending a failed multi-event update rolled back.
 
 ## Problem & why now
 
@@ -168,9 +173,9 @@ and
 ## Delivery slices
 
 1. Parent-aware creation, canonical-parent API, web transport, and create-under
-   UI.
+   UI. **In review.**
 2. Drag-to-nest and un-nest with fresh source/target permissions, cycle feedback,
-   and failure reconciliation.
+   and failure reconciliation. **In review.**
 3. Space settings in the existing room-settings shell: name, topic, avatar, join
    rules, permissions, and child management. This slice also exposes **Settings**
    from `SpaceRail` and closes Spec 63.

@@ -70,6 +70,84 @@ test("creates a new space beneath the selected parent", async ({ page }) => {
   await captureSnapshot(page, "space-hierarchy-create-subspace");
 });
 
+test("drags one space beneath another and refreshes the rail hierarchy", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { space_hierarchy_reorganization: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: {
+      room_id: "!alpha:e2e",
+      name: "Alpha",
+      unread_count: 0,
+      is_space: true,
+    },
+    extraRooms: [
+      {
+        room_id: "!beta:e2e",
+        name: "Beta",
+        unread_count: 0,
+        is_space: true,
+      },
+    ],
+  });
+  await page.goto("/");
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eListenerCount("room_list:update")))
+    .toBeGreaterThan(0);
+
+  const alpha = page.getByRole("button", { name: "Alpha", exact: true });
+  const beta = page.getByRole("button", { name: "Beta", exact: true });
+  for (const space of [alpha, beta]) {
+    await space.click({ button: "right" });
+    await expect(page.getByRole("menuitem", { name: "Move to space…" })).toBeEnabled();
+    await page.keyboard.press("Escape");
+  }
+  const alphaBox = await alpha.boundingBox();
+  const betaBox = await beta.boundingBox();
+  expect(alphaBox).not.toBeNull();
+  expect(betaBox).not.toBeNull();
+  if (!alphaBox || !betaBox) throw new Error("space rail entries did not render");
+
+  await page.mouse.move(alphaBox.x + alphaBox.width / 2, alphaBox.y + alphaBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, {
+    steps: 6,
+  });
+  await expect(beta).toHaveClass(/ring-2/);
+  await page.mouse.up();
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eSetSpaceParentCalls))
+    .toEqual([{ spaceId: "!alpha:e2e", parentSpaceId: "!beta:e2e" }]);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const rooms = (await window.__TAURI_INTERNALS__.invoke("list_rooms")) as Array<{
+          room_id: string;
+          parent_space_ids: string[];
+        }>;
+        return rooms.find((room) => room.room_id === "!alpha:e2e")?.parent_space_ids;
+      }),
+    )
+    .toEqual(["!beta:e2e"]);
+  await page.evaluate(async () => {
+    const rooms = await window.__TAURI_INTERNALS__.invoke("list_rooms");
+    window.__e2eEmit("room_list:update", rooms);
+  });
+
+  await expect(page.getByRole("button", { name: "Expand Beta" })).toBeVisible();
+  await page.getByRole("button", { name: "Expand Beta" }).click();
+  await expect(page.getByRole("button", { name: "Alpha", exact: true })).toBeVisible();
+  await captureSnapshot(page, "space-hierarchy-drag-to-nest");
+});
+
 test("joins a space by address and switches into it", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
