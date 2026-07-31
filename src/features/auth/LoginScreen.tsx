@@ -180,6 +180,21 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const passwordResetOperationRef = useRef(0);
   const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
 
+  useEffect(() => {
+    if (registrationUiaEnabled) return;
+    passwordResetOperationRef.current += 1;
+    const attemptId = passwordResetAttemptRef.current;
+    passwordResetAttemptRef.current = null;
+    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
+    setShowPasswordReset(false);
+    setPasswordResetChallenge(undefined);
+    setPasswordResetComplete(false);
+    setRecoveryEmail("");
+    setRecoveryToken("");
+    setNewPassword("");
+    setPending(false);
+  }, [registrationUiaEnabled]);
+
   useEffect(
     () => () => {
       const attemptId = registrationAttemptRef.current;
