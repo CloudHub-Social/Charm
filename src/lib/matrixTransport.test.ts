@@ -510,6 +510,25 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "create_space",
+      {
+        name: "Engineering",
+        topic: null,
+        roomAliasName: null,
+        public: false,
+        parentSpaceId: "!work:example.org",
+      },
+      "POST",
+      "/api/rooms/create-space",
+      {
+        name: "Engineering",
+        topic: null,
+        room_alias_name: null,
+        public: false,
+        parent_space_id: "!work:example.org",
+      },
+    ],
+    [
       "leave_room",
       { roomId: "!r:example.org" },
       "POST",
@@ -529,6 +548,13 @@ describe("matrix web transport", () => {
       "DELETE",
       "/api/rooms/!space%3Aexample.org/space-children/!child%3Aexample.org",
       undefined,
+    ],
+    [
+      "set_space_parent",
+      { spaceId: "!child:example.org", parentSpaceId: "!space:example.org" },
+      "PUT",
+      "/api/rooms/!child%3Aexample.org/space-parent",
+      { parent_space_id: "!space:example.org" },
     ],
     [
       "set_space_child_suggested",

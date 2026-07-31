@@ -14,6 +14,7 @@ import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
+  getRoomDetails,
   markRoomRead,
   joinRoom,
   knockRoom,
@@ -24,6 +25,7 @@ import {
   setRoomManualOrder,
   setRoomMarkedUnread,
   setRoomMuted,
+  type RoomPermissions,
   type RoomSummary,
   type SpaceChild,
   type SpaceHierarchyNode,
@@ -161,11 +163,17 @@ export function RoomList({
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  // Space-child mutations aren't power-level-gated in the UI (Remove from
-  // space is offered unconditionally), so a rejection — missing power
-  // level, offline, a since-removed link — is a normal reachable outcome
-  // that needs to be visible, not silently dropped.
+  // The action is permission-gated below, but the server remains authoritative:
+  // power levels or child edges can change between the menu check and the
+  // mutation, and offline failures also remain normal reachable outcomes.
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // Permission snapshots are loaded only when a relevant row menu opens and
+  // discarded before every refresh. This keeps the UI fail-closed across
+  // power-level changes without fetching details for every hierarchy row.
+  const [spaceChildPermissions, setSpaceChildPermissions] = useState<
+    Record<string, RoomPermissions>
+  >({});
+  const permissionRequestGenerations = useRef<Map<string, number>>(new Map());
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
   // Rows aren't a fixed height (the message-preview flag grows some rows a
@@ -198,6 +206,28 @@ export function RoomList({
   const typingRoomIds = useRoomListTyping(currentUserId, roomListTypingFlagEnabled);
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
+
+  function refreshSpaceChildPermission(spaceId: string) {
+    const generation = (permissionRequestGenerations.current.get(spaceId) ?? 0) + 1;
+    permissionRequestGenerations.current.set(spaceId, generation);
+    setSpaceChildPermissions((previous) => {
+      if (!(spaceId in previous)) return previous;
+      const { [spaceId]: _stale, ...remaining } = previous;
+      return remaining;
+    });
+    getRoomDetails(spaceId)
+      .then((details) => {
+        if (permissionRequestGenerations.current.get(spaceId) !== generation) return;
+        setSpaceChildPermissions((previous) => ({ ...previous, [spaceId]: details.can }));
+      })
+      .catch(() => {
+        if (permissionRequestGenerations.current.get(spaceId) !== generation) return;
+        setSpaceChildPermissions((previous) => {
+          const { [spaceId]: _failed, ...remaining } = previous;
+          return remaining;
+        });
+      });
+  }
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
     ? roomListFilters[mode]
     : "all";
@@ -559,6 +589,16 @@ export function RoomList({
                       setRemoveError(err instanceof Error ? err.message : String(err)),
                     );
                 }
+              : undefined
+          }
+          onRemoveFromSpaceMenuOpen={
+            removeFromSpaceTargetId
+              ? () => refreshSpaceChildPermission(removeFromSpaceTargetId)
+              : undefined
+          }
+          removeFromSpaceDisabled={
+            removeFromSpaceTargetId
+              ? !spaceChildPermissions[removeFromSpaceTargetId]?.set_space_child
               : undefined
           }
           removeFromSpaceTargetId={removeFromSpaceTargetId}
@@ -969,6 +1009,8 @@ export function RoomList({
                       onJoin: handleJoin,
                       pendingRoomId,
                       spaceManagementEnabled: spaceRailManagementEnabled,
+                      permissionsBySpaceId: spaceChildPermissions,
+                      onPermissionRefresh: refreshSpaceChildPermission,
                       onRemoved: refetchSpaceHierarchy,
                       onRemoveError: setRemoveError,
                       typingRoomIds: roomListTypingFlagEnabled ? typingRoomIds : EMPTY_TYPING_IDS,
@@ -1109,10 +1151,11 @@ function renderHierarchy(
      * snapshot Matrix sync doesn't keep current, so the caller needs to
      * explicitly refetch it for the removed row to disappear immediately. */
     onRemoved: () => void;
-    /** Called with a message when a removal is rejected (e.g. missing power
-     * level) — this action isn't power-level-gated in the UI, so a rejection
-     * is a normal reachable outcome that needs to be visible. */
+    /** Called with a message when a removal is rejected after the permission
+     * check (e.g. a concurrent demotion or removed child edge). */
     onRemoveError: (message: string) => void;
+    permissionsBySpaceId: Record<string, RoomPermissions>;
+    onPermissionRefresh: (spaceId: string) => void;
     typingRoomIds: Set<string>;
   },
   /** The id of the space each node in `nodes` is a direct child of — root
@@ -1150,6 +1193,16 @@ function renderHierarchy(
                   )
             : undefined
         }
+        onRemoveFromSpaceMenuOpen={
+          options.spaceManagementEnabled && !node.child.is_space
+            ? () => options.onPermissionRefresh(parentSpaceId)
+            : undefined
+        }
+        removeFromSpaceDisabled={
+          options.spaceManagementEnabled && !node.child.is_space
+            ? !options.permissionsBySpaceId[parentSpaceId]?.set_space_child
+            : undefined
+        }
         removeFromSpaceTargetId={
           options.spaceManagementEnabled && !node.child.is_space ? parentSpaceId : undefined
         }
@@ -1185,6 +1238,8 @@ interface HierarchyRowProps {
   onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
   onRemoveFromSpace?: () => void;
+  onRemoveFromSpaceMenuOpen?: () => void;
+  removeFromSpaceDisabled?: boolean;
   removeFromSpaceTargetId?: string;
 }
 
@@ -1199,6 +1254,8 @@ function HierarchyRow({
   onSelectSpace,
   onJoin,
   onRemoveFromSpace,
+  onRemoveFromSpaceMenuOpen,
+  removeFromSpaceDisabled,
   removeFromSpaceTargetId,
 }: HierarchyRowProps) {
   const indent = `${Math.min(depth, 6) * 16}px`;
@@ -1243,6 +1300,8 @@ function HierarchyRow({
           onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
           onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
           onRemoveFromSpace={onRemoveFromSpace}
+          onContextMenuOpen={onRemoveFromSpaceMenuOpen}
+          removeFromSpaceDisabled={removeFromSpaceDisabled}
           removeFromSpaceTargetId={removeFromSpaceTargetId}
         />
       </div>
@@ -1277,6 +1336,8 @@ interface DraggableRoomRowProps {
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
   onRemoveFromSpace?: () => void;
+  onRemoveFromSpaceMenuOpen?: () => void;
+  removeFromSpaceDisabled?: boolean;
   removeFromSpaceTargetId?: string;
 }
 
@@ -1291,6 +1352,8 @@ function DraggableRoomRow({
   onSelect,
   onReorder,
   onRemoveFromSpace,
+  onRemoveFromSpaceMenuOpen,
+  removeFromSpaceDisabled,
   removeFromSpaceTargetId,
 }: DraggableRoomRowProps) {
   const [dragOffset, setDragOffset] = useState(0);
@@ -1398,6 +1461,8 @@ function DraggableRoomRow({
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       onRemoveFromSpace={onRemoveFromSpace}
+      onContextMenuOpen={onRemoveFromSpaceMenuOpen}
+      removeFromSpaceDisabled={removeFromSpaceDisabled}
       removeFromSpaceTargetId={removeFromSpaceTargetId}
       dragHandleProps={dragHandleProps}
       style={style}

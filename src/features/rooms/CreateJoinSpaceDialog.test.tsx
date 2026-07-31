@@ -33,7 +33,7 @@ describe("CreateJoinSpaceDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create space" }));
 
     await waitFor(() => expect(onSpaceCreated).toHaveBeenCalledWith("!newspace:example.org"));
-    expect(createSpace).toHaveBeenCalledWith("Engineering", undefined, undefined, false);
+    expect(createSpace).toHaveBeenCalledWith("Engineering", undefined, undefined, false, undefined);
   });
 
   it("passes the entered address through as the room alias", async () => {
@@ -54,7 +54,39 @@ describe("CreateJoinSpaceDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create space" }));
 
     await waitFor(() =>
-      expect(createSpace).toHaveBeenCalledWith("Engineering", undefined, "engineering", false),
+      expect(createSpace).toHaveBeenCalledWith(
+        "Engineering",
+        undefined,
+        "engineering",
+        false,
+        undefined,
+      ),
+    );
+  });
+
+  it("creates beneath the supplied parent space", async () => {
+    createSpace.mockResolvedValue("!newspace:example.org");
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        parentSpaceId="!work:example.org"
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Engineering" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+
+    await waitFor(() =>
+      expect(createSpace).toHaveBeenCalledWith(
+        "Engineering",
+        undefined,
+        undefined,
+        false,
+        "!work:example.org",
+      ),
     );
   });
 
