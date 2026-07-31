@@ -120,11 +120,13 @@ vi.mock("./SpaceRail", () => ({
     activeSpaceId,
     onSelectSpace,
     onCreateJoin,
+    onOpenSettings,
   }: {
     activeMode: string;
     activeSpaceId: string | null;
     onSelectSpace: (spaceId: string) => void;
     onCreateJoin: () => void;
+    onOpenSettings: (spaceId: string) => void;
   }) => (
     <div>
       space-rail:{activeMode}:{activeSpaceId ?? "none"}
@@ -133,6 +135,9 @@ vi.mock("./SpaceRail", () => ({
       </button>
       <button type="button" onClick={onCreateJoin}>
         create-join
+      </button>
+      <button type="button" onClick={() => onOpenSettings("!space:example.org")}>
+        open-space-settings
       </button>
     </div>
   ),
@@ -241,6 +246,29 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("opens the shared room-settings shell in space mode from the rail", async () => {
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText("chat-content:!a:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "open-space-settings" }));
+
+    expect(store.get(roomSettingsAtom)).toEqual({
+      roomId: "!space:example.org",
+      section: "general",
+      kind: "space",
+    });
+  });
+
   it("hides pending invites while the room-invites flag is disabled", async () => {
     mockUseFlag.mockReturnValue(false);
     const invite = room({ room_id: "!invite:example.org", membership: "invite" });

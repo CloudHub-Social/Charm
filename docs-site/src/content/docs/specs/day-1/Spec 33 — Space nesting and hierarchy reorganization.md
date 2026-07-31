@@ -30,12 +30,17 @@ The first delivery slice is in progress:
   hierarchy and power-level checks run.
 - After every reparent attempt, including a partial two-room write failure, the
   rail refreshes its hierarchy rather than retaining a stale pre-drag view.
+- The space rail exposes **Settings** and opens spaces in the existing
+  room-settings shell with space-specific labels. Name, topic, avatar, join
+  rules, members, and power-level permissions reuse the existing permission
+  gates; the room-only encryption affordance is omitted for spaces.
 - The same commands are available through desktop IPC and the authenticated web
   companion transport.
 
-The space-settings surface remains a follow-up slice. Matrix state writes span
-two rooms and are not atomic: failures are surfaced and the hierarchy is
-refetched rather than pretending a failed multi-event update rolled back.
+Child management inside the settings shell remains the final follow-up slice.
+Matrix state writes span two rooms and are not atomic: failures are surfaced and
+the hierarchy is refetched rather than pretending a failed multi-event update
+rolled back.
 
 ## Problem & why now
 
@@ -177,8 +182,8 @@ and
 2. Drag-to-nest and un-nest with fresh source/target permissions, cycle feedback,
    and failure reconciliation. **In review.**
 3. Space settings in the existing room-settings shell: name, topic, avatar, join
-   rules, permissions, and child management. This slice also exposes **Settings**
-   from `SpaceRail` and closes Spec 63.
+   rules, and permissions, plus **Settings** from `SpaceRail`. **In review.**
+   Child management remains before this slice and Spec 63 can close.
 
 ## UI-parity addition (from the 2026-07-13 UI deep-dive)
 

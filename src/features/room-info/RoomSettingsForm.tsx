@@ -78,9 +78,10 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
 
 interface RoomSettingsFormProps {
   details: RoomDetails;
+  isSpace?: boolean;
 }
 
-export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
+export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormProps) {
   const actions = useRoomAdminActions(details.room_id);
   const [name, setName] = useState(details.name ?? "");
   const [topic, setTopic] = useState(details.topic ?? "");
@@ -124,7 +125,7 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
       <section className="flex flex-col gap-6">
         <h3 className="text-sm font-semibold text-foreground">Profile</h3>
         <div className="flex flex-col gap-2">
-          <Label htmlFor="room-name">Room name</Label>
+          <Label htmlFor="room-name">{isSpace ? "Space name" : "Room name"}</Label>
           <div className="flex gap-2">
             <PermissionGate allowed={details.can.set_name}>
               <Input
@@ -264,51 +265,55 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
         </section>
       )}
 
-      <section className="flex flex-col gap-6">
-        <h3 className="text-sm font-semibold text-foreground">Advanced</h3>
-        <div className="flex flex-col gap-2">
-          <Label>Encryption</Label>
-          {details.is_encrypted ? (
-            <span className="text-sm text-muted-foreground">Encrypted — this can't be undone</span>
-          ) : (
-            <PermissionGate allowed={details.can.set_encryption}>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={!details.can.set_encryption}
-                onClick={() => setConfirmingEncryption(true)}
-              >
-                Enable encryption
-              </Button>
-            </PermissionGate>
-          )}
-          <Dialog open={confirmingEncryption} onOpenChange={setConfirmingEncryption}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Enable encryption?</DialogTitle>
-                <DialogDescription>
-                  This can't be undone — once a room is encrypted, it can never be made unencrypted
-                  again.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setConfirmingEncryption(false)}>
-                  Cancel
-                </Button>
+      {!isSpace && (
+        <section className="flex flex-col gap-6">
+          <h3 className="text-sm font-semibold text-foreground">Advanced</h3>
+          <div className="flex flex-col gap-2">
+            <Label>Encryption</Label>
+            {details.is_encrypted ? (
+              <span className="text-sm text-muted-foreground">
+                Encrypted — this can't be undone
+              </span>
+            ) : (
+              <PermissionGate allowed={details.can.set_encryption}>
                 <Button
+                  size="sm"
                   variant="destructive"
-                  onClick={() => {
-                    actions.enableEncryption.mutate(undefined);
-                    setConfirmingEncryption(false);
-                  }}
+                  disabled={!details.can.set_encryption}
+                  onClick={() => setConfirmingEncryption(true)}
                 >
                   Enable encryption
                 </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </section>
+              </PermissionGate>
+            )}
+            <Dialog open={confirmingEncryption} onOpenChange={setConfirmingEncryption}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Enable encryption?</DialogTitle>
+                  <DialogDescription>
+                    This can't be undone — once a room is encrypted, it can never be made
+                    unencrypted again.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setConfirmingEncryption(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => {
+                      actions.enableEncryption.mutate(undefined);
+                      setConfirmingEncryption(false);
+                    }}
+                  >
+                    Enable encryption
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

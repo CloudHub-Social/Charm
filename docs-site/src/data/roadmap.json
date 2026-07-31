@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:55:34.129Z",
+  "generatedAt": "2026-07-31T17:56:42.163Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
@@ -1523,6 +1523,14 @@
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 320,
+          "title": "Gate room removal by space permissions",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/320",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:34:42Z"
+        },
         {
           "number": 298,
           "title": "Spec 63: power-level gating for SpaceRail context menu",

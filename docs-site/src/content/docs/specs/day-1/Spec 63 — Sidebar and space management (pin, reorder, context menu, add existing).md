@@ -10,8 +10,8 @@ sidebar:
 
 ## Implementation status
 
-**Shipped, except `Settings`** (blocked on Spec 33's space-settings surface,
-tracked there — not a gap in this spec's own scope). Pin/unpin, reorder (Move up/down), and a
+**Implementation is in progress; closure is paired with Spec 33 and the remaining
+`RoomList` permission gate.** Pin/unpin, reorder (Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
@@ -33,9 +33,10 @@ confirmation dialog first; Add Existing is a searchable picker over already-
 joined rooms/spaces, excluding the target space, its ancestors, and its
 current children to prevent cycles/duplicates.
 
-`Settings` is not built — it depends on Spec 33's "space settings surface"
-UI-parity addition, which doesn't exist yet; the menu simply omits the item
-until it does.
+`Settings` is now exposed from the rail behind Spec 33's hierarchy flag and
+opens the selected space in the existing room-settings shell. Spec 63 remains
+`in-progress` until the stacked Spec 33 settings work, including child
+management, is complete and both specs can be closed together.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —

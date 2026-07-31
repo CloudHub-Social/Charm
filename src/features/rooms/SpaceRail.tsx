@@ -8,6 +8,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Settings,
   Star,
   StarOff,
   UserPlus,
@@ -68,6 +69,7 @@ interface SpaceRailProps {
   onSelectSpace: (spaceId: string) => void;
   onCreateJoin: () => void;
   onCreateUnderSpace?: (spaceId: string) => void;
+  onOpenSettings?: (spaceId: string) => void;
   /** Called after "Add Existing" or "Remove from space" successfully edits a
    * space's children — lets a sibling `RoomList` showing that space's lobby
    * (a separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
@@ -86,6 +88,7 @@ export function SpaceRail({
   onSelectSpace,
   onCreateJoin,
   onCreateUnderSpace,
+  onOpenSettings,
   onSpaceChildrenChanged,
 }: SpaceRailProps) {
   const managementEnabled = useFlag("space_rail_management");
@@ -681,6 +684,12 @@ export function SpaceRail({
                 >
                   <Plus aria-hidden="true" />
                   Create subspace
+                </ContextMenuItem>
+              )}
+              {hierarchyReorganizationEnabled && onOpenSettings && (
+                <ContextMenuItem onSelect={() => onOpenSettings(space.room_id)}>
+                  <Settings aria-hidden="true" />
+                  Settings
                 </ContextMenuItem>
               )}
               {hierarchyReorganizationEnabled && (
