@@ -44,6 +44,11 @@ export function MessagePillProfileDialog({
   const roomListSignatureRef = useRef<string | null>(null);
   const pendingProfileRefreshRef = useRef(false);
   const pendingMutualRoomsRefreshRef = useRef(false);
+  useEffect(() => {
+    pendingProfileRefreshRef.current = false;
+    pendingMutualRoomsRefreshRef.current = false;
+    roomListSignatureRef.current = null;
+  }, [accountId, userId]);
   const refreshMutualRooms = useCallback(() => {
     const queryKey = ["mutual-rooms", accountId ?? null, userId] as const;
     if (queryClient.isFetching({ queryKey, exact: true }) > 0) {
