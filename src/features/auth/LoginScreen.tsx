@@ -536,16 +536,28 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   async function handleResendPasswordReset() {
     const attemptId = passwordResetAttemptRef.current;
     if (!attemptId || !isWebBuild()) return;
+    const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
     try {
       const challenge = await resendPasswordReset(attemptId);
+      if (
+        passwordResetOperationRef.current !== operation ||
+        passwordResetAttemptRef.current !== attemptId
+      ) {
+        return;
+      }
       setPasswordResetChallenge(challenge);
       setRecoveryToken("");
     } catch {
-      setError("Could not resend the recovery email yet. Wait a moment, then try again.");
+      if (
+        passwordResetOperationRef.current === operation &&
+        passwordResetAttemptRef.current === attemptId
+      ) {
+        setError("Could not resend the recovery email yet. Wait a moment, then try again.");
+      }
     } finally {
-      setPending(false);
+      if (passwordResetOperationRef.current === operation) setPending(false);
     }
   }
 

@@ -70,8 +70,26 @@ pub(crate) async fn build_client(
 pub(crate) async fn validated_homeserver_client(
     homeserver_url: &str,
 ) -> Result<(reqwest::Url, reqwest::Client), String> {
-    let homeserver = reqwest::Url::parse(homeserver_url)
-        .map_err(|_| "enter a valid HTTPS homeserver URL".to_string())?;
+    let homeserver = match reqwest::Url::parse(homeserver_url) {
+        Ok(url) => url,
+        Err(_) => {
+            // The UI intentionally accepts a Matrix server name such as
+            // `matrix.org`. Let matrix-sdk perform `.well-known` discovery,
+            // then apply the same DNS pinning and public-address policy to
+            // the resolved homeserver URL used for authentication.
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                Client::builder()
+                    .server_name_or_homeserver_url(homeserver_url)
+                    .build(),
+            )
+            .await
+            .map_err(|_| "homeserver discovery timed out".to_string())?
+            .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?
+            .homeserver()
+            .clone()
+        }
+    };
     if !homeserver.username().is_empty() || homeserver.password().is_some() {
         return Err("enter a valid HTTPS homeserver URL".to_string());
     }
