@@ -432,6 +432,11 @@ async fn canonical_space_parent_ids(
             }
         }
     }
+    for parent_ids in canonical.values_mut() {
+        parent_ids.sort();
+        parent_ids.dedup();
+        parent_ids.truncate(1);
+    }
     canonical
 }
 
