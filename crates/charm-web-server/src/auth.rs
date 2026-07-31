@@ -10,6 +10,7 @@ use charm_lib::matrix::auth::{
 };
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
+use std::time::Duration;
 
 use crate::session::{CryptoStoreHandle, Session};
 
@@ -21,13 +22,15 @@ use crate::session::{CryptoStoreHandle, Session};
 /// store from the very first `Client::builder().build()` call, rather than
 /// being established in-memory and needing a separate migration into a store
 /// afterward.
-async fn build_client(
+pub(crate) async fn build_client(
     homeserver_url: &str,
     has_persistence: bool,
 ) -> Result<(Client, Option<CryptoStoreHandle>), String> {
+    let (homeserver, http_client) = validated_homeserver_client(homeserver_url).await?;
     if !has_persistence {
         let client = Client::builder()
-            .server_name_or_homeserver_url(homeserver_url)
+            .homeserver_url(homeserver)
+            .http_client(http_client)
             .with_encryption_settings(client_encryption_settings())
             .build()
             .await
@@ -40,8 +43,16 @@ async fn build_client(
         passphrase: crate::crypto_store::generate_passphrase(),
     };
     let store_dir = crate::crypto_store::create_store_dir(&crypto.store_key)?;
+    struct CryptoBuildGuard(Option<CryptoStoreHandle>);
+    impl Drop for CryptoBuildGuard {
+        fn drop(&mut self) {
+            cleanup_failed_crypto_store(&self.0);
+        }
+    }
+    let mut cleanup = CryptoBuildGuard(Some(crypto.clone()));
     let client = match Client::builder()
-        .server_name_or_homeserver_url(homeserver_url)
+        .homeserver_url(homeserver)
+        .http_client(http_client)
         .with_encryption_settings(client_encryption_settings())
         .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
         .build()
@@ -49,18 +60,174 @@ async fn build_client(
     {
         Ok(client) => client,
         Err(e) => {
-            // The directory above was already created by `create_store_dir`
-            // — a `?` here without this cleanup would leak it on every
-            // failed build (e.g. an invalid homeserver URL, or a sqlite
-            // open error), the same leak `cleanup_failed_crypto_store`
-            // exists to prevent for a login/register failure *after* a
-            // successful build. Best-effort for the same reason that one is:
-            // the caller already has a real error to report.
-            cleanup_failed_crypto_store(&Some(crypto));
             return Err(e.to_string());
         }
     };
+    cleanup.0.take();
     Ok((client, Some(crypto)))
+}
+
+pub(crate) async fn validated_homeserver_client(
+    homeserver_url: &str,
+) -> Result<(reqwest::Url, reqwest::Client), String> {
+    let homeserver = if homeserver_url.contains("://") {
+        reqwest::Url::parse(homeserver_url)
+            .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?
+    } else {
+        discover_homeserver(homeserver_url).await?
+    };
+    validated_url_client(homeserver).await
+}
+
+#[derive(serde::Deserialize)]
+struct ClientWellKnown {
+    #[serde(rename = "m.homeserver")]
+    homeserver: ClientWellKnownHomeserver,
+}
+
+#[derive(serde::Deserialize)]
+struct ClientWellKnownHomeserver {
+    base_url: String,
+}
+
+async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> {
+    let origin = reqwest::Url::parse(&format!("https://{server_name}"))
+        .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
+    if origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+    {
+        return Err("enter a valid Matrix server name or HTTPS homeserver URL".to_string());
+    }
+
+    let mut target = origin
+        .join("/.well-known/matrix/client")
+        .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
+    for redirect_count in 0..=3 {
+        let (_, client) = validated_url_client(target.clone()).await?;
+        let response = match client.get(target.clone()).send().await {
+            Ok(response) => response,
+            Err(_) => return Ok(origin),
+        };
+        if response.status().is_redirection() {
+            if redirect_count == 3 {
+                return Err("homeserver discovery used too many redirects".to_string());
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "homeserver discovery returned an invalid redirect".to_string())?;
+            target = target
+                .join(location)
+                .map_err(|_| "homeserver discovery returned an invalid redirect".to_string())?;
+            continue;
+        }
+        if !response.status().is_success() {
+            return Ok(origin);
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
+        if body.len() > 64 * 1024 {
+            return Err("homeserver discovery response was too large".to_string());
+        }
+        let discovered: ClientWellKnown = match serde_json::from_slice(&body) {
+            Ok(discovered) => discovered,
+            Err(_) => return Ok(origin),
+        };
+        return reqwest::Url::parse(&discovered.homeserver.base_url)
+            .map_err(|_| "homeserver discovery returned an invalid base URL".to_string());
+    }
+    unreachable!("the bounded discovery loop always returns")
+}
+
+async fn validated_url_client(
+    homeserver: reqwest::Url,
+) -> Result<(reqwest::Url, reqwest::Client), String> {
+    if !homeserver.username().is_empty() || homeserver.password().is_some() {
+        return Err("enter a valid HTTPS homeserver URL".to_string());
+    }
+    let host = homeserver
+        .host_str()
+        .ok_or_else(|| "enter a valid HTTPS homeserver URL".to_string())?;
+    let explicitly_local = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| !is_public_network_ip(ip));
+    let allow_insecure_local = homeserver.scheme() == "http"
+        && explicitly_local
+        && std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1");
+    if homeserver.scheme() != "https" && !allow_insecure_local {
+        return Err("enter a valid HTTPS homeserver URL".to_string());
+    }
+    let port = homeserver
+        .port_or_known_default()
+        .ok_or_else(|| "enter a valid HTTPS homeserver URL".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "could not resolve homeserver".to_string())?
+        .collect::<Vec<_>>();
+    if addresses.is_empty()
+        || (!allow_insecure_local
+            && !cfg!(test)
+            && addresses
+                .iter()
+                .any(|address| !is_public_network_ip(address.ip())))
+    {
+        return Err("homeserver must resolve only to public addresses".to_string());
+    }
+    let http_client = reqwest::Client::builder()
+        .resolve_to_addrs(host, &addresses)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "could not build homeserver client".to_string())?;
+    Ok((homeserver, http_client))
+}
+
+fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_network_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || segments[0] == 0x2002
+                || segments[0] == 0x5f00)
+        }
+    }
 }
 
 /// Removes a just-created crypto-store directory when the login/register
@@ -73,7 +240,7 @@ async fn build_client(
 /// propagated — the caller already has a real auth error to report, and
 /// leftover disk usage from a rare cleanup failure is far less urgent than
 /// surfacing that.
-fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
+pub(crate) fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
     let Some(crypto) = crypto else { return };
     match crate::crypto_store::existing_store_dir(&crypto.store_key) {
         Ok(Some(dir)) => {
@@ -86,9 +253,46 @@ fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
     }
 }
 
+/// Converts an already-authenticated Matrix client into the same web
+/// session shape used by password login, registration UIA, and token login.
+pub(crate) async fn finish_authenticated_client(
+    client: Client,
+    crypto: Option<CryptoStoreHandle>,
+    flow: &str,
+) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
+    let Some(session_meta) = client.matrix_auth().session() else {
+        cleanup_failed_crypto_store(&crypto);
+        return Err(format!("{flow} succeeded but no session was returned"));
+    };
+    let user_id = session_meta.meta.user_id.to_string();
+    let device_id = session_meta.meta.device_id.to_string();
+    let crypto_store_open = crypto.is_some();
+    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
+    crate::sync_loop::register_event_handlers(
+        &client,
+        session.events.clone(),
+        session.pending_verification_events.clone(),
+        session.profile_and_presence_snapshots(),
+    );
+    let initial_response = client
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                "{flow}'s initial sync failed, deferring to the background sync loop's own retry: {error}"
+            );
+            matrix_sdk::sync::SyncResponse::default()
+        });
+    Ok((
+        LoginResponse { user_id, device_id },
+        session,
+        initial_response,
+    ))
+}
+
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
-/// or full URL — matrix-rust-sdk's `.well-known` discovery handles both, same
-/// as `charm_lib::matrix::auth::build_client`) and logs in with a password.
+/// or full URL). Bare server-name discovery is performed above with Charm's
+/// pinned, no-proxy HTTP policy before the SDK client is built.
 ///
 /// Also returns the `SyncResponse` from the initial `sync_once` below, so
 /// `sync_loop::spawn` can use it directly as its *own* "initial state"
@@ -115,62 +319,7 @@ pub async fn login(
         return Err(e.to_string());
     }
 
-    let Some(session_meta) = client.matrix_auth().session() else {
-        cleanup_failed_crypto_store(&crypto);
-        return Err("login succeeded but no session was returned".to_string());
-    };
-    let user_id = session_meta.meta.user_id.to_string();
-
-    // Built (and its event handlers registered — see
-    // `register_event_handlers`'s doc comment for why that must happen
-    // *before* the sync below, not just before `sync_loop::spawn`) ahead of
-    // that sync, not after: `Session::new` is what creates this session's
-    // broadcast channel, and a `to-device` verification event landing in
-    // this very first sync response is processed synchronously as part of
-    // this call — never replayed later — so the handler needs somewhere to
-    // push it to before this call happens, not after.
-    let crypto_store_open = crypto.is_some();
-    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
-    crate::sync_loop::register_event_handlers(
-        &client,
-        session.events.clone(),
-        session.pending_verification_events.clone(),
-        session.profile_and_presence_snapshots(),
-    );
-
-    // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
-    // room store, which only gets populated by a sync — without this, every
-    // room route 404s/empties out for a freshly logged-in session even
-    // though the account genuinely has rooms. This also doubles as
-    // `sync_loop::spawn`'s initial sync — see this function's doc comment.
-    //
-    // A failure here is *not* propagated as this whole function's error:
-    // the login itself already succeeded above, so failing this call would
-    // throw away valid, already-authenticated credentials over what's very
-    // often a transient network/homeserver hiccup, forcing the user to
-    // resubmit their password for no reason the login itself caused. An
-    // empty/default `SyncResponse` lets the caller still issue a session
-    // cookie; `sync_loop::spawn`'s own loop (using this same empty response
-    // as its "initial state") will attempt its first real sync immediately
-    // after and surface a `sync:state` error there if the homeserver is
-    // genuinely still unreachable — this route just stops being the one
-    // thing standing between "logged in" and "usable".
-    let initial_response = client
-        .sync_once(SyncSettings::default())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                "login's initial sync failed, deferring to the background sync loop's own retry: {e}"
-            );
-            matrix_sdk::sync::SyncResponse::default()
-        });
-
-    let response = LoginResponse {
-        user_id,
-        device_id: session_meta.meta.device_id.to_string(),
-    };
-
-    Ok((response, session, initial_response))
+    finish_authenticated_client(client, crypto, "login").await
 }
 
 /// Registers a new account and logs it in, same in-memory-client shape as
@@ -191,44 +340,19 @@ pub async fn register(
         return Err(e);
     }
 
-    let Some(session_meta) = client.matrix_auth().session() else {
-        cleanup_failed_crypto_store(&crypto);
-        return Err("registration succeeded but no session was returned".to_string());
-    };
-    let user_id = session_meta.meta.user_id.to_string();
+    finish_authenticated_client(client, crypto, "registration").await
+}
 
-    // See `login`'s doc comment on this same ordering: session (and its
-    // event handlers) built before the initial sync, not after.
-    let crypto_store_open = crypto.is_some();
-    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
-    crate::sync_loop::register_event_handlers(
-        &client,
-        session.events.clone(),
-        session.pending_verification_events.clone(),
-        session.profile_and_presence_snapshots(),
-    );
-
-    // Not propagated as an error — see `login`'s matching doc comment, and
-    // more so here: the account was *just created* by
-    // `register_with_dummy_auth` above, so failing this call would strand
-    // the user with an account that already exists but no way back in —
-    // retrying "registration" fails outright (username taken), and this
-    // route never told the caller the account/device id it needs to fall
-    // back to a plain login instead.
-    let initial_response = client
-        .sync_once(SyncSettings::default())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                "registration's initial sync failed, deferring to the background sync loop's own retry: {e}"
-            );
-            matrix_sdk::sync::SyncResponse::default()
-        });
-
-    let response = LoginResponse {
-        user_id,
-        device_id: session_meta.meta.device_id.to_string(),
-    };
-
-    Ok((response, session, initial_response))
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn bare_server_names_reject_paths_before_discovery() {
+        let error = super::discover_homeserver("example.org/not-a-server-name")
+            .await
+            .expect_err("a Matrix server name cannot contain a URL path");
+        assert_eq!(
+            error,
+            "enter a valid Matrix server name or HTTPS homeserver URL"
+        );
+    }
 }

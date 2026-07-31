@@ -202,6 +202,8 @@ pub struct LoginFlowSummary {
     pub token: bool,
     pub sso: bool,
     pub identity_providers: Vec<LoginIdentityProvider>,
+    pub delegated_auth: bool,
+    pub account_management_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1102,6 +1104,9 @@ pub async fn request_registration_email(
     if next_registration_stage(&current.uiaa)? != AuthType::EmailIdentity.as_str() {
         return Err("registration email is not the current authentication stage".to_string());
     }
+    // `pending_registration` itself protects the temp store from the delayed
+    // orphan sweep. Reserve the key before taking the attempt out of that
+    // slot, and keep the reservation through every network/restore path.
     let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
     let mut pending = guard.take().expect("pending attempt checked above");
     drop(guard);
@@ -2298,6 +2303,8 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
         token: false,
         sso: false,
         identity_providers: Vec::new(),
+        delegated_auth: false,
+        account_management_url: None,
     };
     for flow in flows {
         match flow {

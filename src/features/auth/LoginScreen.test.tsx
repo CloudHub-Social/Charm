@@ -620,6 +620,16 @@ describe("LoginScreen login choices", () => {
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
 
+  it("exposes companion-backed token login on web without native callback options", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(screen.getByRole("button", { name: "Use a login token" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Continue with Company SSO" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in with QR code" })).toBeNull();
+  });
+
   it("falls back to generic SSO when login-flow discovery fails", async () => {
     getLoginFlows.mockRejectedValue(new Error("unavailable"));
 

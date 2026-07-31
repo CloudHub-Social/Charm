@@ -4,6 +4,7 @@ pub mod crypto_store;
 pub mod events;
 pub mod media_cache;
 pub mod observability;
+pub mod pending_auth;
 pub mod persistence;
 pub mod routes;
 pub mod session;
@@ -17,6 +18,7 @@ use session::SessionStore;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub sessions: SessionStore,
+    pub pending_auth: pending_auth::PendingAuthStore,
     /// `None` when `CHARM_WEB_SERVER_MASTER_KEY` isn't set — sessions then
     /// behave exactly like sub-PR A (in-memory only, dropped on restart).
     /// See `persistence.rs`'s module doc comment.
@@ -24,6 +26,10 @@ pub struct AppState {
     /// Server-side rollout gate for Spec 33's Matrix write operations.
     /// Read-only hierarchy browsing remains available independently.
     pub space_hierarchy_reorganization: bool,
+    /// Server-side half of the `registration_and_recovery` kill switch.
+    /// Defaults off; the companion enables it explicitly from its deployment
+    /// environment.
+    pub registration_and_recovery_enabled: bool,
 }
 
 /// Test-only, crate-wide lock for tests that read/write process env vars

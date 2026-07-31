@@ -1657,6 +1657,51 @@ impl PersistenceStore {
         }
         restored
     }
+
+    /// Crypto stores referenced by durable session records must never be
+    /// reclaimed as abandoned pre-auth stores, even if the process crashed
+    /// after saving the session but before removing its pending marker.
+    pub async fn persisted_crypto_store_keys(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let prefix = ObjectPath::from(SESSIONS_PREFIX);
+        let mut paths = Vec::new();
+        let mut listing = self.store.list(Some(&prefix));
+        while let Some(entry) = listing.next().await {
+            let meta = entry
+                .map_err(|error| format!("failed to enumerate persisted sessions: {error}"))?;
+            paths.push(meta.location);
+        }
+
+        let reads = paths.into_iter().map(|path| async move {
+            let result = self.store.get(&path).await.map_err(|error| {
+                format!("failed to read persisted session object {path}: {error}")
+            })?;
+            let bytes = result.bytes().await.map_err(|error| {
+                format!("failed to read persisted session object {path}: {error}")
+            })?;
+            let blob: EncryptedBlob = serde_json::from_slice(&bytes).map_err(|error| {
+                format!("failed to decode persisted session object {path}: {error}")
+            })?;
+            let session = self.decrypt(&blob, &path).map_err(|error| {
+                format!("failed to decrypt persisted session object {path}: {error}")
+            })?;
+            if object_path_for_token(&session.token) != path {
+                return Err(format!(
+                    "persisted session token does not match object path {path}"
+                ));
+            }
+            Ok::<_, String>(session.crypto_store_key)
+        });
+
+        let mut keys = std::collections::HashSet::new();
+        for result in futures_util::future::join_all(reads).await {
+            if let Some(key) = result? {
+                keys.insert(key);
+            }
+        }
+        Ok(keys)
+    }
 }
 
 fn snapshot_source_is_not_ready(error: &str) -> bool {
