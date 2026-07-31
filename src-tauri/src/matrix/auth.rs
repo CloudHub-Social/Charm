@@ -1220,6 +1220,7 @@ pub async fn request_registration_email(
     let response = tokio::select! {
         result = pending.client.send(request) => result,
         () = cancellation.cancelled() => {
+            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             discard_pending_registration(&app, pending);
             clear_registration_cancellation(&state, &attempt_id);
             return Err("registration cancelled".to_string());
@@ -1608,9 +1609,14 @@ pub async fn request_password_reset(
         cancellation.cancel();
     }
     let client = tokio::select! {
-        result = Client::builder()
-            .server_name_or_homeserver_url(&homeserver_url)
-            .build() => result.map_err(|_| "could not start password reset".to_string()),
+        result = tokio::time::timeout(
+            AUTH_NETWORK_TIMEOUT,
+            Client::builder()
+                .server_name_or_homeserver_url(&homeserver_url)
+                .build(),
+        ) => result
+            .map_err(|_| "could not start password reset".to_string())?
+            .map_err(|_| "could not start password reset".to_string()),
         () = cancellation.cancelled() => {
             Err("password reset attempt was superseded".to_string())
         },
@@ -1930,6 +1936,15 @@ async fn submit_email_validation(
         .await
         .map_err(|_| format!("could not confirm {flow} email"))?;
     if !response.status().is_success() {
+        return Err(format!("could not confirm {flow} email"));
+    }
+    let accepted = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|body| body.get("success").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    if !accepted {
         return Err(format!("could not confirm {flow} email"));
     }
     Ok(())
@@ -3028,7 +3043,7 @@ mod registration_uia_tests {
                 "client_secret": client_secret,
                 "token": "654321",
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
             .expect(1)
             .mount(server.server())
             .await;
@@ -3368,7 +3383,7 @@ mod registration_uia_tests {
                 "client_secret": client_secret,
                 "token": "123456",
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
             .expect(1)
             .mount(server.server())
             .await;

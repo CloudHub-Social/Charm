@@ -62,6 +62,8 @@ HTTPS origin. Charm resolves it once, rejects non-public delegated addresses,
 pins the approved addresses, and disables redirects; explicitly configured
 same-origin localhost or literal-IP development servers remain supported.
 Request failures remain deliberately generic in the UI.
+The desktop resend lifecycle remains open: until `resend_password_reset` is
+implemented for Tauri, retrying delivery starts a new superseding reset attempt.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
