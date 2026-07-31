@@ -83,7 +83,9 @@ export function MessagePillProfileDialog({
             "\u0000",
           ),
         )
-        .toSorted()
+        // Older supported WebViews do not expose ES2023 Array#toSorted.
+        // oxlint-disable-next-line unicorn/no-array-sort
+        .sort()
         .join("\u0001");
       if (roomListSignatureRef.current === signature) return;
       roomListSignatureRef.current = signature;
@@ -94,7 +96,11 @@ export function MessagePillProfileDialog({
     };
   }, [detailed, refreshMutualRooms, userId]);
   const presenceDetailsEnabled = useFlag("presence_privacy_controls");
-  const livePresence = usePresence(detailed && userId !== "" ? userId : null);
+  // getUserProfile already includes the initial presence snapshot. This hook
+  // only needs to observe newer pushes while the card stays open.
+  const livePresence = usePresence(detailed && userId !== "" ? userId : null, {
+    fetchInitial: false,
+  });
   const profileQuery = useQuery({
     queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
     queryFn: () => getUserProfile(userId, roomId),
@@ -179,7 +185,7 @@ export function MessagePillProfileDialog({
               </p>
             )}
             {detailed && presence && (
-              <p className="text-sm text-muted-foreground">
+              <p className="max-w-full min-w-0 break-words text-sm text-muted-foreground">
                 {presence.presence === "unavailable" ? "away" : presence.presence}
                 {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
               </p>
