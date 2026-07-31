@@ -3,12 +3,23 @@ title: Charm 2.0 Spec — Cross-room message search
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
-**Workstream:** one PR / one agent, likely split into a Rust-side indexing phase and
-a frontend search-UI phase if the indexing approach turns out nontrivial — see
-Trade-offs.
+## Implementation status
+
+The storage and API architecture is now decision-ready. Charm will use a dedicated
+per-account SQLite FTS5 database owned by Charm, not tables or connections owned by
+matrix-sdk. The first code slice is indexing and lifecycle only; the global and
+current-room search UI follows after the index contract is stable.
+
+Implementation has not started in this PR. `rusqlite` is already used by the web
+companion and present in the repository lockfile, but making it a direct desktop
+dependency still requires the repository's explicit dependency approval before the
+indexing PR changes `src-tauri/Cargo.toml`.
+
+**Workstream:** two ordered PRs: Rust/shared indexing and lifecycle first, then the
+frontend search UI and result navigation — see Trade-offs.
 
 ## Problem & why now
 
@@ -44,31 +55,173 @@ search will silently not work in any encrypted room, which is most rooms.
 
 ### Indexing
 
-Build a local full-text index in Rust, populated as events are decrypted and
-inserted into the timeline store (`matrix-sdk-sqlite` already backs Spec 15's
-per-account store — confirm whether SQLite FTS5 can piggyback on that same
-connection/schema, or whether a dedicated index database is cleaner given FTS5
-virtual tables have different lifecycle/vacuum characteristics than the SDK's own
-tables).
+Build a local full-text index in Rust, populated only after an event is available
+to Charm as decrypted timeline content. Each desktop account gets a dedicated
+`message-search.sqlite3` database in that account's Charm-owned data directory.
+Android and iOS use the same Rust-owned database under Tauri's app-data
+directory, keyed by both the account store key and the current Matrix device
+ID. A superseding device or logout deletes the prior device's plaintext index
+before another index can be opened. The mobile build verifies this lifecycle,
+bundled SQLite FTS5/tokenizer availability, and backup exclusion before enabling
+the flag.
+Each web-companion session gets its own persisted random `search_store_key`,
+separate from `crypto_store_key`, and a matching index directory. On first
+restore of a legacy session whose persisted record predates Spec 25 and has no
+crypto key, generate and durably save this search key before enabling search;
+if that migration cannot be persisted, require re-login and do not open an
+MXID-derived fallback. Indexes are never shared merely because two sessions use
+the same MXID. Spec 25's session cleanup removes both random-key lifecycles.
+Never open matrix-sdk's database directly, add tables to its schema, or share its
+connection: the SDK owns that schema and migration lifecycle.
 
-- Index fields: room ID, event ID, sender, plain-text body (HTML-stripped from
-  `formatted_body` where present), origin timestamp.
-- Backfill: on first login (or first login after this feature ships for existing
-  users), index whatever history is already locally available in the SDK's store;
+- Index fields: room ID, event ID, sender, plain-text body, origin timestamp.
+  Normalize formatted Matrix content with Ruma's sanitizer and
+  `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
+  stripper or index hidden/disallowed elements. Remove the descendants of
+  `data-mx-spoiler` elements before extraction, so concealed text cannot appear in
+  either matches or plain snippets. When normalizing an edit of a reply, carry
+  the original event's reply relation into the replacement content before
+  removing the fallback; `m.new_content` alone does not preserve that context.
+  Cross-spec tests must cover Spec 58 spoilers and edited replies whose quoted
+  fallback must not become searchable.
+- Index only `m.text`, `m.notice`, and `m.emote`. Do not index encrypted payloads,
+  undecryptable placeholders, media filenames/captions, reactions, state events, or
+  untrusted raw HTML. Index only acknowledged remote events with a server event ID;
+  pending, failed, retried, and discarded local echoes are excluded, avoiding
+  transaction-ID rows that can survive alongside an acknowledged echo.
+- An unable-to-decrypt placeholder is not marked permanently handled. When the
+  timeline re-emits that event ID after decryption succeeds, insert or update the
+  decrypted row. Reconciliation on startup must make the same transition if the
+  key arrived before restart.
+- Use one visible content row per `(room_id, original_event_id)`. An `m.replace`
+  may update that row only after the same validity checks used by the timeline:
+  the replacement sender must match the original event sender, its target must
+  be the original message in the same room, and its `m.new_content` must be
+  decrypted. A different sender's forged relation is ignored. When the newest
+  otherwise-valid replacement changes the visible content to a non-indexed
+  msgtype, delete the visible FTS row rather than retaining the original text;
+  keep that replacement in provenance so redacting it can restore the preceding
+  searchable version.
+- Track replacement provenance separately from the visible FTS row: original
+  content plus every valid edit's event ID, `origin_server_ts`, and optional
+  searchable body/msgtype. The `matrix-sdk-ui` timeline's already-collapsed
+  visible event is authoritative; search must not independently select a
+  replacement with a tie-break the renderer does not use. When raw backfill
+  contains multiple edits at the same timestamp and no authoritative collapsed
+  projection is available, defer that original event until timeline
+  reconciliation resolves it rather than choosing by local arrival or event ID.
+  Redacting the original writes a persistent
+  tombstone, deletes the visible row, and purges every original/edit plaintext body
+  in provenance; later edits and replay must remain suppressed by that tombstone.
+  Redacting an edit removes that candidate and atomically recomputes the row from
+  the preceding valid edit or original content only when the original is not
+  tombstoned. A late edit/redaction, backfill, or replay therefore converges without
+  retaining or resurrecting stale or redacted text.
+- Backfill: on first login, and on the first index open after the feature flag
+  becomes enabled for an already-active account/session, index whatever history
+  is already locally available in the SDK's store;
   do not force a full server backfill purely to populate search — index grows
   organically as the user scrolls/syncs, same behavior as Seshat.
-- Redaction/edit handling: a redacted event's indexed text must be removed/blanked
-  on redaction; an edited event's index entry must be replaced with the latest
-  content, not append a duplicate.
+- Redaction/edit handling follows the provenance rules above; replacement events
+  never become independent search results.
+- Because the index contains decrypted plaintext, deletion is physical as well as
+  logical: redaction and room/account purge rebuild affected FTS storage, enable
+  `secure_delete`, checkpoint and truncate WAL sidecars, and compact freelist pages
+  before reporting cleanup complete. Tests place a unique marker in an indexed
+  body and verify it is absent from the database, WAL, and SHM files after purge.
+- Every joined-to-non-joined membership transition atomically purges that room's
+  visible rows and edit provenance, whether caused by local leave/forget or sync
+  observing a remote kick, ban, or membership change. Both global and explicitly
+  room-scoped queries verify joined membership before reading or returning results,
+  so a failed purge cannot expose departed-room content through either API shape.
+
+### Ownership, privacy, and lifecycle
+
+- The index handle belongs to the authenticated account session. Desktop and web
+  use the same core index abstraction but resolve their account roots through their
+  existing, separate persistence layers.
+- Derive the desktop index directory from an opaque hash of the account store key
+  plus Matrix device ID, and the web directory from the session's dedicated
+  `search_store_key`; never
+  put an MXID, homeserver, access token, or raw account identifier in a filename.
+  A new/superseding desktop device never reopens a previous device's plaintext
+  index; supersession closes and deletes the old device index.
+- Create the directory and database with owner-only permissions where the platform
+  supports Unix modes. The database contains decrypted message text, so the privacy
+  model and docs must state that local search expands the plaintext-at-rest surface
+  beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
+  initial boundary; SQLCipher is not silently implied.
+- Desktop logout closes and deletes the current device's index, because Charm's
+  logout flow revokes and removes that session and a later interactive login creates
+  a new device that cannot safely reopen the old device-keyed plaintext. Creating a
+  superseding device likewise closes and deletes the prior device index. Account
+  deactivation must close and delete every retained index.
+  PR 1 owns an explicit account-management "Forget local data" control that closes
+  the account, removes both the retained SDK store and every search index, and
+  tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
+  plaintext index separately from the encrypted SDK store. Web logout, session
+  expiry, and administrative session removal close and delete that session's
+  index. A failed/corrupt migration records only non-sensitive diagnostics
+  (schema version, error category, and a random incident ID), securely removes the
+  search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
+  no plaintext quarantine is retained and an SDK store is never modified.
+- A terminal Matrix authentication error, including remote deletion of the
+  current device from another session, is session teardown rather than a
+  retryable sync failure. Desktop, mobile, and web immediately stop serving
+  queries, close the handle, and remove the database and sidecars. Integration
+  tests revoke the device from a second session and verify both access denial
+  and physical cleanup.
+- Web indexes are intentionally session-ephemeral in the first slice. They are not
+  copied into the crypto-store backup and may be rebuilt only from decrypted
+  history available to that same session after restart. The UI must disclose
+  incomplete results after a deployment/restart; durable plaintext search backup
+  is out of scope until an encrypted, session-bound backup design exists. In a
+  hosted deployment this plaintext lives on the companion server, not the
+  browser or user's device, and is therefore visible to the operator and anyone
+  with server-disk access. Web operations guidance and the UI must disclose that
+  trust boundary; companion search directories are excluded from host backups,
+  deleted on session expiry/removal, and retained no longer than the owning
+  session.
+- Run schema creation, writes, rebuilds, and queries off the async runtime's worker
+  threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
+  through a bounded queue that coalesces work by room/event and persists only a
+  non-content sync checkpoint. Overflow schedules a bounded reconciliation from
+  the encrypted SDK store instead of retaining every event in memory, blocking
+  sync, or silently dropping work. Tests stall SQLite while delivering a large
+  sync and prove bounded memory plus eventual reconciliation.
+- Persist a Charm-owned indexing journal/checkpoint before acknowledging a sync
+  position as searchable. The journal contains only opaque event/room identifiers
+  and checkpoints; it never stores message bodies, normalized text, snippets, or
+  other plaintext and rehydrates work from the encrypted SDK store. Startup
+  replays incomplete journal entries and reconciles the index against decrypted
+  events in the SDK store before serving queries; this includes redactions and
+  edit provenance. An index file existing is never sufficient evidence that
+  backfill/reconciliation completed. Tests stop the process between SDK
+  persistence and search commit, scan the journal for raw markers, and verify
+  restart removes redacted plaintext and fills missing events.
+- Live indexing is sourced before room UI/timeline selection: the shared Rust sync
+  pipeline decrypts joined-room timeline events from every sync response and submits
+  eligible events to the indexer even when that room has never been opened. The
+  current `m.ignored_user_list` is applied before live writes and during backfill;
+  newly ignored senders are purged transactionally before the updated ignore list
+  becomes visible to queries. Unignoring permits future live writes and a bounded
+  rebuild of locally retained eligible events, but never restores text from a
+  plaintext quarantine. Initial and recovery backfill enumerate each joined room's
+  locally persisted SDK event cache and pass encrypted events through the SDK's
+  decryption machinery; the indexer never scrapes mounted React timelines. Tests
+  cover an encrypted message arriving in an unopened room and becoming searchable
+  without opening that room or making a search-triggered Matrix request, plus ignore
+  and unignore transitions.
 
 ### Search UI
 
-- Entry point: a dedicated search affordance (e.g. `Cmd/Ctrl+K` or a search icon in
+- Entry point: a dedicated search affordance (`Cmd/Ctrl+F` or a search icon in
   the room-list header, distinct from Spec 19's existing "Search everywhere" filter
   — clarify/differentiate the two entry points so users don't confuse "find a room"
   with "find a message" during implementation).
-- Results: list of matches with room name, sender, timestamp, and a highlighted
-  snippet of matched text (standard FTS5 `snippet()`/`highlight()` output).
+- Results: list of matches with room name, sender, timestamp, and the backend-provided
+  plain-text snippet plus match ranges. The UI must not consume or render FTS-generated
+  `snippet()`/`highlight()` markup.
 - Scope toggle: "this room" vs "all rooms" — mirrors Charm 1.0's per-room vs global
   search modes.
 - Selecting a result jumps to that message in its room's timeline and highlights it
@@ -77,9 +230,56 @@ tables).
 
 ## Data flow
 
-New Tauri/web-server IPC command, e.g. `search_messages(query, room_id?, limit,
-offset) -> SearchResult[]`, backed by the Rust FTS index. No new Matrix protocol
-traffic for local-index hits. If a homeserver-side fallback is desired for rooms
+New Tauri/web-server command:
+
+`search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
+
+The user query is literal text, not raw FTS5 syntax. The backend stores the
+unmodified display text separately from the token/search representation and uses a
+maintained Lindera-backed custom FTS tokenizer that preserves byte offsets into
+that original text internally. The backend converts matched byte spans to UTF-16
+code-unit offsets before transport, validates that every boundary falls on a
+Unicode scalar boundary, and returns the original display snippet plus those
+JavaScript-safe ranges. Tests cover emoji, combining characters, and CJK text.
+Pre-segmented or normalized text is never returned to the UI. This is the
+selected CJK-capable strategy (subject to the repository's
+explicit dependency approval); do not fall back to `unicode61` for unsegmented
+Chinese/Japanese content.
+unmatched quotes and FTS operators are searched as text. Empty-token queries are
+rejected with a typed invalid-query error. Requests are capped server-side at 512
+UTF-8 bytes and `limit` is clamped to 1–100.
+
+The first page creates a bounded, TTL-limited search snapshot containing only the
+ordered result identifiers, ranks, and a non-plaintext content-version identifier
+for the exact renderer-selected event version that matched under a random
+per-account search ID. Later pages resolve that immutable version rather than the
+mutable current event; redaction still suppresses the result and physically purges
+its content. The opaque cursor binds to that snapshot, normalized query,
+optional room scope, account/session, and a random per-process index-incarnation
+nonce. Results use the total order
+`bm25 rank ASC, origin_server_ts DESC, room_id ASC, event_id ASC`; the cursor
+contains the search ID, last tuple, and incarnation. Live indexing does not mutate
+that snapshot, so pagination progresses on active accounts without duplicating,
+skipping, or repeatedly restarting. Room purge and membership checks still suppress
+departed-room results before return. Expired snapshots and pages routed to another
+web process during a rolling deployment are rejected as stale, never replayed
+against an independently rebuilt index. The UI restarts pagination from page one
+on this typed response.
+Each session has a strict cap on live snapshots and aggregate retained identifiers,
+and the process has a separate global byte/count budget. Creating a first page
+deterministically evicts that session's oldest snapshot or returns a typed
+resource-limit error when the global budget cannot admit it; expiry and session
+teardown release accounting immediately. Tests repeatedly request first pages,
+including from concurrent hosted sessions, and assert both quotas and eviction.
+Rolling-deploy integration tests alternate requests between old and new companion
+processes. Results contain event ID, room ID, sender, origin timestamp, a plain-text
+snippet with match ranges, and the next cursor; they never contain FTS-generated
+HTML markup.
+
+Executing a local-index query causes no Matrix protocol traffic. Opening a result
+outside the loaded timeline can use the existing `/context` navigation path and
+therefore reveals that event ID to the homeserver; the UI discloses that boundary
+before the first network-backed jump. If a homeserver-side fallback is desired for rooms
 the local index hasn't caught up on yet (freshly joined room, unencrypted room with
 old history not yet synced), that's an explicit "search on server too" opt-in
 button, not automatic — avoid silently mixing local (private, but possibly
@@ -88,16 +288,52 @@ without the user knowing which is which.
 
 ## API/contract changes
 
-- New Rust module for the index (e.g. `crates/charm-core/src/search/` or similar —
-  confirm actual crate layout before implementing).
-- New IPC command surface as above, generated bindings via ts-rs per existing
-  convention.
+- New shared Rust search module with a small storage trait and a SQLite FTS5
+  implementation. Desktop and web session layers own account-specific handles;
+  neither transport owns indexing semantics.
+- New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
+  catalogs. Opening, backfilling, writing, and querying the index are all disabled
+  when the flag is off. An enabled-to-disabled transition first closes every
+  account/session handle, securely removes the Charm-owned plaintext database
+  and its WAL/SHM files, and records no reusable quarantine. Startup also purges
+  a leftover index before serving other account work when the effective flag is
+  false. Kill-switch tests cover an active handle, restart cleanup, and failure
+  reporting without reopening the index.
+- Because this flag controls a new plaintext-at-rest surface, a trusted remote
+  `false` is a hard veto over any persisted Labs/local override. The veto closes
+  active handles and triggers the same purge even when Labs previously persisted
+  `true`; tests cover that exact transition on every transport.
+- The companion evaluates that flag in trusted server configuration on every
+  indexing/search request (or through a bounded cache with explicit configuration
+  invalidation), rather than binding a `true` value for the lifetime of a
+  sliding-expiry session. Browser OFREP/local-storage state may hide UI but cannot
+  enable indexing or search routes. Disabled and enabled companion sessions are
+  covered separately, including a forged client request while the server-side
+  value is false and a kill-switch transition during an active session.
+- New IPC and authenticated web-companion command surface as above, with generated
+  bindings via ts-rs per existing convention.
+- Search instrumentation uses an explicit metadata allowlist: duration, result
+  count, query byte length, scope kind, and typed error category only. It never
+  logs command arguments, SQL with bound values, literal queries, snippets, or
+  result DTOs. Error and telemetry tests submit distinctive raw markers and verify
+  they are absent, and the operations observability guidance documents this rule.
 - No changes to existing commands.
 
 ## Testing strategy
 
 - Rust unit tests: index insert/query/redact/edit-replace correctness against a
-  fixture set of events, including multi-room and multi-sender fixtures.
+  fixture set of events, including multi-room, multi-sender, text-to-non-text
+  replacements, out-of-order edits, equal-timestamp edits deferred until an
+  authoritative collapsed projection is available, and redaction restoring the
+  preceding renderer-selected searchable version.
+- Rust unit tests: account A cannot open, query, or consume a cursor from account
+  B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
+  matrix-sdk files.
+- Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
+  ordering, cursor TTL expiry and index-incarnation mismatch, local leave/forget and remote kick/ban
+  purge, deactivation wipe, legacy web-session search-key migration, and
+  web-session isolation/cleanup. Include substring word queries within unsegmented
+  Chinese and Japanese sentences, not just whole-message queries.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
   indexed; confirm a never-decrypted (e.g. undecryptable/UTD) event is not indexed
   with garbage ciphertext.
@@ -106,21 +342,26 @@ without the user knowing which is which.
 - Manual: verify search survives app restart (index persisted, not rebuilt from
   scratch each launch) and verify redacting a message removes it from subsequent
   search results.
+- Real Synapse: send and edit an encrypted text event from another client, wait for
+  decryption, then verify replacement and redaction in desktop and web-companion
+  results. Record this separately from repository tests.
 
 ## Trade-offs
 
-- **SQLite FTS5 vs a dedicated search library (e.g. Tantivy)**: FTS5 is simpler to
-  wire into an already-SQLite-based storage layer and sufficient for personal-scale
-  chat history; a dedicated engine is more powerful but adds a new dependency and
-  index-format surface for marginal benefit at this scale. Default to FTS5 unless
-  a spike shows it can't handle realistic history volumes acceptably.
+- **SQLite FTS5 vs a dedicated search library (e.g. Tantivy)**: decided in favor
+  of FTS5. It is sufficient for personal-scale chat history, already supported by
+  Charm's web-server SQLite stack, and avoids a second index format.
+- **SDK database vs a dedicated database**: decided in favor of a dedicated
+  Charm-owned database. This keeps SDK schema migrations, backup/restore, and
+  corruption recovery outside the feature's blast radius at the cost of one extra
+  per-account file and an explicit plaintext-at-rest disclosure.
 - **Local index vs relying on homeserver `/search`**: local index is strictly
   necessary for encrypted rooms (the majority case) and is the only path to parity
   with Charm 1.0's actual behavior; a server-only implementation would look "done"
   but silently fail for most real usage.
-- **Splitting into indexing PR + UI PR**: recommended if the FTS5-vs-store-schema
-  question above turns out to need real design work; otherwise one PR is fine for a
-  scope this size.
+- **Splitting into indexing PR + UI PR**: decided. PR 1 owns schema, account
+  lifecycle, indexing/rebuild, flags, typed command, and desktop/web tests. PR 2
+  owns global/current-room UI, snippets, and result navigation.
 
 ## UI-parity note (from the 2026-07-13 UI deep-dive)
 

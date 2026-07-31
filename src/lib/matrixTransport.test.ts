@@ -372,6 +372,27 @@ describe("matrix web transport", () => {
       undefined,
     ],
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
+    [
+      "get_user_profile",
+      { userId: "@alice:example.org", roomId: "!room:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/profile?room_id=!room%3Aexample.org",
+      undefined,
+    ],
+    [
+      "get_user_profile",
+      { userId: "@alice:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/profile",
+      undefined,
+    ],
+    [
+      "get_mutual_rooms",
+      { userId: "@alice:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/mutual-rooms",
+      undefined,
+    ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
     [
       "get_account_data",
@@ -510,6 +531,25 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "create_space",
+      {
+        name: "Engineering",
+        topic: null,
+        roomAliasName: null,
+        public: false,
+        parentSpaceId: "!work:example.org",
+      },
+      "POST",
+      "/api/rooms/create-space",
+      {
+        name: "Engineering",
+        topic: null,
+        room_alias_name: null,
+        public: false,
+        parent_space_id: "!work:example.org",
+      },
+    ],
+    [
       "leave_room",
       { roomId: "!r:example.org" },
       "POST",
@@ -529,6 +569,13 @@ describe("matrix web transport", () => {
       "DELETE",
       "/api/rooms/!space%3Aexample.org/space-children/!child%3Aexample.org",
       undefined,
+    ],
+    [
+      "set_space_parent",
+      { spaceId: "!child:example.org", parentSpaceId: "!space:example.org" },
+      "PUT",
+      "/api/rooms/!child%3Aexample.org/space-parent",
+      { parent_space_id: "!space:example.org" },
     ],
     [
       "set_space_child_suggested",

@@ -619,7 +619,13 @@ jobs:
         # network automatically. Synapse's oidc_providers config below
         # reaches Dex via the "dex" hostname, so both containers need to be
         # on the same user-defined network here too.
-        run: docker network create charm-ci
+        run: docker network create --subnet 172.28.0.0/16 charm-ci
+
+      - name: Start deterministic link-preview target
+        run: |
+          docker run -d --name preview-target --network charm-ci --ip 172.28.0.10 \
+            -v "$GITHUB_WORKSPACE/dev/synapse/preview-target.html:/usr/share/nginx/html/index.html:ro" \
+            nginx:alpine
 
       - name: Start Dex
         # Local-only OIDC test provider for tests/sso_login.rs — same config
@@ -690,7 +696,7 @@ jobs:
 
       # sccache credentials scoped to just this step — see the `rust` job's
       # clippy/nextest steps for the full rationale.
-      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org
+      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org --test link_preview
         env:
           # Empty (not just unset) when neither key resolves — forks and
           # Dependabot PRs get withheld secrets entirely, so even the
@@ -716,9 +722,12 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
-      - name: Stop Synapse and Dex
+      - name: Web companion live-homeserver API
+        run: cargo test -p charm-web-server --test http_api authenticated_web_preview_round_trips_through_synapse
+
+      - name: Stop Synapse, Dex, and preview target
         if: always()
-        run: docker rm -f synapse dex
+        run: docker rm -f synapse dex preview-target
 
   rust-integration-qr:
     name: Rust (QR login / MAS)

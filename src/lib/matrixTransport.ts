@@ -359,7 +359,15 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         topic: args.topic,
         room_alias_name: args.roomAliasName,
         public: args.public,
+        parent_space_id: args.parentSpaceId,
       });
+    case "set_space_parent":
+      return requestBytes<T>(
+        "PUT",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-parent`,
+        JSON.stringify({ parent_space_id: args.parentSpaceId }),
+        "application/json",
+      );
     case "leave_room":
       return requestBytes<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/leave`);
     case "add_existing_space_child":
@@ -616,6 +624,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("GET", `/api/presence/${encodeSegment(String(args.userId))}`);
     case "get_own_profile":
       return requestJson<T>("GET", "/api/profile/me");
+    case "get_user_profile": {
+      const roomId =
+        typeof args.roomId === "string" ? `?room_id=${encodeURIComponent(args.roomId)}` : "";
+      return requestJson<T>(
+        "GET",
+        `/api/users/${encodeSegment(String(args.userId))}/profile${roomId}`,
+      );
+    }
+    case "get_mutual_rooms":
+      return requestJson<T>("GET", `/api/users/${encodeSegment(String(args.userId))}/mutual-rooms`);
     case "get_profile": {
       const profile = await requestJson<{
         user_id: string;

@@ -47,6 +47,20 @@
     },
     {
       "type": "issue",
+      "number": 382,
+      "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/382",
+      "detail": "follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 350,
+      "title": "Follow-up: align Spec 33 child-list reconciliation wording",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/350",
+      "detail": ""
+    },
+    {
+      "type": "issue",
       "number": 48,
       "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
       "url": "https://github.com/CloudHub-Social/Charm/issues/48",
@@ -912,7 +926,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 299,
@@ -1003,7 +1017,7 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": [
         {

@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Link previews
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 ## Implementation status
@@ -24,6 +24,17 @@ the desktop contract. Both platforms remain gated behind the default-off
 `link_previews` flag. Unit and mocked-homeserver tests cover the desktop
 graceful-failure contract; live-homeserver manual verification was not
 recorded.
+
+**Closure evidence is automated and passing.** The local Synapse
+harness enables URL previews against a deterministic OpenGraph target on its
+isolated Docker network. CI exercises the authenticated desktop core and
+authenticated web-companion route against that real Synapse instance, while a
+frontend regression test proves duplicate consumers reuse one TanStack Query
+fetch. The authenticated desktop and web transports, graceful missing-preview
+behavior, and cache reuse passed in the
+[2026-07-30 live Synapse CI job](https://github.com/CloudHub-Social/Charm/actions/runs/30557178903/job/90920552948).
+That job is live-homeserver evidence; the surrounding repository and mock tests
+remain distinct supporting evidence.
 
 :::note[Historical baseline]
 The proposal below is retained as the implementation design. Its present-tense
