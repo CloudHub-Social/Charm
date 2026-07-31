@@ -72,7 +72,7 @@ here.
 | 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **In progress** | Profile and mutual-room read foundation implemented; card UI and actions remain |
 | 37 | [Message action parity](/specs/day-1/spec-37--message-action-parity/) | **Shipped** | All slices (forward, permalinks, redact-with-reason, resend/discard, view source, report, edit history, reaction viewer/tooltip, quick-react row) implemented behind the `message_action_parity` flag |
 | 38 | [Full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) | **Planned** | No matching merged implementation found |
-| 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
+| 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **In progress** | Additive SDK-classified timeline-item union and mapper; wire migration, rendering, collapse, controls, and live evidence remain |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
