@@ -711,8 +711,17 @@ async fn finish_registration(
         // See `login`'s identical restore-on-failure step.
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+            sync::spawn_sync_task(app.clone(), previous_client);
         }
+        // The temp store has already been relocated by this point. The
+        // completion lock prevents another interactive login from installing
+        // a replacement store concurrently, so leaving this unadopted store
+        // behind would strand both the directory and its keychain entry.
+        persistence::discard_cancelled_account_store(&app, &account_key).map_err(|error| {
+            format!(
+                "registration was superseded, but its relocated store could not be removed: {error}"
+            )
+        })?;
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
