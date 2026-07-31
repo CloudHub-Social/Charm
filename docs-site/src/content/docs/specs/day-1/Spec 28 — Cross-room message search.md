@@ -154,13 +154,15 @@ connection: the SDK owns that schema and migration lifecycle.
 - Desktop logout may retain only the current Matrix device's index for that same
   device to reopen; creating a superseding device closes and deletes the prior
   device index. Account deactivation must close and delete every retained index.
-  The account-management surface must also
-  expose an explicit local-data wipe that removes both the retained SDK store and
-  search index; its confirmation and Spec 08 documentation disclose the plaintext
-  index separately from the encrypted SDK store. Web logout, session expiry, and
-  administrative session removal close and delete that session's index. A
-  failed/corrupt migration quarantines and rebuilds only Charm's search database,
-  never an SDK store.
+  PR 1 owns an explicit account-management "Forget local data" control that closes
+  the account, removes both the retained SDK store and every search index, and
+  tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
+  plaintext index separately from the encrypted SDK store. Web logout, session
+  expiry, and administrative session removal close and delete that session's
+  index. A failed/corrupt migration records only non-sensitive diagnostics
+  (schema version, error category, and a random incident ID), securely removes the
+  search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
+  no plaintext quarantine is retained and an SDK store is never modified.
 - Web indexes are intentionally session-ephemeral in the first slice. They are not
   copied into the crypto-store backup and may be rebuilt only from decrypted
   history available to that same session after restart. The UI must disclose
@@ -177,12 +179,17 @@ connection: the SDK owns that schema and migration lifecycle.
   redacted plaintext and fills missing events.
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
-  eligible events to the indexer even when that room has never been opened. Initial and
-  recovery backfill enumerate each joined room's locally persisted SDK event cache and
-  pass encrypted events through the SDK's decryption machinery; the indexer never
-  scrapes mounted React timelines. Tests cover an encrypted message arriving in an
-  unopened room and becoming searchable without opening that room or making a
-  search-triggered Matrix request.
+  eligible events to the indexer even when that room has never been opened. The
+  current `m.ignored_user_list` is applied before live writes and during backfill;
+  newly ignored senders are purged transactionally before the updated ignore list
+  becomes visible to queries. Unignoring permits future live writes and a bounded
+  rebuild of locally retained eligible events, but never restores text from a
+  plaintext quarantine. Initial and recovery backfill enumerate each joined room's
+  locally persisted SDK event cache and pass encrypted events through the SDK's
+  decryption machinery; the indexer never scrapes mounted React timelines. Tests
+  cover an encrypted message arriving in an unopened room and becoming searchable
+  without opening that room or making a search-triggered Matrix request, plus ignore
+  and unignore transitions.
 
 ### Search UI
 
@@ -221,13 +228,19 @@ rejected with a typed invalid-query error. Requests are capped server-side at 51
 UTF-8 bytes and `limit` is clamped to 1–100.
 
 The cursor is opaque and binds to the normalized query, optional room scope,
-account/session, and an index generation. Results use the total order
+account/session, a random per-process index-incarnation nonce, and an index
+generation. Results use the total order
 `bm25 rank ASC, origin_server_ts DESC, room_id ASC, event_id ASC`; the cursor
-contains the last tuple and generation. Any index mutation increments the
-generation, so a cursor from before an edit/index write is rejected as stale
-rather than duplicating or skipping results. Results contain event ID, room ID,
-sender, origin timestamp, a plain-text snippet with match ranges, and the next
-cursor; they never contain FTS-generated HTML markup.
+contains the last tuple, incarnation, and generation. Any index mutation
+increments the generation, so a cursor from before an edit/index write is rejected
+as stale rather than duplicating or skipping results. A page routed to another
+web process during a rolling deployment is likewise rejected as stale, never
+replayed against an independently rebuilt index that happens to share a numeric
+generation. The UI restarts pagination from page one on this typed response.
+Rolling-deploy integration tests alternate requests between old and new companion
+processes. Results contain event ID, room ID, sender, origin timestamp, a plain-text
+snippet with match ranges, and the next cursor; they never contain FTS-generated
+HTML markup.
 
 Executing a local-index query causes no Matrix protocol traffic. Opening a result
 outside the loaded timeline can use the existing `/context` navigation path and
