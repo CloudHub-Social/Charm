@@ -482,16 +482,15 @@ async fn emit_room_list_and_badge(
     // `RoomListMessagePreview` nor `RoomListSort` is wired up for the web
     // build yet (no feature-flag store here, unlike desktop's
     // `feature_flags::flag`).
-    let snapshot =
-        rooms::snapshot_rooms(
-            client,
-            None,
-            false,
-            false,
-            include_canonical_space_hierarchy,
-            preview_registered_rooms,
-        )
-        .await;
+    let snapshot = rooms::snapshot_rooms(
+        client,
+        None,
+        false,
+        false,
+        include_canonical_space_hierarchy,
+        preview_registered_rooms,
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
@@ -573,6 +572,9 @@ async fn emit_room_updates(
                 .is_some()
         });
         if state_events_present {
+            if room_update_contains_space_child(update) {
+                let _ = events.send(ServerEvent::SpaceChildren(room_id.to_string()));
+            }
             if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
                 let event = ServerEvent::RoomDetails(details);
                 room_details_snapshots
@@ -583,6 +585,24 @@ async fn emit_room_updates(
             }
         }
     }
+}
+
+fn room_update_contains_space_child(update: &matrix_sdk::sync::JoinedRoomUpdate) -> bool {
+    fn is_space_child<T>(raw: &matrix_sdk::ruma::serde::Raw<T>) -> bool {
+        raw.get_field::<String>("type").ok().flatten().as_deref() == Some("m.space.child")
+    }
+
+    let in_state = match &update.state {
+        matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
+            events.iter().any(is_space_child)
+        }
+    };
+    in_state
+        || update
+            .timeline
+            .events
+            .iter()
+            .any(|event| is_space_child(event.raw()))
 }
 
 /// Web-server-local equivalent of `presence::register_presence_handler`,
