@@ -292,7 +292,7 @@ without the user knowing which is which.
   B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
   matrix-sdk files.
 - Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
-  ordering, stale cursors after writes, local leave/forget and remote kick/ban
+  ordering, cursor TTL expiry and index-incarnation mismatch, local leave/forget and remote kick/ban
   purge, deactivation wipe, legacy web-session search-key migration, and
   web-session isolation/cleanup. Include substring word queries within unsegmented
   Chinese and Japanese sentences, not just whole-message queries.
