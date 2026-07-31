@@ -61,7 +61,7 @@ here.
 
 | # | Spec | Status | Evidence or boundary |
 |---|---|---|---|
-| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **Planned** | No matching merged implementation found |
+| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **In progress** | Storage, privacy, lifecycle, and typed API architecture decision-ready; indexing implementation pending |
 | 29 | [Link previews](/specs/day-1/spec-29--link-previews/) | **Follow-up** | Desktop [#250](https://github.com/CloudHub-Social/Charm/pull/250) and web companion `/preview_url` proxy both merged, default-off `link_previews` flag; live-homeserver manual verification remains unrecorded |
 | 30 | [Focus mode and DND](/specs/day-1/spec-30--focus-mode-and-do-not-disturb/) | **Shipped** | [#249](https://github.com/CloudHub-Social/Charm/pull/249), default-off flag; manual tray verification remains non-blocking |
 | 31 | [Room upgrades](/specs/day-1/spec-31--room-upgrades/) | **Planned** | No matching merged implementation found |
@@ -69,10 +69,10 @@ here.
 | 33 | [Space nesting and reorganization](/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/) | **In progress** | Foundational canonical-parent API, desktop/web transports, feature flag, and create-under-space UI are in review; drag-to-nest/un-nest and space settings remain |
 | 34 | [Labs settings](/specs/day-1/spec-34--labs-and-experimental-settings-panel/) | **Shipped** | [#253](https://github.com/CloudHub-Social/Charm/pull/253) |
 | 35 | [Feature flags](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/) | **Shipped** | [#241](https://github.com/CloudHub-Social/Charm/pull/241), [#255](https://github.com/CloudHub-Social/Charm/pull/255), [#256](https://github.com/CloudHub-Social/Charm/pull/256), [#259](https://github.com/CloudHub-Social/Charm/pull/259) |
-| 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **Planned** | No matching merged implementation found |
+| 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **In progress** | Profile and mutual-room read foundation implemented; card UI and actions remain |
 | 37 | [Message action parity](/specs/day-1/spec-37--message-action-parity/) | **Shipped** | All slices (forward, permalinks, redact-with-reason, resend/discard, view source, report, edit history, reaction viewer/tooltip, quick-react row) implemented behind the `message_action_parity` flag |
 | 38 | [Full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) | **Planned** | No matching merged implementation found |
-| 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
+| 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **In progress** | Additive SDK-classified timeline-item union and mapper; wire migration, rendering, collapse, controls, and live evidence remain |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
