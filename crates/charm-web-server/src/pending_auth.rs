@@ -87,6 +87,9 @@ struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    normalized_email: String,
+    send_attempt: u32,
+    retry_not_before: Instant,
     submitted: bool,
     created_at: Instant,
 }
@@ -115,6 +118,24 @@ impl Default for PendingAuthStore {
 }
 
 impl PendingAuthStore {
+    async fn admit_owner_attempt(
+        &self,
+        owner: String,
+        attempt_id: String,
+        cancellation: CancellationToken,
+    ) {
+        let mut guard = self.cancellations.lock().await;
+        guard.retain(|_, (attempt_owner, existing)| {
+            if attempt_owner == &owner {
+                existing.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        guard.insert(attempt_id, (owner, cancellation));
+    }
+
     pub async fn cancel_owner(&self, owner: &str) {
         let attempt_ids = {
             let guard = self.cancellations.lock().await;
@@ -143,10 +164,8 @@ impl PendingAuthStore {
         let _capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id.clone(), (owner, cancellation.clone()));
+        self.admit_owner_attempt(owner, attempt_id.clone(), cancellation.clone())
+            .await;
         self.spawn_expiry(attempt_id.clone());
         match login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await {
             Ok(completed) => Ok((completed, attempt_id)),
@@ -460,10 +479,7 @@ impl PendingAuthStore {
                 } else {
                     self.finish_cancelled_registration(attempt_id, pending)
                         .await;
-                    Err(
-                        "registration was rejected; restart and review the account details"
-                            .to_string(),
-                    )
+                    Err("registration ended: restart and review the account details".to_string())
                 }
             }
         }
@@ -515,9 +531,16 @@ impl PendingAuthStore {
             .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
-            result = Client::builder()
-                .server_name_or_homeserver_url(&homeserver_url)
-                .build() => result,
+            result = async {
+                let (homeserver, http_client) =
+                    crate::auth::validated_homeserver_client(&homeserver_url).await?;
+                Client::builder()
+                    .homeserver_url(homeserver)
+                    .http_client(http_client)
+                    .build()
+                    .await
+                    .map_err(|_| "could not start password reset".to_string())
+            } => result,
             () = cancellation.cancelled() => {
                 return Err("password reset attempt expired or was cancelled".to_string());
             }
@@ -589,6 +612,9 @@ impl PendingAuthStore {
                     client_secret,
                     sid,
                     submit_url,
+                    normalized_email: address_key,
+                    send_attempt: 1,
+                    retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
                     submitted: false,
                     created_at,
                 },
@@ -599,6 +625,94 @@ impl PendingAuthStore {
         }
         Ok(PasswordResetChallenge {
             attempt_id,
+            requires_token,
+        })
+    }
+
+    pub async fn resend_password_reset(
+        &self,
+        source: &str,
+        owner: &str,
+        attempt_id: &str,
+    ) -> Result<PasswordResetChallenge, String> {
+        let cancellation = self
+            .owned_cancellation(owner, attempt_id)
+            .await
+            .map_err(|_| "password reset attempt expired or was cancelled".to_string())?;
+        let mut guard = self.password_resets.lock().await;
+        let Some(current) = guard.get(attempt_id) else {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        };
+        if current.owner != owner || current.created_at.elapsed() > ATTEMPT_TTL {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
+        if current.send_attempt >= MAX_MAILS_PER_ADDRESS as u32 {
+            return Err("password reset email resend limit reached; start again".to_string());
+        }
+        if Instant::now() < current.retry_not_before {
+            return Err("wait before requesting another password reset email".to_string());
+        }
+        let mut pending = guard
+            .remove(attempt_id)
+            .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
+        drop(guard);
+        if let Err(error) = self
+            .check_mail_quota(source, &pending.normalized_email)
+            .await
+        {
+            let _ = self
+                .restore_password_reset(attempt_id.to_owned(), pending)
+                .await;
+            return Err(error);
+        }
+        let send_attempt = pending.send_attempt + 1;
+        let request = request_password_change_token_via_email::v3::Request::new(
+            pending.client_secret.clone(),
+            pending.normalized_email.clone(),
+            UInt::new_saturating(send_attempt.into()),
+        );
+        let response = tokio::select! {
+            response = pending.client.send(request) => response,
+            () = cancellation.cancelled() => {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = self
+                    .restore_password_reset(attempt_id.to_owned(), pending)
+                    .await;
+                return Err("could not resend password reset email".to_string());
+            }
+        };
+        let submit_url = match sanitize_submit_url(
+            &pending.client.homeserver(),
+            response.submit_url.as_deref(),
+            "password-reset",
+        ) {
+            Ok(submit_url) => submit_url,
+            Err(error) => {
+                let _ = self
+                    .restore_password_reset(attempt_id.to_owned(), pending)
+                    .await;
+                return Err(error);
+            }
+        };
+        pending.submit_url = submit_url;
+        pending.sid = response.sid;
+        pending.send_attempt = send_attempt;
+        pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+        pending.submitted = false;
+        let requires_token = pending.submit_url.is_some();
+        if !self
+            .restore_password_reset(attempt_id.to_owned(), pending)
+            .await
+        {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
+        Ok(PasswordResetChallenge {
+            attempt_id: attempt_id.to_owned(),
             requires_token,
         })
     }
@@ -853,8 +967,11 @@ fn authenticated(
 }
 
 pub async fn get_login_flows(homeserver_url: &str) -> Result<LoginFlowSummary, String> {
+    let (homeserver, http_client) =
+        crate::auth::validated_homeserver_client(homeserver_url).await?;
     let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver_url)
+        .homeserver_url(homeserver)
+        .http_client(http_client)
         .build()
         .await
         .map_err(|_| "could not discover login options for this homeserver".to_string())?;
@@ -863,7 +980,17 @@ pub async fn get_login_flows(homeserver_url: &str) -> Result<LoginFlowSummary, S
         .get_login_types()
         .await
         .map_err(|_| "could not discover login options for this homeserver".to_string())?;
-    Ok(summarize_login_flows(response.flows))
+    let mut summary = summarize_login_flows(response.flows);
+    if let Ok(metadata) = client.oauth().server_metadata().await {
+        summary.delegated_auth = true;
+        summary.account_management_url = metadata
+            .account_management_uri
+            .filter(|url| {
+                url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+            })
+            .map(|url| url.to_string());
+    }
+    Ok(summary)
 }
 
 async fn login_with_token_inner(
@@ -1302,6 +1429,8 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
         token: false,
         sso: false,
         identity_providers: Vec::new(),
+        delegated_auth: false,
+        account_management_url: None,
     };
     for flow in flows {
         match flow {

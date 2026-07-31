@@ -200,6 +200,8 @@ pub struct LoginFlowSummary {
     pub token: bool,
     pub sso: bool,
     pub identity_providers: Vec<LoginIdentityProvider>,
+    pub delegated_auth: bool,
+    pub account_management_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -2248,6 +2250,8 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
         token: false,
         sso: false,
         identity_providers: Vec::new(),
+        delegated_auth: false,
+        account_management_url: None,
     };
     for flow in flows {
         match flow {

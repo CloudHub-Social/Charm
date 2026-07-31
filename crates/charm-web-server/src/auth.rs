@@ -10,6 +10,7 @@ use charm_lib::matrix::auth::{
 };
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
+use std::time::Duration;
 
 use crate::session::{CryptoStoreHandle, Session};
 
@@ -25,9 +26,11 @@ pub(crate) async fn build_client(
     homeserver_url: &str,
     has_persistence: bool,
 ) -> Result<(Client, Option<CryptoStoreHandle>), String> {
+    let (homeserver, http_client) = validated_homeserver_client(homeserver_url).await?;
     if !has_persistence {
         let client = Client::builder()
-            .server_name_or_homeserver_url(homeserver_url)
+            .homeserver_url(homeserver)
+            .http_client(http_client)
             .with_encryption_settings(client_encryption_settings())
             .build()
             .await
@@ -48,7 +51,8 @@ pub(crate) async fn build_client(
     }
     let mut cleanup = CryptoBuildGuard(Some(crypto.clone()));
     let client = match Client::builder()
-        .server_name_or_homeserver_url(homeserver_url)
+        .homeserver_url(homeserver)
+        .http_client(http_client)
         .with_encryption_settings(client_encryption_settings())
         .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
         .build()
@@ -61,6 +65,93 @@ pub(crate) async fn build_client(
     };
     cleanup.0.take();
     Ok((client, Some(crypto)))
+}
+
+pub(crate) async fn validated_homeserver_client(
+    homeserver_url: &str,
+) -> Result<(reqwest::Url, reqwest::Client), String> {
+    let homeserver = reqwest::Url::parse(homeserver_url)
+        .map_err(|_| "enter a valid HTTPS homeserver URL".to_string())?;
+    if !homeserver.username().is_empty() || homeserver.password().is_some() {
+        return Err("enter a valid HTTPS homeserver URL".to_string());
+    }
+    let host = homeserver
+        .host_str()
+        .ok_or_else(|| "enter a valid HTTPS homeserver URL".to_string())?;
+    let explicitly_local = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| !is_public_network_ip(ip));
+    let allow_insecure_local = homeserver.scheme() == "http"
+        && explicitly_local
+        && std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1");
+    if homeserver.scheme() != "https" && !allow_insecure_local {
+        return Err("enter a valid HTTPS homeserver URL".to_string());
+    }
+    let port = homeserver
+        .port_or_known_default()
+        .ok_or_else(|| "enter a valid HTTPS homeserver URL".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| "could not resolve homeserver".to_string())?
+        .collect::<Vec<_>>();
+    if addresses.is_empty()
+        || (!allow_insecure_local
+            && !cfg!(test)
+            && addresses
+                .iter()
+                .any(|address| !is_public_network_ip(address.ip())))
+    {
+        return Err("homeserver must resolve only to public addresses".to_string());
+    }
+    let http_client = reqwest::Client::builder()
+        .resolve_to_addrs(host, &addresses)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "could not build homeserver client".to_string())?;
+    Ok((homeserver, http_client))
+}
+
+fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_network_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || segments[0] == 0x2002
+                || segments[0] == 0x5f00)
+        }
+    }
 }
 
 /// Removes a just-created crypto-store directory when the login/register

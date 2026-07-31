@@ -333,6 +333,10 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         token: args.token,
         new_password: args.newPassword,
       });
+    case "resend_password_reset":
+      return requestJson<T>("POST", "/api/auth/password-reset/resend", {
+        attempt_id: args.attemptId,
+      });
     case "cancel_password_reset":
       return requestJson<T>("POST", "/api/auth/password-reset/cancel", {
         attempt_id: args.attemptId,

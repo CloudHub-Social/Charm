@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -119,6 +119,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/auth/password-reset/confirm",
             post(confirm_password_reset),
+        )
+        .route(
+            "/api/auth/password-reset/resend",
+            post(resend_password_reset),
         )
         .route(
             "/api/auth/password-reset/cancel",
@@ -1694,6 +1698,9 @@ async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
     if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         state.pending_auth.cancel_owner(previous.value()).await;
     }
+    if let Some(previous) = jar.get(DISCOVERY_COOKIE) {
+        state.pending_auth.cancel_owner(previous.value()).await;
+    }
 }
 
 async fn begin_registration(
@@ -1746,12 +1753,13 @@ struct RegistrationEmailRequest {
 async fn request_registration_email(
     State(state): State<AppState>,
     ConnectInfo(source): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<RegistrationEmailRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
     let owner = require_preauth_owner(&jar)?;
-    let source_key = source.ip().to_string();
+    let source_key = trusted_client_source(source, &headers);
     state
         .pending_auth
         .request_registration_email(&source_key, &owner, &request.attempt_id, request.email)
@@ -1828,6 +1836,7 @@ struct PasswordResetRequest {
 async fn request_password_reset(
     State(state): State<AppState>,
     ConnectInfo(source): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<PasswordResetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1842,7 +1851,7 @@ async fn request_password_reset(
     let challenge = state
         .pending_auth
         .request_password_reset(
-            source.ip().to_string(),
+            trusted_client_source(source, &headers),
             owner.clone(),
             request.homeserver_url,
             request.email,
@@ -1850,6 +1859,30 @@ async fn request_password_reset(
         .await
         .map_err(ApiError::bad_request)?;
     Ok((jar.add(preauth_cookie(owner)), Json(challenge)))
+}
+
+fn trusted_client_source(source: std::net::SocketAddr, headers: &HeaderMap) -> String {
+    let peer = source.ip();
+    let trusted = std::env::var("CHARM_WEB_TRUSTED_PROXY_IPS")
+        .ok()
+        .is_some_and(|configured| {
+            configured
+                .split(',')
+                .filter_map(|value| value.trim().parse::<std::net::IpAddr>().ok())
+                .any(|address| address == peer)
+        });
+    if trusted {
+        let forwarded = headers
+            .get("cf-connecting-ip")
+            .or_else(|| headers.get("x-forwarded-for"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok());
+        if let Some(forwarded) = forwarded {
+            return forwarded.to_string();
+        }
+    }
+    peer.to_string()
 }
 
 #[derive(Deserialize)]
@@ -1877,6 +1910,27 @@ async fn confirm_password_reset(
         .await
         .map_err(ApiError::bad_request)?;
     Ok((jar.remove(clear_preauth_cookie()), Json(())))
+}
+
+async fn resend_password_reset(
+    State(state): State<AppState>,
+    ConnectInfo(source): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Json(request): Json<AttemptRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
+    let owner = require_preauth_owner(&jar)?;
+    state
+        .pending_auth
+        .resend_password_reset(
+            &trusted_client_source(source, &headers),
+            &owner,
+            &request.attempt_id,
+        )
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_request)
 }
 
 async fn cancel_password_reset(
@@ -1932,7 +1986,6 @@ async fn login_with_token(
         .get(DISCOVERY_COOKIE)
         .map(|cookie| cookie.value().to_owned())
         .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
-    state.pending_auth.cancel_owner(&owner).await;
     let (completed, attempt_id) = state
         .pending_auth
         .login_with_token(

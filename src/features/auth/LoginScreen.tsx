@@ -18,6 +18,7 @@ import {
   loginWithToken,
   requestRegistrationEmail,
   requestPasswordReset,
+  resendPasswordReset,
   register,
   startSsoLogin,
   type LoginResponse,
@@ -530,6 +531,22 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
+  async function handleResendPasswordReset() {
+    const attemptId = passwordResetAttemptRef.current;
+    if (!attemptId || !isWebBuild()) return;
+    setPending(true);
+    setError(null);
+    try {
+      const challenge = await resendPasswordReset(attemptId);
+      setPasswordResetChallenge(challenge);
+      setRecoveryToken("");
+    } catch {
+      setError("Could not resend the recovery email yet. Wait a moment, then try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   function closePasswordReset() {
     passwordResetOperationRef.current += 1;
     const attemptId = passwordResetAttemptRef.current;
@@ -608,6 +625,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
                 </Button>
+                {isWebBuild() && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={handleResendPasswordReset}
+                  >
+                    Resend recovery email
+                  </Button>
+                )}
                 <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
@@ -965,6 +992,24 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         Forgot password?
                       </Button>
                     )}
+                  {mode === "sign-in" && loginFlows?.delegated_auth && (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Password recovery is managed by your identity provider.
+                      {loginFlows.account_management_url && (
+                        <>
+                          {" "}
+                          <a
+                            className="underline"
+                            href={loginFlows.account_management_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Manage account
+                          </a>
+                        </>
+                      )}
+                    </p>
+                  )}
 
                   {mode === "sign-in" && showAlternativeSignInOptions && (
                     <>
