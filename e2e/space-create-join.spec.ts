@@ -196,6 +196,7 @@ test("opens a space in the shared settings shell", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "Space settings" })).toBeVisible();
   await expect(page.getByLabel("Space name")).toHaveValue("Community");
   await expect(page.getByText("Encryption")).toHaveCount(0);
+  await captureSnapshot(page, "space-settings-general");
   await page.getByRole("tab", { name: "Children" }).click();
   const childrenPanel = page.getByRole("tabpanel", { name: "Children" });
   await expect(childrenPanel.getByText("Project", { exact: true })).toBeVisible();

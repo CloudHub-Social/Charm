@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
   listManageableSpaceChildren,
-  onRoomDetailsUpdate,
+  onSpaceChildrenUpdate,
   removeSpaceChild,
   type RoomSummary,
   type SpaceChild,
@@ -72,11 +72,10 @@ export function SpaceChildrenSettings({
   }
 
   useEffect(() => {
-    // Sync emits this for joined-room state changes, including
-    // m.space.child. That is the authoritative point to replace optimistic
-    // additions with the server-confirmed hierarchy snapshot.
-    const unlisten = onRoomDetailsUpdate((details) => {
-      if (details.room_id === spaceId) {
+    // Refresh only for an actual m.space.child update. Room details also
+    // changes for membership, topic, permissions, and other unrelated state.
+    const unlisten = onSpaceChildrenUpdate((updatedSpaceId) => {
+      if (updatedSpaceId === spaceId) {
         void queryClient.invalidateQueries({ queryKey: queryKey(spaceId) });
         onChanged?.();
       }
@@ -95,6 +94,7 @@ export function SpaceChildrenSettings({
     setPendingId(child.room_id);
     try {
       await removeSpaceChild(spaceId, child.room_id);
+      optimisticAddedIdsRef.current.delete(child.room_id);
       optimisticRemovedIdsRef.current.add(child.room_id);
       queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) =>
         current.filter((candidate) => candidate.room_id !== child.room_id),
@@ -172,6 +172,7 @@ export function SpaceChildrenSettings({
         excludedIds={excludedIds}
         onOpenChange={setAddOpen}
         onAdded={(childRoomId) => {
+          optimisticRemovedIdsRef.current.delete(childRoomId);
           optimisticAddedIdsRef.current.add(childRoomId);
           const room = rooms.find((candidate) => candidate.room_id === childRoomId);
           queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) => [

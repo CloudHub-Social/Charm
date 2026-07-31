@@ -174,6 +174,9 @@ async fn emit_room_updates(
                 .is_some()
         });
         if state_events_present {
+            if room_update_contains_space_child(update) {
+                let _ = app.emit("space_children:update", room_id.to_string());
+            }
             // Review fix: `room_admin::pin_event`/`unpin_event` maintain
             // their own `pinned_event_cache` (see its own doc comment) so a
             // pin/unpin write can be immediately followed by another one
@@ -290,6 +293,23 @@ async fn emit_room_updates(
             }
         }
     }
+}
+
+fn room_update_contains_space_child(update: &matrix_sdk::sync::JoinedRoomUpdate) -> bool {
+    fn is_space_child<T>(raw: &matrix_sdk::ruma::serde::Raw<T>) -> bool {
+        raw.get_field::<String>("type").ok().flatten().as_deref() == Some("m.space.child")
+    }
+    let in_state = match &update.state {
+        matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
+            events.iter().any(is_space_child)
+        }
+    };
+    in_state
+        || update
+            .timeline
+            .events
+            .iter()
+            .any(|event| is_space_child(event.raw()))
 }
 
 /// Whether `update`'s sync response actually carried an `m.room.pinned_events`
