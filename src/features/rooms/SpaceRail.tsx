@@ -182,18 +182,20 @@ export function SpaceRail({
   // menu. Each call bumps the room's generation and only applies its own
   // response if it's still the latest generation by the time it resolves.
   const permissionsRequestGeneration = useRef<Map<string, number>>(new Map());
-  const ensurePermissionsLoaded = useCallback((roomId: string) => {
+  const ensurePermissionsLoaded = useCallback((roomId: string, keepPrevious = false) => {
     const generation = (permissionsRequestGeneration.current.get(roomId) ?? 0) + 1;
     permissionsRequestGeneration.current.set(roomId, generation);
     // Drop any previously fetched value for this room before the new
     // request lands, rather than leaving it visible mid-refetch — a stale
     // `true` from the prior open would otherwise stay clickable for the
     // gap between "menu reopened" and "fresh permissions arrived".
-    setPermissionsById((prev) => {
-      if (!(roomId in prev)) return prev;
-      const { [roomId]: _stale, ...rest } = prev;
-      return rest;
-    });
+    if (!keepPrevious) {
+      setPermissionsById((prev) => {
+        if (!(roomId in prev)) return prev;
+        const { [roomId]: _stale, ...rest } = prev;
+        return rest;
+      });
+    }
     return getRoomDetails(roomId)
       .then((details) => {
         if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
@@ -229,7 +231,7 @@ export function SpaceRail({
       const resolvedTarget = insideRail ? targetId : null;
       if (resolvedTarget && !dragPermissionRequestsRef.current.has(resolvedTarget)) {
         dragPermissionRequestsRef.current.add(resolvedTarget);
-        ensurePermissionsLoaded(resolvedTarget);
+        ensurePermissionsLoaded(resolvedTarget, true);
       }
       const invalid =
         resolvedTarget === sourceId ||
@@ -290,8 +292,14 @@ export function SpaceRail({
     recomputeDropRef.current?.();
   }, [permissionsById]);
   useEffect(() => {
-    if (!hierarchyReorganizationEnabled) setMoveTarget(null);
-  }, [hierarchyReorganizationEnabled]);
+    if (hierarchyReorganizationEnabled) return;
+    setMoveTarget(null);
+    stopDragScroll();
+    spaceDropRef.current = null;
+    lastDragPointerRef.current = null;
+    dragPermissionRequestsRef.current.clear();
+    setSpaceDrop(null);
+  }, [hierarchyReorganizationEnabled, stopDragScroll]);
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
       if (!hierarchyReorganizationEnabled || spaceParentMutationPending) return;
@@ -538,7 +546,7 @@ export function SpaceRail({
             if (!hierarchyReorganizationEnabled) return;
             dragPermissionRequestsRef.current.clear();
             dragPermissionRequestsRef.current.add(space.room_id);
-            ensurePermissionsLoaded(space.room_id);
+            ensurePermissionsLoaded(space.room_id, true);
           }}
           onDragMove={updateSpaceDropFromPointer}
           onDragEnd={finishSpaceDrop}
