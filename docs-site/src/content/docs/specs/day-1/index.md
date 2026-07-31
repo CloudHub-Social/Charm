@@ -61,7 +61,7 @@ here.
 
 | # | Spec | Status | Evidence or boundary |
 |---|---|---|---|
-| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **Planned** | No matching merged implementation found |
+| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **In progress** | Storage, privacy, lifecycle, and typed API architecture decision-ready; indexing implementation pending |
 | 29 | [Link previews](/specs/day-1/spec-29--link-previews/) | **Follow-up** | Desktop [#250](https://github.com/CloudHub-Social/Charm/pull/250) and web companion `/preview_url` proxy both merged, default-off `link_previews` flag; live-homeserver manual verification remains unrecorded |
 | 30 | [Focus mode and DND](/specs/day-1/spec-30--focus-mode-and-do-not-disturb/) | **Shipped** | [#249](https://github.com/CloudHub-Social/Charm/pull/249), default-off flag; manual tray verification remains non-blocking |
 | 31 | [Room upgrades](/specs/day-1/spec-31--room-upgrades/) | **Planned** | No matching merged implementation found |
