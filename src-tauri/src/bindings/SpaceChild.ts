@@ -2,8 +2,7 @@
 import type { SpaceJoinRule } from "./SpaceJoinRule";
 
 /**
- * One child room of a space, as returned by the `/hierarchy` endpoint —
- * Day-1 scope only reads the first page (see module docs), so large spaces
- * show a "load more" affordance instead of paginating automatically.
+ * One child room summary. The lightweight browser reads one hierarchy page;
+ * settings management enumerates every live child edge.
  */
 export type SpaceChild = { room_id: string, name: string | null, topic: string | null, num_joined_members: number, join_rule: SpaceJoinRule, is_space: boolean, };

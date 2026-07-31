@@ -35,8 +35,8 @@ current children to prevent cycles/duplicates.
 
 `Settings` is now exposed from the rail behind Spec 33's hierarchy flag and
 opens the selected space in the existing room-settings shell. Spec 63 remains
-`in-progress` until the stacked Spec 33 settings work, including child
-management, is complete and both specs can be closed together.
+`in-progress` until the complete stacked Spec 33 work lands and both specs can
+be closed together; no implementation scope remains in this spec.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —

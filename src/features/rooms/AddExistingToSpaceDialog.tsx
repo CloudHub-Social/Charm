@@ -17,7 +17,10 @@ interface AddExistingToSpaceDialogProps {
    * list is a separately-fetched `/hierarchy` snapshot, not something Matrix
    * sync keeps current) refresh immediately instead of only after the user
    * navigates away and back. */
-  onAdded?: () => void;
+  onAdded?: (childRoomId: string) => void;
+  /** Called after the Matrix write settles, including ambiguous transport
+   * failures where the homeserver may already have committed the edge. */
+  onSettled?: (outcome: "success" | "failure", spaceId: string) => void;
 }
 
 /** Spec 63's "Add Existing" flow: file an already-joined room or space under
@@ -29,6 +32,7 @@ export function AddExistingToSpaceDialog({
   excludedIds,
   onOpenChange,
   onAdded,
+  onSettled,
 }: AddExistingToSpaceDialogProps) {
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -81,21 +85,24 @@ export function AddExistingToSpaceDialog({
   async function handleAdd(childRoomId: string) {
     if (!spaceId) return;
     const requestSpaceId = spaceId;
+    let outcome: "success" | "failure" = "failure";
     setError(null);
     setPendingId(childRoomId);
     try {
       await addExistingSpaceChild(requestSpaceId, childRoomId);
+      outcome = "success";
       // The dialog may have been re-targeted at a different space while this
       // request was in flight (only possible now that dismissal is blocked
       // while pending, but the parent could still swap `spaceId` directly) —
       // don't close/notify on behalf of a target that's no longer showing.
       if (latestSpaceIdRef.current !== requestSpaceId) return;
-      onAdded?.();
+      onAdded?.(childRoomId);
       handleClose(false);
     } catch (err) {
       if (latestSpaceIdRef.current !== requestSpaceId) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      onSettled?.(outcome, requestSpaceId);
       if (latestSpaceIdRef.current === requestSpaceId) setPendingId(null);
     }
   }

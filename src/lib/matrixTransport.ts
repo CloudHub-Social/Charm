@@ -345,6 +345,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       );
     case "list_space_hierarchy":
       return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.spaceId))}/hierarchy`);
+    case "list_space_children":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-children`,
+      );
+    case "list_manageable_space_children":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-children/manageable`,
+      );
     case "join_room":
       return requestJson<T>("POST", "/api/rooms/join", {
         room_id_or_alias: args.roomIdOrAlias,

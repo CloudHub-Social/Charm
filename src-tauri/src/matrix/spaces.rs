@@ -46,9 +46,8 @@ impl From<&JoinRuleSummary> for SpaceJoinRule {
     }
 }
 
-/// One child room of a space, as returned by the `/hierarchy` endpoint —
-/// Day-1 scope only reads the first page (see module docs), so large spaces
-/// show a "load more" affordance instead of paginating automatically.
+/// One child room summary. The lightweight browser reads one hierarchy page;
+/// settings management enumerates every live child edge.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct SpaceChild {
@@ -90,9 +89,6 @@ pub async fn list_space_children_impl(
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
     let mut request = get_hierarchy::v1::Request::new(parsed_space_id.clone());
     request.max_depth = Some(1_u32.into());
-    // Preserve Spec 06's first-page direct-child contract. Complete child
-    // management has a separate state-event-backed API in the settings
-    // track; opening the lightweight SpaceBrowser must stay bounded.
     let chunks = client.send(request).await.map_err(|e| e.to_string())?.rooms;
 
     Ok(chunks
@@ -102,6 +98,64 @@ pub async fn list_space_children_impl(
         .filter(|chunk| chunk.summary.room_id != parsed_space_id)
         .map(chunk_to_child)
         .collect())
+}
+
+/// Fetches the complete live child-edge set for settings management.
+#[tauri::command]
+pub async fn list_manageable_space_children(
+    state: State<'_, MatrixState>,
+    space_id: String,
+) -> Result<Vec<SpaceChild>, String> {
+    let client = state.require_client().await?;
+    list_manageable_space_children_impl(&client, &space_id).await
+}
+
+pub async fn list_manageable_space_children_impl(
+    client: &Client,
+    space_id: &str,
+) -> Result<Vec<SpaceChild>, String> {
+    let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
+    let space = require_space(client, space_id)?;
+    let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), Some(1)).await?;
+    let summaries = chunks
+        .into_iter()
+        .filter(|chunk| chunk.summary.room_id != parsed_space_id)
+        .map(|chunk| (chunk.summary.room_id.to_owned(), chunk_to_child(chunk)))
+        .collect::<HashMap<_, _>>();
+    let child_events = space
+        .get_state_events_static::<SpaceChildEventContent>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut children = child_events
+        .into_iter()
+        .filter_map(|raw| {
+            let event = raw.deserialize().ok()?;
+            let has_via = matches!(
+                &event,
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(original)
+                ) if !original.content.via.is_empty()
+            );
+            has_via.then(|| event.state_key().to_owned())
+        })
+        .map(|child_id| {
+            summaries.get(&child_id).cloned().unwrap_or_else(|| {
+                let is_space = client
+                    .get_room(&child_id)
+                    .is_some_and(|room| room.is_space());
+                SpaceChild {
+                    room_id: child_id.to_string(),
+                    name: None,
+                    topic: None,
+                    num_joined_members: 0,
+                    join_rule: SpaceJoinRule::Other,
+                    is_space,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    children.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    Ok(children)
 }
 
 /// Fetches the full recursive hierarchy rooted at `space_id`.

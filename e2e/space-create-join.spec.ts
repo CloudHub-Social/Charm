@@ -171,6 +171,22 @@ test("opens a space in the shared settings shell", async ({ page }) => {
       room_id: "!community:e2e",
       name: "Community",
     },
+    extraRooms: [
+      { room_id: "!project:e2e", name: "Project", unread_count: 0 },
+      { room_id: "!safe:e2e", name: "Safe room", unread_count: 0 },
+    ],
+    spaceChildren: {
+      "!community:e2e": [
+        {
+          room_id: "!project:e2e",
+          name: "Project",
+          topic: "Planning",
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+      ],
+    },
   });
   await page.goto("/");
 
@@ -181,6 +197,16 @@ test("opens a space in the shared settings shell", async ({ page }) => {
   await expect(page.getByLabel("Space name")).toHaveValue("Community");
   await expect(page.getByText("Encryption")).toHaveCount(0);
   await captureSnapshot(page, "space-settings-general");
+  await page.getByRole("tab", { name: "Children" }).click();
+  const childrenPanel = page.getByRole("tabpanel", { name: "Children" });
+  await expect(childrenPanel.getByText("Project", { exact: true })).toBeVisible();
+  await childrenPanel.getByRole("button", { name: "Remove Project" }).click();
+  await expect(childrenPanel.getByText("This space has no published children.")).toBeVisible();
+
+  await childrenPanel.getByRole("button", { name: "Add existing" }).click();
+  await page.getByRole("button", { name: /Safe room/ }).click();
+  await expect(childrenPanel.getByText("Safe room", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "space-settings-child-management");
 });
 
 test("joins a space by address and switches into it", async ({ page }) => {
