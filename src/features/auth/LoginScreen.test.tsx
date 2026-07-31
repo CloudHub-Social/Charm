@@ -775,7 +775,7 @@ describe("LoginScreen password recovery", () => {
     expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
   });
 
-  it("can close recovery while its request is still pending", async () => {
+  it("cancels a late opaque recovery attempt after closing a pending request", async () => {
     let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
     requestPasswordReset.mockReturnValue(
       new Promise<PasswordResetChallenge>((resolve) => {
@@ -795,10 +795,12 @@ describe("LoginScreen password recovery", () => {
     expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
 
     await act(async () => {
-      resolveRequest?.({ attempt_id: "late-attempt", requires_token: false });
+      // Attempt IDs are opaque. Even a value resembling the obsolete
+      // synthetic-unavailable prefix must be returned to the backend for cleanup.
+      resolveRequest?.({ attempt_id: "unavailable-late-attempt", requires_token: false });
       await Promise.resolve();
     });
-    expect(cancelPasswordReset).toHaveBeenCalledWith("late-attempt");
+    expect(cancelPasswordReset).toHaveBeenCalledWith("unavailable-late-attempt");
   });
 
   it("cancels password-reset discovery when the login screen unmounts", async () => {
