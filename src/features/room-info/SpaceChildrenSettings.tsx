@@ -31,6 +31,7 @@ export function SpaceChildrenSettings({
 }: SpaceChildrenSettingsProps) {
   const queryClient = useQueryClient();
   const optimisticAddedIdsRef = useRef(new Set<string>());
+  const optimisticRemovedIdsRef = useRef(new Set<string>());
   const [addOpen, setAddOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,9 +48,12 @@ export function SpaceChildrenSettings({
       for (const childId of optimisticAddedIdsRef.current) {
         if (fetchedIds.has(childId)) optimisticAddedIdsRef.current.delete(childId);
       }
+      for (const childId of optimisticRemovedIdsRef.current) {
+        if (!fetchedIds.has(childId)) optimisticRemovedIdsRef.current.delete(childId);
+      }
       const cached = queryClient.getQueryData<SpaceChild[]>(queryKey(spaceId)) ?? [];
       return [
-        ...fetched,
+        ...fetched.filter((child) => !optimisticRemovedIdsRef.current.has(child.room_id)),
         ...cached.filter(
           (child) =>
             optimisticAddedIdsRef.current.has(child.room_id) && !fetchedIds.has(child.room_id),
@@ -82,15 +86,21 @@ export function SpaceChildrenSettings({
     };
   }, [onChanged, queryClient, spaceId]);
 
+  useEffect(() => {
+    if (!canEdit) setAddOpen(false);
+  }, [canEdit]);
+
   async function remove(child: SpaceChild) {
     setError(null);
     setPendingId(child.room_id);
     try {
       await removeSpaceChild(spaceId, child.room_id);
+      optimisticRemovedIdsRef.current.add(child.room_id);
       queryClient.setQueryData<SpaceChild[]>(queryKey(spaceId), (current = []) =>
         current.filter((candidate) => candidate.room_id !== child.room_id),
       );
     } catch (err) {
+      optimisticRemovedIdsRef.current.delete(child.room_id);
       setError(err instanceof Error ? err.message : String(err));
       await refresh().catch(() => {});
     } finally {

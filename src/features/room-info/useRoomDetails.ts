@@ -41,6 +41,9 @@ export function useRoomDetails(roomId: string | null, refetchOnMount = false) {
     if (!roomId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
       if (details.room_id !== roomId) return;
+      // Prevent a slower mount refetch from publishing an older permission
+      // snapshot after this authoritative sync push.
+      void queryClient.cancelQueries({ queryKey: roomDetailsQueryKey(roomId), exact: true });
       queryClient.setQueryData(roomDetailsQueryKey(roomId), details);
       queryClient.invalidateQueries({ queryKey: roomMembersQueryKey(roomId) });
     });
