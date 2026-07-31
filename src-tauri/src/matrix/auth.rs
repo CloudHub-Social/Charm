@@ -1034,7 +1034,33 @@ pub async fn request_registration_email(
     attempt_id: String,
     email: String,
 ) -> Result<RegistrationEmailChallenge, String> {
-    ensure_registration_feature_enabled(&app)?;
+    if let Err(error) = ensure_registration_feature_enabled(&app) {
+        let cancellation = state
+            .pending_registration_cancel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|(current_id, _)| current_id == &attempt_id)
+            .map(|(_, cancellation)| cancellation.clone());
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+            clear_registration_cancellation(&state, &attempt_id);
+        }
+        let mut guard = state.pending_registration.lock().await;
+        let discarded = if guard
+            .as_ref()
+            .is_some_and(|pending| pending.attempt_id == attempt_id)
+        {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(discarded) = discarded {
+            discard_pending_registration(&app, discarded);
+        }
+        return Err(error);
+    }
     let cancellation = state
         .pending_registration_cancel
         .lock()
@@ -1154,24 +1180,32 @@ pub async fn request_registration_email(
         .email_client_secret
         .get_or_insert_with(ClientSecret::new)
         .clone();
-    let quota_reservation = match check_auth_mail_quota(&state, &address_key).await {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            if !restore_or_discard_pending_registration(
-                &app,
-                &state,
-                &attempt_id,
-                &cancellation,
-                pending,
-            )
-            .await
-            {
-                return Err("registration cancelled".to_string());
+    let homeserver_scope = pending.client.homeserver().origin().ascii_serialization();
+    let quota_reservation =
+        match check_auth_mail_quota(&state, &address_key, &homeserver_scope).await {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if !restore_or_discard_pending_registration(
+                    &app,
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await
+                {
+                    return Err("registration cancelled".to_string());
+                }
+                reservation.defuse();
+                return Err(error);
             }
-            reservation.defuse();
-            return Err(error);
-        }
-    };
+        };
+    if cancellation.is_cancelled() {
+        refund_auth_mail_quota(&state, quota_reservation).await;
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
     let send_attempt = pending.email_send_attempt + 1;
     let request = request_registration_token_via_email::v3::Request::new(
         client_secret.clone(),
@@ -1215,6 +1249,10 @@ pub async fn request_registration_email(
         clear_registration_cancellation(&state, &attempt_id);
         return Err("registration cancelled".to_string());
     }
+    pending.email_address_key = Some(address_key);
+    pending.email_send_attempt = send_attempt;
+    pending.email_retry_not_before =
+        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let submit_url = match sanitize_email_submit_url(
         &pending.client.homeserver(),
         response.submit_url.as_deref(),
@@ -1242,10 +1280,6 @@ pub async fn request_registration_email(
             }
         }
     };
-    pending.email_address_key = Some(address_key);
-    pending.email_send_attempt = send_attempt;
-    pending.email_retry_not_before =
-        Some(std::time::Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY);
     let requires_token = submit_url.is_some();
     pending.email_validation = Some(PendingRegistrationEmail {
         client_secret,
