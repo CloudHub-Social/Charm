@@ -1,21 +1,28 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T15:22:37.701Z",
+  "generatedAt": "2026-07-31T17:36:43.327Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
     "follow-up": 4,
-    "in-progress": 4,
-    "planned": 30
+    "in-progress": 6,
+    "planned": 28
   },
   "attention": [
     {
       "type": "pull-request",
-      "number": 324,
-      "title": "Start Spec 39 timeline state-event foundation",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
-      "detail": "Day-1 Spec 39 · ready for review"
+      "number": 322,
+      "title": "Spec 45: Make registration and recovery decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/322",
+      "detail": "Day-1 Spec 45 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 325,
+      "title": "Make Spec 28 local search decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/325",
+      "detail": "Day-1 Spec 28 · ready for review"
     },
     {
       "type": "pull-request",
@@ -32,18 +39,18 @@
       "detail": "Day-1 Spec 36 · ready for review"
     },
     {
-      "type": "pull-request",
-      "number": 326,
-      "title": "Make Spec 55 quick switcher decision-ready",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/326",
-      "detail": "Day-1 Spec 55 · ready for review"
+      "type": "issue",
+      "number": 382,
+      "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/382",
+      "detail": "follow-up"
     },
     {
       "type": "issue",
-      "number": 48,
-      "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/48",
-      "detail": "enhancement"
+      "number": 350,
+      "title": "Follow-up: align Spec 33 child-list reconciliation wording",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/350",
+      "detail": ""
     }
   ],
   "workstreams": [
@@ -132,8 +139,8 @@
       "counts": {
         "shipped": 11,
         "follow-up": 2,
-        "in-progress": 4,
-        "planned": 19
+        "in-progress": 6,
+        "planned": 17
       }
     },
     {
@@ -416,7 +423,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:13:27Z"
+          "updatedAt": "2026-07-31T00:01:08Z"
         },
         {
           "number": 230,
@@ -893,10 +900,20 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:05:15Z"
+          "updatedAt": "2026-07-31T17:33:13Z"
         }
       ],
-      "issues": []
+      "issues": [
+        {
+          "number": 382,
+          "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/382",
+          "updatedAt": "2026-07-31T17:32:11Z",
+          "labels": [
+            "follow-up"
+          ]
+        }
+      ]
     },
     {
       "id": "day-1-29",
@@ -995,9 +1012,17 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 350,
+          "title": "Follow-up: align Spec 33 child-list reconciliation wording",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/350",
+          "updatedAt": "2026-07-30T21:41:37Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-34",
@@ -1075,7 +1100,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/323",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:09:33Z"
+          "updatedAt": "2026-07-30T20:50:42Z"
         }
       ],
       "issues": []
@@ -1147,7 +1172,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/324",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:22:04Z"
+          "updatedAt": "2026-07-30T20:49:39Z"
         }
       ],
       "issues": []
@@ -1250,8 +1275,17 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 322,
+          "title": "Spec 45: Make registration and recovery decision-ready",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/322",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:35:55Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1408,7 +1442,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/326",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T15:07:32Z"
+          "updatedAt": "2026-07-30T20:49:05Z"
         }
       ],
       "issues": []
