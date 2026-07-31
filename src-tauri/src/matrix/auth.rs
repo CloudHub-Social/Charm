@@ -1604,9 +1604,14 @@ pub async fn request_password_reset(
         cancellation.cancel();
     }
     let client = tokio::select! {
-        result = Client::builder()
-            .server_name_or_homeserver_url(&homeserver_url)
-            .build() => result.map_err(|_| "could not start password reset".to_string()),
+        result = tokio::time::timeout(
+            AUTH_NETWORK_TIMEOUT,
+            Client::builder()
+                .server_name_or_homeserver_url(&homeserver_url)
+                .build(),
+        ) => result
+            .map_err(|_| "could not start password reset".to_string())?
+            .map_err(|_| "could not start password reset".to_string()),
         () = cancellation.cancelled() => {
             Err("password reset attempt was superseded".to_string())
         },

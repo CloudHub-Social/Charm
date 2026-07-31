@@ -183,10 +183,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       registrationAttemptRef.current = null;
       registrationEmailOperationRef.current += 1;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
-      const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
       passwordResetOperationRef.current += 1;
-      if (resetAttemptId) cancelPasswordReset(resetAttemptId).catch(logAndIgnore);
+      // `undefined` also cancels a backend request that is still in discovery
+      // and has not returned its opaque attempt id to this component yet.
+      cancelPasswordReset(undefined).catch(logAndIgnore);
     },
     [],
   );
@@ -713,7 +714,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       )}
                       <Button
                         type="button"
-                        disabled={pending}
+                        disabled={pending || registrationStep.policies.length === 0}
                         onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
                       >
                         {pending && <Loader2 className="animate-spin" />}

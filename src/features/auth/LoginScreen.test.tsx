@@ -508,7 +508,14 @@ describe("LoginScreen registration UIA", () => {
       flows: [{ stages: ["m.login.terms"] }],
       next_stage: "m.login.terms",
       fallback_url: "",
-      policies: [],
+      policies: [
+        {
+          id: "privacy",
+          name: "Privacy policy",
+          language: "en",
+          url: "https://matrix.example/privacy",
+        },
+      ],
     });
     continueRegistration.mockRejectedValue(new Error("registration attempt is no longer current"));
     render(<LoginScreen onSignedIn={vi.fn()} />);
@@ -523,6 +530,28 @@ describe("LoginScreen registration UIA", () => {
 
     expect(screen.queryByRole("button", { name: "Accept and continue" })).not.toBeInTheDocument();
     expect(screen.getByText(/registration attempt is no longer current/i)).toBeVisible();
+  });
+
+  it("does not accept a terms stage with no displayable policies", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-no-policies",
+      completed: [],
+      flows: [{ stages: ["m.login.terms"] }],
+      next_stage: "m.login.terms",
+      fallback_url: "",
+      policies: [],
+    });
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(screen.getByRole("button", { name: "Accept and continue" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/did not provide terms/i);
+    expect(continueRegistration).not.toHaveBeenCalled();
   });
 });
 
@@ -760,6 +789,21 @@ describe("LoginScreen password recovery", () => {
       await Promise.resolve();
     });
     expect(cancelPasswordReset).toHaveBeenCalledWith("late-attempt");
+  });
+
+  it("cancels password-reset discovery when the login screen unmounts", async () => {
+    requestPasswordReset.mockReturnValue(new Promise<PasswordResetChallenge>(() => {}));
+    const { unmount } = render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+    unmount();
+
+    expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
   });
 
   it("cancels a direct-token recovery attempt without exposing its backend session", async () => {
