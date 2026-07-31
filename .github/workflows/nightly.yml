@@ -1374,9 +1374,20 @@ jobs:
           SOURCEMAPS_RESULT: ${{ needs['frontend-sourcemaps'].result }}
         run: |
           set -euo pipefail
-          date_tag="nightly-$(date -u +%Y-%m-%d)"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+          date_utc="$(date -u +%Y-%m-%d)"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # A scheduled nightly may already own today's date-only tag. A
+            # manual validation run can target a newer commit later that same
+            # day, so give it a commit-qualified tag instead of replacing the
+            # old tag's assets while its source archives still point elsewhere.
+            date_tag="nightly-${date_utc}-${sha_short}"
+            release_title="Nightly validation — ${date_utc} (${sha_short})"
+          else
+            date_tag="nightly-${date_utc}"
+            release_title="Nightly build — ${date_utc}"
+          fi
 
           missing=""
           for pair in "macOS:$MACOS_RESULT:no artifact published this run" "Windows:$WINDOWS_RESULT:no artifact published this run" "Linux:$LINUX_RESULT:no artifact published this run" "Android:$ANDROID_RESULT:no artifact published this run" "Frontend sourcemaps:$SOURCEMAPS_RESULT:frontend events from this run's binaries may be unsymbolicated"; do
@@ -1423,7 +1434,7 @@ jobs:
             # with nothing to replace it.
             gh release edit "$date_tag" \
               --repo "${{ github.repository }}" \
-              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --title "$release_title" \
               --notes-file release-notes.md
             gh release upload "$date_tag" \
               --repo "${{ github.repository }}" \
@@ -1436,7 +1447,7 @@ jobs:
             # its source archive) point at a newer commit than the binaries.
             gh release create "$date_tag" \
               --repo "${{ github.repository }}" \
-              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --title "$release_title" \
               --notes-file release-notes.md \
               --target "${{ github.sha }}" \
               --prerelease \
