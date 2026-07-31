@@ -2,7 +2,8 @@ import type { ComponentProps, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRoomDetails } from "@/features/room-info/testUtils";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import type { RoomListMode } from "./SpaceRail";
@@ -65,6 +66,7 @@ const setRoomManualOrder = vi.fn().mockResolvedValue(undefined);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const listSpaceHierarchy = vi.fn().mockResolvedValue([]);
 const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
+const getRoomDetails = vi.fn();
 const joinRoom = vi.fn().mockResolvedValue(undefined);
 const knockRoom = vi.fn().mockResolvedValue(undefined);
 // Never resolves — these tests don't care about the header profile chip
@@ -89,6 +91,7 @@ vi.mock("@/lib/matrix", () => ({
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   listSpaceHierarchy: (...args: unknown[]) => listSpaceHierarchy(...args),
   removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
+  getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
@@ -134,6 +137,18 @@ function hierarchyChild(roomId: string, name: string, isSpace = false) {
   };
 }
 
+beforeEach(() => {
+  getRoomDetails.mockReset();
+  getRoomDetails.mockImplementation((roomId: string) =>
+    Promise.resolve(
+      makeRoomDetails({
+        room_id: roomId,
+        can: { ...makeRoomDetails().can, set_space_child: true },
+      }),
+    ),
+  );
+});
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
@@ -142,6 +157,13 @@ afterEach(() => {
   featureFlagMocks.roomListMessagePreview = false;
   featureFlagMocks.spaceRailManagement = false;
 });
+
+async function openEnabledRemoveFromSpace(roomName: string) {
+  fireEvent.contextMenu(await screen.findByText(roomName));
+  const item = await screen.findByText("Remove from space");
+  await waitFor(() => expect(item).not.toHaveAttribute("data-disabled"));
+  return item;
+}
 
 describe("RoomList", () => {
   it("shows room skeletons while the initial room list is loading", () => {
@@ -417,8 +439,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Team chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Team chat"));
 
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child:localhost");
   });
@@ -451,8 +472,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Team chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Team chat"));
 
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("Team chat")).not.toBeInTheDocument());
@@ -486,8 +506,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Team chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Team chat"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
   });
@@ -539,8 +558,7 @@ describe("RoomList", () => {
     );
     const { rerender } = render(withSelectedSpace(space));
 
-    fireEvent.contextMenu(await screen.findByText("Team chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Team chat"));
     expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
 
     rerender(withSelectedSpace(otherSpace));
@@ -669,6 +687,45 @@ describe("RoomList", () => {
     expect(screen.queryByText("Remove from space")).not.toBeInTheDocument();
   });
 
+  it("keeps Remove from space disabled when the user lacks m.space.child power", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    getRoomDetails.mockResolvedValue(
+      makeRoomDetails({
+        room_id: "!space:localhost",
+        can: { ...makeRoomDetails().can, set_space_child: false },
+      }),
+    );
+    const space = makeRoomSummary({
+      room_id: "!space:localhost",
+      is_space: true,
+      name: "Team",
+    });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: hierarchyChild("!child:localhost", "Team chat"),
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    const item = await screen.findByText("Remove from space");
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
+    expect(item).toHaveAttribute("data-disabled");
+
+    fireEvent.click(item);
+    expect(removeSpaceChild).not.toHaveBeenCalled();
+  });
+
   it("wires Remove from space for a favourited room row, which bypasses the hierarchy view", async () => {
     featureFlagMocks.spaceRailManagement = true;
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
@@ -700,8 +757,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Pinned chat"));
 
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
   });
@@ -735,8 +791,7 @@ describe("RoomList", () => {
     );
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
 
-    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Pinned chat"));
 
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
   });
@@ -774,8 +829,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Pinned chat"));
 
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
   });
@@ -834,8 +888,7 @@ describe("RoomList", () => {
       />,
     );
 
-    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
-    fireEvent.click(await screen.findByText("Remove from space"));
+    fireEvent.click(await openEnabledRemoveFromSpace("Pinned chat"));
 
     expect(removeSpaceChild).toHaveBeenCalledWith("!nested:localhost", "!fav-child:localhost");
   });

@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use charm_web_server::{observability, persistence::PersistenceStore, routes, sync_loop, AppState};
 
+const SPACE_HIERARCHY_REORGANIZATION_ENV: &str =
+    "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bound for the rest of `main`'s lifetime, not discarded — an unbound
@@ -56,6 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         persistence: persistence.clone(),
+        space_hierarchy_reorganization: std::env::var(SPACE_HIERARCHY_REORGANIZATION_ENV)
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
         ..AppState::default()
     };
 
