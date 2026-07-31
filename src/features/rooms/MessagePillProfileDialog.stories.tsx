@@ -60,6 +60,7 @@ const meta = {
     accountId,
     roomId,
     detailed: true,
+    refetchOnMount: false,
     onClose: fn(),
     onNavigateToRoom: fn(),
   },

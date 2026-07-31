@@ -29,6 +29,7 @@ export function MessagePillProfileDialog({
   accountId,
   roomId,
   detailed = false,
+  refetchOnMount = "always",
   onNavigateToRoom,
   onClose,
 }: {
@@ -36,6 +37,7 @@ export function MessagePillProfileDialog({
   accountId?: string;
   roomId?: string;
   detailed?: boolean;
+  refetchOnMount?: "always" | boolean;
   onNavigateToRoom?: (roomId: string) => void;
   onClose: () => void;
 }) {
@@ -101,11 +103,23 @@ export function MessagePillProfileDialog({
   const livePresence = usePresence(detailed && userId !== "" ? userId : null, {
     fetchInitial: false,
   });
+  const presenceRevisionRef = useRef(0);
+  const lastLivePresenceRef = useRef(livePresence);
+  const profileRequestPresenceRevisionRef = useRef(0);
+  if (lastLivePresenceRef.current !== livePresence) {
+    lastLivePresenceRef.current = livePresence;
+    presenceRevisionRef.current += 1;
+  }
   const profileQuery = useQuery({
     queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
-    queryFn: () => getUserProfile(userId, roomId),
+    queryFn: async () => {
+      const requestPresenceRevision = presenceRevisionRef.current;
+      const result = await getUserProfile(userId, roomId);
+      profileRequestPresenceRevisionRef.current = requestPresenceRevision;
+      return result;
+    },
     enabled: detailed && userId !== "",
-    refetchOnMount: "always",
+    refetchOnMount,
   });
   const profileIsFetching = profileQuery.isFetching;
   const refetchProfile = profileQuery.refetch;
@@ -119,7 +133,7 @@ export function MessagePillProfileDialog({
     queryKey: ["mutual-rooms", accountId ?? null, userId],
     queryFn: () => getMutualRooms(userId),
     enabled: detailed && userId !== "",
-    refetchOnMount: "always",
+    refetchOnMount,
   });
   const mutualRoomsAreFetching = mutualRoomsQuery.isFetching;
   const refetchMutualRooms = mutualRoomsQuery.refetch;
@@ -130,7 +144,10 @@ export function MessagePillProfileDialog({
     }
   }, [mutualRoomsAreFetching, refetchMutualRooms]);
   const resolvedProfile = detailed ? profileQuery.data : undefined;
-  const presence = livePresence ?? resolvedProfile?.presence;
+  const presence =
+    presenceRevisionRef.current === profileRequestPresenceRevisionRef.current
+      ? (resolvedProfile?.presence ?? livePresence)
+      : (livePresence ?? resolvedProfile?.presence);
   const displayName =
     resolvedProfile?.room_display_name ?? resolvedProfile?.display_name ?? profile?.label ?? null;
   const avatarUrl = resolvedProfile?.room_avatar_url ?? resolvedProfile?.avatar_url ?? null;
@@ -157,8 +174,10 @@ export function MessagePillProfileDialog({
                 {initials(profile.userId, displayName)}
               </AvatarFallback>
             </Avatar>
-            <DialogTitle>{displayName}</DialogTitle>
-            <DialogDescription>{profile.userId}</DialogDescription>
+            <DialogTitle className="max-w-full min-w-0 break-words">{displayName}</DialogTitle>
+            <DialogDescription className="max-w-full min-w-0 break-all">
+              {profile.userId}
+            </DialogDescription>
             {detailed && resolvedProfile && roomIdentityDiffers && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Avatar size="sm">
