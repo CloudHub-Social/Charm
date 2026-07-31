@@ -434,6 +434,17 @@ describe("SpaceRail", () => {
     expect(screen.getByRole("dialog", { name: "Invite to Team" })).toBeInTheDocument();
   });
 
+  it("opens create-under-space from a permitted space context menu", async () => {
+    const onCreateUnderSpace = vi.fn();
+    renderRail({ onCreateUnderSpace });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expectMenuItemEnabled("Create subspace"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Create subspace" }));
+
+    expect(onCreateUnderSpace).toHaveBeenCalledWith("!space:localhost");
+  });
+
   it("disables Invite until the space's permissions have loaded, then re-enables it once permitted", async () => {
     let resolveDetails: (details: ReturnType<typeof makeRoomDetails>) => void = () => {};
     getRoomDetails.mockReturnValueOnce(
