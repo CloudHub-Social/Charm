@@ -482,16 +482,15 @@ async fn emit_room_list_and_badge(
     // `RoomListMessagePreview` nor `RoomListSort` is wired up for the web
     // build yet (no feature-flag store here, unlike desktop's
     // `feature_flags::flag`).
-    let snapshot =
-        rooms::snapshot_rooms(
-            client,
-            None,
-            false,
-            false,
-            include_canonical_space_hierarchy,
-            preview_registered_rooms,
-        )
-        .await;
+    let snapshot = rooms::snapshot_rooms(
+        client,
+        None,
+        false,
+        false,
+        include_canonical_space_hierarchy,
+        preview_registered_rooms,
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
