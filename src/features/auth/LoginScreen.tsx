@@ -290,14 +290,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         // oxlint-disable-next-line no-await-in-loop
         step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
-    } catch (error) {
-      const message = String(error);
+    } catch (registrationError) {
+      const message = String(registrationError);
       if (!isTerminalRegistrationError(message) && step.state === "challenge") {
         // The backend deliberately preserves retryable UIA failures (for
         // example a temporary rate limit). Keep the opaque attempt and expose
         // the automatic stage so the user can retry it without starting over.
         setRegistrationStep(step);
-        throw error;
+        throw registrationError;
       }
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
@@ -306,7 +306,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setRegistrationEmail("");
       setRegistrationEmailToken("");
       if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
-      throw error;
+      throw registrationError;
     }
     if (
       expectedOperation !== undefined &&
@@ -511,9 +511,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setNewPassword("");
       setPassword("");
       setPasswordResetComplete(true);
-    } catch (error) {
+    } catch (resetError) {
       if (passwordResetOperationRef.current === operation) {
-        if (isTerminalPasswordResetError(String(error))) {
+        if (isTerminalPasswordResetError(String(resetError))) {
           passwordResetAttemptRef.current = null;
           setPasswordResetChallenge(undefined);
           setRecoveryToken("");
