@@ -165,20 +165,40 @@ connection: the SDK owns that schema and migration lifecycle.
   (schema version, error category, and a random incident ID), securely removes the
   search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
   no plaintext quarantine is retained and an SDK store is never modified.
+- A terminal Matrix authentication error, including remote deletion of the
+  current device from another session, is session teardown rather than a
+  retryable sync failure. Desktop, mobile, and web immediately stop serving
+  queries, close the handle, and remove the database and sidecars. Integration
+  tests revoke the device from a second session and verify both access denial
+  and physical cleanup.
 - Web indexes are intentionally session-ephemeral in the first slice. They are not
   copied into the crypto-store backup and may be rebuilt only from decrypted
   history available to that same session after restart. The UI must disclose
   incomplete results after a deployment/restart; durable plaintext search backup
-  is out of scope until an encrypted, session-bound backup design exists.
+  is out of scope until an encrypted, session-bound backup design exists. In a
+  hosted deployment this plaintext lives on the companion server, not the
+  browser or user's device, and is therefore visible to the operator and anyone
+  with server-disk access. Web operations guidance and the UI must disclose that
+  trust boundary; companion search directories are excluded from host backups,
+  deleted on session expiry/removal, and retained no longer than the owning
+  session.
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
-  threads. Sync/timeline delivery must not wait on SQLite I/O.
+  threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
+  through a bounded queue that coalesces work by room/event and persists only a
+  non-content sync checkpoint. Overflow schedules a bounded reconciliation from
+  the encrypted SDK store instead of retaining every event in memory, blocking
+  sync, or silently dropping work. Tests stall SQLite while delivering a large
+  sync and prove bounded memory plus eventual reconciliation.
 - Persist a Charm-owned indexing journal/checkpoint before acknowledging a sync
-  position as searchable. Startup replays incomplete journal entries and
-  reconciles the index against decrypted events in the SDK store before serving
-  queries; this includes redactions and edit provenance. An index file existing is
-  never sufficient evidence that backfill/reconciliation completed. Tests stop the
-  process between SDK persistence and search commit and verify restart removes
-  redacted plaintext and fills missing events.
+  position as searchable. The journal contains only opaque event/room identifiers
+  and checkpoints; it never stores message bodies, normalized text, snippets, or
+  other plaintext and rehydrates work from the encrypted SDK store. Startup
+  replays incomplete journal entries and reconciles the index against decrypted
+  events in the SDK store before serving queries; this includes redactions and
+  edit provenance. An index file existing is never sufficient evidence that
+  backfill/reconciliation completed. Tests stop the process between SDK
+  persistence and search commit, scan the journal for raw markers, and verify
+  restart removes redacted plaintext and fills missing events.
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
   eligible events to the indexer even when that room has never been opened. The
@@ -230,8 +250,11 @@ rejected with a typed invalid-query error. Requests are capped server-side at 51
 UTF-8 bytes and `limit` is clamped to 1–100.
 
 The first page creates a bounded, TTL-limited search snapshot containing only the
-ordered result identifiers and ranks (never message plaintext) under a random
-per-account search ID. The opaque cursor binds to that snapshot, normalized query,
+ordered result identifiers, ranks, and a non-plaintext content-version identifier
+for the exact renderer-selected event version that matched under a random
+per-account search ID. Later pages resolve that immutable version rather than the
+mutable current event; redaction still suppresses the result and physically purges
+its content. The opaque cursor binds to that snapshot, normalized query,
 optional room scope, account/session, and a random per-process index-incarnation
 nonce. Results use the total order
 `bm25 rank ASC, origin_server_ts DESC, room_id ASC, event_id ASC`; the cursor
@@ -242,6 +265,12 @@ departed-room results before return. Expired snapshots and pages routed to anoth
 web process during a rolling deployment are rejected as stale, never replayed
 against an independently rebuilt index. The UI restarts pagination from page one
 on this typed response.
+Each session has a strict cap on live snapshots and aggregate retained identifiers,
+and the process has a separate global byte/count budget. Creating a first page
+deterministically evicts that session's oldest snapshot or returns a typed
+resource-limit error when the global budget cannot admit it; expiry and session
+teardown release accounting immediately. Tests repeatedly request first pages,
+including from concurrent hosted sessions, and assert both quotas and eviction.
 Rolling-deploy integration tests alternate requests between old and new companion
 processes. Results contain event ID, room ID, sender, origin timestamp, a plain-text
 snippet with match ranges, and the next cursor; they never contain FTS-generated
@@ -270,6 +299,10 @@ without the user knowing which is which.
   a leftover index before serving other account work when the effective flag is
   false. Kill-switch tests cover an active handle, restart cleanup, and failure
   reporting without reopening the index.
+- Because this flag controls a new plaintext-at-rest surface, a trusted remote
+  `false` is a hard veto over any persisted Labs/local override. The veto closes
+  active handles and triggers the same purge even when Labs previously persisted
+  `true`; tests cover that exact transition on every transport.
 - The companion evaluates that flag in trusted server configuration on every
   indexing/search request (or through a bounded cache with explicit configuration
   invalidation), rather than binding a `true` value for the lifetime of a
@@ -279,6 +312,11 @@ without the user knowing which is which.
   value is false and a kill-switch transition during an active session.
 - New IPC and authenticated web-companion command surface as above, with generated
   bindings via ts-rs per existing convention.
+- Search instrumentation uses an explicit metadata allowlist: duration, result
+  count, query byte length, scope kind, and typed error category only. It never
+  logs command arguments, SQL with bound values, literal queries, snippets, or
+  result DTOs. Error and telemetry tests submit distinctive raw markers and verify
+  they are absent, and the operations observability guidance documents this rule.
 - No changes to existing commands.
 
 ## Testing strategy
