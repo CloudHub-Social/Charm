@@ -147,6 +147,9 @@ define_feature_flag_keys!(
         /// Spec 54 room-list typing indicator: a per-row badge showing when
         /// someone is currently typing in that room.
         RoomListTypingIndicator,
+        /// Spec 36 profile cards for room members, message senders, and
+        /// interactive mentions.
+        UserProfileCards,
     }
 );
 
@@ -173,6 +176,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::Bookmarks => false,
             FeatureFlagKey::RoomListSort => false,
             FeatureFlagKey::RoomListTypingIndicator => false,
+            FeatureFlagKey::UserProfileCards => false,
         }
     }
 
@@ -234,6 +238,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => {
                 "Show a typing badge on room-list rows for rooms with someone currently typing."
             }
+            FeatureFlagKey::UserProfileCards => {
+                "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms."
+            }
         }
     }
 
@@ -267,6 +274,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => {
                 "Spec 54 (room-list enrichment and filtering)"
             }
+            FeatureFlagKey::UserProfileCards => "Spec 36 (user profile cards)",
         }
     }
 
@@ -292,6 +300,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::Bookmarks => "bookmarks",
             FeatureFlagKey::RoomListSort => "room_list_sort",
             FeatureFlagKey::RoomListTypingIndicator => "room_list_typing_indicator",
+            FeatureFlagKey::UserProfileCards => "user_profile_cards",
         }
     }
 }
