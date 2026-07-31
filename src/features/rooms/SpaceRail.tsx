@@ -144,6 +144,7 @@ export function SpaceRail({
   const dragScrollDirectionRef = useRef(0);
   const dragScrollFrameRef = useRef<number | null>(null);
   const dragPermissionRequestsRef = useRef(new Set<string>());
+  const dragPermissionFailuresRef = useRef(new Set<string>());
   const recomputeDropRef = useRef<(() => void) | null>(null);
   const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopDragScroll = useCallback(() => {
@@ -260,8 +261,11 @@ export function SpaceRail({
         dragPermissionRequestsRef.current.add(resolvedTarget);
         void ensurePermissionsLoaded(resolvedTarget, true).then((permissions) => {
           if (!permissions) {
-            dragPermissionRequestsRef.current.delete(resolvedTarget);
-            recomputeDropRef.current?.();
+            // Keep the failed request sticky while the pointer is held in
+            // place. A failed lookup used to delete this marker and
+            // immediately recompute the same drop, creating an unbounded
+            // request loop without any new user input.
+            dragPermissionFailuresRef.current.add(resolvedTarget);
           }
         });
       }
@@ -309,6 +313,21 @@ export function SpaceRail({
   );
   const updateSpaceDropFromPointer = useCallback(
     (sourceId: string, clientX: number, clientY: number) => {
+      const previous = lastDragPointerRef.current;
+      if (
+        previous &&
+        (previous.sourceId !== sourceId ||
+          previous.clientX !== clientX ||
+          previous.clientY !== clientY)
+      ) {
+        // A real pointer move permits one retry for targets whose previous
+        // permission lookup failed. Pending/successful requests remain
+        // deduplicated for the rest of the drag.
+        for (const roomId of dragPermissionFailuresRef.current) {
+          dragPermissionRequestsRef.current.delete(roomId);
+        }
+        dragPermissionFailuresRef.current.clear();
+      }
       lastDragPointerRef.current = { sourceId, clientX, clientY };
       updateSpaceDrop(sourceId, clientX, clientY);
     },
@@ -333,6 +352,7 @@ export function SpaceRail({
     spaceDropRef.current = null;
     lastDragPointerRef.current = null;
     dragPermissionRequestsRef.current.clear();
+    dragPermissionFailuresRef.current.clear();
     setSpaceDrop(null);
     setCanonicalParentOverrides({});
     moveSelectionPendingRef.current = false;
@@ -377,6 +397,7 @@ export function SpaceRail({
       spaceDropRef.current = null;
       lastDragPointerRef.current = null;
       dragPermissionRequestsRef.current.clear();
+      dragPermissionFailuresRef.current.clear();
       setSpaceDrop(null);
       if (!drop || drop.sourceId !== sourceId || drop.invalid) return;
       const source = rooms.find((room) => room.room_id === sourceId);
@@ -585,6 +606,7 @@ export function SpaceRail({
           onDragPrepare={() => {
             if (!hierarchyReorganizationEnabled) return;
             dragPermissionRequestsRef.current.clear();
+            dragPermissionFailuresRef.current.clear();
             dragPermissionRequestsRef.current.add(space.room_id);
             ensurePermissionsLoaded(space.room_id, true);
           }}
