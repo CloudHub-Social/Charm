@@ -491,7 +491,8 @@ async fn emit_room_list_and_badge(
         preview_registered_rooms,
     )
     .await;
-    let badge = shell::compute_badge_state(&snapshot);
+    let badge =
+        shell::compute_badge_state_for_presentation(&snapshot, include_canonical_space_hierarchy);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
 }

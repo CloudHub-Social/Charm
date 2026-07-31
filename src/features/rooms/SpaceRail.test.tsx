@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -490,6 +490,53 @@ describe("SpaceRail", () => {
       expect(setSpaceParent).toHaveBeenCalledWith("!alpha:localhost", "!beta:localhost"),
     );
     await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
+  });
+
+  it("retries a failed drag permission lookup only after new pointer activity", async () => {
+    let betaAttempts = 0;
+    getRoomDetails.mockImplementation((roomId: string) => {
+      if (roomId === "!beta:localhost" && betaAttempts++ === 0) {
+        return Promise.reject(new Error("temporary permission lookup failure"));
+      }
+      return Promise.resolve(makeRoomDetails({ room_id: roomId }));
+    });
+    renderRail({
+      rooms: [
+        makeRoomSummary({ room_id: "!alpha:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+    const alpha = screen.getByRole("button", { name: "Alpha" });
+    const beta = screen.getByRole("button", { name: "Beta" });
+    mockPointerCapture(alpha);
+    mockElementFromPoint(beta);
+
+    fireEvent.pointerEnter(alpha);
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!alpha:localhost"));
+    fireEvent.pointerDown(alpha, { pointerId: 1, clientX: 10, clientY: 10, buttons: 1 });
+    fireEvent.pointerMove(alpha, { pointerId: 1, clientX: 10, clientY: 30, buttons: 1 });
+    await waitFor(() =>
+      expect(
+        getRoomDetails.mock.calls.filter(([roomId]) => roomId === "!beta:localhost"),
+      ).toHaveLength(1),
+    );
+
+    // The failed request updates permission state and recomputes the held
+    // drop, but must not immediately issue the same request again.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      getRoomDetails.mock.calls.filter(([roomId]) => roomId === "!beta:localhost"),
+    ).toHaveLength(1);
+
+    fireEvent.pointerMove(alpha, { pointerId: 1, clientX: 10, clientY: 31, buttons: 1 });
+    await waitFor(() =>
+      expect(
+        getRoomDetails.mock.calls.filter(([roomId]) => roomId === "!beta:localhost"),
+      ).toHaveLength(2),
+    );
+    fireEvent.pointerUp(alpha, { pointerId: 1, clientX: 10, clientY: 31 });
   });
 
   it("offers a keyboard-operable parent picker", async () => {
