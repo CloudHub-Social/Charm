@@ -108,6 +108,12 @@
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
+    "key": "user_profile_cards",
+    "default": false,
+    "description": "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms.",
+    "owner": "Spec 36 (user profile cards)"
+  },
+  {
     "key": "timeline_state_events",
     "default": false,
     "description": "Render membership and room-state changes in the timeline.",
