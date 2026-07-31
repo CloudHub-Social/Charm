@@ -403,6 +403,11 @@ fn discard_stale_temp_stores(
 /// separate call to [`DeferredTempStoreDiscards::discard`] — see
 /// [`recover_stale_backups_at`]'s doc comment for why these are split.
 pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscards, String> {
+    // This is the recovery entry point invoked by the real startup path.
+    // Process durable cancelled-account markers before startup is allowed to
+    // restore a session, rather than relying on the legacy combined sweep
+    // wrapper (which production startup intentionally does not call).
+    sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
     let entries = recover_stale_backups_at(&root)?;
     Ok(DeferredTempStoreDiscards(entries))
