@@ -29,7 +29,7 @@
     {
       "slug": "registration",
       "title": "Interactive account registration",
-      "summary": "Create an account through homeserver-advertised terms, automatic dummy, and browser fallback verification stages.",
+      "summary": "Create an account through homeserver-advertised interactive authentication stages.",
       "status": "preview",
       "spec": "Spec 45",
       "specLinks": [

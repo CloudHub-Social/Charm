@@ -144,6 +144,10 @@ pub struct MatrixState {
     /// `pending_sso`/`pending_qr_temp_store_key` when that pass gathers its
     /// protected set.
     pub(crate) completing_sso_temp_store_keys: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Cancellation handles for SSO callbacks that have left `pending_sso`
+    /// but are still exchanging their login token.
+    pub(crate) completing_sso_cancellations:
+        std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
     /// Temp-store keys reserved by `start_sso_login`/`start_qr_login`
     /// immediately after generating them, before any `.await` — closes a
     /// window at the *other* end of the flow from
@@ -368,6 +372,7 @@ impl Default for MatrixState {
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),
             completing_sso_temp_store_keys: std::sync::Mutex::default(),
+            completing_sso_cancellations: std::sync::Mutex::default(),
             reserved_temp_store_keys: std::sync::Mutex::default(),
             media_cache: tokio::sync::OnceCell::default(),
             attachment_cancellations: std::sync::Mutex::default(),

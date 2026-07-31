@@ -4,6 +4,7 @@
 
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::register;
+use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, AuthType, Dummy, LoginTermsParams, Terms, UiaaInfo,
 };
@@ -51,6 +52,8 @@ pub(crate) struct PendingSso {
     /// an `account_key` yet. `complete_sso_login` relocates it to one on
     /// success; `cancel_sso_login` discards it on cancellation.
     pub(crate) store_key: String,
+    expires_at: tokio::time::Instant,
+    cancellation: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -73,6 +76,7 @@ pub struct RegisterRequest {
 }
 
 const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
@@ -123,6 +127,23 @@ pub enum RegistrationAuthResponse {
     AcceptTerms,
     CompleteDummy,
     AcknowledgeFallback { stage: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct LoginIdentityProvider {
+    pub id: String,
+    pub name: String,
+    pub brand: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct LoginFlowSummary {
+    pub password: bool,
+    pub token: bool,
+    pub sso: bool,
+    pub identity_providers: Vec<LoginIdentityProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -605,9 +626,10 @@ pub(crate) async fn build_persisted_client_with_store_passphrase(
 /// builds a throwaway in-memory one (no local store) purely to run discovery.
 #[tauri::command]
 pub async fn discover_homeserver(input: String) -> Result<DiscoverHomeserverResponse, String> {
-    Ok(DiscoverHomeserverResponse {
-        homeserver_url: discover(&input).await?,
-    })
+    let homeserver_url = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, discover(&input))
+        .await
+        .map_err(|_| "homeserver discovery timed out".to_string())??;
+    Ok(DiscoverHomeserverResponse { homeserver_url })
 }
 
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
@@ -643,7 +665,7 @@ pub async fn register(
     let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
-    finish_registration(app, &state, client, temp_key, None, None).await
+    finish_registration(app, &state, client, temp_key, None, None, None).await
 }
 
 async fn finish_registration(
@@ -653,6 +675,7 @@ async fn finish_registration(
     temp_key: String,
     attempt_id: Option<&str>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<LoginResponse, String> {
     let session = client
         .matrix_auth()
@@ -663,7 +686,12 @@ async fn finish_registration(
 
     // See `login`'s identical guard and its doc comment on
     // `MatrixState::login_completion_lock`.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let _completion_guard = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, state.login_completion_lock.lock())
+            .await
+            .map_err(|_| "authentication setup timed out".to_string())?,
+        None => state.login_completion_lock.lock().await,
+    };
     if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
         return Err("registration cancelled".to_string());
     }
@@ -674,6 +702,16 @@ async fn finish_registration(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app.clone(), previous_client);
+        }
+        let _ = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &temp_key);
+        return Err("authentication setup timed out".to_string());
+    }
     let _finalizing = FinalizingRegistrationGuard::new(state, account_key.clone());
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
@@ -703,6 +741,15 @@ async fn finish_registration(
         }
         drop(client);
         return clear_cancelled_registration_session(&app, &account_key);
+    }
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app.clone(), previous_client);
+        }
+        drop(client);
+        discard_cancelled_registration_session(&app, &account_key)?;
+        return Err("authentication setup timed out".to_string());
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -783,6 +830,14 @@ fn clear_cancelled_registration_session(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<LoginResponse, String> {
+    discard_cancelled_registration_session(app, account_key)?;
+    Err("registration cancelled".to_string())
+}
+
+fn discard_cancelled_registration_session(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
     let cleanup = match persistence::discard_cancelled_account_session(app, account_key) {
         Ok(()) => Ok(()),
         Err(_) => persistence::discard_cancelled_account_session(app, account_key),
@@ -792,7 +847,7 @@ fn clear_cancelled_registration_session(
             "registration cancelled, but its durable state could not be removed: {error}"
         ));
     }
-    Err("registration cancelled".to_string())
+    Ok(())
 }
 
 /// Starts a registration UIA attempt without exposing its client, credentials,
@@ -858,6 +913,7 @@ pub async fn begin_registration(
                 store_key,
                 Some(&attempt_id),
                 Some(&cancellation),
+                None,
             )
             .await
             {
@@ -986,6 +1042,7 @@ pub async fn continue_registration(
                 pending.store_key,
                 Some(&attempt_id),
                 Some(&cancellation),
+                None,
             )
             .await
             {
@@ -1087,6 +1144,223 @@ pub async fn cancel_registration(
     drop(guard);
     discard_pending_registration(&app, pending);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_login_flows(
+    app: AppHandle,
+    homeserver_url: String,
+) -> Result<LoginFlowSummary, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let response = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, async {
+        let client = Client::builder()
+            .server_name_or_homeserver_url(&homeserver_url)
+            .build()
+            .await
+            .map_err(|_| "could not discover login options for this homeserver".to_string())?;
+        client
+            .matrix_auth()
+            .get_login_types()
+            .await
+            .map_err(|_| "could not discover login options for this homeserver".to_string())
+    })
+    .await
+    .map_err(|_| "login option discovery timed out".to_string())??;
+    Ok(summarize_login_flows(response.flows))
+}
+
+#[tauri::command]
+pub async fn login_with_token(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    homeserver_url: String,
+    token: String,
+) -> Result<LoginResponse, String> {
+    let deadline = tokio::time::Instant::now() + AUTH_NETWORK_TIMEOUT;
+    ensure_registration_feature_enabled(&app)?;
+    cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    if let Some(pending) = state.pending_sso.lock().await.take() {
+        let store_key = pending.store_key.clone();
+        drop(pending);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+    }
+
+    let store_key = persistence::temp_store_key();
+    let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
+    let client =
+        match tokio::time::timeout_at(deadline, build_client(&app, &homeserver_url, &store_key))
+            .await
+        {
+            Ok(Ok(client)) => client,
+            Err(_) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("token login setup timed out".to_string());
+            }
+            Ok(Err(error)) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err(error);
+            }
+        };
+    let flows =
+        match tokio::time::timeout_at(deadline, client.matrix_auth().get_login_types()).await {
+            Ok(Ok(flows)) => flows,
+            Ok(Err(_)) | Err(_) => {
+                drop(client);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("could not verify token login support".to_string());
+            }
+        };
+    if !flows
+        .flows
+        .iter()
+        .any(|flow| matches!(flow, LoginType::Token(_)))
+    {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+        return Err("this homeserver does not advertise token login".to_string());
+    }
+
+    if !matches!(
+        tokio::time::timeout_at(
+            deadline,
+            client
+                .matrix_auth()
+                .login_token(&token)
+                .initial_device_display_name("Charm")
+                .send(),
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+        return Err("token login failed".to_string());
+    }
+    let _restore_store_guard = match tokio::time::timeout_at(deadline, restore_store_lock().lock())
+        .await
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            let revoked =
+                tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return if matches!(revoked, Ok(Ok(_))) {
+                Err("token login setup timed out".to_string())
+            } else {
+                Err(
+                    "token login setup timed out and the authenticated device could not be revoked"
+                        .to_string(),
+                )
+            };
+        }
+    };
+    // Keep the reservation visible until the process-wide restore/sweep lock
+    // is held, so cleanup cannot delete this active store in the gap.
+    reservation.defuse();
+    let cleanup_key = store_key.clone();
+    match finish_registration(
+        app.clone(),
+        &state,
+        client,
+        store_key,
+        None,
+        None,
+        Some(deadline),
+    )
+    .await
+    {
+        Ok(session) => Ok(session),
+        Err(error) => {
+            let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
+            Err(error)
+        }
+    }
+}
+
+fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
+    const MAX_IDENTITY_PROVIDERS: usize = 32;
+    let mut summary = LoginFlowSummary {
+        password: false,
+        token: false,
+        sso: false,
+        identity_providers: Vec::new(),
+    };
+    for flow in flows {
+        match flow {
+            LoginType::Password(_) => summary.password = true,
+            LoginType::Token(_) => summary.token = true,
+            LoginType::Sso(sso) => {
+                summary.sso = true;
+                for provider in sso.identity_providers {
+                    if summary.identity_providers.len() >= MAX_IDENTITY_PROVIDERS
+                        || summary
+                            .identity_providers
+                            .iter()
+                            .any(|existing| existing.id == provider.id)
+                    {
+                        continue;
+                    }
+                    summary.identity_providers.push(LoginIdentityProvider {
+                        id: provider.id,
+                        name: sanitized_provider_name(&provider.name),
+                        brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn sanitized_provider_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .filter_map(|character| {
+            if character.is_alphanumeric() {
+                Some(character)
+            } else if character.is_whitespace() {
+                Some(' ')
+            } else if matches!(
+                character,
+                '-' | '_'
+                    | '.'
+                    | ','
+                    | ':'
+                    | ';'
+                    | '/'
+                    | '&'
+                    | '+'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '\''
+                    | '’'
+            ) {
+                Some(character)
+            } else {
+                None
+            }
+        })
+        .take(80)
+        .collect::<String>();
+    if sanitized.trim().is_empty() {
+        "Single sign-on".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn identity_provider_is_advertised(flows: &[LoginType], idp_id: &str) -> bool {
+    flows.iter().any(|flow| {
+        matches!(
+            flow,
+            LoginType::Sso(sso)
+                if sso.identity_providers.iter().any(|provider| provider.id == idp_id)
+        )
+    })
 }
 
 fn ensure_registration_feature_enabled(app: &AppHandle) -> Result<(), String> {
@@ -1512,7 +1786,12 @@ pub async fn start_sso_login(
     app: AppHandle,
     state: State<'_, MatrixState>,
     homeserver_url: String,
+    idp_id: Option<String>,
 ) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + AUTH_NETWORK_TIMEOUT;
+    if idp_id.is_some() {
+        ensure_registration_feature_enabled(&app)?;
+    }
     cancel_pending_registration_for_superseding_auth(&app, &state).await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
@@ -1524,9 +1803,60 @@ pub async fn start_sso_login(
     // unprotected for however long that network setup takes — `pending_sso`
     // itself isn't set until after both succeed.
     let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
-    let client = build_client(&app, &homeserver_url, &store_key).await?;
+    let client =
+        match tokio::time::timeout_at(deadline, build_client(&app, &homeserver_url, &store_key))
+            .await
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err("single sign-on setup timed out".to_string());
+            }
+        };
     let attempt_state = generate_sso_state();
-    let sso_url = get_sso_login_url(&client, &attempt_state).await?;
+    if let Some(idp_id) = idp_id.as_deref() {
+        let flows =
+            match tokio::time::timeout_at(deadline, client.matrix_auth().get_login_types()).await {
+                Ok(Ok(flows)) => flows,
+                Ok(Err(_)) => {
+                    drop(client);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err("could not verify this identity provider".to_string());
+                }
+                Err(_) => {
+                    drop(client);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err("single sign-on setup timed out".to_string());
+                }
+            };
+        if !identity_provider_is_advertised(&flows.flows, idp_id) {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("this identity provider is not advertised by the homeserver".to_string());
+        }
+    }
+    let sso_url = match tokio::time::timeout_at(
+        deadline,
+        get_sso_login_url_with_provider(&client, &attempt_state, idp_id.as_deref()),
+    )
+    .await
+    {
+        Ok(Ok(url)) => url,
+        Ok(Err(error)) => {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err(error);
+        }
+        Err(_) => {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("single sign-on setup timed out".to_string());
+        }
+    };
 
     // Publish to `pending_sso` *before* defusing the reservation, not after
     // (Codex review on #288, P2): defusing first would leave a gap between
@@ -1534,10 +1864,14 @@ pub async fn start_sso_login(
     // was protected by neither set, exactly the race
     // `ReservedTempStoreGuard` exists to close. This order means the
     // reservation is still live for the whole handoff.
+    let expires_at = tokio::time::Instant::now() + REGISTRATION_ATTEMPT_TTL;
+    let cancellation = tokio_util::sync::CancellationToken::new();
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
-        state: attempt_state,
+        state: attempt_state.clone(),
         store_key,
+        expires_at,
+        cancellation,
     });
     reservation.defuse();
     // A double-start (e.g. a double click) would otherwise overwrite the
@@ -1546,10 +1880,44 @@ pub async fn start_sso_login(
     // via a different trigger (a new attempt instead of an explicit
     // cancel).
     if let Some(previous) = previous {
-        let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+        let store_key = previous.store_key.clone();
+        drop(previous);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
     }
+    spawn_sso_expiry(app, attempt_state);
 
     Ok(sso_url)
+}
+
+fn spawn_sso_expiry(app: AppHandle, attempt_state: String) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
+        let state = app.state::<MatrixState>();
+        let mut guard = state.pending_sso.lock().await;
+        let expired = if guard
+            .as_ref()
+            .is_some_and(|pending| pending.state == attempt_state)
+        {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(expired) = expired {
+            expired.cancellation.cancel();
+            let store_key = expired.store_key.clone();
+            drop(expired);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+        } else if let Some(cancellation) = state
+            .completing_sso_cancellations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&attempt_state)
+            .cloned()
+        {
+            cancellation.cancel();
+        }
+    });
 }
 
 fn generate_sso_state() -> String {
@@ -1568,7 +1936,18 @@ fn generate_sso_state() -> String {
 #[tauri::command]
 pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     if let Some(pending) = state.pending_sso.lock().await.take() {
-        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        pending.cancellation.cancel();
+        let store_key = pending.store_key.clone();
+        drop(pending);
+        let _ = persistence::discard_temp_login_store(&app, &store_key);
+    }
+    for cancellation in state
+        .completing_sso_cancellations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+    {
+        cancellation.cancel();
     }
     Ok(())
 }
@@ -1576,10 +1955,18 @@ pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> 
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/`, same rationale as [`super::resolve_alias`].
 pub async fn get_sso_login_url(client: &Client, attempt_state: &str) -> Result<String, String> {
+    get_sso_login_url_with_provider(client, attempt_state, None).await
+}
+
+async fn get_sso_login_url_with_provider(
+    client: &Client,
+    attempt_state: &str,
+    idp_id: Option<&str>,
+) -> Result<String, String> {
     let redirect_url = format!("{SSO_REDIRECT_BASE_URL}?state={attempt_state}");
     client
         .matrix_auth()
-        .get_sso_login_url(&redirect_url, None)
+        .get_sso_login_url(&redirect_url, idp_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1598,16 +1985,22 @@ fn extract_sso_callback_state(callback_url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod registration_uia_tests {
+    use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
     use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, UiaaInfo};
     use serde_json::json;
 
     use super::{
-        next_registration_stage, registration_auth_data, registration_fallback_url,
-        sanitized_registration_policies, RegistrationAuthResponse,
+        identity_provider_is_advertised, next_registration_stage, registration_auth_data,
+        registration_fallback_url, sanitized_provider_name, sanitized_registration_policies,
+        summarize_login_flows, RegistrationAuthResponse,
     };
 
     fn uiaa(value: serde_json::Value) -> UiaaInfo {
         serde_json::from_value(value).expect("valid UIA fixture")
+    }
+
+    fn login_flows(value: serde_json::Value) -> Vec<LoginType> {
+        serde_json::from_value(value).expect("valid login-flow fixture")
     }
 
     #[test]
@@ -1724,6 +2117,87 @@ mod registration_uia_tests {
             "https://example.org/matrix/_matrix/client/v3/auth/m.login.recaptcha/fallback/web?session=session+value"
         );
     }
+
+    #[test]
+    fn summarizes_login_types_and_provider_metadata() {
+        let flows = login_flows(json!([
+            {"type": "m.login.password"},
+            {"type": "m.login.token", "get_login_token": false},
+            {
+                "type": "m.login.sso",
+                "identity_providers": [
+                    {"id": "oidc-github", "name": "GitHub", "brand": "github"},
+                    {"id": "company", "name": "Company SSO"}
+                ]
+            }
+        ]));
+
+        let summary = summarize_login_flows(flows);
+        assert!(summary.password);
+        assert!(summary.token);
+        assert!(summary.sso);
+        assert_eq!(summary.identity_providers.len(), 2);
+        assert_eq!(summary.identity_providers[0].id, "oidc-github");
+        assert_eq!(
+            summary.identity_providers[0].brand.as_deref(),
+            Some("github")
+        );
+    }
+
+    #[test]
+    fn sanitizes_untrusted_identity_provider_labels() {
+        let name = format!("Secure\u{202e}evil{}", "x".repeat(100));
+        let sanitized = sanitized_provider_name(&name);
+        assert!(!sanitized.contains('\u{202e}'));
+        assert_eq!(sanitized.chars().count(), 80);
+        assert_eq!(sanitized_provider_name("\u{200f}\n"), "Single sign-on");
+        assert_eq!(
+            sanitized_provider_name("\u{200b}\u{2060}\u{feff}"),
+            "Single sign-on"
+        );
+    }
+
+    #[test]
+    fn caps_and_deduplicates_identity_providers() {
+        let providers = (0..40)
+            .map(|index| {
+                json!({
+                    "id": format!("provider-{index}"),
+                    "name": format!("Provider {index}")
+                })
+            })
+            .chain(std::iter::once(json!({
+                "id": "provider-0",
+                "name": "Duplicate"
+            })))
+            .collect::<Vec<_>>();
+        let flows = login_flows(json!([{
+            "type": "m.login.sso",
+            "identity_providers": providers
+        }]));
+
+        let summary = summarize_login_flows(flows);
+        assert_eq!(summary.identity_providers.len(), 32);
+        assert_eq!(
+            summary
+                .identity_providers
+                .iter()
+                .filter(|provider| provider.id == "provider-0")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn accepts_only_a_freshly_advertised_identity_provider() {
+        let flows = login_flows(json!([{
+            "type": "m.login.sso",
+            "identity_providers": [{"id": "company", "name": "Company SSO"}]
+        }]));
+
+        assert!(identity_provider_is_advertised(&flows, "company"));
+        assert!(!identity_provider_is_advertised(&flows, "forged"));
+    }
 }
 
 #[cfg(test)]
@@ -1810,6 +2284,7 @@ pub async fn complete_sso_login(
     struct SsoCompletionGuard<'a> {
         matrix_state: &'a MatrixState,
         store_key: String,
+        attempt_state: String,
     }
     impl Drop for SsoCompletionGuard<'_> {
         fn drop(&mut self) {
@@ -1818,6 +2293,11 @@ pub async fn complete_sso_login(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&self.store_key);
+            self.matrix_state
+                .completing_sso_cancellations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.attempt_state);
         }
     }
     state
@@ -1825,15 +2305,32 @@ pub async fn complete_sso_login(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(pending.store_key.clone());
+    state
+        .completing_sso_cancellations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(callback_state.clone(), pending.cancellation.clone());
     let _completing_guard = SsoCompletionGuard {
         matrix_state: &state,
         store_key: pending.store_key.clone(),
+        attempt_state: callback_state,
     };
 
     drop(pending_sso);
     let client = pending.client;
 
-    if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
+    let callback_result = tokio::select! {
+        biased;
+        () = pending.cancellation.cancelled() => Err("single sign-on cancelled".to_string()),
+        result = tokio::time::timeout_at(
+            pending.expires_at,
+            complete_sso_login_with_callback(&client, &callback_url),
+        ) => match result {
+            Ok(result) => result,
+            Err(_) => Err("single sign-on attempt expired".to_string()),
+        },
+    };
+    if let Err(e) = callback_result {
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
         // startup sweep — clean it up now instead, same as a cancelled

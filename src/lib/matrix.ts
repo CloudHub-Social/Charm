@@ -14,6 +14,8 @@ import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
+import type { LoginFlowSummary } from "@bindings/LoginFlowSummary";
+import type { LoginIdentityProvider } from "@bindings/LoginIdentityProvider";
 import type { MediaContent } from "@bindings/MediaContent";
 import type { MembershipKind } from "@bindings/MembershipKind";
 import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
@@ -151,6 +153,8 @@ export type {
   JumpToEventResult,
   LoginRequest,
   LoginResponse,
+  LoginFlowSummary,
+  LoginIdentityProvider,
   MediaContent,
   MembershipKind,
   MutualRoomSummary,
@@ -231,6 +235,14 @@ export function cancelRegistration(attemptId: string): Promise<void> {
   return invoke("cancel_registration", { attemptId }, { captureOnError: false });
 }
 
+export function getLoginFlows(homeserverUrl: string): Promise<LoginFlowSummary> {
+  return invoke("get_login_flows", { homeserverUrl }, { captureOnError: false });
+}
+
+export function loginWithToken(homeserverUrl: string, token: string): Promise<LoginResponse> {
+  return invoke("login_with_token", { homeserverUrl, token }, { captureOnError: false });
+}
+
 // captureOnError: false — this fires on every keystroke via
 // useHomeserverDiscovery while the user is still typing a server name, so an
 // unresolvable address is the common case, not an error worth reporting.
@@ -241,8 +253,12 @@ export function discoverHomeserver(input: string): Promise<DiscoverHomeserverRes
 // captureOnError: false — LoginScreen catches this to render the SSO error
 // inline (e.g. the homeserver doesn't support SSO), the same expected-UX
 // pattern as login/register above.
-export function startSsoLogin(homeserverUrl: string): Promise<string> {
-  return invoke("start_sso_login", { homeserverUrl }, { captureOnError: false });
+export function startSsoLogin(homeserverUrl: string, idpId?: string): Promise<string> {
+  return invoke(
+    "start_sso_login",
+    { homeserverUrl, idpId: idpId ?? null },
+    { captureOnError: false },
+  );
 }
 
 // captureOnError: false — LoginScreen catches this too, including the

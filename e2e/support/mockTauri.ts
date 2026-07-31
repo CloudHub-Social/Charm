@@ -104,8 +104,10 @@ export function installMockTauri(seed: {
   restoreSession?: boolean;
   /** Enable the deterministic terms -> dummy registration UIA fixture. */
   registrationUia?: boolean;
+  /** Advertise provider SSO and standalone token login on the login screen. */
+  loginChoices?: boolean;
 }) {
-  if (seed.registrationUia) {
+  if (seed.registrationUia || seed.loginChoices) {
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
@@ -337,6 +339,19 @@ export function installMockTauri(seed: {
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () =>
       seed.restoreSession === false ? null : { user_id: seed.userId, device_id: seed.deviceId },
+    discover_homeserver: () => ({ homeserver_url: "https://matrix.example/" }),
+    get_login_flows: () =>
+      seed.loginChoices
+        ? {
+            password: true,
+            token: true,
+            sso: true,
+            identity_providers: [{ id: "company", name: "Company SSO", brand: null }],
+          }
+        : { password: true, token: false, sso: true, identity_providers: [] },
+    start_sso_login: () => "https://matrix.example/sso/company",
+    cancel_sso_login: () => null,
+    login_with_token: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
     begin_registration: () => {
       if (!seed.registrationUia) return undefined;
       return {

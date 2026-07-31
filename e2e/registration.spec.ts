@@ -29,3 +29,27 @@ test("registration completes a homeserver terms and dummy UIA flow", async ({ pa
 
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
 });
+
+test("login choices expose a homeserver provider and standalone token login", async ({ page }) => {
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_LOGIN_CHOICES",
+    room: { room_id: "!login-choices:localhost", name: "Login choices", unread_count: 0 },
+    hasRooms: false,
+    restoreSession: false,
+    loginChoices: true,
+  });
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: "Continue with Company SSO" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with SSO" })).not.toBeVisible();
+  await page.getByRole("button", { name: "Continue with Company SSO" }).click();
+  await expect(page.getByText("Waiting for you to finish in the browser…")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Use a login token" }).click();
+  await page.getByLabel("Login token").fill("one-time-token");
+  await page.getByRole("button", { name: "Use login token" }).click();
+
+  await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
+});
