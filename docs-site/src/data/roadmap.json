@@ -1,29 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:43:49.751Z",
+  "generatedAt": "2026-07-31T17:44:32.822Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 38,
+    "shipped": 39,
     "follow-up": 8,
-    "in-progress": 2,
+    "in-progress": 1,
     "planned": 29
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 327,
-      "title": "Clarify Spec 13 hardware-blocked evidence",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
-      "detail": "Day-1 Spec 13 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 326,
-      "title": "Make Spec 55 quick switcher decision-ready",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/326",
-      "detail": "Day-1 Spec 55 · ready for review"
-    },
     {
       "type": "issue",
       "number": 382,
@@ -130,9 +116,9 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 11,
+        "shipped": 12,
         "follow-up": 6,
-        "in-progress": 2,
+        "in-progress": 1,
         "planned": 17
       }
     },
@@ -415,9 +401,9 @@
           "number": 327,
           "title": "Clarify Spec 13 hardware-blocked evidence",
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:41:10Z"
+          "updatedAt": "2026-07-31T17:44:04Z"
         },
         {
           "number": 230,
@@ -915,7 +901,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 299,
@@ -1428,15 +1414,15 @@
       "number": 55,
       "title": "Command palette and quick switcher",
       "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 326,
           "title": "Make Spec 55 quick switcher decision-ready",
           "url": "https://github.com/CloudHub-Social/Charm/pull/326",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:41:09Z"
+          "updatedAt": "2026-07-31T17:43:35Z"
         }
       ],
       "issues": []
