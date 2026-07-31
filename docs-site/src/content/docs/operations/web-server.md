@@ -33,6 +33,11 @@ For plain-HTTP local development only, set
 to store the server's `Secure` session cookie over HTTP. Never use this flag on
 a TLS-backed production deployment.
 
+Experimental Matrix writes also require a companion-side rollout gate. Spec 33
+space-parent creation and reorganization remain disabled unless
+`CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION` is set to `1` or `true`.
+Read-only space hierarchy browsing and top-level space creation are unaffected.
+
 ## Request and event surfaces
 
 - Login, registration, logout, profile, rooms, members, timelines, message

@@ -101,6 +101,7 @@ export function RoomsScreen({
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
+  const [createSpaceParentId, setCreateSpaceParentId] = useState<string | null>(null);
   // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
   // edit a space's children — `RoomList`'s own hierarchy view is a
   // point-in-time `/hierarchy` snapshot Matrix sync doesn't keep current, so
@@ -516,7 +517,14 @@ export function RoomsScreen({
             onSelectHome={selectHome}
             onSelectDms={selectDms}
             onSelectSpace={selectSpace}
-            onCreateJoin={() => setCreateJoinDialogOpen(true)}
+            onCreateJoin={() => {
+              setCreateSpaceParentId(null);
+              setCreateJoinDialogOpen(true);
+            }}
+            onCreateUnderSpace={(spaceId) => {
+              setCreateSpaceParentId(spaceId);
+              setCreateJoinDialogOpen(true);
+            }}
             onSpaceChildrenChanged={() => setHierarchyRefreshToken((token) => token + 1)}
           />
         }
@@ -588,8 +596,15 @@ export function RoomsScreen({
       />
       <CreateJoinSpaceDialog
         open={createJoinDialogOpen}
-        onOpenChange={setCreateJoinDialogOpen}
-        onSpaceCreated={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
+        parentSpaceId={createSpaceParentId}
+        onOpenChange={(open) => {
+          setCreateJoinDialogOpen(open);
+          if (!open) setCreateSpaceParentId(null);
+        }}
+        onSpaceCreated={(spaceId) => {
+          selectNewlyCreatedOrJoinedSpace(spaceId);
+          setHierarchyRefreshToken((token) => token + 1);
+        }}
         onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
       <RoomSettingsModal currentUserId={currentUserId} />
