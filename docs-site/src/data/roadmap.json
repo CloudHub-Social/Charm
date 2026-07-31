@@ -1,35 +1,21 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:36:43.175Z",
+  "generatedAt": "2026-07-31T17:40:56.171Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
-    "follow-up": 4,
-    "in-progress": 6,
-    "planned": 28
+    "follow-up": 5,
+    "in-progress": 5,
+    "planned": 29
   },
   "attention": [
     {
       "type": "pull-request",
-      "number": 322,
-      "title": "Spec 45: Make registration and recovery decision-ready",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/322",
-      "detail": "Day-1 Spec 45 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 325,
-      "title": "Make Spec 28 local search decision-ready",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/325",
-      "detail": "Day-1 Spec 28 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 327,
-      "title": "Clarify Spec 13 hardware-blocked evidence",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
-      "detail": "Day-1 Spec 13 · ready for review"
+      "number": 324,
+      "title": "Start Spec 39 timeline state-event foundation",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
+      "detail": "Day-1 Spec 39 · ready for review"
     },
     {
       "type": "pull-request",
@@ -37,6 +23,20 @@
       "title": "Start Spec 36 profile data foundation",
       "url": "https://github.com/CloudHub-Social/Charm/pull/323",
       "detail": "Day-1 Spec 36 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 326,
+      "title": "Make Spec 55 quick switcher decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/326",
+      "detail": "Day-1 Spec 55 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 327,
+      "title": "Clarify Spec 13 hardware-blocked evidence",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
+      "detail": "Day-1 Spec 13 · ready for review"
     },
     {
       "type": "issue",
@@ -138,8 +138,8 @@
       ],
       "counts": {
         "shipped": 11,
-        "follow-up": 2,
-        "in-progress": 6,
+        "follow-up": 3,
+        "in-progress": 5,
         "planned": 17
       }
     },
@@ -160,13 +160,14 @@
         "day-2-10",
         "day-2-11",
         "day-2-12",
-        "day-2-13"
+        "day-2-13",
+        "day-2-14"
       ],
       "counts": {
         "shipped": 2,
         "follow-up": 0,
         "in-progress": 0,
-        "planned": 11
+        "planned": 12
       }
     }
   ],
@@ -423,7 +424,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T00:01:08Z"
+          "updatedAt": "2026-07-31T17:37:18Z"
         },
         {
           "number": 230,
@@ -900,7 +901,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T17:33:13Z"
+          "updatedAt": "2026-07-31T17:37:18Z"
         }
       ],
       "issues": [
@@ -1100,7 +1101,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/323",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T20:50:42Z"
+          "updatedAt": "2026-07-31T17:40:28Z"
         }
       ],
       "issues": []
@@ -1172,7 +1173,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/324",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T20:49:39Z"
+          "updatedAt": "2026-07-31T17:40:39Z"
         }
       ],
       "issues": []
@@ -1275,15 +1276,15 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",
           "url": "https://github.com/CloudHub-Social/Charm/pull/322",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:35:55Z"
+          "updatedAt": "2026-07-31T17:40:35Z"
         }
       ],
       "issues": []
@@ -1442,7 +1443,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/326",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-30T20:49:05Z"
+          "updatedAt": "2026-07-31T17:37:19Z"
         }
       ],
       "issues": []
@@ -1706,6 +1707,16 @@
       "number": 13,
       "title": "Scheduled and delayed send",
       "route": "/specs/day-2/spec-13--scheduled-and-delayed-send/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-14",
+      "tier": "day-2",
+      "number": 14,
+      "title": "Guest room previews",
+      "route": "/specs/day-2/spec-14--guest-room-previews/",
       "status": "planned",
       "pullRequests": [],
       "issues": []
