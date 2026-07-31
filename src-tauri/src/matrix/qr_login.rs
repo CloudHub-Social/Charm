@@ -77,11 +77,15 @@ pub enum QrLoginProgressEvent {
 /// `_impl(client: &Client, ...)` signature that doesn't apply here.
 #[tauri::command]
 pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<(), String> {
+    super::auth::cancel_pending_registration_for_superseding_auth(
+        &app,
+        &app.state::<MatrixState>(),
+    )
+    .await;
     // Guards against a double-start (e.g. a double click) leaving two login
     // tasks running concurrently, one of which would hold a stale
     // pending_qr_check_code no longer reachable from the frontend.
     cancel_qr_login(app.clone(), app.state::<MatrixState>()).await?;
-
     // The account isn't known until the OAuth device-code dance completes —
     // open a temp store now and relocate it once the MXID is known.
     let temp_key = persistence::temp_store_key();

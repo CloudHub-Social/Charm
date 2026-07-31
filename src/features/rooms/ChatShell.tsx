@@ -3,6 +3,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
+import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
@@ -206,6 +207,7 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -217,6 +219,14 @@ export function ChatShell({
   const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
+  const openProfile = (userId: string, label: string, source: "mention" | "message-sender") => {
+    Sentry.addBreadcrumb({
+      category: "ui.profile",
+      message: "User profile opened",
+      data: { source },
+    });
+    setPillProfile({ userId, label });
+  };
   const [fileDragActive, setFileDragActive] = useState(false);
   // A file picked/dropped/pasted while `media_send_polish` is on is staged
   // here (rather than uploaded immediately) so the user gets a chance to add
@@ -228,6 +238,9 @@ export function ChatShell({
   } | null>(null);
   const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
   const roomId = room?.room_id ?? "";
+  useEffect(() => {
+    setPillProfile(null);
+  }, [roomId]);
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
     pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;
@@ -663,7 +676,12 @@ export function ChatShell({
                   newMessageKeys={newMessageKeys}
                   controller={messageActionController}
                   onJumpToMessage={handleJumpToMessage}
-                  onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
+                  onSenderClick={
+                    userProfileCardsEnabled
+                      ? (userId, label) => openProfile(userId, label, "message-sender")
+                      : undefined
+                  }
+                  onUserPillClick={(userId, label) => openProfile(userId, label, "mention")}
                   onRoomPillClick={onNavigateToRoom}
                 />
               );
@@ -944,7 +962,14 @@ export function ChatShell({
           )}
         </button>
       )}
-      <MessagePillProfileDialog profile={pillProfile} onClose={() => setPillProfile(null)} />
+      <MessagePillProfileDialog
+        profile={pillProfile}
+        accountId={currentUserId}
+        roomId={roomId}
+        detailed={userProfileCardsEnabled}
+        onNavigateToRoom={onNavigateToRoom}
+        onClose={() => setPillProfile(null)}
+      />
     </div>
   );
 }

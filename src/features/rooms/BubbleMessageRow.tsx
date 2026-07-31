@@ -43,6 +43,7 @@ export function BubbleMessageRow({
   onResend,
   onDiscard,
   onJumpToMessage,
+  onSenderClick,
   onUserPillClick,
   onRoomPillClick,
   isPending,
@@ -74,27 +75,67 @@ export function BubbleMessageRow({
     >
       {!own &&
         (showAvatar ? (
-          <Avatar size="sm">
-            <AvatarImage
-              src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
-              alt=""
-            />
-            <AvatarFallback
-              style={{ background: avatarColor(message.sender) }}
-              className="font-bold text-white"
+          onSenderClick ? (
+            <button
+              type="button"
+              className="-m-2 flex min-h-11 min-w-11 items-center justify-center rounded-full p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`Open profile for ${message.sender_display_name ?? message.sender}`}
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onClick={() =>
+                onSenderClick(message.sender, message.sender_display_name ?? message.sender)
+              }
             >
-              {initials(message.sender, message.sender_display_name)}
-            </AvatarFallback>
-          </Avatar>
+              <Avatar size="sm">
+                <AvatarImage
+                  src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
+                  alt=""
+                />
+                <AvatarFallback
+                  style={{ background: avatarColor(message.sender) }}
+                  className="font-bold text-white"
+                >
+                  {initials(message.sender, message.sender_display_name)}
+                </AvatarFallback>
+              </Avatar>
+            </button>
+          ) : (
+            <Avatar size="sm">
+              <AvatarImage
+                src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
+                alt=""
+              />
+              <AvatarFallback
+                style={{ background: avatarColor(message.sender) }}
+                className="font-bold text-white"
+              >
+                {initials(message.sender, message.sender_display_name)}
+              </AvatarFallback>
+            </Avatar>
+          )
         ) : (
           <div className="w-6 shrink-0" />
         ))}
       <div className={cn("flex min-w-0 flex-col gap-0.5", own && "items-end")}>
-        {showAvatar && (
-          <span className="text-sm font-semibold text-secondary-foreground">
-            {message.sender_display_name ?? message.sender}
-          </span>
-        )}
+        {showAvatar &&
+          (onSenderClick ? (
+            <button
+              type="button"
+              className="w-fit text-sm font-semibold text-secondary-foreground hover:underline"
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onTouchCancel={(event) => event.stopPropagation()}
+              onClick={() =>
+                onSenderClick(message.sender, message.sender_display_name ?? message.sender)
+              }
+            >
+              {message.sender_display_name ?? message.sender}
+            </button>
+          ) : (
+            <span className="text-sm font-semibold text-secondary-foreground">
+              {message.sender_display_name ?? message.sender}
+            </span>
+          ))}
         {message.in_reply_to && !message.redacted && (
           <ReplyPreview
             reply={message.in_reply_to}

@@ -6,13 +6,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  beginRegistration,
+  cancelRegistration,
   cancelSsoLogin,
   completeSsoLogin,
+  continueRegistration,
   login,
   register,
   startSsoLogin,
   type LoginResponse,
+  type RegistrationAuthResponse,
+  type RegistrationStep,
 } from "@/lib/matrix";
+import { useFlag } from "@/featureFlags";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -22,6 +28,19 @@ import { isWebBuild } from "@/lib/platform";
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
 const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
+const TERMINAL_REGISTRATION_ERRORS = [
+  "registration ended:",
+  "registration attempt expired",
+  "registration attempt is no longer current",
+  "no registration is in progress",
+  "registration cancelled",
+  "registration and recovery is not enabled",
+];
+
+function isTerminalRegistrationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) => normalized.includes(terminalError));
+}
 
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
@@ -45,6 +64,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [registrationStep, setRegistrationStep] = useState<
+    Extract<RegistrationStep, { state: "challenge" }> | undefined
+  >();
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
@@ -56,6 +78,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
+  const registrationUiaEnabled = useFlag("registration_and_recovery") && !isWebBuild();
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -64,6 +87,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // against completing a callback that doesn't belong to an SSO attempt this
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
+  const registrationAttemptRef = useRef<string | null>(null);
+
+  useEffect(
+    () => () => {
+      const attemptId = registrationAttemptRef.current;
+      registrationAttemptRef.current = null;
+      if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (isWebBuild()) return undefined;
@@ -115,15 +148,95 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setPending(true);
     setError(null);
     try {
-      const response =
-        mode === "sign-in"
-          ? await login({ homeserver_url: homeserverUrl, username, password })
-          : await register({ homeserver_url: homeserverUrl, username, password });
-      onSignedIn(response);
+      if (mode === "sign-in") {
+        onSignedIn(await login({ homeserver_url: homeserverUrl, username, password }));
+      } else if (registrationUiaEnabled) {
+        await handleRegistrationStep(
+          await beginRegistration({ homeserver_url: homeserverUrl, username, password }),
+        );
+      } else {
+        onSignedIn(await register({ homeserver_url: homeserverUrl, username, password }));
+      }
     } catch (err) {
       setError(String(err));
     } finally {
       setPending(false);
+    }
+  }
+
+  async function handleRegistrationStep(initialStep: RegistrationStep) {
+    let step = initialStep;
+    try {
+      for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+        registrationAttemptRef.current = step.attempt_id;
+        if (step.next_stage !== "m.login.dummy") break;
+        if (automaticStages >= 8) {
+          throw new Error("Homeserver repeated an automatic registration stage; start again.");
+        }
+        // UIA stages are ordered and stateful, so each automatic dummy response
+        // must use the challenge returned by the previous request.
+        // oxlint-disable-next-line no-await-in-loop
+        step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
+      }
+    } catch (registrationError) {
+      const message = String(registrationError);
+      if (!isTerminalRegistrationError(message) && step.state === "challenge") {
+        // The backend deliberately preserves retryable UIA failures (for
+        // example a temporary rate limit). Keep the opaque attempt and expose
+        // the automatic stage so the user can retry it without starting over.
+        setRegistrationStep(step);
+        throw registrationError;
+      }
+      const attemptId = registrationAttemptRef.current;
+      registrationAttemptRef.current = null;
+      setRegistrationStep(undefined);
+      if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
+      throw registrationError;
+    }
+    if (step.state === "complete") {
+      registrationAttemptRef.current = null;
+      setRegistrationStep(undefined);
+      setPassword("");
+      onSignedIn(step.session);
+      return;
+    }
+    setRegistrationStep(step);
+    setPassword("");
+  }
+
+  async function handleRegistrationContinue(response: RegistrationAuthResponse) {
+    const attemptId = registrationAttemptRef.current;
+    if (!attemptId) return;
+    setPending(true);
+    setError(null);
+    try {
+      await handleRegistrationStep(await continueRegistration(attemptId, response));
+    } catch (err) {
+      const message = String(err);
+      if (isTerminalRegistrationError(message)) {
+        registrationAttemptRef.current = null;
+        setRegistrationStep(undefined);
+      }
+      setError(message.replace("registration ended:", "").trim());
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleCancelRegistration() {
+    const attemptId = registrationAttemptRef.current;
+    registrationAttemptRef.current = null;
+    if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
+    setRegistrationStep(undefined);
+    setError(null);
+  }
+
+  async function handleOpenRegistrationUrl(url: string) {
+    setError(null);
+    try {
+      await openExternalUrl(url);
+    } catch (err) {
+      setError(String(err));
     }
   }
 
@@ -172,122 +285,238 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           <Tabs
             value={mode}
             onValueChange={(value) => {
-              setMode(value as Mode);
-              setError(null);
-              if (ssoPending) handleCancelSso();
+              void (async () => {
+                if (registrationStep) await handleCancelRegistration();
+                setMode(value as Mode);
+                setError(null);
+                if (ssoPending) handleCancelSso();
+              })();
             }}
           >
             <TabsList className="w-full">
-              <TabsTrigger value="sign-in">Sign in</TabsTrigger>
-              <TabsTrigger value="register">Create account</TabsTrigger>
+              <TabsTrigger value="sign-in" disabled={pending || ssoPending}>
+                Sign in
+              </TabsTrigger>
+              <TabsTrigger value="register" disabled={pending || ssoPending}>
+                Create account
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value={mode}>
-              <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="homeserver-url">Homeserver</Label>
-                  <Input
-                    id="homeserver-url"
-                    value={homeserverUrl}
-                    onChange={(e) => setHomeserverUrl(e.currentTarget.value)}
-                    placeholder="matrix.org"
-                    disabled={pending || ssoPending}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {discovery.state === "resolving" && "Looking up server…"}
-                    {discovery.state === "resolved" && `Resolved to ${discovery.homeserverUrl}`}
-                    {discovery.state === "failed" && "Could not find a homeserver at that address"}
-                    {discovery.state === "idle" && "Server name (matrix.org) or full URL"}
-                  </p>
-                </div>
+              {mode === "register" && registrationStep ? (
+                <div className="flex flex-col gap-5" aria-live="polite">
+                  <div className="flex flex-col gap-1">
+                    <h2 className="text-sm font-semibold">Finish creating your account</h2>
+                    <p className="text-xs text-muted-foreground">
+                      {registrationStageDescription(registrationStep.next_stage)}
+                    </p>
+                  </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="username">Username</Label>
-                  <Input
-                    id="username"
-                    value={username}
-                    onChange={(e) => setUsername(e.currentTarget.value)}
-                    placeholder="Username"
-                    aria-invalid={Boolean(error)}
-                    disabled={pending || ssoPending}
-                  />
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.currentTarget.value)}
-                    placeholder="Password"
-                    aria-invalid={Boolean(error)}
-                    disabled={pending || ssoPending}
-                  />
-                  {error && <p className="text-xs text-destructive">{error}</p>}
-                </div>
-
-                <Button type="submit" disabled={pending || ssoPending} className="w-full">
-                  {pending && <Loader2 className="animate-spin" />}
-                  {pending
-                    ? mode === "sign-in"
-                      ? "Signing in…"
-                      : "Creating account…"
-                    : mode === "sign-in"
-                      ? "Sign in"
-                      : "Create account"}
-                </Button>
-
-                {mode === "sign-in" && showNativeSignInOptions && (
-                  <>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <div className="h-px flex-1 bg-border" />
-                      or
-                      <div className="h-px flex-1 bg-border" />
-                    </div>
-                    {ssoPending ? (
-                      <div className="flex flex-col gap-2">
-                        <p className="text-center text-xs text-muted-foreground">
-                          Waiting for you to finish in the browser…
+                  {registrationStep.next_stage === "m.login.terms" && (
+                    <div className="flex flex-col gap-3">
+                      {registrationStep.policies.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          {registrationStep.policies.map((policy) => (
+                            <Button
+                              key={`${policy.id}:${policy.language}`}
+                              type="button"
+                              variant="outline"
+                              onClick={() => void handleOpenRegistrationUrl(policy.url)}
+                            >
+                              Read {policy.name}
+                            </Button>
+                          ))}
+                        </div>
+                      )}
+                      <Button
+                        type="button"
+                        disabled={pending || registrationStep.policies.length === 0}
+                        onClick={() => void handleRegistrationContinue({ kind: "accept_terms" })}
+                      >
+                        {pending && <Loader2 className="animate-spin" />}
+                        Accept and continue
+                      </Button>
+                      {registrationStep.policies.length === 0 && (
+                        <p role="alert" className="text-xs text-destructive">
+                          This homeserver did not provide terms that Charm can display. Cancel and
+                          use the homeserver's registration page.
                         </p>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={handleCancelSso}
-                          className="w-full"
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    ) : (
+                      )}
+                    </div>
+                  )}
+
+                  {registrationStep.next_stage === "m.login.dummy" && (
+                    <Button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => void handleRegistrationContinue({ kind: "complete_dummy" })}
+                    >
+                      {pending && <Loader2 className="animate-spin" />}
+                      Retry account creation
+                    </Button>
+                  )}
+
+                  {registrationStep.next_stage !== "m.login.terms" &&
+                    registrationStep.next_stage !== "m.login.dummy" && (
                       <div className="flex flex-col gap-2">
                         <Button
                           type="button"
                           variant="outline"
                           disabled={pending}
-                          onClick={handleSsoLogin}
-                          className="w-full"
+                          onClick={() =>
+                            void handleOpenRegistrationUrl(registrationStep.fallback_url)
+                          }
                         >
-                          Continue with SSO
+                          Open verification
                         </Button>
                         <Button
                           type="button"
-                          variant="outline"
                           disabled={pending}
-                          onClick={() => setShowQrLogin(true)}
-                          className="w-full"
+                          onClick={() =>
+                            void handleRegistrationContinue({
+                              kind: "acknowledge_fallback",
+                              stage: registrationStep.next_stage,
+                            })
+                          }
                         >
-                          Sign in with QR code
+                          {pending && <Loader2 className="animate-spin" />}
+                          I have completed verification
                         </Button>
                       </div>
                     )}
-                  </>
-                )}
-              </form>
+
+                  {error && <p className="text-xs text-destructive">{error}</p>}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void handleCancelRegistration()}
+                  >
+                    Cancel account creation
+                  </Button>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="homeserver-url">Homeserver</Label>
+                    <Input
+                      id="homeserver-url"
+                      value={homeserverUrl}
+                      onChange={(e) => setHomeserverUrl(e.currentTarget.value)}
+                      placeholder="matrix.org"
+                      disabled={pending || ssoPending}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {discovery.state === "resolving" && "Looking up server…"}
+                      {discovery.state === "resolved" && `Resolved to ${discovery.homeserverUrl}`}
+                      {discovery.state === "failed" &&
+                        "Could not find a homeserver at that address"}
+                      {discovery.state === "idle" && "Server name (matrix.org) or full URL"}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="username">Username</Label>
+                    <Input
+                      id="username"
+                      value={username}
+                      onChange={(e) => setUsername(e.currentTarget.value)}
+                      placeholder="Username"
+                      aria-invalid={Boolean(error)}
+                      disabled={pending || ssoPending}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="password">Password</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.currentTarget.value)}
+                      placeholder="Password"
+                      aria-invalid={Boolean(error)}
+                      disabled={pending || ssoPending}
+                    />
+                    {error && <p className="text-xs text-destructive">{error}</p>}
+                  </div>
+
+                  <Button type="submit" disabled={pending || ssoPending} className="w-full">
+                    {pending && <Loader2 className="animate-spin" />}
+                    {pending
+                      ? mode === "sign-in"
+                        ? "Signing in…"
+                        : "Creating account…"
+                      : mode === "sign-in"
+                        ? "Sign in"
+                        : "Create account"}
+                  </Button>
+
+                  {mode === "sign-in" && showNativeSignInOptions && (
+                    <>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        <div className="h-px flex-1 bg-border" />
+                        or
+                        <div className="h-px flex-1 bg-border" />
+                      </div>
+                      {ssoPending ? (
+                        <div className="flex flex-col gap-2">
+                          <p className="text-center text-xs text-muted-foreground">
+                            Waiting for you to finish in the browser…
+                          </p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleCancelSso}
+                            className="w-full"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={handleSsoLogin}
+                            className="w-full"
+                          >
+                            Continue with SSO
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() => setShowQrLogin(true)}
+                            className="w-full"
+                          >
+                            Sign in with QR code
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </form>
+              )}
             </TabsContent>
           </Tabs>
         )}
       </div>
     </main>
   );
+}
+
+function registrationStageDescription(stage: string): string {
+  switch (stage) {
+    case "m.login.terms":
+      return "Review and accept the homeserver policies to continue.";
+    case "m.login.dummy":
+      return "Your homeserver is ready to finish registration.";
+    case "m.login.recaptcha":
+      return "Complete the homeserver CAPTCHA in your browser, then return to Charm.";
+    case "m.login.email.identity":
+      return "Verify your email through the homeserver, then return to Charm.";
+    default:
+      return "Complete this homeserver verification step in your browser, then return to Charm.";
+  }
 }

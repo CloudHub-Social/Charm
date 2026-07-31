@@ -100,7 +100,20 @@ export function installMockTauri(seed: {
    * `true` to drive crash-recovery.spec.ts's prompt flow.
    */
   previousSessionCrashed?: boolean;
+  /** Return no restored Matrix session so the real login surface mounts. */
+  restoreSession?: boolean;
+  /** Enable the deterministic terms -> dummy registration UIA fixture. */
+  registrationUia?: boolean;
 }) {
+  if (seed.registrationUia) {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { registration_and_recovery: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  }
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
   // reads them unconditionally (e.g. `parent_space_ids.includes(...)`), so a
@@ -322,7 +335,50 @@ export function installMockTauri(seed: {
   // no second client in this fake to produce it organically.
 
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-    try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
+    try_restore_session: () =>
+      seed.restoreSession === false ? null : { user_id: seed.userId, device_id: seed.deviceId },
+    begin_registration: () => {
+      if (!seed.registrationUia) return undefined;
+      return {
+        state: "challenge",
+        attempt_id: "e2e-registration-attempt",
+        completed: [],
+        flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+        next_stage: "m.login.terms",
+        fallback_url:
+          "https://matrix.example/_matrix/client/v3/auth/m.login.terms/fallback/web?session=e2e",
+        policies: [
+          {
+            id: "privacy",
+            version: "1",
+            language: "en",
+            name: "Privacy policy",
+            url: "https://matrix.example/privacy",
+          },
+        ],
+      };
+    },
+    continue_registration: (args) => {
+      if (!seed.registrationUia) return undefined;
+      const response = args.response as { kind?: string };
+      if (response.kind === "accept_terms") {
+        return {
+          state: "challenge",
+          attempt_id: "e2e-registration-attempt",
+          completed: ["m.login.terms"],
+          flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+          next_stage: "m.login.dummy",
+          fallback_url:
+            "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web?session=e2e",
+          policies: [],
+        };
+      }
+      if (response.kind === "complete_dummy") {
+        return { state: "complete", session: { user_id: seed.userId, device_id: seed.deviceId } };
+      }
+      throw new Error("Unexpected registration response");
+    },
+    cancel_registration: () => null,
     // Shallow-copied for the same reason `pushRoomListUpdate` below is: the
     // real backend never hands out a live, mutable reference the frontend
     // could still see updates to via a later in-place mutation elsewhere in
@@ -371,6 +427,34 @@ export function installMockTauri(seed: {
       avatar_path: null,
       presence: "online",
     }),
+    get_user_profile: (args) => {
+      const userId = args.userId as string;
+      const member = seed.members?.find((candidate) => candidate.user_id === userId);
+      return {
+        user_id: userId,
+        display_name: member?.display_name ?? null,
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: member?.display_name ?? null,
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: {
+          user_id: userId,
+          presence: "online",
+          status_msg: "Available",
+          last_active_ago_ms: null,
+        },
+      };
+    },
+    get_mutual_rooms: () =>
+      allRooms.map((candidate) => ({
+        room_id: candidate.room_id,
+        name: candidate.name ?? null,
+        avatar_url: candidate.avatar_url ?? null,
+        avatar_path: candidate.avatar_path ?? null,
+        is_direct: Boolean(candidate.is_direct),
+        is_space: Boolean(candidate.is_space),
+      })),
     get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
     set_account_data: (args) => {
       accountData.set(args.eventType as string, args.content);

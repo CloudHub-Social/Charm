@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LoginScreen } from "./LoginScreen";
 import type { LoginResponse } from "@/lib/matrix";
@@ -15,10 +15,14 @@ const openUrl = vi.fn().mockResolvedValue(undefined);
 
 const login = vi.fn();
 const register = vi.fn();
+const beginRegistration = vi.fn();
+const continueRegistration = vi.fn();
+const cancelRegistration = vi.fn().mockResolvedValue(undefined);
 const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso");
 const completeSsoLogin = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
 const discoverHomeserver = vi.fn().mockReturnValue(new Promise(() => {}));
+const featureFlags = vi.hoisted(() => ({ registrationEnabled: false, initialized: true }));
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: () => getCurrent(),
@@ -32,10 +36,18 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("@/lib/matrix", () => ({
   login: (...args: unknown[]) => login(...args),
   register: (...args: unknown[]) => register(...args),
+  beginRegistration: (...args: unknown[]) => beginRegistration(...args),
+  continueRegistration: (...args: unknown[]) => continueRegistration(...args),
+  cancelRegistration: (...args: unknown[]) => cancelRegistration(...args),
   startSsoLogin: (...args: unknown[]) => startSsoLogin(...args),
   completeSsoLogin: (...args: unknown[]) => completeSsoLogin(...args),
   cancelSsoLogin: (...args: unknown[]) => cancelSsoLogin(...args),
   discoverHomeserver: (...args: unknown[]) => discoverHomeserver(...args),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) => key === "registration_and_recovery" && featureFlags.registrationEnabled,
+  useFeatureFlagsInitialized: () => featureFlags.initialized,
 }));
 
 vi.mock("./QrLoginScreen", () => ({
@@ -44,6 +56,14 @@ vi.mock("./QrLoginScreen", () => ({
 
 function fakeSession(): LoginResponse {
   return { user_id: "@me:localhost", device_id: "DEVICE1" };
+}
+
+function fillRegistrationForm() {
+  const registrationTab = screen.getByRole("tab", { name: "Create account" });
+  registrationTab.focus();
+  fireEvent.click(registrationTab);
+  fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse" } });
 }
 
 describe("LoginScreen SSO callback handling", () => {
@@ -56,6 +76,11 @@ describe("LoginScreen SSO callback handling", () => {
     openUrl.mockClear().mockResolvedValue(undefined);
     login.mockClear();
     register.mockClear();
+    beginRegistration.mockReset();
+    continueRegistration.mockReset();
+    cancelRegistration.mockReset().mockResolvedValue(undefined);
+    featureFlags.registrationEnabled = false;
+    featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
     cancelSsoLogin.mockClear().mockResolvedValue(undefined);
@@ -170,6 +195,10 @@ describe("LoginScreen default homeserver URL", () => {
     openUrl.mockClear().mockResolvedValue(undefined);
     login.mockClear();
     register.mockClear();
+    beginRegistration.mockReset();
+    continueRegistration.mockReset();
+    cancelRegistration.mockReset().mockResolvedValue(undefined);
+    featureFlags.registrationEnabled = false;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockClear();
     cancelSsoLogin.mockClear().mockResolvedValue(undefined);
@@ -195,5 +224,199 @@ describe("LoginScreen default homeserver URL", () => {
     render(<LoginScreen onSignedIn={vi.fn()} />);
 
     expect(screen.getByLabelText("Homeserver")).toHaveValue("https://cloudhub.social");
+  });
+});
+
+describe("LoginScreen registration UIA", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    getCurrentUrls = null;
+    openUrlCallback = undefined;
+    getCurrent.mockClear();
+    onOpenUrl.mockClear();
+    openUrl.mockReset().mockResolvedValue(undefined);
+    login.mockReset();
+    register.mockReset();
+    beginRegistration.mockReset();
+    continueRegistration.mockReset();
+    cancelRegistration.mockReset().mockResolvedValue(undefined);
+    startSsoLogin.mockReset().mockResolvedValue("https://homeserver.example/sso");
+    completeSsoLogin.mockReset();
+    cancelSsoLogin.mockReset().mockResolvedValue(undefined);
+    featureFlags.registrationEnabled = true;
+  });
+
+  it("continues a terms challenge and signs in after registration completes", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-1",
+      completed: [],
+      flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+      next_stage: "m.login.terms",
+      fallback_url: "https://matrix.example/_matrix/client/v3/auth/m.login.terms/fallback/web",
+      policies: [
+        {
+          id: "privacy",
+          version: "1",
+          language: "en",
+          name: "Privacy policy",
+          url: "https://matrix.example/privacy",
+        },
+      ],
+    });
+    continueRegistration
+      .mockResolvedValueOnce({
+        state: "challenge",
+        attempt_id: "attempt-1",
+        completed: ["m.login.terms"],
+        flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+        next_stage: "m.login.dummy",
+        fallback_url: "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web",
+        policies: [],
+      })
+      .mockResolvedValueOnce({ state: "complete", session: fakeSession() });
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(beginRegistration).toHaveBeenCalledWith({
+      homeserver_url: "https://cloudhub.social",
+      username: "alice",
+      password: "correct horse",
+    });
+    expect(
+      screen.getByText("Review and accept the homeserver policies to continue."),
+    ).toBeVisible();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Read Privacy policy" }).click();
+    });
+    expect(openUrl).toHaveBeenCalledWith("https://matrix.example/privacy");
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Accept and continue" }).click();
+    });
+    expect(continueRegistration).toHaveBeenCalledWith("attempt-1", { kind: "accept_terms" });
+    expect(continueRegistration).toHaveBeenCalledWith("attempt-1", { kind: "complete_dummy" });
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("keeps a retryable automatic stage available without cancelling the attempt", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-dummy",
+      completed: [],
+      flows: [{ stages: ["m.login.dummy"] }],
+      next_stage: "m.login.dummy",
+      fallback_url: "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web",
+      policies: [],
+    });
+    continueRegistration
+      .mockRejectedValueOnce(new Error("Too many registration attempts. Wait and try again."))
+      .mockResolvedValueOnce({ state: "complete", session: fakeSession() });
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(cancelRegistration).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Retry account creation" })).toBeVisible();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry account creation" }).click();
+    });
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("opens the homeserver fallback and cancels an unfinished challenge", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-2",
+      completed: [],
+      flows: [{ stages: ["m.login.recaptcha"] }],
+      next_stage: "m.login.recaptcha",
+      fallback_url:
+        "https://matrix.example/_matrix/client/v3/auth/m.login.recaptcha/fallback/web?session=opaque",
+      policies: [],
+    });
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Open verification" }).click();
+    });
+    expect(openUrl).toHaveBeenCalledWith(
+      "https://matrix.example/_matrix/client/v3/auth/m.login.recaptcha/fallback/web?session=opaque",
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Cancel account creation" }).click();
+    });
+    expect(cancelRegistration).toHaveBeenCalledWith("attempt-2");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
+  it("clears an expired registration challenge instead of leaving stale controls", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-expired",
+      completed: [],
+      flows: [{ stages: ["m.login.terms"] }],
+      next_stage: "m.login.terms",
+      fallback_url: "",
+      policies: [
+        {
+          id: "privacy",
+          name: "Privacy policy",
+          language: "en",
+          url: "https://matrix.example/privacy",
+        },
+      ],
+    });
+    continueRegistration.mockRejectedValue(new Error("registration attempt is no longer current"));
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Accept and continue" }).click();
+    });
+
+    expect(screen.queryByRole("button", { name: "Accept and continue" })).not.toBeInTheDocument();
+    expect(screen.getByText(/registration attempt is no longer current/i)).toBeVisible();
+  });
+
+  it("does not accept a terms stage with no displayable policies", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-no-policies",
+      completed: [],
+      flows: [{ stages: ["m.login.terms"] }],
+      next_stage: "m.login.terms",
+      fallback_url: "",
+      policies: [],
+    });
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(screen.getByRole("button", { name: "Accept and continue" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/did not provide terms/i);
+    expect(continueRegistration).not.toHaveBeenCalled();
   });
 });
