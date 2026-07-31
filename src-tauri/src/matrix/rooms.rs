@@ -400,15 +400,19 @@ async fn canonical_space_parent_ids(
 ) -> std::collections::HashMap<String, Vec<String>> {
     use matrix_sdk::ruma::events::space::parent::SpaceParentEventContent;
 
+    const MAX_PARENT_STATE_REQUESTS: usize = 8;
+    let mut parent_stream = futures_util::stream::iter(client.joined_space_rooms())
+        .map(|room| async move {
+            let room_id = room.room_id().to_string();
+            let parent_events = room
+                .get_state_events_static::<SpaceParentEventContent>()
+                .await
+                .ok()?;
+            Some((room_id, parent_events))
+        })
+        .buffer_unordered(MAX_PARENT_STATE_REQUESTS);
     let mut canonical = std::collections::HashMap::new();
-    for room in client.joined_space_rooms() {
-        let room_id = room.room_id().to_string();
-        let Ok(parent_events) = room
-            .get_state_events_static::<SpaceParentEventContent>()
-            .await
-        else {
-            continue;
-        };
+    while let Some(Some((room_id, parent_events))) = parent_stream.next().await {
         for raw_event in parent_events {
             let Ok(event) = raw_event.deserialize() else {
                 continue;
