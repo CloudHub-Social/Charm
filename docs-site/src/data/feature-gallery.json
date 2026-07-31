@@ -3,7 +3,8 @@
   "excludedFlags": [
     "canary",
     "message_pinning",
-    "presence_privacy_controls"
+    "presence_privacy_controls",
+    "user_profile_cards"
   ],
   "features": [
     {
@@ -230,6 +231,26 @@
         "name": "space-hierarchy-foundation",
         "alt": "Charm space rail and room list showing a Team Space hierarchy",
         "caption": "The hierarchy fixture documents nested spaces and unread badges."
+      }
+    },
+    {
+      "slug": "space-hierarchy-reorganization",
+      "title": "Space hierarchy reorganization",
+      "summary": "Create spaces beneath an existing parent and reorganize the hierarchy while preserving valid Matrix parent relationships.",
+      "status": "preview",
+      "spec": "Spec 33",
+      "specLinks": [
+        {
+          "label": "Spec 33",
+          "href": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/"
+        }
+      ],
+      "flag": "space_hierarchy_reorganization",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "space-hierarchy-create-subspace",
+        "alt": "Charm space rail showing Research nested beneath the Team space",
+        "caption": "Playwright creates a subspace from the parent space context menu and verifies the nested result."
       }
     },
     {

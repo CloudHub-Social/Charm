@@ -567,10 +567,18 @@ export function installMockTauri(seed: {
         room_id: roomId,
         name: args.name,
         is_space: true,
+        parent_space_ids: typeof args.parentSpaceId === "string" ? [args.parentSpaceId] : [],
       });
       messagesByRoom.set(roomId, []);
       pushRoomListUpdate();
       return roomId;
+    },
+    set_space_parent: (args) => {
+      const target = findRoom(args.spaceId as string);
+      if (!target) throw new Error("space not found");
+      target.parent_space_ids = typeof args.parentSpaceId === "string" ? [args.parentSpaceId] : [];
+      pushRoomListUpdate();
+      return undefined;
     },
     join_room: (args) => {
       const target = args.roomIdOrAlias as string;

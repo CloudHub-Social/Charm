@@ -34,6 +34,42 @@ test("creates a new space and switches into it", async ({ page }) => {
   await captureSnapshot(page, "space-create-join-created");
 });
 
+test("creates a new space beneath the selected parent", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { space_hierarchy_reorganization: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: {
+      room_id: HOME_ROOM_ID,
+      name: "Team",
+      unread_count: 0,
+      is_space: true,
+    },
+  });
+  await page.goto("/");
+
+  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  await teamButton.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Create subspace" }).click();
+
+  await expect(page.getByRole("heading", { name: "Create or join a space" })).toBeVisible();
+  await page.getByLabel("Name").fill("Research");
+  await page.getByRole("button", { name: "Create space" }).click();
+
+  await expect(page.getByRole("heading", { name: "Research" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Research", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Collapse Team" })).toBeVisible();
+  await captureSnapshot(page, "space-hierarchy-create-subspace");
+});
+
 test("joins a space by address and switches into it", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,

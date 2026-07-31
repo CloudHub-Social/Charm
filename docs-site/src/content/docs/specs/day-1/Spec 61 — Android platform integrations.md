@@ -91,8 +91,8 @@ extremely common chat-app affordances there).
   existing Tauri plugins vs need a custom Kotlin plugin — Share intents,
   notification channels/actions, Conversation shortcuts, and priority-conversation
   marking are unlikely to be webview-reachable and will need custom plugin code
-  (the repo's existing `RustWebChromeClient`/permission-fix work in Spec 13 is the
-  precedent for this kind of native Kotlin touch-point).
+  (Spec 13 is a manifest-only precedent: wry owns its permission callback, so
+  Charm must not add or duplicate application Kotlin for that path).
 - **Manifest audit**: intent filters, notification channel setup, and shortcut
   declarations all live in `AndroidManifest.xml`/native resources — audit what
   exists today (Spec 13's findings already touched this file for permissions;

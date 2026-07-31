@@ -40,6 +40,24 @@ rc_message:
   per_second: 1000
   burst_count: 1000
 
+# Enable the local-only URL-preview integration target used by Spec 29.
+# Keep the recommended private-network blacklist in place and punch one
+# exact exception for the fixed `preview-target` container address. This
+# configuration is never appropriate for a public homeserver.
+url_preview_enabled: true
+url_preview_ip_range_blacklist:
+  - 127.0.0.0/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 100.64.0.0/10
+  - 169.254.0.0/16
+  - ::1/128
+  - fe80::/10
+  - fc00::/7
+url_preview_ip_range_whitelist:
+  - 172.28.0.10/32
+
 oidc_providers:
   - idp_id: dex
     idp_name: "Dex (local dev)"

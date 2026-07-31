@@ -57,6 +57,7 @@ interface SpaceRailProps {
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
   onCreateJoin: () => void;
+  onCreateUnderSpace?: (spaceId: string) => void;
   /** Called after "Add Existing" or "Remove from space" successfully edits a
    * space's children — lets a sibling `RoomList` showing that space's lobby
    * (a separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
@@ -74,9 +75,12 @@ export function SpaceRail({
   onSelectDms,
   onSelectSpace,
   onCreateJoin,
+  onCreateUnderSpace,
   onSpaceChildrenChanged,
 }: SpaceRailProps) {
   const managementEnabled = useFlag("space_rail_management");
+  const hierarchyReorganizationEnabled = useFlag("space_hierarchy_reorganization");
+  const contextMenuEnabled = managementEnabled || hierarchyReorganizationEnabled;
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [prefs, setPrefs] = useSpaceRailPrefsSync(currentUserId);
   const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
@@ -313,7 +317,7 @@ export function SpaceRail({
     );
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
-        {managementEnabled ? (
+        {contextMenuEnabled ? (
           <ContextMenu
             onOpenChange={(open) => {
               if (!open) return;
@@ -327,14 +331,16 @@ export function SpaceRail({
                 <LogIn aria-hidden="true" />
                 Open lobby
               </ContextMenuItem>
-              <ContextMenuItem
-                disabled={!canInvite}
-                onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
-              >
-                <UserPlus aria-hidden="true" />
-                Invite
-              </ContextMenuItem>
-              {topLevel && (
+              {managementEnabled && (
+                <ContextMenuItem
+                  disabled={!canInvite}
+                  onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
+                >
+                  <UserPlus aria-hidden="true" />
+                  Invite
+                </ContextMenuItem>
+              )}
+              {managementEnabled && topLevel && (
                 <>
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => setPinned(space.room_id, !pinned)}>
@@ -361,15 +367,26 @@ export function SpaceRail({
                   )}
                 </>
               )}
-              <ContextMenuSeparator />
-              <ContextMenuItem
-                disabled={!canEditOwnChildren}
-                onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
-              >
-                <FolderPlus aria-hidden="true" />
-                Add existing…
-              </ContextMenuItem>
-              {parentId && (
+              {managementEnabled && <ContextMenuSeparator />}
+              {managementEnabled && (
+                <ContextMenuItem
+                  disabled={!canEditOwnChildren}
+                  onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
+                >
+                  <FolderPlus aria-hidden="true" />
+                  Add existing…
+                </ContextMenuItem>
+              )}
+              {hierarchyReorganizationEnabled && onCreateUnderSpace && (
+                <ContextMenuItem
+                  disabled={!canEditOwnChildren}
+                  onSelect={() => onCreateUnderSpace(space.room_id)}
+                >
+                  <Plus aria-hidden="true" />
+                  Create subspace
+                </ContextMenuItem>
+              )}
+              {managementEnabled && parentId && (
                 <>
                   <ContextMenuItem
                     disabled={!canEditParentChildren}
@@ -404,14 +421,18 @@ export function SpaceRail({
                   </ContextMenuItem>
                 </>
               )}
-              <ContextMenuSeparator />
-              <ContextMenuItem
-                variant="destructive"
-                onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
-              >
-                <LogOut aria-hidden="true" />
-                Leave
-              </ContextMenuItem>
+              {managementEnabled && (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    variant="destructive"
+                    onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
+                  >
+                    <LogOut aria-hidden="true" />
+                    Leave
+                  </ContextMenuItem>
+                </>
+              )}
             </ContextMenuContent>
           </ContextMenu>
         ) : (
