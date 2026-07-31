@@ -672,6 +672,21 @@ describe("LoginScreen password recovery", () => {
     expect(cancelPasswordReset).toHaveBeenCalledWith("late-attempt");
   });
 
+  it("cancels password-reset discovery when the login screen unmounts", async () => {
+    requestPasswordReset.mockReturnValue(new Promise<PasswordResetChallenge>(() => {}));
+    const { unmount } = render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+    unmount();
+
+    expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
+  });
+
   it("cancels a direct-token recovery attempt without exposing its backend session", async () => {
     requestPasswordReset.mockResolvedValue({
       attempt_id: "token-attempt",

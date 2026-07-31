@@ -175,10 +175,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
-      const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
       passwordResetOperationRef.current += 1;
-      if (resetAttemptId) cancelPasswordReset(resetAttemptId).catch(logAndIgnore);
+      // `undefined` also cancels a backend request that is still in discovery
+      // and has not returned its opaque attempt id to this component yet.
+      cancelPasswordReset(undefined).catch(logAndIgnore);
     },
     [],
   );
