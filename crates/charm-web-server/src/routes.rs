@@ -2208,10 +2208,7 @@ mod space_hierarchy_feature_gate_tests {
         .expect_err("the default-off rollout gate must reject hierarchy writes");
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            error.message,
-            "space hierarchy reorganization is disabled"
-        );
+        assert_eq!(error.message, "space hierarchy reorganization is disabled");
     }
 
     #[test]
