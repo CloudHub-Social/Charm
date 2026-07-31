@@ -16,11 +16,13 @@
 - Add feature-gated space rail management: pin/unpin, reorder, and a per-space context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave), synced across devices via account data. ([#290](https://github.com/CloudHub-Social/Charm/pull/290) by @Just-Insane)
 - Add drag-to-nest and un-nest interactions to the space rail, with cycle feedback and hierarchy reconciliation. ([#333](https://github.com/CloudHub-Social/Charm/pull/333) by @Just-Insane)
 - Open spaces in the shared settings shell from the space rail with space-specific controls and labels. ([#334](https://github.com/CloudHub-Social/Charm/pull/334) by @Just-Insane)
+- Manage published child rooms and subspaces from a permission-gated Children tab in space settings. ([#335](https://github.com/CloudHub-Social/Charm/pull/335) by @Just-Insane)
 - Add feature-gated canonical space-parent APIs and a permission-gated Create subspace action for Spec 33. ([#321](https://github.com/CloudHub-Social/Charm/pull/321) by @Just-Insane)
 - Start Spec 39 with a typed timeline-item union that preserves Matrix membership, profile, room state, tombstone, and hidden-state classifications for the upcoming renderer. ([#324](https://github.com/CloudHub-Social/Charm/pull/324) by @Just-Insane)
 - Show collapsible membership and room-state notices in timelines behind a default-off feature flag, with matching Appearance controls. ([#336](https://github.com/CloudHub-Social/Charm/pull/336) by @Just-Insane)
 - Start Spec 36 with user-profile read contracts for desktop and web plus a default-off surface flag, including room-specific identity, best-effort presence, and privacy-minimal mutual-room summaries. ([#323](https://github.com/CloudHub-Social/Charm/pull/323) by @Just-Insane)
 - Add browser-bound companion routes for registration UIA, password recovery, login-flow discovery, and advertised token login. ([#339](https://github.com/CloudHub-Social/Charm/pull/339) by @Just-Insane)
+- Add direct, backend-owned email verification to interactive account registration. ([#337](https://github.com/CloudHub-Social/Charm/pull/337) by @Just-Insane)
 
 ### Fixes
 
