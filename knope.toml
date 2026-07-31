@@ -40,7 +40,7 @@ type = "PrepareRelease"
 
 [[workflows.steps]]
 type = "Command"
-command = "node scripts/sync-android-version-code.mjs"
+command = "node scripts/sync-android-version-code.mjs && git add src-tauri/tauri.conf.json"
 
 [[workflows.steps]]
 type = "Command"
