@@ -27,12 +27,15 @@ and contribution guidelines.
 
 Every night (and on demand via the [Nightly builds](../../actions/workflows/nightly.yml)
 workflow), CI builds macOS/Windows/Linux/Android and publishes them to a
-date-tagged, pre-release [GitHub Release](../../releases) (`nightly-YYYY-MM-DD`,
-overwritten if re-run same day). These are release-profile builds for
-testing — not signed by a trusted publisher, not auto-updating, not for
-production use. iOS is intentionally not published here: Apple requires a
-paid Developer Program membership to install on a real device, so iOS
-nightlies stay a CI-only compile check.
+pre-release [GitHub Release](../../releases). Scheduled builds use the
+date-only tag `nightly-YYYY-MM-DD` and overwrite that release if re-run the
+same day. On-demand validation builds use the commit-qualified tag
+`nightly-YYYY-MM-DD-SHA`, so their binaries and source archives stay aligned;
+re-running the same commit updates that commit's release. These are
+release-profile builds for testing — not signed by a trusted publisher, not
+auto-updating, not for production use. iOS is intentionally not published
+here: Apple requires a paid Developer Program membership to install on a real
+device, so iOS nightlies stay a CI-only compile check.
 
 Because the builds aren't signed by a certificate a trusted authority
 recognizes, each OS's normal "this isn't from a known publisher" gate needs
