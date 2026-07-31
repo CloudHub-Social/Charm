@@ -21,6 +21,9 @@ pub struct AppState {
     /// behave exactly like sub-PR A (in-memory only, dropped on restart).
     /// See `persistence.rs`'s module doc comment.
     pub persistence: Option<Arc<PersistenceStore>>,
+    /// Server-side rollout gate for Spec 33's Matrix write operations.
+    /// Read-only hierarchy browsing remains available independently.
+    pub space_hierarchy_reorganization: bool,
 }
 
 /// Test-only, crate-wide lock for tests that read/write process env vars

@@ -25,6 +25,9 @@ function delay(ms: number): Promise<void> {
 interface CreateJoinSpaceDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When set, newly-created spaces are attached beneath this parent. The
+   * join flow is unchanged and never reparents an existing remote space. */
+  parentSpaceId?: string | null;
   onSpaceCreated: (spaceId: string) => void;
   onSpaceJoined: (spaceId: string) => void;
 }
@@ -39,6 +42,7 @@ interface CreateJoinSpaceDialogProps {
 export function CreateJoinSpaceDialog({
   open,
   onOpenChange,
+  parentSpaceId,
   onSpaceCreated,
   onSpaceJoined,
 }: CreateJoinSpaceDialogProps) {
@@ -88,13 +92,20 @@ export function CreateJoinSpaceDialog({
         topic.trim() || undefined,
         roomAlias.trim() || undefined,
         isPublic,
+        parentSpaceId ?? undefined,
       );
       if (requestIdRef.current !== requestId) return;
       onSpaceCreated(spaceId);
       resetAndClose();
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
-      setError(err instanceof Error ? err.message : "Couldn't create the space.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : "Couldn't create the space.",
+      );
       setPending(false);
     }
   }

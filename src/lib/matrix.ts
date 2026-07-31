@@ -814,12 +814,22 @@ export function createSpace(
   topic?: string,
   roomAliasName?: string,
   isPublic = false,
+  parentSpaceId?: string,
 ): Promise<string> {
   return invoke("create_space", {
     name,
     topic: topic ?? null,
     roomAliasName: roomAliasName ?? null,
     public: isPublic,
+    parentSpaceId: parentSpaceId ?? null,
+  });
+}
+
+/** Makes `parentSpaceId` canonical, or removes the current canonical parent. */
+export function setSpaceParent(spaceId: string, parentSpaceId?: string): Promise<void> {
+  return invoke("set_space_parent", {
+    spaceId,
+    parentSpaceId: parentSpaceId ?? null,
   });
 }
 
