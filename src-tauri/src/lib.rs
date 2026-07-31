@@ -1343,9 +1343,18 @@ pub fn run() {
                 // login that started or finished partway through the sleep
                 // is still read accurately (Codex review on #288, P2).
                 tokio::time::sleep(matrix::persistence::ORPHAN_TEMP_STORE_MIN_AGE).await;
+                // Take the sweep lock before observing protected keys.
+                // Registration publishes its pending store while holding this
+                // same lock, so collecting first could preserve a stale
+                // snapshot and delete the newly-published challenge after the
+                // registration releases the lock.
+                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
                 let matrix_state = sweep_handle.state::<matrix::MatrixState>();
                 let mut protected_temp_keys = std::collections::HashSet::new();
                 if let Some(pending) = matrix_state.pending_sso.lock().await.as_ref() {
+                    protected_temp_keys.insert(pending.store_key.clone());
+                }
+                if let Some(pending) = matrix_state.pending_registration.lock().await.as_ref() {
                     protected_temp_keys.insert(pending.store_key.clone());
                 }
                 if let Some(key) = matrix_state
@@ -1382,7 +1391,6 @@ pub fn run() {
                         .iter()
                         .cloned(),
                 );
-                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
                 if let Err(e) = matrix::persistence::sweep_orphan_temp_stores_excluding(
                     &sweep_handle,
                     &protected_temp_keys,
@@ -1435,6 +1443,9 @@ pub fn run() {
             forward_sentry_envelope,
             matrix::auth::login,
             matrix::auth::register,
+            matrix::auth::begin_registration,
+            matrix::auth::continue_registration,
+            matrix::auth::cancel_registration,
             matrix::auth::discover_homeserver,
             matrix::auth::start_sso_login,
             matrix::auth::complete_sso_login,
@@ -1581,6 +1592,8 @@ pub fn run() {
             // behind for the next launch to notice.
             #[cfg(desktop)]
             if let tauri::RunEvent::Exit = event {
+                let matrix_state = app_handle.state::<matrix::MatrixState>();
+                matrix::auth::cancel_pending_registration_on_exit(app_handle, &matrix_state);
                 if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
                     mark_clean_exit(&app_data_dir);
                 }

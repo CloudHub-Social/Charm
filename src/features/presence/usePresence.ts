@@ -30,13 +30,16 @@ export function usePresenceListener() {
  * hasn't changed presence since we started listening). Best-effort: a failed
  * or `null` lookup just leaves presence unknown, never surfaced as an error.
  */
-export function usePresence(userId: string | null): PresenceUpdate | null {
+export function usePresence(
+  userId: string | null,
+  { fetchInitial = true }: { fetchInitial?: boolean } = {},
+): PresenceUpdate | null {
   const store = useStore();
   const presence = useAtomValue(presenceAtomFamily(userId ?? ""));
   const setPresenceAtom = useSetAtom(presenceAtomFamily(userId ?? ""));
 
   useEffect(() => {
-    if (!userId || presence) return undefined;
+    if (!userId || !fetchInitial || presence) return undefined;
     let cancelled = false;
     // A `presence:update` push (via `usePresenceListener`) can set this
     // user's atom directly while this one-shot fetch is still in flight —
@@ -62,7 +65,7 @@ export function usePresence(userId: string | null): PresenceUpdate | null {
       unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `store`/`setPresenceAtom` are stable refs from jotai's useStore/useSetAtom; `presence` is deliberately excluded so this one-shot fetch only re-runs on `userId` change, not on every atom update
-  }, [userId]);
+  }, [fetchInitial, userId]);
 
   return userId ? presence : null;
 }

@@ -152,6 +152,9 @@ define_feature_flag_keys!(
         UserProfileCards,
         /// Spec 39 membership and room-state notices in the timeline.
         TimelineStateEvents,
+        /// Spec 45 registration UIA, password recovery, provider-aware SSO,
+        /// and standalone token login.
+        RegistrationAndRecovery,
     }
 );
 
@@ -180,6 +183,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => false,
             FeatureFlagKey::UserProfileCards => false,
             FeatureFlagKey::TimelineStateEvents => false,
+            FeatureFlagKey::RegistrationAndRecovery => false,
         }
     }
 
@@ -247,6 +251,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => {
                 "Render membership and room-state changes in the timeline."
             }
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login."
+            }
         }
     }
 
@@ -282,6 +289,9 @@ impl FeatureFlagKey {
             }
             FeatureFlagKey::UserProfileCards => "Spec 36 (user profile cards)",
             FeatureFlagKey::TimelineStateEvents => "Spec 39 (timeline state and membership events)",
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Spec 45 (registration and password-reset flows)"
+            }
         }
     }
 
@@ -309,6 +319,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListTypingIndicator => "room_list_typing_indicator",
             FeatureFlagKey::UserProfileCards => "user_profile_cards",
             FeatureFlagKey::TimelineStateEvents => "timeline_state_events",
+            FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
         }
     }
 }

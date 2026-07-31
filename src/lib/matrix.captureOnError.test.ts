@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke as transportInvoke } from "./matrixTransport";
 import {
+  beginRegistration,
   bootstrapCrossSigning,
+  cancelRegistration,
   changePassword,
   completeSsoLogin,
   deactivateAccount,
@@ -9,6 +11,7 @@ import {
   discoverHomeserver,
   login,
   register,
+  continueRegistration,
   startQrLogin,
   startSsoLogin,
   submitQrCheckCode,
@@ -30,6 +33,17 @@ describe("expected-failure IPC calls opt out of Sentry capture", () => {
       "register",
       () => register({ homeserver_url: "https://example.org", username: "a", password: "b" }),
     ],
+    [
+      "begin_registration",
+      () =>
+        beginRegistration({
+          homeserver_url: "https://example.org",
+          username: "a",
+          password: "b",
+        }),
+    ],
+    ["continue_registration", () => continueRegistration("attempt", { kind: "complete_dummy" })],
+    ["cancel_registration", () => cancelRegistration("attempt")],
     ["discover_homeserver", () => discoverHomeserver("example.org")],
     ["start_sso_login", () => startSsoLogin("https://example.org")],
     ["complete_sso_login", () => completeSsoLogin("charm://sso-callback")],

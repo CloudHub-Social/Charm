@@ -66,7 +66,7 @@ here.
 | 30 | [Focus mode and DND](/specs/day-1/spec-30--focus-mode-and-do-not-disturb/) | **Shipped** | [#249](https://github.com/CloudHub-Social/Charm/pull/249), default-off flag; manual tray verification remains non-blocking |
 | 31 | [Room upgrades](/specs/day-1/spec-31--room-upgrades/) | **Planned** | No matching merged implementation found |
 | 32 | [Room alias management](/specs/day-1/spec-32--room-alias-management/) | **Shipped** | Desktop [#251](https://github.com/CloudHub-Social/Charm/pull/251); web transport commands shipped, default-off `room_alias_management` flag |
-| 33 | [Space nesting and reorganization](/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/) | **In progress** | Foundational canonical-parent API, desktop/web transports, feature flag, and create-under-space UI are in review; drag-to-nest/un-nest and space settings remain |
+| 33 | [Space nesting and reorganization](/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/) | **In progress** | Canonical-parent APIs, desktop/web transports, create-under-space, and drag-to-nest/un-nest with failure reconciliation are in review; space settings remain |
 | 34 | [Labs settings](/specs/day-1/spec-34--labs-and-experimental-settings-panel/) | **Shipped** | [#253](https://github.com/CloudHub-Social/Charm/pull/253) |
 | 35 | [Feature flags](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/) | **Shipped** | [#241](https://github.com/CloudHub-Social/Charm/pull/241), [#255](https://github.com/CloudHub-Social/Charm/pull/255), [#256](https://github.com/CloudHub-Social/Charm/pull/256), [#259](https://github.com/CloudHub-Social/Charm/pull/259) |
 | 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **In progress** | Profile and mutual-room read foundation implemented; card UI and actions remain |
@@ -78,7 +78,7 @@ here.
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
 | 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **Planned** | Restore exists through Spec 25; setup and import/export remain scoped here |
-| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **Planned** | No matching merged implementation found |
+| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **In progress** | Typed Tauri registration UIA plus default-off desktop terms/dummy/fallback UI; web, recovery/SSO/token login, and live verification remain |
 | 46 | [Notification granularity and email pushers](/specs/day-1/spec-46--notification-rule-granularity-and-email-pushers/) | **Planned** | No matching merged implementation found |
 | 47 | [Appearance and display parity](/specs/day-1/spec-47--appearance-and-display-parity/) | **Planned** | No matching merged implementation found |
 | 48 | [Desktop shell controls](/specs/day-1/spec-48--desktop-shell-and-settings-controls/) | **Planned** | No matching merged implementation found |

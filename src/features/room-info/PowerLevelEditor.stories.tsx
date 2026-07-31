@@ -37,6 +37,7 @@ const BASE_DETAILS: RoomDetails = {
     set_canonical_alias: true,
     set_pinned_events: true,
     set_space_child: true,
+    set_space_parent: true,
   },
   canonical_alias: null,
   alt_aliases: [],

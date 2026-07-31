@@ -118,5 +118,11 @@
     "default": false,
     "description": "Render membership and room-state changes in the timeline.",
     "owner": "Spec 39 (timeline state and membership events)"
+  },
+  {
+    "key": "registration_and_recovery",
+    "default": false,
+    "description": "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login.",
+    "owner": "Spec 45 (registration and password-reset flows)"
   }
 ]

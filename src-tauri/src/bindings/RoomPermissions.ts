@@ -25,4 +25,8 @@ set_pinned_events: boolean,
  * the child's *parent* space (a second, separately-fetched
  * `RoomDetails`), since that's whose `m.space.child` edge is mutated.
  */
-set_space_child: boolean, };
+set_space_child: boolean, 
+/**
+ * Gates reparenting a space by sending `m.space.parent` in this room.
+ */
+set_space_parent: boolean, };

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:45:50.942Z",
+  "generatedAt": "2026-07-31T17:52:01.036Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
@@ -403,7 +403,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
           "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:44:04Z"
+          "updatedAt": "2026-07-31T17:46:48Z"
         },
         {
           "number": 230,
@@ -880,7 +880,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
           "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:43:05Z"
+          "updatedAt": "2026-07-31T17:47:18Z"
         }
       ],
       "issues": [

@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use charm_web_server::{observability, persistence::PersistenceStore, routes, sync_loop, AppState};
 
-const SPACE_HIERARCHY_REORGANIZATION_ENV: &str =
-    "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
+const SPACE_HIERARCHY_REORGANIZATION_ENV: &str = "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 persist,
                 initial_response,
                 session.sync_snapshots(),
+                state.space_hierarchy_reorganization,
             );
             *session
                 .sync_handle

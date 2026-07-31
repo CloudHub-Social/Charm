@@ -4,7 +4,10 @@
 
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::register;
-use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
+use matrix_sdk::ruma::api::client::uiaa::{
+    AuthData, AuthType, Dummy, LoginTermsParams, Terms, UiaaInfo,
+};
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::Client;
@@ -60,13 +63,66 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct RegisterRequest {
     /// Same flexible server-name-or-URL input as [`LoginRequest::homeserver_url`].
     pub homeserver_url: String,
     pub username: String,
     pub password: String,
+}
+
+const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+pub(crate) struct PendingRegistration {
+    pub(crate) client: Client,
+    pub(crate) store_key: String,
+    request: RegisterRequest,
+    attempt_id: String,
+    uiaa: UiaaInfo,
+    created_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RegistrationFlow {
+    pub stages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RegistrationPolicy {
+    pub id: String,
+    pub version: String,
+    pub language: String,
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RegistrationStep {
+    Challenge {
+        attempt_id: String,
+        completed: Vec<String>,
+        flows: Vec<RegistrationFlow>,
+        next_stage: String,
+        fallback_url: String,
+        policies: Vec<RegistrationPolicy>,
+    },
+    Complete {
+        session: LoginResponse,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RegistrationAuthResponse {
+    AcceptTerms,
+    CompleteDummy,
+    AcknowledgeFallback { stage: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -116,6 +172,7 @@ pub async fn login(
         // previous synchronous-setup path couldn't race a UI-initiated login
         // by construction (the window wasn't interactive yet); this restores
         // that same guarantee for the async path.
+        cancel_pending_registration_for_superseding_auth(&app, &state).await;
         let _restore_store_guard = restore_store_lock().lock().await;
 
         // The account's MXID isn't known for certain until login succeeds (the
@@ -577,6 +634,7 @@ pub async fn register(
     // P1): held for this whole function so the startup orphan-temp-store
     // sweep can't delete this registration's temp store out from under it
     // between creation and relocation.
+    cancel_pending_registration_for_superseding_auth(&app, &state).await;
     let _restore_store_guard = restore_store_lock().lock().await;
 
     // Same rationale as `login`: the account isn't certain until
@@ -585,17 +643,30 @@ pub async fn register(
     let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
+    finish_registration(app, &state, client, temp_key, None, None).await
+}
+
+async fn finish_registration(
+    app: AppHandle,
+    state: &MatrixState,
+    client: Client,
+    temp_key: String,
+    attempt_id: Option<&str>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<LoginResponse, String> {
     let session = client
         .matrix_auth()
         .session()
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
-
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
 
     // See `login`'s identical guard and its doc comment on
     // `MatrixState::login_completion_lock`.
     let _completion_guard = state.login_completion_lock.lock().await;
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err("registration cancelled".to_string());
+    }
 
     // See `login`'s identical capture-and-restore-on-failure rationale.
     let previous_client = state.client.lock().await.clone();
@@ -603,6 +674,7 @@ pub async fn register(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    let _finalizing = FinalizingRegistrationGuard::new(state, account_key.clone());
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &temp_key,
@@ -619,6 +691,19 @@ pub async fn register(
         }
         return Err(e.into());
     }
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        // Relocation has already made this session durable. A cancellation
+        // response is only truthful if we also remove that durable session;
+        // otherwise startup can restore an account the user explicitly
+        // cancelled. Retry once for transient keychain failures and surface
+        // any remaining cleanup failure instead of silently claiming success.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app.clone(), previous_client);
+        }
+        drop(client);
+        return clear_cancelled_registration_session(&app, &account_key);
+    }
 
     // See `login`'s identical check and rationale for returning `Err` rather
     // than a losing `Ok` response: with `login_completion_lock` held for the
@@ -627,8 +712,18 @@ pub async fn register(
         // See `login`'s identical restore-on-failure step.
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+            sync::spawn_sync_task(app.clone(), previous_client);
         }
+        // The temp store has already been relocated by this point. The
+        // completion lock prevents another interactive login from installing
+        // a replacement store concurrently, so leaving this unadopted store
+        // behind would strand both the directory and its keychain entry.
+        drop(client);
+        persistence::discard_cancelled_account_session(&app, &account_key).map_err(|error| {
+            format!(
+                "registration was superseded, but its relocated store could not be removed: {error}"
+            )
+        })?;
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -644,10 +739,713 @@ pub async fn register(
         device_id: session.meta.device_id.to_string(),
     };
 
-    *state.client.lock().await = Some(client.clone());
+    let mut client_slot = state.client.lock().await;
+    if let Some(cancellation) = cancellation {
+        let completion_won = {
+            let mut cancellation_slot = state
+                .pending_registration_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let is_current = cancellation_slot
+                .as_ref()
+                .is_some_and(|(current_id, current)| {
+                    attempt_id.is_some_and(|attempt_id| current_id == attempt_id)
+                        && !current.is_cancelled()
+                        && !cancellation.is_cancelled()
+                });
+            if is_current {
+                cancellation_slot.take();
+            }
+            is_current
+        };
+        if !completion_won {
+            drop(client_slot);
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app.clone(), previous_client);
+            }
+            drop(client);
+            return clear_cancelled_registration_session(&app, &account_key);
+        }
+        // This is the completion/cancellation linearization point. A cancel
+        // that acquired the slot first wins above; after this removal the
+        // authenticated client is committed while its slot remains locked,
+        // so completion wins.
+    }
+    *client_slot = Some(client.clone());
+    drop(client_slot);
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
+}
+
+fn clear_cancelled_registration_session(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<LoginResponse, String> {
+    let cleanup = match persistence::discard_cancelled_account_session(app, account_key) {
+        Ok(()) => Ok(()),
+        Err(_) => persistence::discard_cancelled_account_session(app, account_key),
+    };
+    if let Err(error) = cleanup {
+        return Err(format!(
+            "registration cancelled, but its durable state could not be removed: {error}"
+        ));
+    }
+    Err("registration cancelled".to_string())
+}
+
+/// Starts a registration UIA attempt without exposing its client, credentials,
+/// or encrypted temporary-store key across IPC.
+#[tauri::command]
+pub async fn begin_registration(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    request: RegisterRequest,
+) -> Result<RegistrationStep, String> {
+    ensure_registration_feature_enabled(&app)?;
+    cancel_pending_registration_for_superseding_auth(&app, &state).await;
+    let _restore_store_guard = restore_store_lock().lock().await;
+    let attempt_id = generate_attempt_id();
+    let started_at = std::time::Instant::now();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .replace((attempt_id.clone(), cancellation.clone()));
+    spawn_registration_expiry(app.clone(), attempt_id.clone(), cancellation.clone());
+
+    let store_key = persistence::temp_store_key();
+    let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
+    let client = tokio::select! {
+        result = build_client(&app, &request.homeserver_url, &store_key) => {
+            match result {
+                Ok(client) => client,
+                Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err(error);
+                }
+            }
+        }
+        () = cancellation.cancelled() => {
+            clear_registration_cancellation(&state, &attempt_id);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let register_request = registration_request(&request, None);
+
+    let matrix_auth = client.matrix_auth();
+    let registration_result = tokio::select! {
+        result = matrix_auth.register(register_request) => result,
+        () = cancellation.cancelled() => {
+            drop(client);
+            clear_registration_cancellation(&state, &attempt_id);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return Err("registration cancelled".to_string());
+        }
+    };
+
+    match registration_result {
+        Ok(_) => {
+            let cleanup_key = store_key.clone();
+            match finish_registration(
+                app.clone(),
+                &state,
+                client,
+                store_key,
+                Some(&attempt_id),
+                Some(&cancellation),
+            )
+            .await
+            {
+                Ok(session) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Ok(RegistrationStep::Complete { session })
+                }
+                Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            let Some(uiaa) = error.as_uiaa_response().cloned() else {
+                drop(client);
+                clear_registration_cancellation(&state, &attempt_id);
+                let _ = persistence::discard_temp_login_store(&app, &store_key);
+                return Err(safe_registration_error(&error));
+            };
+            let step = match registration_challenge(&attempt_id, &client, &uiaa) {
+                Ok(step) => step,
+                Err(error) => {
+                    drop(client);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    let _ = persistence::discard_temp_login_store(&app, &store_key);
+                    return Err(error);
+                }
+            };
+            let pending = PendingRegistration {
+                client,
+                store_key,
+                request,
+                attempt_id: attempt_id.clone(),
+                uiaa,
+                created_at: started_at,
+            };
+            restore_pending_registration_if_current(
+                &app,
+                &state,
+                &attempt_id,
+                &cancellation,
+                pending,
+            )
+            .await?;
+            reservation.defuse();
+            Ok(step)
+        }
+    }
+}
+
+/// Continues exactly the active registration attempt and Matrix UIA session.
+/// The supplied response must match the next stage selected from the latest
+/// homeserver-advertised flow.
+#[tauri::command]
+pub async fn continue_registration(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+    response: RegistrationAuthResponse,
+) -> Result<RegistrationStep, String> {
+    if let Err(error) = ensure_registration_feature_enabled(&app) {
+        cancel_pending_registration_for_superseding_auth(&app, &state).await;
+        return Err(error);
+    }
+    let cancellation = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|(current_id, _)| current_id == &attempt_id)
+        .map(|(_, cancellation)| cancellation.clone())
+        .ok_or_else(|| "registration attempt is no longer current".to_string())?;
+    // Cancellation must remain responsive while another login/restore owns
+    // this process-wide store lock.
+    let _restore_store_guard = tokio::select! {
+        guard = restore_store_lock().lock() => guard,
+        () = cancellation.cancelled() => {
+            return Err("registration cancelled".to_string());
+        }
+    };
+    let mut pending_guard = state.pending_registration.lock().await;
+    let Some(current) = pending_guard.as_ref() else {
+        return Err("no registration is in progress".to_string());
+    };
+    if current.attempt_id != attempt_id {
+        return Err("registration attempt is no longer current".to_string());
+    }
+    if current.created_at.elapsed() > REGISTRATION_ATTEMPT_TTL {
+        let expired = pending_guard.take().expect("pending attempt checked above");
+        drop(pending_guard);
+        cancellation.cancel();
+        clear_registration_cancellation(&state, &attempt_id);
+        discard_pending_registration(&app, expired);
+        return Err("registration attempt expired; start again".to_string());
+    }
+
+    let expected_stage = next_registration_stage(&current.uiaa)?;
+    let auth = registration_auth_data(response, &expected_stage, &current.uiaa)?;
+    let reservation = ReservedTempStoreGuard::new(&state, current.store_key.clone());
+    let mut pending = pending_guard.take().expect("pending attempt checked above");
+    drop(pending_guard);
+
+    let request = registration_request(&pending.request, Some(auth));
+    let registration_result = tokio::select! {
+        result = async { pending.client.matrix_auth().register(request).await } => result,
+        () = cancellation.cancelled() => {
+            discard_pending_registration(&app, pending);
+            clear_registration_cancellation(&state, &attempt_id);
+            return Err("registration cancelled".to_string());
+        }
+    };
+    if cancellation.is_cancelled() || !registration_cancellation_is_current(&state, &attempt_id) {
+        discard_pending_registration(&app, pending);
+        clear_registration_cancellation(&state, &attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    match registration_result {
+        Ok(_) => {
+            let cleanup_key = pending.store_key.clone();
+            match finish_registration(
+                app.clone(),
+                &state,
+                pending.client,
+                pending.store_key,
+                Some(&attempt_id),
+                Some(&cancellation),
+            )
+            .await
+            {
+                Ok(session) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    Ok(RegistrationStep::Complete { session })
+                }
+                Err(error) => {
+                    clear_registration_cancellation(&state, &attempt_id);
+                    let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            if let Some(uiaa) = error.as_uiaa_response().cloned() {
+                pending.uiaa = uiaa;
+                let step = match registration_challenge(
+                    &pending.attempt_id,
+                    &pending.client,
+                    &pending.uiaa,
+                ) {
+                    Ok(step) => step,
+                    Err(error) => {
+                        discard_pending_registration(&app, pending);
+                        clear_registration_cancellation(&state, &attempt_id);
+                        return Err(error);
+                    }
+                };
+                restore_pending_registration_if_current(
+                    &app,
+                    &state,
+                    &attempt_id,
+                    &cancellation,
+                    pending,
+                )
+                .await?;
+                reservation.defuse();
+                Ok(step)
+            } else {
+                let message = safe_registration_error(&error);
+                if registration_error_allows_retry(&error) {
+                    restore_pending_registration_if_current(
+                        &app,
+                        &state,
+                        &attempt_id,
+                        &cancellation,
+                        pending,
+                    )
+                    .await?;
+                    reservation.defuse();
+                } else {
+                    discard_pending_registration(&app, pending);
+                    clear_registration_cancellation(&state, &attempt_id);
+                    return Err(format!("registration ended: {message}"));
+                }
+                Err(message)
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_registration(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+) -> Result<(), String> {
+    let cancellation = {
+        let guard = state
+            .pending_registration_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match guard.as_ref() {
+            Some((current_id, cancellation)) if current_id == &attempt_id => {
+                Some(cancellation.clone())
+            }
+            Some(_) => return Err("registration attempt is no longer current".to_string()),
+            None => None,
+        }
+    };
+    let Some(cancellation) = cancellation else {
+        if state.pending_registration.lock().await.is_none() {
+            return Ok(());
+        }
+        return Err("registration attempt is no longer current".to_string());
+    };
+    cancellation.cancel();
+    clear_registration_cancellation(&state, &attempt_id);
+
+    let mut guard = state.pending_registration.lock().await;
+    let Some(current) = guard.as_ref() else {
+        return Ok(());
+    };
+    if current.attempt_id != attempt_id {
+        return Err("registration attempt is no longer current".to_string());
+    }
+    let pending = guard.take().expect("pending attempt checked above");
+    drop(guard);
+    discard_pending_registration(&app, pending);
+    Ok(())
+}
+
+fn ensure_registration_feature_enabled(app: &AppHandle) -> Result<(), String> {
+    let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::RegistrationAndRecovery,
+        )
+    });
+    enabled
+        .then_some(())
+        .ok_or_else(|| "registration and recovery is not enabled".to_string())
+}
+
+pub(crate) async fn cancel_pending_registration_for_superseding_auth(
+    app: &AppHandle,
+    state: &MatrixState,
+) {
+    if let Some((_, cancellation)) = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        cancellation.cancel();
+    }
+    if let Some(pending) = state.pending_registration.lock().await.take() {
+        discard_pending_registration(app, pending);
+    }
+}
+
+/// Best-effort synchronous cleanup for Tauri's synchronous `RunEvent::Exit`
+/// callback. Cancelling first lets an in-flight continuation perform its own
+/// cleanup; an idle attempt can be taken immediately without starting or
+/// blocking an async runtime from inside the event loop.
+pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &MatrixState) {
+    if let Some((_, cancellation)) = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        cancellation.cancel();
+    }
+    if let Ok(mut pending) = state.pending_registration.try_lock() {
+        if let Some(pending) = pending.take() {
+            discard_pending_registration(app, pending);
+        }
+    }
+    if let Some(account_key) = state
+        .finalizing_registration_account
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    {
+        let _ = persistence::mark_cancelled_account_cleanup(app, &account_key);
+        let _ = persistence::discard_cancelled_account_session(app, &account_key);
+    }
+}
+
+fn clear_registration_cancellation(state: &MatrixState, attempt_id: &str) {
+    let mut guard = state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if guard
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
+    {
+        guard.take();
+    }
+}
+
+fn registration_cancellation_is_current(state: &MatrixState, attempt_id: &str) -> bool {
+    state
+        .pending_registration_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|(current_id, _)| current_id == attempt_id)
+}
+
+async fn restore_pending_registration_if_current(
+    app: &AppHandle,
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingRegistration,
+) -> Result<(), String> {
+    if cancellation.is_cancelled() || !registration_cancellation_is_current(state, attempt_id) {
+        discard_pending_registration(app, pending);
+        clear_registration_cancellation(state, attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    let mut guard = state.pending_registration.lock().await;
+    if guard.is_some()
+        || cancellation.is_cancelled()
+        || !registration_cancellation_is_current(state, attempt_id)
+    {
+        drop(guard);
+        discard_pending_registration(app, pending);
+        clear_registration_cancellation(state, attempt_id);
+        return Err("registration cancelled".to_string());
+    }
+    *guard = Some(pending);
+    Ok(())
+}
+
+fn spawn_registration_expiry(
+    app: AppHandle,
+    attempt_id: String,
+    cancellation: tokio_util::sync::CancellationToken,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::select! {
+            () = tokio::time::sleep(REGISTRATION_ATTEMPT_TTL) => {}
+            () = cancellation.cancelled() => return,
+        }
+        let state = app.state::<MatrixState>();
+        let cancellation = {
+            let guard = state
+                .pending_registration_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            guard
+                .as_ref()
+                .filter(|(current_id, _)| current_id == &attempt_id)
+                .map(|(_, cancellation)| cancellation.clone())
+        };
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+            clear_registration_cancellation(&state, &attempt_id);
+        }
+        let mut guard = state.pending_registration.lock().await;
+        let expired = if guard
+            .as_ref()
+            .is_some_and(|pending| pending.attempt_id == attempt_id)
+        {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(expired) = expired {
+            discard_pending_registration(&app, expired);
+        }
+    });
+}
+
+struct FinalizingRegistrationGuard<'a> {
+    state: &'a MatrixState,
+    account_key: String,
+}
+
+impl<'a> FinalizingRegistrationGuard<'a> {
+    fn new(state: &'a MatrixState, account_key: String) -> Self {
+        state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(account_key.clone());
+        Self { state, account_key }
+    }
+}
+
+impl Drop for FinalizingRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self
+            .state
+            .finalizing_registration_account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if guard.as_deref() == Some(self.account_key.as_str()) {
+            guard.take();
+        }
+    }
+}
+
+fn discard_pending_registration(app: &AppHandle, pending: PendingRegistration) {
+    let store_key = pending.store_key.clone();
+    drop(pending);
+    let _ = persistence::discard_temp_login_store(app, &store_key);
+}
+
+fn safe_registration_error(error: &matrix_sdk::Error) -> String {
+    match error.client_api_error_kind() {
+        Some(ErrorKind::UserInUse) => "That username is already in use.".to_string(),
+        Some(ErrorKind::InvalidUsername) => "That username is not valid.".to_string(),
+        Some(ErrorKind::LimitExceeded(_)) => {
+            "Too many registration attempts. Wait and try again.".to_string()
+        }
+        Some(ErrorKind::UserLimitExceeded(_)) | Some(ErrorKind::ResourceLimitExceeded(_)) => {
+            "This homeserver is not accepting additional registrations.".to_string()
+        }
+        _ => "Registration was rejected. Check the username and password requirements.".to_string(),
+    }
+}
+
+fn registration_error_allows_retry(error: &matrix_sdk::Error) -> bool {
+    matches!(
+        error.client_api_error_kind(),
+        None | Some(ErrorKind::LimitExceeded(_))
+    )
+}
+
+fn registration_request(
+    request: &RegisterRequest,
+    auth: Option<AuthData>,
+) -> register::v3::Request {
+    let mut register_request = register::v3::Request::new();
+    register_request.username = Some(request.username.clone());
+    register_request.password = Some(request.password.clone());
+    register_request.auth = auth;
+    register_request
+}
+
+fn generate_attempt_id() -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect()
+}
+
+fn next_registration_stage(uiaa: &UiaaInfo) -> Result<String, String> {
+    let completed = uiaa
+        .completed
+        .iter()
+        .map(AuthType::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    uiaa.flows
+        .iter()
+        .filter_map(|flow| {
+            let remaining = flow
+                .stages
+                .iter()
+                .filter(|stage| !completed.contains(stage.as_str()))
+                .collect::<Vec<_>>();
+            remaining
+                .first()
+                .map(|next| (remaining.len(), next.as_str()))
+        })
+        .min_by_key(|(remaining, _)| *remaining)
+        .map(|(_, stage)| stage.to_owned())
+        .ok_or_else(|| "homeserver returned no incomplete registration stage".to_string())
+}
+
+fn registration_auth_data(
+    response: RegistrationAuthResponse,
+    expected_stage: &str,
+    uiaa: &UiaaInfo,
+) -> Result<AuthData, String> {
+    match response {
+        RegistrationAuthResponse::AcceptTerms if expected_stage == AuthType::Terms.as_str() => {
+            let mut terms = Terms::new();
+            terms.session = uiaa.session.clone();
+            Ok(AuthData::Terms(terms))
+        }
+        RegistrationAuthResponse::CompleteDummy if expected_stage == AuthType::Dummy.as_str() => {
+            let mut dummy = Dummy::new();
+            dummy.session = uiaa.session.clone();
+            Ok(AuthData::Dummy(dummy))
+        }
+        RegistrationAuthResponse::AcknowledgeFallback { stage } if stage == expected_stage => {
+            let session = uiaa
+                .session
+                .clone()
+                .ok_or_else(|| "homeserver omitted the registration UIA session".to_string())?;
+            Ok(AuthData::fallback_acknowledgement(session))
+        }
+        _ => Err(format!(
+            "registration response does not match the required stage {expected_stage}"
+        )),
+    }
+}
+
+fn registration_challenge(
+    attempt_id: &str,
+    client: &Client,
+    uiaa: &UiaaInfo,
+) -> Result<RegistrationStep, String> {
+    let next_stage = next_registration_stage(uiaa)?;
+    let fallback_url = match uiaa.session.as_deref() {
+        Some(session) => registration_fallback_url(client, &next_stage, session)?,
+        None if matches!(
+            next_stage.as_str(),
+            stage if stage == AuthType::Terms.as_str() || stage == AuthType::Dummy.as_str()
+        ) =>
+        {
+            String::new()
+        }
+        None => return Err("homeserver omitted the registration UIA session".to_string()),
+    };
+    let policies = sanitized_registration_policies(uiaa);
+    Ok(RegistrationStep::Challenge {
+        attempt_id: attempt_id.to_owned(),
+        completed: uiaa
+            .completed
+            .iter()
+            .map(|stage| stage.as_str().to_owned())
+            .collect(),
+        flows: uiaa
+            .flows
+            .iter()
+            .map(|flow| RegistrationFlow {
+                stages: flow
+                    .stages
+                    .iter()
+                    .map(|stage| stage.as_str().to_owned())
+                    .collect(),
+            })
+            .collect(),
+        next_stage,
+        fallback_url,
+        policies,
+    })
+}
+
+fn registration_fallback_url(
+    client: &Client,
+    stage: &str,
+    session: &str,
+) -> Result<String, String> {
+    let mut url = client.homeserver().clone();
+    url.set_query(None);
+    url.path_segments_mut()
+        .map_err(|_| "homeserver URL cannot host a registration fallback".to_string())?
+        .pop_if_empty()
+        .extend(["_matrix", "client", "v3", "auth", stage, "fallback", "web"]);
+    url.query_pairs_mut().append_pair("session", session);
+    Ok(url.to_string())
+}
+
+fn sanitized_registration_policies(uiaa: &UiaaInfo) -> Vec<RegistrationPolicy> {
+    let Ok(Some(params)) = uiaa.params::<LoginTermsParams>(&AuthType::Terms) else {
+        return Vec::new();
+    };
+    params
+        .policies
+        .into_iter()
+        .flat_map(|(id, definition)| {
+            definition
+                .translations
+                .into_iter()
+                .filter_map(move |(language, translation)| {
+                    let url = url::Url::parse(&translation.url).ok()?;
+                    if !matches!(url.scheme(), "http" | "https") {
+                        return None;
+                    }
+                    Some(RegistrationPolicy {
+                        id: id.clone(),
+                        version: definition.version.clone(),
+                        language,
+                        name: translation.name,
+                        url: url.to_string(),
+                    })
+                })
+        })
+        .collect()
 }
 
 /// Registers `username`/`password` on `client`'s homeserver, leaving the
@@ -715,6 +1513,7 @@ pub async fn start_sso_login(
     state: State<'_, MatrixState>,
     homeserver_url: String,
 ) -> Result<String, String> {
+    cancel_pending_registration_for_superseding_auth(&app, &state).await;
     // The account isn't known until the browser redirects back with a
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
@@ -795,6 +1594,136 @@ fn extract_sso_callback_state(callback_url: &str) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.into_owned())
+}
+
+#[cfg(test)]
+mod registration_uia_tests {
+    use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, UiaaInfo};
+    use serde_json::json;
+
+    use super::{
+        next_registration_stage, registration_auth_data, registration_fallback_url,
+        sanitized_registration_policies, RegistrationAuthResponse,
+    };
+
+    fn uiaa(value: serde_json::Value) -> UiaaInfo {
+        serde_json::from_value(value).expect("valid UIA fixture")
+    }
+
+    #[test]
+    fn selects_the_shortest_viable_flow_and_skips_completed_stages() {
+        let info = uiaa(json!({
+            "flows": [
+                {"stages": ["m.login.terms", "m.login.email.identity", "m.login.dummy"]},
+                {"stages": ["m.login.terms", "m.login.dummy"]}
+            ],
+            "completed": ["m.login.terms"],
+            "session": "uia-session"
+        }));
+
+        assert_eq!(
+            next_registration_stage(&info).as_deref(),
+            Ok(AuthType::Dummy.as_str())
+        );
+    }
+
+    #[test]
+    fn rejects_a_response_for_a_different_stage() {
+        let info = uiaa(json!({
+            "flows": [{"stages": ["m.login.terms"]}],
+            "session": "uia-session"
+        }));
+
+        let error = registration_auth_data(
+            RegistrationAuthResponse::CompleteDummy,
+            AuthType::Terms.as_str(),
+            &info,
+        )
+        .expect_err("dummy must not satisfy terms");
+        assert!(error.contains(AuthType::Terms.as_str()));
+    }
+
+    #[test]
+    fn threads_the_homeserver_session_into_terms_auth() {
+        let info = uiaa(json!({
+            "flows": [{"stages": ["m.login.terms"]}],
+            "session": "uia-session"
+        }));
+
+        let auth = registration_auth_data(
+            RegistrationAuthResponse::AcceptTerms,
+            AuthType::Terms.as_str(),
+            &info,
+        )
+        .expect("terms auth");
+        assert!(matches!(
+            auth,
+            AuthData::Terms(terms) if terms.session.as_deref() == Some("uia-session")
+        ));
+    }
+
+    #[test]
+    fn accepts_sessionless_direct_terms_and_dummy_auth() {
+        let terms_info = uiaa(json!({"flows": [{"stages": ["m.login.terms"]}]}));
+        let dummy_info = uiaa(json!({"flows": [{"stages": ["m.login.dummy"]}]}));
+
+        assert!(matches!(
+            registration_auth_data(
+                RegistrationAuthResponse::AcceptTerms,
+                AuthType::Terms.as_str(),
+                &terms_info,
+            ),
+            Ok(AuthData::Terms(terms)) if terms.session.is_none()
+        ));
+        assert!(matches!(
+            registration_auth_data(
+                RegistrationAuthResponse::CompleteDummy,
+                AuthType::Dummy.as_str(),
+                &dummy_info,
+            ),
+            Ok(AuthData::Dummy(dummy)) if dummy.session.is_none()
+        ));
+    }
+
+    #[test]
+    fn exposes_only_http_policy_links() {
+        let info = uiaa(json!({
+            "flows": [{"stages": ["m.login.terms"]}],
+            "params": {
+                "m.login.terms": {
+                    "policies": {
+                        "privacy": {
+                            "version": "2",
+                            "en": {"name": "Privacy", "url": "https://example.org/privacy"},
+                            "bad": {"name": "Bad", "url": "javascript:alert(1)"}
+                        }
+                    }
+                }
+            },
+            "session": "uia-session"
+        }));
+
+        let policies = sanitized_registration_policies(&info);
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].name, "Privacy");
+        assert_eq!(policies[0].url, "https://example.org/privacy");
+    }
+
+    #[tokio::test]
+    async fn fallback_url_preserves_a_homeserver_path_prefix() {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("https://example.org/matrix/")
+            .build()
+            .await
+            .expect("client");
+
+        let url = registration_fallback_url(&client, AuthType::ReCaptcha.as_str(), "session value")
+            .expect("fallback URL");
+        assert_eq!(
+            url,
+            "https://example.org/matrix/_matrix/client/v3/auth/m.login.recaptcha/fallback/web?session=session+value"
+        );
+    }
 }
 
 #[cfg(test)]

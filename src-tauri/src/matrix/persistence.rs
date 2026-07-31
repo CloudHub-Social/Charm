@@ -57,6 +57,7 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// correctly pairs with whatever's in the keychain, since `on_commit` never
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
+const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -166,7 +167,36 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
 /// failed — same "leftover from an interrupted run" shape, so it's handled
 /// alongside orphan temp stores rather than via a separate startup hook.
 pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
+    sweep_cancelled_account_cleanups(app)?;
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
+}
+
+pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let marker =
+        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
+    let root = matrix_store_root(app)?;
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
+            continue;
+        };
+        if discard_cancelled_account_session(app, account_key).is_ok() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 static STARTUP_SWEEP_READY: std::sync::OnceLock<(
@@ -373,6 +403,11 @@ fn discard_stale_temp_stores(
 /// separate call to [`DeferredTempStoreDiscards::discard`] — see
 /// [`recover_stale_backups_at`]'s doc comment for why these are split.
 pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscards, String> {
+    // This is the recovery entry point invoked by the real startup path.
+    // Process durable cancelled-account markers before startup is allowed to
+    // restore a session, rather than relying on the legacy combined sweep
+    // wrapper (which production startup intentionally does not call).
+    sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
     let entries = recover_stale_backups_at(&root)?;
     Ok(DeferredTempStoreDiscards(entries))
@@ -527,6 +562,48 @@ pub fn discard_temp_login_store(app: &AppHandle, temp_key: &str) -> Result<(), S
     let path = matrix_store_root(app)?.join(temp_key);
     discard_temp_store(&path, temp_key);
     Ok(())
+}
+
+/// Removes a newly-relocated account store and its passphrase after an
+/// authentication completion loses to cancellation. Unlike
+/// [`clear_session`], this is intentionally destructive: the session was
+/// never adopted, so retaining its encrypted store only strands plaintext
+/// cache state and a keychain entry with no usable session.
+pub fn discard_cancelled_account_store(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    discard_cancelled_account_store_locked(app, account_key)
+}
+
+fn discard_cancelled_account_store_locked(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
+    // Resolve without `store_path`: its create-on-access contract is useful
+    // for live stores but would manufacture an empty directory while cleanup
+    // is trying to prove the cancelled store is absent.
+    let path = matrix_store_root(app)?.join(account_key);
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("failed to remove cancelled account store: {error}")),
+    }
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+        .map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Atomically removes every durable artifact for a registration that was
+/// relocated but never adopted. Sharing [`RELOCATE_LOCK`] with relocation
+/// prevents synchronous shutdown cleanup from deleting the store before the
+/// relocation commit writes its session credentials.
+pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_session(account_key)?;
+    clear_oauth_session(account_key)?;
+    discard_cancelled_account_store_locked(app, account_key)
 }
 
 /// One-time dev-only migration for the pre-Spec-15 layout, where

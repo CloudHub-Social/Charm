@@ -96,6 +96,23 @@ pub struct MatrixState {
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
     /// result and homeserver connection `start_sso_login` already resolved.
     pub(crate) pending_sso: Mutex<Option<auth::PendingSso>>,
+    /// One registration UIA attempt owned by this app session. The Matrix
+    /// client, credentials, and temporary encrypted store never cross IPC;
+    /// TypeScript receives only the opaque `attempt_id` and sanitized
+    /// challenge metadata.
+    pub(crate) pending_registration: Mutex<Option<auth::PendingRegistration>>,
+    /// Cancellation remains addressable while `continue_registration` owns
+    /// the pending value during a network request, so Cancel, timeout, or a
+    /// superseding auth flow can abort that in-flight request as well as an
+    /// idle challenge.
+    pub(crate) pending_registration_cancel:
+        std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+    /// Account key for a registration that has entered its durable
+    /// relocation/adoption phase. Tauri's exit callback is synchronous, so
+    /// it cannot wait for that future to observe cancellation; keeping the
+    /// key here lets orderly shutdown remove a session that was persisted
+    /// but not yet adopted by the UI.
+    pub(crate) finalizing_registration_account: std::sync::Mutex<Option<String>>,
     /// Set while a QR login is in the `QrScanned` stage (waiting for the
     /// user to type in the check code shown on the other device) — see
     /// `qr_login::submit_qr_check_code`.
@@ -344,6 +361,9 @@ impl Default for MatrixState {
             client: Mutex::default(),
             login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
+            pending_registration: Mutex::default(),
+            pending_registration_cancel: std::sync::Mutex::default(),
+            finalizing_registration_account: std::sync::Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),

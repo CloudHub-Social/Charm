@@ -52,6 +52,7 @@ interface MessageRowProps {
   onDiscard: () => void;
   /** See `MessageRowLayoutProps.onJumpToMessage`. */
   onJumpToMessage: (eventId: string) => void;
+  onSenderClick?: (userId: string, label: string) => void;
   onUserPillClick?: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
   /** Forwards this message to another room. */

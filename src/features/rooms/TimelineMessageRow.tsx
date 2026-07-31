@@ -22,6 +22,7 @@ interface TimelineMessageRowProps {
   newMessageKeys: Set<string>;
   controller: MessageActionController;
   onJumpToMessage: (eventId: string) => void;
+  onSenderClick?: (userId: string, label: string) => void;
   onUserPillClick: (userId: string, label: string) => void;
   onRoomPillClick?: (roomIdentifier: string) => void;
   previousTimelineTimestampMs?: number | null;
@@ -44,6 +45,7 @@ export function TimelineMessageRow({
   newMessageKeys,
   controller,
   onJumpToMessage,
+  onSenderClick,
   onUserPillClick,
   onRoomPillClick,
   previousTimelineTimestampMs,
@@ -99,6 +101,7 @@ export function TimelineMessageRow({
         registerActionsRef={controller.registerActionsRef}
         {...controller.rowActions(message)}
         onJumpToMessage={onJumpToMessage}
+        onSenderClick={onSenderClick}
         onUserPillClick={onUserPillClick}
         onRoomPillClick={onRoomPillClick}
       />
