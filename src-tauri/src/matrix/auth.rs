@@ -52,6 +52,8 @@ pub(crate) struct PendingSso {
     /// an `account_key` yet. `complete_sso_login` relocates it to one on
     /// success; `cancel_sso_login` discards it on cancellation.
     pub(crate) store_key: String,
+    expires_at: tokio::time::Instant,
+    cancellation: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -701,6 +703,11 @@ async fn finish_registration(
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app.clone(), previous_client);
+        }
+        let _ = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &temp_key);
         return Err("authentication setup timed out".to_string());
@@ -741,7 +748,7 @@ async fn finish_registration(
             sync::spawn_sync_task(app.clone(), previous_client);
         }
         drop(client);
-        clear_cancelled_registration_session(&app, &account_key)?;
+        discard_cancelled_registration_session(&app, &account_key)?;
         return Err("authentication setup timed out".to_string());
     }
 
@@ -823,6 +830,14 @@ fn clear_cancelled_registration_session(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<LoginResponse, String> {
+    discard_cancelled_registration_session(app, account_key)?;
+    Err("registration cancelled".to_string())
+}
+
+fn discard_cancelled_registration_session(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
     let cleanup = match persistence::discard_cancelled_account_session(app, account_key) {
         Ok(()) => Ok(()),
         Err(_) => persistence::discard_cancelled_account_session(app, account_key),
@@ -832,7 +847,7 @@ fn clear_cancelled_registration_session(
             "registration cancelled, but its durable state could not be removed: {error}"
         ));
     }
-    Err("registration cancelled".to_string())
+    Ok(())
 }
 
 /// Starts a registration UIA attempt without exposing its client, credentials,
@@ -1221,15 +1236,25 @@ pub async fn login_with_token(
         let _ = persistence::discard_temp_login_store(&app, &store_key);
         return Err("token login failed".to_string());
     }
-    let _restore_store_guard =
-        match tokio::time::timeout_at(deadline, restore_store_lock().lock()).await {
-            Ok(guard) => guard,
-            Err(_) => {
-                drop(client);
-                let _ = persistence::discard_temp_login_store(&app, &store_key);
-                return Err("token login setup timed out".to_string());
-            }
-        };
+    let _restore_store_guard = match tokio::time::timeout_at(deadline, restore_store_lock().lock())
+        .await
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            let revoked =
+                tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+            return if matches!(revoked, Ok(Ok(_))) {
+                Err("token login setup timed out".to_string())
+            } else {
+                Err(
+                    "token login setup timed out and the authenticated device could not be revoked"
+                        .to_string(),
+                )
+            };
+        }
+    };
     // Keep the reservation visible until the process-wide restore/sweep lock
     // is held, so cleanup cannot delete this active store in the gap.
     reservation.defuse();
@@ -1839,10 +1864,14 @@ pub async fn start_sso_login(
     // was protected by neither set, exactly the race
     // `ReservedTempStoreGuard` exists to close. This order means the
     // reservation is still live for the whole handoff.
+    let expires_at = tokio::time::Instant::now() + REGISTRATION_ATTEMPT_TTL;
+    let cancellation = tokio_util::sync::CancellationToken::new();
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
         state: attempt_state.clone(),
         store_key,
+        expires_at,
+        cancellation,
     });
     reservation.defuse();
     // A double-start (e.g. a double click) would otherwise overwrite the
@@ -1875,9 +1904,18 @@ fn spawn_sso_expiry(app: AppHandle, attempt_state: String) {
         };
         drop(guard);
         if let Some(expired) = expired {
+            expired.cancellation.cancel();
             let store_key = expired.store_key.clone();
             drop(expired);
             let _ = persistence::discard_temp_login_store(&app, &store_key);
+        } else if let Some(cancellation) = state
+            .completing_sso_cancellations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&attempt_state)
+            .cloned()
+        {
+            cancellation.cancel();
         }
     });
 }
@@ -1898,9 +1936,18 @@ fn generate_sso_state() -> String {
 #[tauri::command]
 pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     if let Some(pending) = state.pending_sso.lock().await.take() {
+        pending.cancellation.cancel();
         let store_key = pending.store_key.clone();
         drop(pending);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
+    }
+    for cancellation in state
+        .completing_sso_cancellations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+    {
+        cancellation.cancel();
     }
     Ok(())
 }
@@ -2237,6 +2284,7 @@ pub async fn complete_sso_login(
     struct SsoCompletionGuard<'a> {
         matrix_state: &'a MatrixState,
         store_key: String,
+        attempt_state: String,
     }
     impl Drop for SsoCompletionGuard<'_> {
         fn drop(&mut self) {
@@ -2245,6 +2293,11 @@ pub async fn complete_sso_login(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&self.store_key);
+            self.matrix_state
+                .completing_sso_cancellations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.attempt_state);
         }
     }
     state
@@ -2252,15 +2305,32 @@ pub async fn complete_sso_login(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(pending.store_key.clone());
+    state
+        .completing_sso_cancellations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(callback_state.clone(), pending.cancellation.clone());
     let _completing_guard = SsoCompletionGuard {
         matrix_state: &state,
         store_key: pending.store_key.clone(),
+        attempt_state: callback_state,
     };
 
     drop(pending_sso);
     let client = pending.client;
 
-    if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
+    let callback_result = tokio::select! {
+        biased;
+        () = pending.cancellation.cancelled() => Err("single sign-on cancelled".to_string()),
+        result = tokio::time::timeout_at(
+            pending.expires_at,
+            complete_sso_login_with_callback(&client, &callback_url),
+        ) => match result {
+            Ok(result) => result,
+            Err(_) => Err("single sign-on attempt expired".to_string()),
+        },
+    };
+    if let Err(e) = callback_result {
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
         // startup sweep — clean it up now instead, same as a cancelled
