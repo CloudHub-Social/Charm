@@ -34,7 +34,7 @@ export const ROOM_DETAILS_STALE_TIME_MS = 5 * 60 * 1000;
  * leaving the member list stale (beyond its `staleTime`) when they switch
  * back.
  */
-export function useRoomDetails(roomId: string | null) {
+export function useRoomDetails(roomId: string | null, refetchOnMount = false) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -54,5 +54,6 @@ export function useRoomDetails(roomId: string | null) {
     queryFn: () => getRoomDetails(roomId as string),
     enabled: Boolean(roomId),
     staleTime: ROOM_DETAILS_STALE_TIME_MS,
+    refetchOnMount: refetchOnMount ? "always" : undefined,
   });
 }

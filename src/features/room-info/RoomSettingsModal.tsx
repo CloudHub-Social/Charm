@@ -45,7 +45,12 @@ export function RoomSettingsModal({
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
-  const { data: details, isLoading, isError, isFetching } = useRoomDetails(targetRoomId);
+  const {
+    data: details,
+    isLoading,
+    isError,
+    isFetching,
+  } = useRoomDetails(targetRoomId, target?.kind === "space");
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
