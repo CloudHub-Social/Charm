@@ -154,10 +154,20 @@ export function SpaceRail({
       dragScrollFrameRef.current = null;
       return;
     }
-    railScrollRef.current?.scrollBy({ top: direction * 8 });
+    const rail = railScrollRef.current;
+    if (!rail) {
+      stopDragScroll();
+      return;
+    }
+    const before = rail.scrollTop;
+    rail.scrollTop += direction * 8;
+    if (rail.scrollTop === before) {
+      stopDragScroll();
+      return;
+    }
     recomputeDropRef.current?.();
     dragScrollFrameRef.current = requestAnimationFrame(continueDragScroll);
-  }, []);
+  }, [stopDragScroll]);
   useEffect(() => {
     return () => {
       if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
@@ -174,6 +184,7 @@ export function SpaceRail({
   // fetch is swallowed, not surfaced via `reportActionError` — the user
   // didn't take an action yet, and the gated items simply stay disabled.
   const [permissionsById, setPermissionsById] = useState<Record<string, RoomPermissions>>({});
+  const [permissionsRefreshing, setPermissionsRefreshing] = useState<Set<string>>(new Set());
   // Per-room request generation counter, not a plain "in flight" boolean —
   // closing and reopening the menu while the first request for the same
   // room is still pending must still issue a fresh request (the user's
@@ -185,6 +196,7 @@ export function SpaceRail({
   const ensurePermissionsLoaded = useCallback((roomId: string, keepPrevious = false) => {
     const generation = (permissionsRequestGeneration.current.get(roomId) ?? 0) + 1;
     permissionsRequestGeneration.current.set(roomId, generation);
+    setPermissionsRefreshing((current) => new Set(current).add(roomId));
     // Drop any previously fetched value for this room before the new
     // request lands, rather than leaving it visible mid-refetch — a stale
     // `true` from the prior open would otherwise stay clickable for the
@@ -198,14 +210,24 @@ export function SpaceRail({
     }
     return getRoomDetails(roomId)
       .then((details) => {
-        if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
+        if (permissionsRequestGeneration.current.get(roomId) !== generation) return undefined;
         setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
+        return details.can;
       })
       .catch(() => {
-        if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
+        if (permissionsRequestGeneration.current.get(roomId) !== generation) return undefined;
         setPermissionsById((prev) => {
           const { [roomId]: _removed, ...rest } = prev;
           return rest;
+        });
+        return undefined;
+      })
+      .finally(() => {
+        if (permissionsRequestGeneration.current.get(roomId) !== generation) return;
+        setPermissionsRefreshing((current) => {
+          const next = new Set(current);
+          next.delete(roomId);
+          return next;
         });
       });
   }, []);
@@ -235,6 +257,8 @@ export function SpaceRail({
       }
       const invalid =
         resolvedTarget === sourceId ||
+        permissionsRefreshing.has(sourceId) ||
+        (resolvedTarget !== null && permissionsRefreshing.has(resolvedTarget)) ||
         permissionsById[sourceId]?.set_space_parent !== true ||
         (resolvedTarget !== null && permissionsById[resolvedTarget]?.set_space_child !== true) ||
         (resolvedTarget !== null &&
@@ -265,6 +289,7 @@ export function SpaceRail({
       continueDragScroll,
       ensurePermissionsLoaded,
       permissionsById,
+      permissionsRefreshing,
       rooms,
       stopDragScroll,
     ],
@@ -299,6 +324,7 @@ export function SpaceRail({
     lastDragPointerRef.current = null;
     dragPermissionRequestsRef.current.clear();
     setSpaceDrop(null);
+    setCanonicalParentOverrides({});
   }, [hierarchyReorganizationEnabled, stopDragScroll]);
   const mutateSpaceParent = useCallback(
     (sourceId: string, targetId: string | null) => {
@@ -309,19 +335,9 @@ export function SpaceRail({
       // promote that noncanonical relationship to Charm's canonical parent.
       setSpaceParentMutationPending(true);
       setSpaceParent(sourceId, targetId ?? undefined)
-        .then(() => {
-          setCanonicalParentOverrides((current) => ({ ...current, [sourceId]: targetId }));
-        })
         .catch(async (error) => {
           reportActionError(error);
-          const refreshed = await listRooms().catch(() => null);
-          const observed = refreshed?.find((room) => room.room_id === sourceId);
-          if (observed) {
-            setCanonicalParentOverrides((current) => ({
-              ...current,
-              [sourceId]: observed.parent_space_ids[0] ?? null,
-            }));
-          }
+          await listRooms().catch(() => null);
         })
         .finally(() => {
           setSpaceParentMutationPending(false);
@@ -369,7 +385,7 @@ export function SpaceRail({
           ? overriddenParent
             ? [overriddenParent]
             : []
-          : space.parent_space_ids;
+          : space.parent_space_ids.slice(0, 1);
         for (const parentId of parentIds) {
           parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
           if (knownSpaceIds.has(parentId)) {
@@ -628,12 +644,6 @@ export function SpaceRail({
                 <ContextMenuItem
                   disabled={spaceParentMutationPending || ownPermissions?.set_space_parent !== true}
                   onSelect={() => {
-                    const candidates = rooms.filter((candidate) => candidate.is_space);
-                    void (async () => {
-                      for (const candidate of candidates) {
-                        await ensurePermissionsLoaded(candidate.room_id);
-                      }
-                    })();
                     setMoveTarget({ spaceId: space.room_id, name: label, parentId });
                   }}
                 >
@@ -854,11 +864,19 @@ export function SpaceRail({
                   <button
                     key={room.room_id}
                     type="button"
-                    disabled={permissionsById[room.room_id]?.set_space_child !== true}
-                    className="min-h-11 rounded-md px-3 text-left text-sm hover:bg-accent"
+                    aria-disabled={
+                      permissionsRefreshing.has(room.room_id) ||
+                      permissionsById[room.room_id]?.set_space_child !== true
+                    }
+                    className="min-h-11 rounded-md px-3 text-left text-sm hover:bg-accent aria-disabled:opacity-50"
+                    onPointerEnter={() => void ensurePermissionsLoaded(room.room_id)}
+                    onFocus={() => void ensurePermissionsLoaded(room.room_id)}
                     onClick={() => {
-                      mutateSpaceParent(moveTarget.spaceId, room.room_id);
-                      setMoveTarget(null);
+                      void ensurePermissionsLoaded(room.room_id).then((permissions) => {
+                        if (permissions?.set_space_child !== true) return;
+                        mutateSpaceParent(moveTarget.spaceId, room.room_id);
+                        setMoveTarget(null);
+                      });
                     }}
                   >
                     {displayName(room.room_id, room.name)}
