@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:42:39.842Z",
+  "generatedAt": "2026-07-31T17:43:19.074Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
-    "follow-up": 6,
-    "in-progress": 4,
+    "follow-up": 8,
+    "in-progress": 2,
     "planned": 29
   },
   "attention": [
@@ -16,20 +16,6 @@
       "title": "Clarify Spec 13 hardware-blocked evidence",
       "url": "https://github.com/CloudHub-Social/Charm/pull/327",
       "detail": "Day-1 Spec 13 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 325,
-      "title": "Make Spec 28 local search decision-ready",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/325",
-      "detail": "Day-1 Spec 28 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 324,
-      "title": "Start Spec 39 timeline state-event foundation",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/324",
-      "detail": "Day-1 Spec 39 · ready for review"
     },
     {
       "type": "pull-request",
@@ -51,6 +37,13 @@
       "title": "Follow-up: align Spec 33 child-list reconciliation wording",
       "url": "https://github.com/CloudHub-Social/Charm/issues/350",
       "detail": ""
+    },
+    {
+      "type": "issue",
+      "number": 48,
+      "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/48",
+      "detail": "enhancement"
     }
   ],
   "workstreams": [
@@ -138,8 +131,8 @@
       ],
       "counts": {
         "shipped": 11,
-        "follow-up": 4,
-        "in-progress": 4,
+        "follow-up": 6,
+        "in-progress": 2,
         "planned": 17
       }
     },
@@ -893,15 +886,15 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 325,
           "title": "Make Spec 28 local search decision-ready",
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:41:10Z"
+          "updatedAt": "2026-07-31T17:43:05Z"
         }
       ],
       "issues": [
@@ -1165,15 +1158,15 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 324,
           "title": "Start Spec 39 timeline state-event foundation",
           "url": "https://github.com/CloudHub-Social/Charm/pull/324",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:41:10Z"
+          "updatedAt": "2026-07-31T17:42:30Z"
         }
       ],
       "issues": []
