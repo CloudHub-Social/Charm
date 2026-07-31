@@ -354,6 +354,36 @@ describe("LoginScreen registration UIA", () => {
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
 
+  it("keeps a retryable automatic stage available without cancelling the attempt", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-dummy",
+      completed: [],
+      flows: [{ stages: ["m.login.dummy"] }],
+      next_stage: "m.login.dummy",
+      fallback_url: "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web",
+      policies: [],
+    });
+    continueRegistration
+      .mockRejectedValueOnce(new Error("Too many registration attempts. Wait and try again."))
+      .mockResolvedValueOnce({ state: "complete", session: fakeSession() });
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+
+    expect(cancelRegistration).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Retry account creation" })).toBeVisible();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry account creation" }).click();
+    });
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
   it("opens the homeserver fallback and cancels an unfinished challenge", async () => {
     beginRegistration.mockResolvedValue({
       state: "challenge",
@@ -417,12 +447,19 @@ describe("LoginScreen registration UIA", () => {
       target: { value: "123456" },
     });
     await act(async () => {
+      screen.getByRole("button", { name: "Resend verification email" }).click();
+    });
+    expect(screen.getByLabelText("Email token")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Email token"), {
+      target: { value: "654321" },
+    });
+    await act(async () => {
       screen.getByRole("button", { name: "Complete email verification" }).click();
     });
 
     expect(continueRegistration).toHaveBeenCalledWith("attempt-email", {
       kind: "complete_email",
-      token: "123456",
+      token: "654321",
     });
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
@@ -473,9 +510,7 @@ describe("LoginScreen registration UIA", () => {
       fallback_url: "",
       policies: [],
     });
-    continueRegistration.mockRejectedValue(
-      new Error("registration attempt is no longer current"),
-    );
+    continueRegistration.mockRejectedValue(new Error("registration attempt is no longer current"));
     render(<LoginScreen onSignedIn={vi.fn()} />);
     fillRegistrationForm();
 
