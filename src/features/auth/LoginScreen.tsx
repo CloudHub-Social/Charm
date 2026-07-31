@@ -39,9 +39,7 @@ const TERMINAL_REGISTRATION_ERRORS = [
 
 function isTerminalRegistrationError(message: string): boolean {
   const normalized = message.toLowerCase();
-  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) =>
-    normalized.includes(terminalError),
-  );
+  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) => normalized.includes(terminalError));
 }
 
 interface LoginScreenProps {
@@ -181,6 +179,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         step = await continueRegistration(step.attempt_id, { kind: "complete_dummy" });
       }
     } catch (error) {
+      const message = String(error);
+      if (!isTerminalRegistrationError(message) && step.state === "challenge") {
+        // The backend deliberately preserves retryable UIA failures (for
+        // example a temporary rate limit). Keep the opaque attempt and expose
+        // the automatic stage so the user can retry it without starting over.
+        setRegistrationStep(step);
+        throw error;
+      }
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
@@ -339,6 +345,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     </div>
                   )}
 
+                  {registrationStep.next_stage === "m.login.dummy" && (
+                    <Button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => void handleRegistrationContinue({ kind: "complete_dummy" })}
+                    >
+                      {pending && <Loader2 className="animate-spin" />}
+                      Retry account creation
+                    </Button>
+                  )}
+
                   {registrationStep.next_stage !== "m.login.terms" &&
                     registrationStep.next_stage !== "m.login.dummy" && (
                       <div className="flex flex-col gap-2">
@@ -423,11 +440,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     {error && <p className="text-xs text-destructive">{error}</p>}
                   </div>
 
-                  <Button
-                    type="submit"
-                    disabled={pending || ssoPending}
-                    className="w-full"
-                  >
+                  <Button type="submit" disabled={pending || ssoPending} className="w-full">
                     {pending && <Loader2 className="animate-spin" />}
                     {pending
                       ? mode === "sign-in"
