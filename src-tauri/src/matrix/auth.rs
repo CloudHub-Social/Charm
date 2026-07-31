@@ -719,7 +719,7 @@ async fn finish_registration(
         // a replacement store concurrently, so leaving this unadopted store
         // behind would strand both the directory and its keychain entry.
         drop(client);
-        persistence::discard_cancelled_account_store(&app, &account_key).map_err(|error| {
+        persistence::discard_cancelled_account_session(&app, &account_key).map_err(|error| {
             format!(
                 "registration was superseded, but its relocated store could not be removed: {error}"
             )
@@ -1142,6 +1142,7 @@ pub(crate) fn cancel_pending_registration_on_exit(app: &AppHandle, state: &Matri
         .unwrap_or_else(|error| error.into_inner())
         .take()
     {
+        let _ = persistence::mark_cancelled_account_cleanup(app, &account_key);
         let _ = persistence::discard_cancelled_account_session(app, &account_key);
     }
 }
