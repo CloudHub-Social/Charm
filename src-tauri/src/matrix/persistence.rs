@@ -57,6 +57,7 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// correctly pairs with whatever's in the keychain, since `on_commit` never
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
+const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -166,7 +167,36 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
 /// failed — same "leftover from an interrupted run" shape, so it's handled
 /// alongside orphan temp stores rather than via a separate startup hook.
 pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
+    sweep_cancelled_account_cleanups(app)?;
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
+}
+
+pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let marker =
+        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
+    let root = matrix_store_root(app)?;
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
+            continue;
+        };
+        if discard_cancelled_account_session(app, account_key).is_ok() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 static STARTUP_SWEEP_READY: std::sync::OnceLock<(
