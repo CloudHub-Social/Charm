@@ -372,6 +372,27 @@ describe("matrix web transport", () => {
       undefined,
     ],
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
+    [
+      "get_user_profile",
+      { userId: "@alice:example.org", roomId: "!room:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/profile?room_id=!room%3Aexample.org",
+      undefined,
+    ],
+    [
+      "get_user_profile",
+      { userId: "@alice:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/profile",
+      undefined,
+    ],
+    [
+      "get_mutual_rooms",
+      { userId: "@alice:example.org" },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/mutual-rooms",
+      undefined,
+    ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
     [
       "get_account_data",
