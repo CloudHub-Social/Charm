@@ -663,7 +663,7 @@ pub async fn register(
     let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
-    finish_registration(app, &state, client, temp_key, None, None).await
+    finish_registration(app, &state, client, temp_key, None, None, None).await
 }
 
 async fn finish_registration(
@@ -673,6 +673,7 @@ async fn finish_registration(
     temp_key: String,
     attempt_id: Option<&str>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<LoginResponse, String> {
     let session = client
         .matrix_auth()
@@ -683,7 +684,12 @@ async fn finish_registration(
 
     // See `login`'s identical guard and its doc comment on
     // `MatrixState::login_completion_lock`.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let _completion_guard = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, state.login_completion_lock.lock())
+            .await
+            .map_err(|_| "authentication setup timed out".to_string())?,
+        None => state.login_completion_lock.lock().await,
+    };
     if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
         return Err("registration cancelled".to_string());
     }
@@ -694,6 +700,11 @@ async fn finish_registration(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &temp_key);
+        return Err("authentication setup timed out".to_string());
+    }
     let _finalizing = FinalizingRegistrationGuard::new(state, account_key.clone());
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
@@ -723,6 +734,15 @@ async fn finish_registration(
         }
         drop(client);
         return clear_cancelled_registration_session(&app, &account_key);
+    }
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app.clone(), previous_client);
+        }
+        drop(client);
+        clear_cancelled_registration_session(&app, &account_key)?;
+        return Err("authentication setup timed out".to_string());
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -878,6 +898,7 @@ pub async fn begin_registration(
                 store_key,
                 Some(&attempt_id),
                 Some(&cancellation),
+                None,
             )
             .await
             {
@@ -1006,6 +1027,7 @@ pub async fn continue_registration(
                 pending.store_key,
                 Some(&attempt_id),
                 Some(&cancellation),
+                None,
             )
             .await
             {
@@ -1212,7 +1234,17 @@ pub async fn login_with_token(
     // is held, so cleanup cannot delete this active store in the gap.
     reservation.defuse();
     let cleanup_key = store_key.clone();
-    match finish_registration(app.clone(), &state, client, store_key, None, None).await {
+    match finish_registration(
+        app.clone(),
+        &state,
+        client,
+        store_key,
+        None,
+        None,
+        Some(deadline),
+    )
+    .await
+    {
         Ok(session) => Ok(session),
         Err(error) => {
             let _ = persistence::discard_temp_login_store(&app, &cleanup_key);
@@ -1808,7 +1840,7 @@ pub async fn start_sso_login(
     // reservation is still live for the whole handoff.
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
-        state: attempt_state,
+        state: attempt_state.clone(),
         store_key,
     });
     reservation.defuse();
@@ -1822,8 +1854,31 @@ pub async fn start_sso_login(
         drop(previous);
         let _ = persistence::discard_temp_login_store(&app, &store_key);
     }
+    spawn_sso_expiry(app, attempt_state);
 
     Ok(sso_url)
+}
+
+fn spawn_sso_expiry(app: AppHandle, attempt_state: String) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(REGISTRATION_ATTEMPT_TTL).await;
+        let state = app.state::<MatrixState>();
+        let mut guard = state.pending_sso.lock().await;
+        let expired = if guard
+            .as_ref()
+            .is_some_and(|pending| pending.state == attempt_state)
+        {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(expired) = expired {
+            let store_key = expired.store_key.clone();
+            drop(expired);
+            let _ = persistence::discard_temp_login_store(&app, &store_key);
+        }
+    });
 }
 
 fn generate_sso_state() -> String {

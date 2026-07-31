@@ -66,14 +66,14 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // (`access[_-]?token` matches "accessToken" via a zero-length separator
 // before "Token", case-insensitively).
 const SECRET_FIELD_PATTERN =
-  /((?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^\s,]+))/gi;
+  /((?:access[_-]?token|refresh[_-]?token|token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^\s,]+))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
 // snake_case equivalents. SECRET_FIELD_PATTERN above mirrors this list (plus
 // a generic `*secret` catch-all) for the free-text `key=value` case.
 const SECRET_FIELD_NAME_PATTERN =
-  /(?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|secret)$/i;
+  /(?:access[_-]?token|refresh[_-]?token|token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|secret)$/i;
 
 export function scrubMatrixIds(text: string): string {
   return text
