@@ -57,6 +57,7 @@ use charm_lib::matrix::send::{
 use charm_lib::matrix::spaces::{
     add_existing_space_child_impl, create_space_impl, join_room_impl, knock_room_impl,
     list_space_hierarchy_impl, remove_space_child_impl, set_space_child_suggested_impl,
+    set_space_parent_impl,
 };
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
@@ -120,6 +121,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
         .route("/api/rooms/{room_id}/leave", post(leave_room))
+        .route("/api/rooms/{room_id}/space-parent", put(set_space_parent))
         .route(
             "/api/rooms/{room_id}/space-children/{child_room_id}",
             post(add_existing_space_child).delete(remove_space_child),
@@ -865,6 +867,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         state
             .sessions
@@ -949,6 +952,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         state
             .sessions
@@ -1009,6 +1013,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@already-gone-throttled:example.invalid").await;
         // Fresh enough that the throttled durable-touch write below would
@@ -1079,6 +1084,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@awaiting-initial:example.invalid").await;
         session
@@ -1157,6 +1163,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@stale-pinned:example.invalid").await;
         let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
@@ -1223,6 +1230,7 @@ mod refresh_session_cookie_gating_tests {
         let state = AppState {
             sessions: crate::session::SessionStore::new(),
             persistence: Some(std::sync::Arc::new(store)),
+            ..AppState::default()
         };
         let session = dummy_live_session("@active-deleted:example.invalid").await;
         // Genuinely active: an open WebSocket connection, which is what
@@ -2131,6 +2139,7 @@ struct CreateSpaceRequest {
     topic: Option<String>,
     room_alias_name: Option<String>,
     public: bool,
+    parent_space_id: Option<String>,
 }
 
 async fn create_space(
@@ -2139,16 +2148,77 @@ async fn create_space(
     Json(request): Json<CreateSpaceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    if request.parent_space_id.is_some() {
+        require_space_hierarchy_write_enabled(state.space_hierarchy_reorganization)?;
+    }
     let room_id = create_space_impl(
         &session.client,
         &request.name,
         request.topic.as_deref(),
         request.room_alias_name.as_deref(),
         request.public,
+        request.parent_space_id.as_deref(),
     )
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(room_id))
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSpaceParentRequest {
+    parent_space_id: Option<String>,
+}
+
+async fn set_space_parent(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Json(request): Json<SetSpaceParentRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    require_space_hierarchy_write_enabled(state.space_hierarchy_reorganization)?;
+    set_space_parent_impl(
+        &session.client,
+        &room_id,
+        request.parent_space_id.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_space_hierarchy_write_enabled(enabled: bool) -> Result<(), ApiError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "space hierarchy reorganization is disabled",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod space_hierarchy_feature_gate_tests {
+    use axum::http::StatusCode;
+
+    #[test]
+    fn hierarchy_writes_are_disabled_by_default() {
+        let error = super::require_space_hierarchy_write_enabled(
+            crate::AppState::default().space_hierarchy_reorganization,
+        )
+        .expect_err("the default-off rollout gate must reject hierarchy writes");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.message,
+            "space hierarchy reorganization is disabled"
+        );
+    }
+
+    #[test]
+    fn hierarchy_writes_can_be_enabled_by_server_configuration() {
+        assert!(super::require_space_hierarchy_write_enabled(true).is_ok());
+    }
 }
 
 async fn leave_room(

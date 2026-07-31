@@ -72,6 +72,12 @@
     "owner": "Spec 63 (sidebar and space management)"
   },
   {
+    "key": "space_hierarchy_reorganization",
+    "default": false,
+    "description": "Create spaces inside other spaces and reorganize their canonical hierarchy.",
+    "owner": "Spec 33 (space hierarchy reorganization)"
+  },
+  {
     "key": "message_pinning",
     "default": false,
     "description": "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge.",

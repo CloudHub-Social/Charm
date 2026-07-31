@@ -30,12 +30,19 @@ interface RoomListItemProps {
   onToggleMuted?: () => void;
   onMarkRead?: () => void;
   onMarkUnread?: () => void;
+  /** Called whenever this row's context menu opens. `RoomList` uses this to
+   * refresh the parent space's permissions at the point of use instead of
+   * trusting a long-lived permission snapshot. */
+  onContextMenuOpen?: () => void;
   /** Detaches `room` from the space whose lobby this row is rendered in —
    * only passed when the row is shown inside a space's room list (not Home
    * or DMs) and `room` is actually a child of that space. This is the
    * counterpart to `SpaceRail`'s own `Remove from space` action, which only
    * covers sub-space rows, not regular rooms filed under a space. */
   onRemoveFromSpace?: () => void;
+  /** Keeps the removal action visible but fail-closed while the parent
+   * space's fresh `m.space.child` permission is loading or denied. */
+  removeFromSpaceDisabled?: boolean;
   /** The space id `onRemoveFromSpace` (if present) would detach `room` from —
    * not read by this component, only compared in `roomListItemPropsEqual`.
    * `onRemoveFromSpace`'s own identity can't stand in for this: `RoomList`
@@ -61,7 +68,9 @@ function RoomListItemImpl({
   onToggleMuted,
   onMarkRead,
   onMarkUnread,
+  onContextMenuOpen,
   onRemoveFromSpace,
+  removeFromSpaceDisabled = false,
   dragHandleProps,
   style,
 }: RoomListItemProps) {
@@ -193,7 +202,7 @@ function RoomListItemImpl({
   }
 
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={(open) => open && onContextMenuOpen?.()}>
       <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
       <ContextMenuContent>
         {onToggleFavourite && (
@@ -217,7 +226,9 @@ function RoomListItemImpl({
         {onRemoveFromSpace && (
           <>
             <ContextMenuSeparator />
-            <ContextMenuItem onSelect={onRemoveFromSpace}>Remove from space</ContextMenuItem>
+            <ContextMenuItem disabled={removeFromSpaceDisabled} onSelect={onRemoveFromSpace}>
+              Remove from space
+            </ContextMenuItem>
           </>
         )}
       </ContextMenuContent>
@@ -257,6 +268,7 @@ export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListIt
   // don't change, so without this check the row would keep showing (or
   // hiding) the action until some unrelated prop forced a re-render.
   if (Boolean(prev.onRemoveFromSpace) !== Boolean(next.onRemoveFromSpace)) return false;
+  if (Boolean(prev.removeFromSpaceDisabled) !== Boolean(next.removeFromSpaceDisabled)) return false;
   // Presence alone misses the narrower case where the same room is visible
   // under two different spaces and the user switches from one lobby to the
   // other: `onRemoveFromSpace` stays present in both renders, but the

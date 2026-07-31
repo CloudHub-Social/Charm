@@ -224,6 +224,28 @@ describe("RoomListItem", () => {
     expect(onRemoveFromSpace).toHaveBeenCalledOnce();
   });
 
+  it("keeps Remove from space disabled while permission is denied or unresolved", async () => {
+    const onRemoveFromSpace = vi.fn();
+    const onContextMenuOpen = vi.fn();
+    render(
+      <RoomListItem
+        room={room}
+        active={false}
+        onSelect={() => {}}
+        onContextMenuOpen={onContextMenuOpen}
+        onRemoveFromSpace={onRemoveFromSpace}
+        removeFromSpaceDisabled
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button"));
+    const item = await screen.findByText("Remove from space");
+    expect(onContextMenuOpen).toHaveBeenCalledOnce();
+    expect(item).toHaveAttribute("data-disabled");
+    fireEvent.click(item);
+    expect(onRemoveFromSpace).not.toHaveBeenCalled();
+  });
+
   it("renders an avatar image when the room has a resolved avatar_path", async () => {
     vi.stubGlobal("Image", MockImage);
     const { container } = render(

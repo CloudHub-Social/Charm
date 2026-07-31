@@ -1498,6 +1498,7 @@ pub fn run() {
             matrix::spaces::join_room,
             matrix::spaces::knock_room,
             matrix::spaces::create_space,
+            matrix::spaces::set_space_parent,
             matrix::spaces::add_existing_space_child,
             matrix::spaces::remove_space_child,
             matrix::spaces::set_space_child_suggested,
