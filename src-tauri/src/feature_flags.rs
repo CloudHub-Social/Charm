@@ -150,6 +150,9 @@ define_feature_flag_keys!(
         /// Spec 36 profile cards for room members, message senders, and
         /// interactive mentions.
         UserProfileCards,
+        /// Spec 45 registration UIA, password recovery, provider-aware SSO,
+        /// and standalone token login.
+        RegistrationAndRecovery,
     }
 );
 
@@ -177,6 +180,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListSort => false,
             FeatureFlagKey::RoomListTypingIndicator => false,
             FeatureFlagKey::UserProfileCards => false,
+            FeatureFlagKey::RegistrationAndRecovery => false,
         }
     }
 
@@ -241,6 +245,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::UserProfileCards => {
                 "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms."
             }
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login."
+            }
         }
     }
 
@@ -275,6 +282,9 @@ impl FeatureFlagKey {
                 "Spec 54 (room-list enrichment and filtering)"
             }
             FeatureFlagKey::UserProfileCards => "Spec 36 (user profile cards)",
+            FeatureFlagKey::RegistrationAndRecovery => {
+                "Spec 45 (registration and password-reset flows)"
+            }
         }
     }
 
@@ -301,6 +311,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListSort => "room_list_sort",
             FeatureFlagKey::RoomListTypingIndicator => "room_list_typing_indicator",
             FeatureFlagKey::UserProfileCards => "user_profile_cards",
+            FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
         }
     }
 }

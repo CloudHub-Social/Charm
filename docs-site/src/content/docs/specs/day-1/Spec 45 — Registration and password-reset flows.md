@@ -3,8 +3,28 @@ title: Charm 2.0 Spec — Registration and password-reset flows
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+The first registration-UIA core slice is implemented for the Tauri transport
+behind the default-off `registration_and_recovery` flag. It adds typed
+`begin_registration`, `continue_registration`, and `cancel_registration`
+commands; keeps the pending Matrix client, password, attempt lifetime, and
+encrypted temporary-store key in Rust; selects the shortest incomplete
+homeserver-advertised flow; supports direct terms/dummy completion; and exposes a
+homeserver fallback URL for CAPTCHA, email, and unknown stages. The default-off
+desktop UI renders policy links and terms acceptance, auto-completes dummy
+stages, opens other stages in the homeserver fallback, supports cancellation,
+and lands successful registration in the existing onboarding flow. The
+continuation validates both the opaque Charm attempt ID and the next advertised
+stage, while policy links are restricted to HTTP(S).
+
+This does not yet complete Spec 45. The web companion attempt boundary, direct
+email request-token path, recovery/SSO/token-login slice, and real-homeserver
+verification remain open. Repository and Playwright tests for DTO mapping,
+stage/session validation, and UI navigation are not live-homeserver evidence.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and
@@ -231,8 +251,9 @@ New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
 defaulting to `false`. The existing legacy dummy registration and generic SSO
 actions remain available while the flag is off, so a dark launch cannot regress
-baseline authentication. Backend commands remain fully validated even when the UI
-flag is disabled; flags are rollout controls, not authorization boundaries.
+baseline authentication. Tauri commands enforce the same flag and fully validate
+attempt and stage inputs when enabled; flags are rollout controls, not
+authorization boundaries.
 
 ## Testing strategy
 
