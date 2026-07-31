@@ -36,8 +36,9 @@ The first delivery slice is in progress:
   gates; the room-only encryption affordance is omitted for spaces.
 - A **Children** settings tab lists the space's published child rooms and
   subspaces, supports permission-gated removal, and reuses the cycle-safe
-  **Add existing** picker. The list is invalidated after each successful
-  mutation so settings reflects the homeserver response.
+  **Add existing** picker. Successful mutations update the local child-list cache
+  optimistically, while `space_children:update` invalidates the list after sync so
+  the homeserver's authoritative state reconciles the optimistic view.
 - The same commands are available through desktop IPC and the authenticated web
   companion transport.
 
@@ -146,7 +147,9 @@ and
 - Extend `create_space` (introduced in Spec 19 phase 4, PR #153) with an optional
   `parent_space_id` param.
 - New `set_space_parent` command for the drag-to-nest re-parent action.
-- No changes to hierarchy-read commands.
+- Add `list_manageable_space_children` for the settings child-management surface;
+  it returns the current published child rooms and subspaces with the metadata the
+  list needs. Spec 19's existing hierarchy walk remains unchanged.
 
 ## Testing strategy
 
