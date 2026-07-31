@@ -55,16 +55,12 @@ const TERMINAL_PASSWORD_RESET_ERRORS = [
 
 function isTerminalRegistrationError(message: string): boolean {
   const normalized = message.toLowerCase();
-  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) =>
-    normalized.includes(terminalError),
-  );
+  return TERMINAL_REGISTRATION_ERRORS.some((terminalError) => normalized.includes(terminalError));
 }
 
 function isTerminalPasswordResetError(message: string): boolean {
   const normalized = message.toLowerCase();
-  return TERMINAL_PASSWORD_RESET_ERRORS.some((terminalError) =>
-    normalized.includes(terminalError),
-  );
+  return TERMINAL_PASSWORD_RESET_ERRORS.some((terminalError) => normalized.includes(terminalError));
 }
 
 interface LoginScreenProps {
@@ -338,6 +334,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         registrationAttemptRef.current === attemptId
       ) {
         setRegistrationEmailChallenge(challenge);
+        setRegistrationEmailToken("");
       }
     } catch (err) {
       if (registrationEmailOperationRef.current === operation) {
@@ -913,11 +910,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {error && <p className="text-xs text-destructive">{error}</p>}
 
                   {(mode === "register" || showTokenLogin || passwordLoginAvailable) && (
-                    <Button
-                      type="submit"
-                      disabled={pending || ssoPending}
-                      className="w-full"
-                    >
+                    <Button type="submit" disabled={pending || ssoPending} className="w-full">
                       {pending && <Loader2 className="animate-spin" />}
                       {pending
                         ? mode === "sign-in"

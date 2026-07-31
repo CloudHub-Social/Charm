@@ -417,12 +417,19 @@ describe("LoginScreen registration UIA", () => {
       target: { value: "123456" },
     });
     await act(async () => {
+      screen.getByRole("button", { name: "Resend verification email" }).click();
+    });
+    expect(screen.getByLabelText("Email token")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Email token"), {
+      target: { value: "654321" },
+    });
+    await act(async () => {
       screen.getByRole("button", { name: "Complete email verification" }).click();
     });
 
     expect(continueRegistration).toHaveBeenCalledWith("attempt-email", {
       kind: "complete_email",
-      token: "123456",
+      token: "654321",
     });
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
@@ -473,9 +480,7 @@ describe("LoginScreen registration UIA", () => {
       fallback_url: "",
       policies: [],
     });
-    continueRegistration.mockRejectedValue(
-      new Error("registration attempt is no longer current"),
-    );
+    continueRegistration.mockRejectedValue(new Error("registration attempt is no longer current"));
     render(<LoginScreen onSignedIn={vi.fn()} />);
     fillRegistrationForm();
 
