@@ -111,9 +111,10 @@ pub(crate) struct PendingPasswordReset {
 pub(crate) struct AuthMailQuota {
     by_address: std::collections::HashMap<String, Vec<std::time::Instant>>,
     all: Vec<std::time::Instant>,
-    upstream_retry_until: Option<std::time::Instant>,
+    upstream_retry_until_by_homeserver: std::collections::HashMap<String, std::time::Instant>,
 }
 
+#[derive(Clone)]
 struct AuthMailQuotaReservation {
     address_digest: String,
     at: std::time::Instant,
@@ -1183,7 +1184,9 @@ pub async fn request_password_reset(
             Err("password reset attempt expired; start again".to_string())
         }
     }?;
-    let quota_reservation = check_auth_mail_quota(&state, &delivery_email).await?;
+    let homeserver_scope = client.homeserver().origin().ascii_serialization();
+    let quota_reservation =
+        check_auth_mail_quota(&state, &delivery_email, &homeserver_scope).await?;
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
@@ -1193,10 +1196,12 @@ pub async fn request_password_reset(
     let response = tokio::select! {
         result = client.send(request) => result,
         () = cancellation.cancelled() => {
+            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             clear_password_reset_cancellation(&state, &attempt_id);
             return Err("password reset attempt was superseded".to_string());
         },
         () = tokio::time::sleep_until(deadline) => {
+            refund_auth_mail_quota(&state, quota_reservation.clone()).await;
             clear_password_reset_cancellation(&state, &attempt_id);
             return Err("password reset attempt expired; start again".to_string());
         }
@@ -1219,7 +1224,7 @@ pub async fn request_password_reset(
             if error.client_api_error_kind().is_none() {
                 refund_auth_mail_quota(&state, quota_reservation).await;
             }
-            retain_password_reset_retry_after(&state, &error).await;
+            retain_password_reset_retry_after(&state, &homeserver_scope, &error).await;
             // Matrix deliberately permits homeservers to reject an unknown
             // address here. Retain a synthetic pending validation session so
             // confirmation also behaves like a real but unverified attempt;
@@ -1258,6 +1263,7 @@ pub async fn request_password_reset(
 async fn check_auth_mail_quota(
     state: &MatrixState,
     address: &str,
+    homeserver_scope: &str,
 ) -> Result<AuthMailQuotaReservation, String> {
     let now = std::time::Instant::now();
     let cutoff = now.checked_sub(AUTH_MAIL_QUOTA_WINDOW);
@@ -1268,12 +1274,15 @@ async fn check_auth_mail_quota(
     let digest = format!("{:016x}", hasher.finish());
     let mut quota = state.auth_mail_quota.lock().await;
     if quota
-        .upstream_retry_until
-        .is_some_and(|retry_until| retry_until > now)
+        .upstream_retry_until_by_homeserver
+        .get(homeserver_scope)
+        .is_some_and(|retry_until| *retry_until > now)
     {
         return Err("too many recovery emails; try again later".to_string());
     }
-    quota.upstream_retry_until = None;
+    quota
+        .upstream_retry_until_by_homeserver
+        .retain(|_, retry_until| *retry_until > now);
     quota
         .all
         .retain(|at| cutoff.is_none_or(|cutoff| *at >= cutoff));
@@ -1327,7 +1336,11 @@ fn synthetic_password_reset_challenge(
     Ok((sid, None, false))
 }
 
-async fn retain_password_reset_retry_after(state: &MatrixState, error: &matrix_sdk::HttpError) {
+async fn retain_password_reset_retry_after(
+    state: &MatrixState,
+    homeserver_scope: &str,
+    error: &matrix_sdk::HttpError,
+) {
     use matrix_sdk::ruma::api::error::RetryAfter;
 
     let Some(ErrorKind::LimitExceeded(data)) = error.client_api_error_kind() else {
@@ -1344,11 +1357,11 @@ async fn retain_password_reset_retry_after(state: &MatrixState, error: &matrix_s
     };
     let retry_until = std::time::Instant::now() + delay;
     let mut quota = state.auth_mail_quota.lock().await;
-    quota.upstream_retry_until = Some(
-        quota
-            .upstream_retry_until
-            .map_or(retry_until, |current| current.max(retry_until)),
-    );
+    quota
+        .upstream_retry_until_by_homeserver
+        .entry(homeserver_scope.to_owned())
+        .and_modify(|current| *current = (*current).max(retry_until))
+        .or_insert(retry_until);
 }
 
 #[tauri::command]
@@ -1565,6 +1578,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (a == 172 && (16..=31).contains(&b))
                 || (a == 192 && b == 0 && c == 0)
                 || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
                 || (a == 192 && b == 168)
                 || (a == 198 && (b == 18 || b == 19))
                 || (a == 198 && b == 51 && c == 100)
@@ -2672,6 +2686,7 @@ mod registration_uia_tests {
             "10.0.0.1",
             "169.254.169.254",
             "192.168.1.2",
+            "192.88.99.1",
             "198.51.100.1",
             "::1",
             "fc00::1",
@@ -2711,12 +2726,12 @@ mod registration_uia_tests {
     async fn password_reset_mail_quota_survives_individual_attempts() {
         let state = MatrixState::default();
         for _ in 0..AUTH_MAILS_PER_ADDRESS {
-            check_auth_mail_quota(&state, "Alice@Example.org")
+            check_auth_mail_quota(&state, "Alice@Example.org", "https://example.org")
                 .await
                 .expect("within address quota");
         }
         assert!(
-            check_auth_mail_quota(&state, "alice@example.org")
+            check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
                 .await
                 .is_err(),
             "normalized address quota must not reset with a new attempt"
@@ -2726,16 +2741,40 @@ mod registration_uia_tests {
     #[tokio::test]
     async fn password_reset_mail_quota_refunds_unsent_requests() {
         let state = MatrixState::default();
-        let reservation = check_auth_mail_quota(&state, "alice@example.org")
+        let reservation = check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
             .await
             .expect("initial reservation");
         refund_auth_mail_quota(&state, reservation).await;
 
         for _ in 0..AUTH_MAILS_PER_ADDRESS {
-            check_auth_mail_quota(&state, "alice@example.org")
+            check_auth_mail_quota(&state, "alice@example.org", "https://example.org")
                 .await
                 .expect("refunded reservation must not consume capacity");
         }
+    }
+
+    #[tokio::test]
+    async fn password_reset_upstream_retry_deadline_is_homeserver_scoped() {
+        let state = MatrixState::default();
+        state
+            .auth_mail_quota
+            .lock()
+            .await
+            .upstream_retry_until_by_homeserver
+            .insert(
+                "https://server-a.example".to_owned(),
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            );
+
+        assert!(
+            check_auth_mail_quota(&state, "alice@example.org", "https://server-a.example",)
+                .await
+                .is_err(),
+            "the rate-limited homeserver must retain its deadline"
+        );
+        check_auth_mail_quota(&state, "alice@example.org", "https://server-b.example")
+            .await
+            .expect("an unrelated homeserver must remain available");
     }
 
     #[tokio::test]
