@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-30T14:27:05.135Z",
+  "generatedAt": "2026-07-31T17:45:50.853Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 38,
-    "follow-up": 4,
+    "shipped": 39,
+    "follow-up": 8,
     "in-progress": 1,
-    "planned": 33
+    "planned": 29
   },
   "attention": [
     {
@@ -116,10 +116,10 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 11,
-        "follow-up": 2,
+        "shipped": 12,
+        "follow-up": 6,
         "in-progress": 1,
-        "planned": 22
+        "planned": 17
       }
     },
     {
@@ -1072,8 +1072,17 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "in-progress",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 323,
+          "title": "Start Spec 36 profile data foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/323",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:41:39Z"
+        }
+      ],
       "issues": []
     },
     {
