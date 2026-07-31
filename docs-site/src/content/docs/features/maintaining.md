@@ -21,8 +21,10 @@ public feature gallery.
 - `scripts/sync-feature-docs.mjs` validates flag coverage and copies only the
   curated images into `docs-site/public/features/`.
 
-The internal `canary` flag is explicitly excluded. Every other flag must have a
-gallery entry, even while it defaults off.
+Flags without a public UI may be listed in `excludedFlags` while their foundation
+lands. Remove that exclusion and add an E2E-backed gallery entry in the same PR
+that introduces the user-facing surface. Every other flag must have a gallery
+entry, even while it defaults off.
 
 ## Updating a screenshot
 

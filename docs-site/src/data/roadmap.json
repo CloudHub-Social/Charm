@@ -1,15 +1,29 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:40:56.424Z",
+  "generatedAt": "2026-07-31T17:42:11.594Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 38,
-    "follow-up": 5,
-    "in-progress": 5,
+    "follow-up": 6,
+    "in-progress": 4,
     "planned": 29
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 327,
+      "title": "Clarify Spec 13 hardware-blocked evidence",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
+      "detail": "Day-1 Spec 13 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 325,
+      "title": "Make Spec 28 local search decision-ready",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/325",
+      "detail": "Day-1 Spec 28 · ready for review"
+    },
     {
       "type": "pull-request",
       "number": 324,
@@ -19,24 +33,10 @@
     },
     {
       "type": "pull-request",
-      "number": 323,
-      "title": "Start Spec 36 profile data foundation",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/323",
-      "detail": "Day-1 Spec 36 · ready for review"
-    },
-    {
-      "type": "pull-request",
       "number": 326,
       "title": "Make Spec 55 quick switcher decision-ready",
       "url": "https://github.com/CloudHub-Social/Charm/pull/326",
       "detail": "Day-1 Spec 55 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 327,
-      "title": "Clarify Spec 13 hardware-blocked evidence",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/327",
-      "detail": "Day-1 Spec 13 · ready for review"
     },
     {
       "type": "issue",
@@ -138,8 +138,8 @@
       ],
       "counts": {
         "shipped": 11,
-        "follow-up": 3,
-        "in-progress": 5,
+        "follow-up": 4,
+        "in-progress": 4,
         "planned": 17
       }
     },
@@ -424,7 +424,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/327",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T17:37:18Z"
+          "updatedAt": "2026-07-31T17:41:10Z"
         },
         {
           "number": 230,
@@ -901,7 +901,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/325",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T17:37:18Z"
+          "updatedAt": "2026-07-31T17:41:10Z"
         }
       ],
       "issues": [
@@ -1093,15 +1093,15 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 323,
           "title": "Start Spec 36 profile data foundation",
           "url": "https://github.com/CloudHub-Social/Charm/pull/323",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:40:28Z"
+          "updatedAt": "2026-07-31T17:41:39Z"
         }
       ],
       "issues": []
@@ -1173,7 +1173,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/324",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T17:40:39Z"
+          "updatedAt": "2026-07-31T17:41:10Z"
         }
       ],
       "issues": []
@@ -1284,7 +1284,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/322",
           "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-31T17:40:35Z"
+          "updatedAt": "2026-07-31T17:41:18Z"
         }
       ],
       "issues": []
@@ -1443,7 +1443,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/326",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-31T17:37:19Z"
+          "updatedAt": "2026-07-31T17:41:09Z"
         }
       ],
       "issues": []
