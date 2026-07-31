@@ -697,12 +697,24 @@ pub async fn snapshot_rooms(
                     manual_order,
                     is_space,
                     parent_space_ids: if is_space && include_canonical_space_hierarchy {
-                        canonical_space_parents
+                        // Preserve every confirmed Matrix relationship for
+                        // cycle checks and settings. Canonicalization is only
+                        // presentation ordering: the selected Charm parent is
+                        // first, followed by unrelated noncanonical edges.
+                        let all = parents.get(&room_id).cloned().unwrap_or_default();
+                        let canonical = canonical_space_parents
                             .get(&room_id)
-                            .cloned()
-                            .unwrap_or_default()
-                    } else if is_space {
-                        parents.get(&room_id).cloned().unwrap_or_default()
+                            .and_then(|ids| ids.first())
+                            .cloned();
+                        canonical
+                            .into_iter()
+                            .chain(all.into_iter().filter(|id| {
+                                canonical_space_parents
+                                    .get(&room_id)
+                                    .and_then(|ids| ids.first())
+                                    != Some(id)
+                            }))
+                            .collect()
                     } else {
                         parents.get(&room_id).cloned().unwrap_or_default()
                     },
