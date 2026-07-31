@@ -43,10 +43,10 @@ two-device mobile leg (R2 in the spec).
 | Platform | (1) getUserMedia grant | (2) RTCPeerConnection + media | (3) getDisplayMedia | Verdict |
 |---|---|---|---|---|
 | macOS | **PASS** | **PASS** | **PASS** | **GO** |
-| iOS | **BLOCKED** (Simulator has no camera; no physical device this session) - config gaps fixed 2026-07-13, still unverified on hardware | UNVERIFIED-LIVE | EXPECTED-GAP (ReplayKit-only, not exposed to WKWebView) | **CONDITIONAL** (fix landed, needs physical device) |
-| Windows | **PASS** | **PASS** | **PASS** | **GO** |
-| Linux | NOT RUN - no GUI display this session; fix landed 2026-07-13, still unverified | NOT RUN | NOT RUN | **CONDITIONAL** (fix landed, needs display environment) |
-| Android | **FAIL as tested** (fix landed 2026-07-13, not yet re-verified) | UNTESTED (never reached — depends on (1)) | **EXPECTED-GAP, confirmed** — `getDisplayMedia` not present on WebView at all | **CONDITIONAL** — fix merged, needs device re-run |
+| iOS | **HARDWARE-BLOCKED** (Simulator has no camera; no physical device available) — config gaps fixed 2026-07-13, still unverified on hardware | **HARDWARE-BLOCKED** | EXPECTED-GAP (ReplayKit-only, not exposed to WKWebView) | **CONDITIONAL** (fix landed, needs physical device) |
+| Windows | **PASS (fake-device/fake-UI CI)**; real permission click path **HARDWARE-BLOCKED** | **PASS (CI)** | **PASS (CI)** | **CONDITIONAL** — confirmed media path, real `PermissionRequested` click-through still required |
+| Linux | **HARDWARE-BLOCKED** — no GUI-capable Linux environment; fix landed 2026-07-13, still unverified | **HARDWARE-BLOCKED** | **HARDWARE-BLOCKED** | **CONDITIONAL** (fix landed, needs display environment) |
+| Android | **HISTORICAL FAIL (pre-fix); post-fix HARDWARE-BLOCKED** — manifest fix landed 2026-07-13, no device/emulator re-run available | **HARDWARE-BLOCKED** (the pre-fix run never reached this step) | **EXPECTED-GAP, confirmed** — `getDisplayMedia` not present on WebView at all | **CONDITIONAL** — fix merged, needs device/emulator re-run |
 
 ### macOS — detail
 
@@ -243,12 +243,15 @@ public/spike-webrtc.html Buttons A/B to confirm the fix works end-to-end.
 
 ### Android — detail (real capability result via headless CI, 2026-07-07)
 
-Wiring landed: `android.permission.CAMERA` / `android.permission.RECORD_AUDIO` in
-`AndroidManifest.xml`, plus non-required camera `<uses-feature>` entries. Per
-Android docs this OS-level permission is necessary but **not sufficient** — the
-`WebView`'s `WebChromeClient` must separately override `onPermissionRequest` and
-call `PermissionRequest.grant(...)` for in-page media access; whether Tauri's
-default Android shell does this was the open question (R1).
+:::caution[Historical root-cause attribution corrected]
+The 2026-07-07 run below is valid pre-fix capability evidence, but its original
+explanation was wrong. The tested repository manifest did **not** yet declare
+`CAMERA`/`RECORD_AUDIO`, while pinned wry already supplied
+`RustWebChromeClient.onPermissionRequest` and the runtime-permission launcher.
+PR #229 subsequently added the missing manifest declarations without custom
+Kotlin. The log remains a historical pre-fix result; only a device/emulator
+re-run can establish the post-fix verdict.
+:::
 
 **Getting a real answer took nine CI iterations** — genuinely worth naming since
 it's most of why Android took so long: five distinct build bugs (openssl-sys
@@ -281,15 +284,11 @@ A: requesting getUserMedia({audio:true,video:true})...
 
 - **(1) getUserMedia grant — FAIL (hangs, not rejects).** The call fires and
   then never resolves or rejects — no error surfaces even in our own harness's
-  `try/catch`. Unlike Windows, there's no `--use-fake-ui-for-media-stream`
-  equivalent for the Android emulator's camera permission — and since nothing in
-  Tauri's default Android shell implements `WebChromeClient.onPermissionRequest`
-  to call `grant()`, the in-webview media-permission negotiation never resolves
-  at all. The `adb shell pm grant ... android.permission.CAMERA` step only
-  satisfies the OS-level runtime permission Android itself requires — it does
-  nothing for the separate WebView-level permission callback. **This is exactly
-  the R1 risk the spec named up front, now confirmed with real evidence instead
-  of a guess.**
+  `try/catch`. The historical run established the hang, but not its originally
+  claimed cause. Source review later confirmed the WebView callback already
+  existed and the repository manifest declarations were missing. Treat this as
+  pre-fix evidence only; do not infer the current result without the
+  hardware-blocked re-run.
 - **(2) RTCPeerConnection + media — untested.** Never reached; the harness's `B`
   button requires a local stream from `A`, which never completed.
 - **(3) getDisplayMedia — EXPECTED-GAP, confirmed.** `getDisplayMedia available:
@@ -338,19 +337,17 @@ IPC commands).
 
 ## Scoped gaps list (Phase 4 work items)
 
-1. ~~**Windows:** determine whether WRY/Tauri v2 surfaces WebView2's
-   `PermissionRequested` automatically~~ — **Resolved 2026-07-07: yes**, all
-   three capabilities passed via CI with no custom handler. Remaining item is
-   just a real human click-through to remove the fake-UI caveat noted above.
+1. **Windows:** the fake-device/fake-UI CI run confirmed media, peer connection,
+   and screen capture, but did not exercise WebView2's real
+   `CoreWebView2.PermissionRequested` click path. R1 remains open and
+   hardware-blocked until a human run verifies that path on Windows.
 2. **Linux:** same shape of item for WebKitGTK's `permission-request` signal —
    still fully open, no fake-device/fake-UI equivalent exists for WebKitGTK the
    way it does for Chromium/WebView2.
-3. ~~**Android:** implement/confirm `WebChromeClient.onPermissionRequest` →
-   `PermissionRequest.grant(...)`~~ — **Confirmed 2026-07-07: it's not
-   implemented today**, and getUserMedia hangs indefinitely without it. This is
-   now a confirmed, required Phase 4 work item (not a hypothetical) — implement
-   the grant callback in the generated Android shell, plus the `Activity`-level
-   runtime permission flow.
+3. **Android:** PR #229 added the missing manifest declarations and confirmed
+   that wry already implements the `WebChromeClient` permission callback without
+   custom Kotlin. Whether that change resolves the observed `getUserMedia` hang
+   remains open and hardware-blocked until the device/emulator Buttons A/B rerun.
 4. **iOS/Android screen share:** both are native-API-only (ReplayKit /
    MediaProjection) and not reachable from the webview — Phase 4 either bridges
    these natively or descopes screen share on mobile. This is an EXPECTED-GAP by
@@ -399,137 +396,66 @@ IPC commands).
 - [ ] Webview version inventory: macOS still needs a real version (UA was
       generic); Windows done (`Edg/149.0.0.0`); Android done
       (`Chrome/101.0.4951.61`, Android 13 emulator image).
-- [ ] Optional: a real human click-through on Windows to remove the fake-UI
-      caveat noted in the Windows section (low priority — CI result is already
-      strong signal).
-- [ ] Final GO/CONDITIONAL/NO-GO verdicts once iOS/Linux/Android land.
+- [ ] Windows: a real human click-through on unpatched WRY is still required to
+      verify the `CoreWebView2.PermissionRequested` prompt path that the fake-UI
+      CI run bypassed. This missing result is hardware-blocked, not failed.
+- [ ] Final GO/CONDITIONAL/NO-GO verdicts once Windows click-through and the
+      iOS/Linux/Android hardware-blocked runs land.
 
-**Updated bottom line (2026-07-07):** 3 of 5 platforms now have real,
-CI/hardware-confirmed verdicts:
+**Current bottom line:** macOS and Windows retain their confirmed evidence. The
+remaining live results are hardware-blocked, not failed:
 - **macOS — GO.** No workaround needed.
-- **Windows — GO.** No workaround needed (R1 resolved: WRY surfaces WebView2's
-  permission flow without custom code).
-- **Android — NO-GO as shipped, CONDITIONAL for Phase 4.** R1 resolved the other
-  way: a `WebChromeClient.onPermissionRequest` handler is required and doesn't
-  exist yet. This is a scoped, known engineering task, not an architectural
-  dead end.
-- **iOS — pending** a physical device (Simulator can't test camera grant).
-- **Linux — not attempted** (no display environment available this session; no
-  fake-device shortcut exists for WebKitGTK the way Chromium/WebView2 has one).
+- **Windows — GO for the confirmed fake-device media path.** The recorded CI
+  evidence remains valid, but R1 is not fully resolved: the real
+  `CoreWebView2.PermissionRequested` click path remains a required,
+  hardware-blocked verification before Spec 13 closure.
+- **Android — CONDITIONAL, post-fix verification hardware-blocked.** The historical
+  pre-fix run hung, but source review established that wry already supplied the
+  `WebChromeClient.onPermissionRequest` flow; PR #229 added the missing manifest
+  permissions. No post-fix verdict may be inferred without a device/emulator run.
+- **iOS — hardware-blocked** pending a physical device (Simulator cannot test the
+  camera grant).
+- **Linux — hardware-blocked** pending a GUI-capable environment; headless build
+  evidence is not a live WebKitGTK permission/media result.
 
-The spike has done its job for the three platforms it could reach: it turned
+The spike has done its job for the platforms it could reach: it turned
 "we don't know if this works" into either a clean GO or a specific, bounded
 Phase 4 work item — which is exactly what a gating investigation is supposed to
 produce.
 
 ## Phase 4 handoff spec: Android `onPermissionRequest` fix
 
-**Status: implemented, PR merged-pending review — [PR #229](https://github.com/CloudHub-Social/Charm/pull/229) (2026-07-13).**
+**Status: implemented and merged — [PR #229](https://github.com/CloudHub-Social/Charm/pull/229) (2026-07-13); live re-verification is hardware-blocked.**
 See the corrected-root-cause note in the Android detail section above: the fix
 that landed is a manifest-only change (`CAMERA`/`RECORD_AUDIO`/
 `MODIFY_AUDIO_SETTINGS` permissions), not new Kotlin `WebChromeClient` code,
 because wry already implements the grant/deny callback. Device/emulator
-verification is still outstanding. The rest of this section is kept as
-originally written for context on what was investigated before implementing.
+verification is still outstanding. The superseded Kotlin implementation scope
+and acceptance criteria have been removed so this section cannot be mistaken
+for an instruction to add a second `WebChromeClient`.
 
-This is no longer investigation work — the
-finding above is confirmed (getUserMedia hangs indefinitely on Android because
-no `WebChromeClient.onPermissionRequest` handler exists). This section is a
-self-contained implementation spec a new agent/session can pick up directly,
-without re-reading the rest of this findings doc.
+The pre-fix `getUserMedia` hang remains valid historical evidence. Its original
+root-cause attribution below is not: pinned wry source confirmed that the handler
+already existed, while the Android manifest permissions did not. Closure resumes
+only when a device/emulator can re-run Buttons A/B against the merged manifest fix.
 
-**Environment constraint driving this handoff:** the session doing this
-implementation work may not have an Android SDK/emulator or device available
-(confirmed: this was true of the current session, 2026-07-13 — no
-`android_sdk_root`/emulator tooling present). **Do not block on that.** Land the
-code change and the manifest/permission wiring regardless; end-to-end
-verification (the actual `getUserMedia` grant + `RTCPeerConnection` +
-`getDisplayMedia` re-run against the harness) happens in a *separate* session
-that has emulator/device access — same shape as how Windows's CI-based run and
-Android's own 10-iteration CI run were done in this spike. Flag in the PR
-description that manual/CI verification is a follow-up, not a blocker for
-merging the code.
+### Closed implementation scope
 
-### Problem (recap, confirmed via CI 2026-07-07)
-
-`android.permission.CAMERA` / `android.permission.RECORD_AUDIO` are already
-declared in `AndroidManifest.xml` (OS-level runtime permission), but that's
-necessary and not sufficient for in-webview media access. The generated Android
-shell's `WebView` never overrides `WebChromeClient.onPermissionRequest`, so
-when a page calls `getUserMedia`, the in-page permission negotiation has no
-handler to resolve it — the call hangs forever (not reject, not error).
-Confirmed today: `src-tauri/gen/android/app/src/main/java/social/cloudhub/charm/MainActivity.kt`
-on `main` is a bare `TauriActivity` subclass with no `WebChromeClient`
-override — the gap is still present outside the spike branch.
-
-### Scope (in)
-
-1. **Runtime permission request at the `Activity` level.** Before/on first use
-   of a calling surface, request `android.permission.CAMERA` and
-   `android.permission.RECORD_AUDIO` via the standard Android 6+
-   runtime-permission flow (`ActivityCompat.requestPermissions` /
-   `registerForActivityResult(RequestMultiplePermissions())`) if not already
-   granted. Manifest declaration alone (already present) does not grant these
-   at runtime on API 23+.
-2. **`WebChromeClient.onPermissionRequest` override.** Get (or set, if none
-   exists yet) a custom `WebChromeClient` on the Tauri-managed `WebView`
-   instance and override `onPermissionRequest(request: PermissionRequest)` to:
-   - Check the requested resources (`PermissionRequest.RESOURCE_VIDEO_CAPTURE`,
-     `RESOURCE_AUDIO_CAPTURE`).
-   - If the corresponding Android runtime permission is already granted, call
-     `request.grant(request.resources)` on the main thread.
-   - If not granted, deny (`request.deny()`) rather than hang — a real user
-     denial should surface as a JS-side rejection, not an indefinite hang. (The
-     hang itself, independent of grant/deny, is the bug this item fixes — a
-     resolved `deny()` is a correct terminal state; an unresolved promise is
-     not.)
-3. **Wire it into Tauri's Android shell correctly.** Tauri v2's generated
-   Android project builds the `WebView` through its own Kotlin/Rust bridge
-   (not a hand-rolled `WebView` in `MainActivity.kt`), so confirm the actual
-   integration point — likely overriding/extending the `WebViewClient`/
-   `WebChromeClient` Tauri already installs (check `RustWebViewClient` /
-   equivalent in the `gen/android` output, or whether a Tauri plugin hook
-   exists for this) rather than replacing Tauri's own `WebChromeClient`
-   wholesale and losing whatever it already does (e.g. `onShowFileChooser`,
-   console logging).
-4. **Don't reintroduce this on every `tauri android init` regen.** `gen/android`
-   is normally regenerable output. If the fix must live in a file under
-   `gen/android`, confirm whether that directory is checked in (it is, per
-   `MainActivity.kt` existing on `main` today — same "hand-edit checked-in
-   generated file" situation Spec 15 hit with Android's keyring backend) or
-   whether Tauri supports injecting this via a plugin/hook that survives
-   regeneration. Prefer the plugin/hook path if one exists; document the
-   choice either way so it isn't silently lost on the next `tauri android init`.
-
-### Non-goals (out)
-
-- No call UI, no MatrixRTC/Element Call wiring — same non-goals as the parent
-  spec. This item is purely the permission-callback plumbing.
-- No fix for Android `getDisplayMedia` — confirmed absent from Android WebView
-  entirely (MediaProjection is native-only); this is the pre-existing
-  EXPECTED-GAP from the spike, unchanged, and out of scope here.
-- No iOS or Linux work — tracked separately below, not part of this item.
-
-### Acceptance criteria
-
-- [ ] `AndroidManifest.xml` permission declarations unchanged/confirmed present
-      (already there).
-- [ ] Runtime permission request implemented and triggers on first
-      camera/mic-requiring action.
-- [ ] `WebChromeClient.onPermissionRequest` override implemented, granting only
-      resources whose corresponding Android runtime permission is already
-      held, denying (not hanging) otherwise.
-- [ ] Change integrates with Tauri's existing Android `WebView`
-      construction rather than replacing it outright (verify no regression to
-      existing `WebChromeClient` behavior, e.g. file chooser, if Tauri already
-      installs one).
-- [ ] PR description explicitly notes end-to-end verification (re-running the
-      spike harness's Button A/B on a real device or emulator) is a follow-up
-      once Android SDK/emulator access is available, not a merge blocker.
+- [x] Add `CAMERA`, `RECORD_AUDIO`, and `MODIFY_AUDIO_SETTINGS` to the Android
+      manifest while keeping camera/microphone hardware optional — PR #229.
+- [x] Preserve wry's existing `RustWebChromeClient` permission handling; do not
+      replace or duplicate it with application Kotlin.
+- [ ] Protect the declarations from `src-tauri/gen/android` regeneration with a
+      surviving hook or a documented, tested reapplication step.
 - [ ] Follow-up verification (separate session, when emulator/device access
       exists): re-run `public/spike-webrtc.html` Buttons A and B on Android and
-      confirm (1) resolves PASS instead of hanging, updating the matrix in this
-      findings doc from NO-GO to GO/CONDITIONAL as appropriate.
+      record the actual PASS or FAIL result. Update the matrix from its current
+      post-fix HARDWARE-BLOCKED/CONDITIONAL state to GO, CONDITIONAL, or NO-GO
+      according to that evidence; do not assume the manifest fix passes.
+
+Android `getDisplayMedia` remains an expected platform gap because Android
+WebView does not expose it. Call UI, MatrixRTC work, and iOS/Linux verification
+remain outside this Android implementation item.
 
 ### Other remaining gaps from this spike (unchanged, tracked here for completeness)
 
@@ -546,8 +472,9 @@ environment access this session doesn't have either:
 - **Webview version inventory:** macOS's real WKWebView/Safari version still
   not captured (UA string is generic); Windows and Android are already
   captured.
-- **Windows:** optional real human click-through to remove the fake-UI CI
-  caveat — low priority, CI result already treated as strong signal.
+- **Windows:** required real human click-through to verify the
+  `CoreWebView2.PermissionRequested` path bypassed by fake-UI CI. The existing
+  CI evidence remains valid, but this gap blocks Spec 13 closure.
 
 None of these four require re-running the Android fix above — they're
 independent per-platform gaps a future session with the right hardware access

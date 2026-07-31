@@ -12,10 +12,10 @@ status: in-progress
 
 Charm 2.0's planning doc mandates first-party WebRTC calling in Phase 4 — running
 WebRTC **directly in the WRY webview**, replacing Charm 1's iframe-embedded Element
-Call. That is a large, expensive build, and its feasibility rests on an assumption
-that is **not yet proven on any target platform**: that the webview each Tauri target
-ships (WKWebView on macOS/iOS, WebView2 on Windows, WebKitGTK on Linux, Android
-System WebView) will actually grant camera/mic access, establish an
+Call. That is a large, expensive build, and its feasibility originally rested on an
+unproven assumption: that the webview each Tauri target ships (WKWebView on
+macOS/iOS, WebView2 on Windows, WebKitGTK on Linux, Android System WebView) will
+actually grant camera/mic access, establish an
 `RTCPeerConnection`, negotiate media, and ideally screen-share — from inside a Tauri
 app, not a browser.
 
@@ -23,24 +23,28 @@ This is exactly where prior art bites: WKWebView historically did not implement
 `getUserMedia` at all until relatively recently and still has entitlement/Info.plist
 requirements; WebView2 gates media permissions through a native
 `PermissionRequested` event the host app must handle; WebKitGTK needs the correct
-build and a permission-request signal wired up; Android System WebView requires the
-host `Activity` to grant runtime permissions **and** answer the `onPermissionRequest`
-callback. Any one of these failing quietly turns Phase 4 into a rewrite mid-flight.
+build and a permission-request signal wired up; Android System WebView requires
+manifest/runtime permissions plus a `WebChromeClient` permission callback. Wry's
+Tauri Android shell already supplies that callback; Charm must not replace or
+duplicate it. Any one of these failing quietly turns Phase 4 into a rewrite
+mid-flight.
 
 The doc therefore requires this spike **in parallel during Phase 1**, because its
 findings **gate the Phase 4 calling build**. This spec is an **investigation
 deliverable** — a findings matrix and a go/no-go per platform — **not shipped call
 UI**. CEF is explicitly out unless WRY is shown to be a dead end on a platform.
 
-## Current state (in repo)
+## Historical baseline and current correction
 
 - Runtime is Tauri v2 with the default **WRY** webview per platform; no CEF.
 - No calling code, no WebRTC, no `getUserMedia`/`RTCPeerConnection` usage anywhere
   today. `App.tsx` → `RoomsScreen` is the whole surface; verification is the only
   crypto-adjacent feature.
-- No camera/mic permission strings, entitlements, or manifest permissions are
-  declared in any platform config (`Info.plist` / macOS entitlements /
-  `AndroidManifest.xml` / Tauri capability files) because nothing has needed them.
+- At proposal time, no camera/mic permission strings, entitlements, or manifest
+  permissions were declared. The spike subsequently added the required platform
+  configuration, including Android's `CAMERA`, `RECORD_AUDIO`, and
+  `MODIFY_AUDIO_SETTINGS` manifest permissions in PR #229. Live iOS, Android, and
+  Linux verification remains hardware-blocked as recorded in the findings doc.
 - Matrix's own calling primitives (MatrixRTC / Element Call widget) are **not** in
   scope for this spike — the spike validates the *transport substrate* (webview +
   WebRTC + permissions), not the Matrix signalling layer.
@@ -137,11 +141,13 @@ capturable via screenshot.
     type and result.
 - **Android (Android System WebView):**
   - `AndroidManifest.xml`: `android.permission.CAMERA`,
-    `android.permission.RECORD_AUDIO` (and `INTERNET`, already present for Matrix).
-  - Runtime permission request (Android 6+) from the host `Activity` **and** the
-    WebView's `WebChromeClient.onPermissionRequest` must call
-    `PermissionRequest.grant(...)` — both are required; either missing blocks media.
-    Record how this is wired through the Tauri Android shell.
+    `android.permission.RECORD_AUDIO`, and `android.permission.MODIFY_AUDIO_SETTINGS`
+    (plus `INTERNET`, already present for Matrix). PR #229 added the missing media
+    declarations.
+  - Preserve wry's existing `RustWebChromeClient.onPermissionRequest` handling;
+    do not add an application Kotlin `WebChromeClient`. Re-run on a device or
+    emulator to verify the manifest fix end-to-end before changing Android's
+    hardware-blocked verdict.
   - `getDisplayMedia` on Android WebView is generally unsupported (MediaProjection is
     native) — expect a gap; record.
 
@@ -230,11 +236,14 @@ scoped by this spike's findings.
 
 ## Risks & open questions
 
-- **R1 — WRY abstracts away the native permission hook.** WebView2's
-  `PermissionRequested`, WebKitGTK's `permission-request`, and Android's
-  `onPermissionRequest` may not be surfaced by WRY, requiring a patch/fork or a Tauri
-  plugin to intercept. If so, that itself is a Phase 4 line item — capture it as
-  CONDITIONAL, not NO-GO, unless truly unreachable.
+- **R1 — native permission hooks differ by platform.** The Windows fake-UI run
+  proved WebView2 media capture once Chromium's permission surface was
+  auto-satisfied; it did **not** prove the real `CoreWebView2.PermissionRequested`
+  click path on unpatched WRY, which remains a required hardware verification.
+  Android's `onPermissionRequest` path needed manifest declarations rather than a
+  second handler. WebKitGTK still requires Charm's signal hook. Preserve these
+  platform-specific findings rather than generalizing one platform's workaround to
+  another.
 - **R2 — mobile loopback is meaningless.** Single-device loopback doesn't exercise a
   real camera path the same way; the two-device leg is mandatory for iOS/Android and
   needs a minimal signalling shim.
