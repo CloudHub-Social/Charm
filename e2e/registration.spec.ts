@@ -4,7 +4,7 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 
 const USER_ID = "@e2e-registration:localhost";
 
-test("registration completes a homeserver terms and dummy UIA flow", async ({ page }) => {
+test("registration completes homeserver terms, email, and dummy UIA", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_REGISTRATION",
@@ -26,6 +26,11 @@ test("registration completes a homeserver terms and dummy UIA flow", async ({ pa
   ).toBeVisible();
   await captureSnapshot(page, "registration-terms-challenge");
   await page.getByRole("button", { name: "Accept and continue" }).click();
+
+  await page.getByLabel("Email").fill("alice@example.org");
+  await page.getByRole("button", { name: "Send verification email" }).click();
+  await page.getByLabel("Email token").fill("654321");
+  await page.getByRole("button", { name: "Complete email verification" }).click();
 
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
 });

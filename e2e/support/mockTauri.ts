@@ -102,7 +102,7 @@ export function installMockTauri(seed: {
   previousSessionCrashed?: boolean;
   /** Return no restored Matrix session so the real login surface mounts. */
   restoreSession?: boolean;
-  /** Enable the deterministic terms -> dummy registration UIA fixture. */
+  /** Enable the deterministic terms -> email -> dummy registration UIA fixture. */
   registrationUia?: boolean;
   /** Advertise provider SSO and standalone token login on the login screen. */
   loginChoices?: boolean;
@@ -366,7 +366,7 @@ export function installMockTauri(seed: {
         state: "challenge",
         attempt_id: "e2e-registration-attempt",
         completed: [],
-        flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+        flows: [{ stages: ["m.login.terms", "m.login.email.identity", "m.login.dummy"] }],
         next_stage: "m.login.terms",
         fallback_url:
           "https://matrix.example/_matrix/client/v3/auth/m.login.terms/fallback/web?session=e2e",
@@ -389,7 +389,19 @@ export function installMockTauri(seed: {
           state: "challenge",
           attempt_id: "e2e-registration-attempt",
           completed: ["m.login.terms"],
-          flows: [{ stages: ["m.login.terms", "m.login.dummy"] }],
+          flows: [{ stages: ["m.login.terms", "m.login.email.identity", "m.login.dummy"] }],
+          next_stage: "m.login.email.identity",
+          fallback_url:
+            "https://matrix.example/_matrix/client/v3/auth/m.login.email.identity/fallback/web?session=e2e",
+          policies: [],
+        };
+      }
+      if (response.kind === "complete_email") {
+        return {
+          state: "challenge",
+          attempt_id: "e2e-registration-attempt",
+          completed: ["m.login.terms", "m.login.email.identity"],
+          flows: [{ stages: ["m.login.terms", "m.login.email.identity", "m.login.dummy"] }],
           next_stage: "m.login.dummy",
           fallback_url:
             "https://matrix.example/_matrix/client/v3/auth/m.login.dummy/fallback/web?session=e2e",
@@ -401,6 +413,7 @@ export function installMockTauri(seed: {
       }
       throw new Error("Unexpected registration response");
     },
+    request_registration_email: () => ({ requires_token: true }),
     cancel_registration: () => null,
     // Shallow-copied for the same reason `pushRoomListUpdate` below is: the
     // real backend never hands out a live, mutable reference the frontend

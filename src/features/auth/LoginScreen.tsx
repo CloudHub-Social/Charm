@@ -16,6 +16,7 @@ import {
   getLoginFlows,
   login,
   loginWithToken,
+  requestRegistrationEmail,
   requestPasswordReset,
   register,
   startSsoLogin,
@@ -23,6 +24,7 @@ import {
   type LoginFlowSummary,
   type PasswordResetChallenge,
   type RegistrationAuthResponse,
+  type RegistrationEmailChallenge,
   type RegistrationStep,
 } from "@/lib/matrix";
 import { useFlag } from "@/featureFlags";
@@ -86,6 +88,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [registrationStep, setRegistrationStep] = useState<
     Extract<RegistrationStep, { state: "challenge" }> | undefined
   >();
+  const [registrationEmail, setRegistrationEmail] = useState("");
+  const [registrationEmailToken, setRegistrationEmailToken] = useState("");
+  const [registrationEmailChallenge, setRegistrationEmailChallenge] =
+    useState<RegistrationEmailChallenge>();
   const [loginFlows, setLoginFlows] = useState<LoginFlowSummary>();
   const [loginFlowsFailed, setLoginFlowsFailed] = useState(false);
   const [showTokenLogin, setShowTokenLogin] = useState(false);
@@ -166,6 +172,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // branch cancels the exact pending attempt before allowing another start.
   const ssoSetupInFlightRef = useRef(false);
   const registrationAttemptRef = useRef<string | null>(null);
+  const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
   const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
@@ -189,6 +196,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     () => () => {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
+      registrationEmailOperationRef.current += 1;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
       passwordResetAttemptRef.current = null;
       passwordResetOperationRef.current += 1;
@@ -276,10 +284,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  async function handleRegistrationStep(initialStep: RegistrationStep) {
+  async function handleRegistrationStep(initialStep: RegistrationStep, expectedOperation?: number) {
     let step = initialStep;
     try {
       for (let automaticStages = 0; step.state === "challenge"; automaticStages += 1) {
+        if (
+          expectedOperation !== undefined &&
+          registrationEmailOperationRef.current !== expectedOperation
+        ) {
+          return;
+        }
         registrationAttemptRef.current = step.attempt_id;
         if (step.next_stage !== "m.login.dummy") break;
         if (automaticStages >= 8) {
@@ -302,44 +316,110 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       const attemptId = registrationAttemptRef.current;
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmail("");
+      setRegistrationEmailToken("");
       if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
       throw registrationError;
     }
     if (step.state === "complete") {
       registrationAttemptRef.current = null;
       setRegistrationStep(undefined);
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmailToken("");
       setPassword("");
       onSignedIn(step.session);
       return;
+    }
+    if (
+      expectedOperation !== undefined &&
+      registrationEmailOperationRef.current !== expectedOperation
+    ) {
+      return;
+    }
+    if (step.next_stage !== "m.login.email.identity") {
+      setRegistrationEmailChallenge(undefined);
+      setRegistrationEmailToken("");
     }
     setRegistrationStep(step);
     setPassword("");
   }
 
-  async function handleRegistrationContinue(response: RegistrationAuthResponse) {
+  async function handleRequestRegistrationEmail() {
     const attemptId = registrationAttemptRef.current;
-    if (!attemptId) return;
+    if (!attemptId || !registrationEmail) return;
+    const operation = ++registrationEmailOperationRef.current;
     setPending(true);
     setError(null);
     try {
-      await handleRegistrationStep(await continueRegistration(attemptId, response));
-    } catch (err) {
-      const message = String(err);
-      if (isTerminalRegistrationError(message)) {
-        registrationAttemptRef.current = null;
-        setRegistrationStep(undefined);
+      const challenge = await requestRegistrationEmail(attemptId, registrationEmail);
+      if (
+        registrationEmailOperationRef.current === operation &&
+        registrationAttemptRef.current === attemptId
+      ) {
+        setRegistrationEmailChallenge(challenge);
+        setRegistrationEmailToken("");
       }
-      setError(message.replace("registration ended:", "").trim());
+    } catch (err) {
+      if (registrationEmailOperationRef.current === operation) {
+        const message = String(err);
+        if (isTerminalRegistrationError(message)) {
+          registrationAttemptRef.current = null;
+          setRegistrationStep(undefined);
+          setRegistrationEmailChallenge(undefined);
+          setRegistrationEmail("");
+          setRegistrationEmailToken("");
+        }
+        setError(message.replace("registration ended:", "").trim());
+      }
     } finally {
-      setPending(false);
+      if (registrationEmailOperationRef.current === operation) setPending(false);
+    }
+  }
+
+  async function handleRegistrationContinue(response: RegistrationAuthResponse) {
+    const attemptId = registrationAttemptRef.current;
+    if (!attemptId) return;
+    const operation = ++registrationEmailOperationRef.current;
+    setPending(true);
+    setError(null);
+    try {
+      const step = await continueRegistration(attemptId, response);
+      if (
+        step.state !== "complete" &&
+        (registrationEmailOperationRef.current !== operation ||
+          registrationAttemptRef.current !== attemptId)
+      ) {
+        return;
+      }
+      await handleRegistrationStep(step, operation);
+    } catch (err) {
+      if (registrationEmailOperationRef.current === operation) {
+        const message = String(err);
+        if (isTerminalRegistrationError(message)) {
+          registrationAttemptRef.current = null;
+          setRegistrationStep(undefined);
+          setRegistrationEmailChallenge(undefined);
+          setRegistrationEmail("");
+          setRegistrationEmailToken("");
+        }
+        setError(message.replace("registration ended:", "").trim());
+      }
+    } finally {
+      if (registrationEmailOperationRef.current === operation) setPending(false);
     }
   }
 
   async function handleCancelRegistration() {
     const attemptId = registrationAttemptRef.current;
     registrationAttemptRef.current = null;
+    registrationEmailOperationRef.current += 1;
     if (attemptId) await cancelRegistration(attemptId).catch(logAndIgnore);
     setRegistrationStep(undefined);
+    setRegistrationEmailChallenge(undefined);
+    setRegistrationEmail("");
+    setRegistrationEmailToken("");
+    setPending(false);
     setError(null);
   }
 
@@ -664,6 +744,85 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     </div>
                   )}
 
+                  {registrationStep.next_stage === "m.login.email.identity" && (
+                    <div className="flex flex-col gap-3">
+                      {!registrationEmailChallenge ? (
+                        <>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="registration-email">Email</Label>
+                            <Input
+                              id="registration-email"
+                              type="email"
+                              value={registrationEmail}
+                              onChange={(event) => setRegistrationEmail(event.currentTarget.value)}
+                              autoComplete="email"
+                              disabled={pending}
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            disabled={pending || !registrationEmail}
+                            onClick={() => void handleRequestRegistrationEmail()}
+                          >
+                            {pending && <Loader2 className="animate-spin" />}
+                            Send verification email
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          {registrationEmailChallenge.requires_token ? (
+                            <div className="flex flex-col gap-1.5">
+                              <Label htmlFor="registration-email-token">Email token</Label>
+                              <Input
+                                id="registration-email-token"
+                                value={registrationEmailToken}
+                                onChange={(event) =>
+                                  setRegistrationEmailToken(event.currentTarget.value)
+                                }
+                                autoComplete="one-time-code"
+                                disabled={pending}
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Open the link in the verification email, then return here.
+                            </p>
+                          )}
+                          <Button
+                            type="button"
+                            disabled={
+                              pending ||
+                              (registrationEmailChallenge.requires_token && !registrationEmailToken)
+                            }
+                            onClick={() =>
+                              void handleRegistrationContinue({
+                                kind: "complete_email",
+                                token: registrationEmailChallenge.requires_token
+                                  ? registrationEmailToken
+                                  : null,
+                              })
+                            }
+                          >
+                            {pending && <Loader2 className="animate-spin" />}
+                            Complete email verification
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={pending}
+                            onClick={() => void handleRequestRegistrationEmail()}
+                          >
+                            Resend verification email
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            To use a different email address, cancel this registration and start
+                            again.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {registrationStep.next_stage === "m.login.dummy" && (
                     <Button
                       type="button"
@@ -676,6 +835,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   )}
 
                   {registrationStep.next_stage !== "m.login.terms" &&
+                    registrationStep.next_stage !== "m.login.email.identity" &&
                     registrationStep.next_stage !== "m.login.dummy" && (
                       <div className="flex flex-col gap-2">
                         <Button

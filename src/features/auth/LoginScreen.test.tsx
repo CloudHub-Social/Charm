@@ -16,6 +16,7 @@ const openUrl = vi.fn().mockResolvedValue(undefined);
 const login = vi.fn();
 const register = vi.fn();
 const beginRegistration = vi.fn();
+const requestRegistrationEmail = vi.fn();
 const continueRegistration = vi.fn();
 const cancelRegistration = vi.fn().mockResolvedValue(undefined);
 const getLoginFlows = vi.fn().mockResolvedValue({
@@ -47,6 +48,7 @@ vi.mock("@/lib/matrix", () => ({
   login: (...args: unknown[]) => login(...args),
   register: (...args: unknown[]) => register(...args),
   beginRegistration: (...args: unknown[]) => beginRegistration(...args),
+  requestRegistrationEmail: (...args: unknown[]) => requestRegistrationEmail(...args),
   continueRegistration: (...args: unknown[]) => continueRegistration(...args),
   cancelRegistration: (...args: unknown[]) => cancelRegistration(...args),
   getLoginFlows: (...args: unknown[]) => getLoginFlows(...args),
@@ -101,6 +103,7 @@ describe("LoginScreen SSO callback handling", () => {
     login.mockClear();
     register.mockClear();
     beginRegistration.mockReset();
+    requestRegistrationEmail.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
     getLoginFlows.mockReset().mockResolvedValue({
@@ -227,6 +230,7 @@ describe("LoginScreen default homeserver URL", () => {
     login.mockClear();
     register.mockClear();
     beginRegistration.mockReset();
+    requestRegistrationEmail.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
     getLoginFlows.mockReset().mockResolvedValue({
@@ -411,6 +415,91 @@ describe("LoginScreen registration UIA", () => {
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
 
+  it("keeps registration email credentials behind the attempt boundary", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-email",
+      completed: [],
+      flows: [{ stages: ["m.login.email.identity"] }],
+      next_stage: "m.login.email.identity",
+      fallback_url:
+        "https://matrix.example/_matrix/client/v3/auth/m.login.email.identity/fallback/web",
+      policies: [],
+    });
+    requestRegistrationEmail.mockResolvedValue({ requires_token: true });
+    continueRegistration.mockResolvedValue({ state: "complete", session: fakeSession() });
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    fillRegistrationForm();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Send verification email" }).click();
+    });
+
+    expect(requestRegistrationEmail).toHaveBeenCalledWith("attempt-email", "alice@example.org");
+    fireEvent.change(screen.getByLabelText("Email token"), {
+      target: { value: "123456" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Resend verification email" }).click();
+    });
+    expect(screen.getByLabelText("Email token")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Email token"), {
+      target: { value: "654321" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Complete email verification" }).click();
+    });
+
+    expect(continueRegistration).toHaveBeenCalledWith("attempt-email", {
+      kind: "complete_email",
+      token: "654321",
+    });
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("ignores a registration email response after account creation is cancelled", async () => {
+    beginRegistration.mockResolvedValue({
+      state: "challenge",
+      attempt_id: "attempt-email",
+      completed: [],
+      flows: [{ stages: ["m.login.email.identity"] }],
+      next_stage: "m.login.email.identity",
+      fallback_url: "",
+      policies: [],
+    });
+    let resolveEmail: ((challenge: { requires_token: boolean }) => void) | undefined;
+    requestRegistrationEmail.mockReturnValue(
+      new Promise((resolve) => {
+        resolveEmail = resolve;
+      }),
+    );
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    fillRegistrationForm();
+    await act(async () => {
+      screen.getByRole("button", { name: "Create account" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "alice@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send verification email" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel account creation" }));
+
+    await act(async () => {
+      resolveEmail?.({ requires_token: true });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByLabelText("Email token")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeVisible();
+  });
+
   it("clears an expired registration challenge instead of leaving stale controls", async () => {
     beginRegistration.mockResolvedValue({
       state: "challenge",
@@ -479,6 +568,7 @@ describe("LoginScreen login choices", () => {
     loginWithToken.mockReset().mockResolvedValue(fakeSession());
     register.mockReset();
     beginRegistration.mockReset();
+    requestRegistrationEmail.mockReset();
     continueRegistration.mockReset();
     cancelRegistration.mockReset().mockResolvedValue(undefined);
     discoverHomeserver.mockReset().mockResolvedValue({
