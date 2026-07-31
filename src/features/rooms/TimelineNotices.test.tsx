@@ -71,7 +71,7 @@ describe("TimelineNotices", () => {
     );
 
     const summary = screen.getByRole("button", {
-      name: "Alice (@alice:example.org), Bob (@bob:example.org) and 1 others joined",
+      name: "Alice (@alice:example.org), Bob (@bob:example.org) and 1 other joined",
     });
     fireEvent.click(summary);
     const lines = screen.getByTestId("timeline-notices").querySelectorAll("p");

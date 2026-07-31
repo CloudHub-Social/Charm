@@ -226,7 +226,10 @@ function collapsedMembershipLabel(
       <TargetIdentity item={items[0]} />
       {items.length === 2 ? " and " : ", "}
       <TargetIdentity item={items[1]} />
-      {items.length > 2 ? ` and ${items.length - 2} others` : ""} {membershipVerb(items[0])}
+      {items.length > 2
+        ? ` and ${items.length - 2} other${items.length === 3 ? "" : "s"}`
+        : ""}{" "}
+      {membershipVerb(items[0])}
     </>
   );
 }
