@@ -68,7 +68,8 @@ function canonicalSpecs(tier) {
 function normalizeStatus(value) {
 	const status = value.toLowerCase().replaceAll('*', '');
 	if (/shipped|complete|merged|\bgo\b/.test(status)) return 'shipped';
-	if (/follow-up|progress|partial|active|implement/.test(status)) return 'in-progress';
+	if (/follow-up|partial/.test(status)) return 'follow-up';
+	if (/progress|active|implement/.test(status)) return 'in-progress';
 	return 'planned';
 }
 
@@ -209,6 +210,7 @@ function finalStatus(baseline, pullRequests, issues) {
 	if (baseline === 'shipped') {
 		return hasOpen || issues.length > 0 ? 'follow-up' : 'shipped';
 	}
+	if (baseline === 'follow-up') return 'follow-up';
 	if (hasOpen) return hasMerged ? 'follow-up' : 'in-progress';
 	// An explicitly in-progress spec remains in progress after its implementation
 	// PRs merge when acceptance evidence or remaining scope is still open. The
@@ -257,7 +259,9 @@ const hydratedSpecs = specs.map((spec) => {
 		? 'shipped'
 		: baselineStatuses.includes('in-progress')
 			? 'in-progress'
-			: 'planned';
+			: baselineStatuses.includes('follow-up')
+				? 'follow-up'
+				: 'planned';
 	const pullRequests = allPullRequests
 		.filter(
 			(pullRequest) =>
