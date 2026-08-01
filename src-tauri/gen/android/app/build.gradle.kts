@@ -42,15 +42,19 @@ fun buildConfigString(value: String): String =
 
 val sentryAndroidUpload = System.getenv("SENTRY_ANDROID_UPLOAD") == "true"
 if (sentryAndroidUpload) {
+    // Release CI builds with uploads disabled first, then invokes only the
+    // generated upload tasks with bounded retries. This keeps Sentry network
+    // stalls from hiding whether the Android artifacts themselves built.
+    val sentryAndroidAutoUpload = System.getenv("SENTRY_ANDROID_AUTO_UPLOAD") != "false"
     apply(plugin = "io.sentry.android.gradle")
     configure<SentryPluginExtension> {
         org.set(requiredSentryEnv("SENTRY_ORG"))
         projectName.set(requiredSentryEnv("SENTRY_PROJECT"))
         authToken.set(requiredSentryEnv("SENTRY_AUTH_TOKEN"))
         includeProguardMapping.set(true)
-        autoUploadProguardMapping.set(true)
+        autoUploadProguardMapping.set(sentryAndroidAutoUpload)
         uploadNativeSymbols.set(true)
-        autoUploadNativeSymbols.set(true)
+        autoUploadNativeSymbols.set(sentryAndroidAutoUpload)
         includeNativeSources.set(true)
         includeSourceContext.set(false)
         includeDependenciesReport.set(false)
