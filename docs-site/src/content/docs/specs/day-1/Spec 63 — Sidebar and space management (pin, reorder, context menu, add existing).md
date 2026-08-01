@@ -10,8 +10,8 @@ sidebar:
 
 ## Implementation status
 
-**Implementation is in progress; closure is paired with Spec 33 and the remaining
-`RoomList` permission gate.** Pin/unpin, reorder (Move up/down), and a
+**All implementation scope has merged; closure remains paired with Spec 33's
+live Matrix-write verification.** Pin/unpin, reorder (Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
@@ -33,10 +33,16 @@ confirmation dialog first; Add Existing is a searchable picker over already-
 joined rooms/spaces, excluding the target space, its ancestors, and its
 current children to prevent cycles/duplicates.
 
-`Settings` is now exposed from the rail behind Spec 33's hierarchy flag and
-opens the selected space in the existing room-settings shell. Spec 63 remains
-`in-progress` until the complete stacked Spec 33 work lands and both specs can
-be closed together; no implementation scope remains in this spec.
+`Settings` is exposed from the rail behind Spec 33's hierarchy flag and opens
+the selected space in the existing room-settings shell. The remaining
+`RoomList` removal gate merged in
+[#320](https://github.com/CloudHub-Social/Charm/pull/320), while the settings and
+child-management surfaces merged in
+[#334](https://github.com/CloudHub-Social/Charm/pull/334) and
+[#335](https://github.com/CloudHub-Social/Charm/pull/335). A real-account nightly
+smoke test confirmed the rail menus and shared settings shell in read-only use.
+Spec 63 remains `in-progress` only until Spec 33 records its live hierarchy-write
+matrix; no implementation scope remains in this spec.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —

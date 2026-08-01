@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:58:45.883Z",
+  "generatedAt": "2026-08-01T16:22:10.979Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
-    "follow-up": 8,
-    "in-progress": 1,
+    "follow-up": 2,
+    "in-progress": 7,
     "planned": 29
   },
   "attention": [
@@ -16,13 +16,6 @@
       "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
       "url": "https://github.com/CloudHub-Social/Charm/issues/382",
       "detail": "follow-up"
-    },
-    {
-      "type": "issue",
-      "number": 350,
-      "title": "Follow-up: align Spec 33 child-list reconciliation wording",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/350",
-      "detail": ""
     },
     {
       "type": "issue",
@@ -68,8 +61,8 @@
       ],
       "counts": {
         "shipped": 25,
-        "follow-up": 2,
-        "in-progress": 0,
+        "follow-up": 1,
+        "in-progress": 1,
         "planned": 0
       }
     },
@@ -117,8 +110,8 @@
       ],
       "counts": {
         "shipped": 12,
-        "follow-up": 6,
-        "in-progress": 1,
+        "follow-up": 1,
+        "in-progress": 6,
         "planned": 17
       }
     },
@@ -395,7 +388,7 @@
       "number": 13,
       "title": "Voice-video platform spike",
       "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 327,
@@ -872,7 +865,7 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 325,
@@ -993,16 +986,49 @@
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
       "status": "in-progress",
-      "pullRequests": [],
-      "issues": [
+      "pullRequests": [
         {
-          "number": 350,
-          "title": "Follow-up: align Spec 33 child-list reconciliation wording",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/350",
-          "updatedAt": "2026-07-30T21:41:37Z",
-          "labels": []
+          "number": 393,
+          "title": "docs: align Spec 33 child reconciliation contract",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/393",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T23:09:47Z"
+        },
+        {
+          "number": 335,
+          "title": "Manage children from space settings",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/335",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:56Z"
+        },
+        {
+          "number": 334,
+          "title": "Open spaces in the shared settings shell",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/334",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:20:40Z"
+        },
+        {
+          "number": 333,
+          "title": "Add drag-to-nest space rail interactions",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/333",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:13Z"
+        },
+        {
+          "number": 321,
+          "title": "Add canonical space parent APIs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/321",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:35:09Z"
         }
-      ]
+      ],
+      "issues": []
     },
     {
       "id": "day-1-34",
@@ -1072,8 +1098,16 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 329,
+          "title": "feat: add user profile card surface",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/329",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:04:50Z"
+        },
         {
           "number": 323,
           "title": "Start Spec 36 profile data foundation",
@@ -1144,8 +1178,16 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 336,
+          "title": "Render membership and state notices in timelines",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/336",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:15:22Z"
+        },
         {
           "number": 324,
           "title": "Start Spec 39 timeline state-event foundation",
@@ -1255,8 +1297,48 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 339,
+          "title": "Add companion registration and recovery",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/339",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:36:40Z"
+        },
+        {
+          "number": 337,
+          "title": "Add direct email validation to registration UIA",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/337",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:57Z"
+        },
+        {
+          "number": 332,
+          "title": "feat: add email password recovery",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/332",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:13Z"
+        },
+        {
+          "number": 330,
+          "title": "Add typed registration UIA core",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/330",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:13Z"
+        },
+        {
+          "number": 331,
+          "title": "feat: add provider and token login choices",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/331",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:06Z"
+        },
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",
@@ -1521,8 +1603,24 @@
       "number": 63,
       "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 335,
+          "title": "Manage children from space settings",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/335",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:56Z"
+        },
+        {
+          "number": 334,
+          "title": "Open spaces in the shared settings shell",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/334",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:20:40Z"
+        },
         {
           "number": 320,
           "title": "Gate room removal by space permissions",

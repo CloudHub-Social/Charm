@@ -130,13 +130,16 @@ helper before hand-rolling.
 
 ## Implementation status
 
-- In progress: canonical `UserProfile` and privacy-minimal
-  `MutualRoomSummary` contracts, desktop commands, web routes, and the
-  default-off feature flag.
-- In review: the profile card renders room-aware identity, presence/status,
-  account-isolated mutual-room queries and navigation; mentions retain their
-  existing entry point, while sender avatars/names/nicks become keyboard
-  accessible entry points only when `user_profile_cards` is enabled.
+- Merged: canonical `UserProfile` and privacy-minimal `MutualRoomSummary`
+  contracts, desktop commands, web routes, and the default-off feature flag in
+  [#323](https://github.com/CloudHub-Social/Charm/pull/323).
+- Merged: the profile card in
+  [#329](https://github.com/CloudHub-Social/Charm/pull/329) renders room-aware
+  identity, presence/status, account-isolated mutual-room queries and navigation;
+  mentions retain their existing entry point, while sender avatars/names/nicks
+  become keyboard accessible entry points only when `user_profile_cards` is
+  enabled. A real-account nightly smoke test confirmed the sender entry point,
+  synchronized presence, and mutual-room list.
 - Remaining: migrate the two legacy own-profile DTO consumers, add member-list
   entry, render last-active time and identity copy actions, wire
   DM/block/moderation actions, and implement `set_room_profile`.
