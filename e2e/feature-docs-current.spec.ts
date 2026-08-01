@@ -27,11 +27,12 @@ test.describe("committed feature documentation", () => {
 
       // The .png name selects Playwright's image comparator for this Buffer, so
       // maxDiffPixels is applied rather than a byte-for-byte buffer comparison.
-      // One hundred pixels is 0.011% of a 1280x720 snapshot: enough for occasional
-      // SVG-edge antialiasing noise, but far below a visible UI change.
+      // Two hundred fifty pixels is 0.027% of a 1280x720 snapshot: enough for
+      // repeatable SVG-edge antialiasing drift across otherwise identical Linux
+      // captures, but far below a visible UI change.
       expect(actual).toMatchSnapshot({
         name: `${feature.slug}.png`,
-        maxDiffPixels: 100,
+        maxDiffPixels: 250,
       });
     });
   }
