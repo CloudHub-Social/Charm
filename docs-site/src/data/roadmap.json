@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-01T15:57:58.096Z",
+  "generatedAt": "2026-08-01T16:05:50.155Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
@@ -1299,6 +1299,46 @@
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 339,
+          "title": "Add companion registration and recovery",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/339",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:36:40Z"
+        },
+        {
+          "number": 337,
+          "title": "Add direct email validation to registration UIA",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/337",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:57Z"
+        },
+        {
+          "number": 332,
+          "title": "feat: add email password recovery",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/332",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:13Z"
+        },
+        {
+          "number": 330,
+          "title": "Add typed registration UIA core",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/330",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:13Z"
+        },
+        {
+          "number": 331,
+          "title": "feat: add provider and token login choices",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/331",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:06Z"
+        },
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",
