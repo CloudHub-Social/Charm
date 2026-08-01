@@ -451,7 +451,9 @@ jobs:
   android-debug-files:
     name: Android mapping and native symbols
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Allows every bounded build/upload attempt to report its own failure
+    # before GitHub's outer job safety cap takes over.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
