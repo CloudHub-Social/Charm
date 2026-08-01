@@ -451,6 +451,7 @@ jobs:
   android-debug-files:
     name: Android mapping and native symbols
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -502,9 +503,12 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      - name: Build Android app and upload mappings/native symbols
+      - name: Build Android app and prepare mappings/native symbols
         env:
           SENTRY_ANDROID_UPLOAD: "true"
+          # Generate and embed Sentry metadata during the build, but keep
+          # network uploads out of the already-expensive Android task graph.
+          SENTRY_ANDROID_AUTO_UPLOAD: "false"
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
@@ -530,7 +534,43 @@ jobs:
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           # Build the generated default Android ABI set so uploaded native symbols
           # match the universal release artifact.
-          pnpm tauri android build --ci
+          timeout --signal=TERM --kill-after=1m 40m pnpm tauri android build --ci
+
+      - name: Upload Android mappings and native symbols
+        env:
+          SENTRY_ANDROID_UPLOAD: "true"
+          SENTRY_ANDROID_AUTO_UPLOAD: "true"
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          gradle=src-tauri/gen/android/gradlew
+          project_dir=src-tauri/gen/android
+          tasks=(
+            :app:uploadSentryProguardMappingsUniversalRelease
+            :app:uploadSentryNativeSymbolsForUniversalRelease
+          )
+
+          for task in "${tasks[@]}"; do
+            uploaded=false
+            for attempt in 1 2 3; do
+              echo "Running $task (attempt $attempt of 3)"
+              if timeout --signal=TERM --kill-after=1m 6m \
+                "$gradle" -p "$project_dir" "$task" \
+                --no-daemon --stacktrace --info; then
+                uploaded=true
+                break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::$task failed or timed out; retrying"
+                sleep $((attempt * 10))
+              fi
+            done
+            if [ "$uploaded" != true ]; then
+              echo "::error::$task failed after 3 bounded attempts"
+              exit 1
+            fi
+          done
 
       - name: Report Android release artifact sizes
         env:

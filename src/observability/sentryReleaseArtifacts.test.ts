@@ -89,13 +89,23 @@ describe("Sentry release artifact workflow", () => {
     expect(workflow.match(/--include-sources/g)?.length).toBeGreaterThanOrEqual(3);
     expect(workflow.match(/--wait/g)?.length).toBeGreaterThanOrEqual(3);
     expect(workflow).toContain('SENTRY_ANDROID_UPLOAD: "true"');
+    expect(workflow).toContain('SENTRY_ANDROID_AUTO_UPLOAD: "false"');
+    expect(workflow).toContain(
+      "timeout --signal=TERM --kill-after=1m 40m pnpm tauri android build --ci",
+    );
+    expect(workflow).toContain(":app:uploadSentryProguardMappingsUniversalRelease");
+    expect(workflow).toContain(":app:uploadSentryNativeSymbolsForUniversalRelease");
+    expect(workflow).toContain("::error::$task failed after 3 bounded attempts");
     expect(workflow).toContain("pnpm tauri android build --ci");
     expect(workflow).toContain("@sentry/cli@3.5.1 build upload");
     expect(workflow).toContain("--base-sha");
     expect(androidGradle).toContain("includeProguardMapping.set(true)");
-    expect(androidGradle).toContain("autoUploadProguardMapping.set(true)");
+    expect(androidGradle).toContain(
+      'val sentryAndroidAutoUpload = System.getenv("SENTRY_ANDROID_AUTO_UPLOAD") != "false"',
+    );
+    expect(androidGradle).toContain("autoUploadProguardMapping.set(sentryAndroidAutoUpload)");
     expect(androidGradle).toContain("uploadNativeSymbols.set(true)");
-    expect(androidGradle).toContain("autoUploadNativeSymbols.set(true)");
+    expect(androidGradle).toContain("autoUploadNativeSymbols.set(sentryAndroidAutoUpload)");
     expect(androidGradle).toContain("includeNativeSources.set(true)");
   });
 
