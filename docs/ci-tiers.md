@@ -71,8 +71,9 @@ reason that needs to be fast.
 ## Tier 4 — Production release _(partially implemented)_
 
 Triggered by pushing a version tag (`v*`). `release-builds.yml`
-already does part of this today: uploads debug symbols / release artifacts
-to Sentry for the tagged commit. The remaining piece — producing real
+already does part of this today: uploads debug symbols and frontend source
+maps to Sentry for the tagged commit, with size analysis for those builds.
+The remaining piece — producing real
 **signed and notarized** shipping bundles (macOS notarization, code-signing
 certs, Windows Authenticode, etc.) and publishing them (GitHub Release
 assets, the auto-updater feed) — is designed but not built. It needs signing
