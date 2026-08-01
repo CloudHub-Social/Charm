@@ -96,7 +96,7 @@ here.
 | 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
-| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Removal gating [#320](https://github.com/CloudHub-Social/Charm/pull/320) and Spec 33 settings/children are merged and smoke-tested read-only; closure is paired with Spec 33's live hierarchy-write evidence |
+| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Removal gating [#320](https://github.com/CloudHub-Social/Charm/pull/320), settings [#334](https://github.com/CloudHub-Social/Charm/pull/334), and child management [#335](https://github.com/CloudHub-Social/Charm/pull/335) are merged and smoke-tested read-only; closure is paired with Spec 33's live hierarchy-write evidence |
 
 ## Cross-cutting rules
 

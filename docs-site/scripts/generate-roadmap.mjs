@@ -210,10 +210,13 @@ function finalStatus(baseline, pullRequests, issues) {
 		return hasOpen || issues.length > 0 ? 'follow-up' : 'shipped';
 	}
 	if (hasOpen) return hasMerged ? 'follow-up' : 'in-progress';
+	// An explicitly in-progress spec remains in progress after its implementation
+	// PRs merge when acceptance evidence or remaining scope is still open. The
+	// repository-reviewed spec/index baseline is authoritative for that boundary.
+	if (baseline === 'in-progress') return 'in-progress';
 	// A merged PR is evidence of implementation, not proof that every acceptance
 	// criterion, manual check, or operator-owned step is complete. Keep the
-	// repository-reviewed spec status authoritative and surface this as follow-up
-	// until the spec/index is explicitly reconciled.
+	// planned baseline visible as follow-up until the spec/index is reconciled.
 	if (hasMerged) return 'follow-up';
 	return baseline;
 }

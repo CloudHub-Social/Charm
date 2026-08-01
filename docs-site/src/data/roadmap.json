@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-01T16:05:50.155Z",
+  "generatedAt": "2026-08-01T16:14:54.509Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
-    "follow-up": 9,
-    "in-progress": 0,
+    "follow-up": 2,
+    "in-progress": 7,
     "planned": 29
   },
   "attention": [
@@ -61,8 +61,8 @@
       ],
       "counts": {
         "shipped": 25,
-        "follow-up": 2,
-        "in-progress": 0,
+        "follow-up": 1,
+        "in-progress": 1,
         "planned": 0
       }
     },
@@ -110,8 +110,8 @@
       ],
       "counts": {
         "shipped": 12,
-        "follow-up": 7,
-        "in-progress": 0,
+        "follow-up": 1,
+        "in-progress": 6,
         "planned": 17
       }
     },
@@ -388,7 +388,7 @@
       "number": 13,
       "title": "Voice-video platform spike",
       "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 327,
@@ -865,7 +865,7 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 325,
@@ -985,7 +985,7 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 393,
@@ -1098,7 +1098,7 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 329,
@@ -1178,7 +1178,7 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 336,
@@ -1297,7 +1297,7 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 339,
@@ -1603,8 +1603,24 @@
       "number": 63,
       "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 335,
+          "title": "Manage children from space settings",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/335",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:56Z"
+        },
+        {
+          "number": 334,
+          "title": "Open spaces in the shared settings shell",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/334",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:20:40Z"
+        },
         {
           "number": 320,
           "title": "Gate room removal by space permissions",
