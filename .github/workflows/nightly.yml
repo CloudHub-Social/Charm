@@ -684,12 +684,13 @@ jobs:
 
           # linuxdeploy-plugin-appimage's `continuous` release tag is
           # mutable by design (it's a rolling pre-release), so this pins to
-          # today's asset by digest; bump the digest here when
-          # intentionally picking up a newer continuous build.
+          # the 2026-08-01 asset by digest; bump the digest here only after
+          # reviewing GitHub's release-asset digest and independently hashing
+          # the downloaded binary.
           fetch_pinned \
             "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" \
             "$tools_dir/linuxdeploy-plugin-appimage.AppImage" \
-            "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"
+            "a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"
 
           # linuxdeploy-plugin-gstreamer: prepare_tools() downloads this
           # unconditionally (from another mutable `master` branch) even
