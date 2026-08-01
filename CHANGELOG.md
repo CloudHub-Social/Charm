@@ -1,3 +1,10 @@
+## 0.1.2 (2026-08-01)
+
+### Fixes
+
+- Cancel every stale password-reset attempt when recovery is cancelled or restarted. ([#394](https://github.com/CloudHub-Social/Charm/pull/394) by @Just-Insane)
+- Keep the space settings label stable for assistive technology while the dialog closes. ([#395](https://github.com/CloudHub-Social/Charm/pull/395) by @Just-Insane)
+
 ## 0.1.1 (2026-07-31)
 
 ### Features
