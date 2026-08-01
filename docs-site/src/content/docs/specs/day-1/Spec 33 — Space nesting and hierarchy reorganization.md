@@ -42,11 +42,22 @@ The first delivery slice is in progress:
 - The same commands are available through desktop IPC and the authenticated web
   companion transport.
 
-All planned implementation slices are now in review. Matrix state writes span
-two rooms and are not atomic: failures are surfaced and the hierarchy is
+All planned implementation slices have merged: canonical parent APIs in
+[#321](https://github.com/CloudHub-Social/Charm/pull/321), drag-to-nest in
+[#333](https://github.com/CloudHub-Social/Charm/pull/333), the shared settings
+entry in [#334](https://github.com/CloudHub-Social/Charm/pull/334), child
+management in [#335](https://github.com/CloudHub-Social/Charm/pull/335), and the
+child reconciliation clarification in
+[#393](https://github.com/CloudHub-Social/Charm/pull/393). Matrix state writes
+span two rooms and are not atomic: failures are surfaced and the hierarchy is
 refetched rather than pretending a failed multi-event update rolled back.
-The spec remains `in-progress` until the stacked PRs land and final live
-homeserver evidence is recorded.
+
+Repository tests cover the mutation, validation, reconciliation, transport, and
+settings paths. A real-account nightly smoke test confirmed the shared space
+settings shell and child list against synchronized homeserver state without
+performing writes. The spec remains `in-progress` until a live homeserver run
+records create-under-space, reparent, un-nest, cycle rejection, and post-resync
+results; the read-only artifact smoke is not a substitute for those writes.
 
 ## Problem & why now
 

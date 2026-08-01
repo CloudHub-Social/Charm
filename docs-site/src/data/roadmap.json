@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-31T17:58:45.883Z",
+  "generatedAt": "2026-08-01T15:57:58.096Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 39,
-    "follow-up": 8,
-    "in-progress": 1,
+    "follow-up": 9,
+    "in-progress": 0,
     "planned": 29
   },
   "attention": [
@@ -16,13 +16,6 @@
       "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
       "url": "https://github.com/CloudHub-Social/Charm/issues/382",
       "detail": "follow-up"
-    },
-    {
-      "type": "issue",
-      "number": 350,
-      "title": "Follow-up: align Spec 33 child-list reconciliation wording",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/350",
-      "detail": ""
     },
     {
       "type": "issue",
@@ -117,8 +110,8 @@
       ],
       "counts": {
         "shipped": 12,
-        "follow-up": 6,
-        "in-progress": 1,
+        "follow-up": 7,
+        "in-progress": 0,
         "planned": 17
       }
     },
@@ -992,17 +985,50 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "in-progress",
-      "pullRequests": [],
-      "issues": [
+      "status": "follow-up",
+      "pullRequests": [
         {
-          "number": 350,
-          "title": "Follow-up: align Spec 33 child-list reconciliation wording",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/350",
-          "updatedAt": "2026-07-30T21:41:37Z",
-          "labels": []
+          "number": 393,
+          "title": "docs: align Spec 33 child reconciliation contract",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/393",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T23:09:47Z"
+        },
+        {
+          "number": 335,
+          "title": "Manage children from space settings",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/335",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:29:56Z"
+        },
+        {
+          "number": 334,
+          "title": "Open spaces in the shared settings shell",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/334",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:20:40Z"
+        },
+        {
+          "number": 333,
+          "title": "Add drag-to-nest space rail interactions",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/333",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:10:13Z"
+        },
+        {
+          "number": 321,
+          "title": "Add canonical space parent APIs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/321",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T17:35:09Z"
         }
-      ]
+      ],
+      "issues": []
     },
     {
       "id": "day-1-34",
@@ -1075,6 +1101,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 329,
+          "title": "feat: add user profile card surface",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/329",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:04:50Z"
+        },
+        {
           "number": 323,
           "title": "Start Spec 36 profile data foundation",
           "url": "https://github.com/CloudHub-Social/Charm/pull/323",
@@ -1146,6 +1180,14 @@
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
       "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 336,
+          "title": "Render membership and state notices in timelines",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/336",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-31T18:15:22Z"
+        },
         {
           "number": 324,
           "title": "Start Spec 39 timeline state-event foundation",

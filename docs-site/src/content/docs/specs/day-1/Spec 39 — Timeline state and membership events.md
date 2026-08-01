@@ -8,13 +8,15 @@ status: in-progress
 
 ## Implementation status
 
-The implementation is now in review across two stacked slices. The foundation
-adds a ts-rs-exported `TimelineItemSummary` union and maps matrix-sdk-ui's existing
+The implementation has merged across two slices: the foundation in
+[#324](https://github.com/CloudHub-Social/Charm/pull/324) adds a ts-rs-exported
+`TimelineItemSummary` union and maps matrix-sdk-ui's existing
 membership, member-profile, room name, topic, avatar, tombstone, and hidden-state
 classifications into it.
 
-The rendering slice carries that full union through both desktop IPC and the web
-companion while retaining the legacy message-only list for compatibility. Behind
+The rendering slice in [#336](https://github.com/CloudHub-Social/Charm/pull/336)
+carries that full union through both desktop IPC and the web companion while
+retaining the legacy message-only list for compatibility. Behind
 the default-off `timeline_state_events` flag, Charm renders friendly notices in
 Bubble, Discord, and IRC layouts, collapses consecutive matching membership
 changes with expand-on-click, and exposes membership and hidden-state visibility
@@ -24,8 +26,11 @@ behavior rather than changing row identity for the dark launch.
 
 Repository evidence includes Rust mapper and binding tests, web-server compilation,
 frontend unit coverage, and a Playwright full-shell collapsed-membership journey.
-This spec remains in progress until the stacked PRs land and a real room confirms
-join/leave/topic changes from another client.
+A real-account nightly smoke test also confirmed a synchronized membership/profile
+notice, collapse rendering, and the Appearance visibility controls. This spec
+remains in progress until a second client produces live join, leave, name, topic,
+avatar, and tombstone changes and Charm records the resulting variants; the
+read-only artifact smoke does not cover that Matrix event matrix.
 
 **Workstream:** one PR / one agent. Extends Spec 14/26 (timeline). Likely the
 single most-noticeable omission found in the whole parity audit.

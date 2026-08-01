@@ -34,10 +34,16 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
-This does not yet complete Spec 45. Real-homeserver verification remains open.
-Repository and Playwright tests for DTO mapping, stage/session validation, direct
-email-token submission, browser-owner isolation, cancellation, and UI navigation
-are not live-homeserver evidence.
+The implementation slices have merged in
+[#330](https://github.com/CloudHub-Social/Charm/pull/330),
+[#331](https://github.com/CloudHub-Social/Charm/pull/331),
+[#332](https://github.com/CloudHub-Social/Charm/pull/332),
+[#337](https://github.com/CloudHub-Social/Charm/pull/337), and
+[#339](https://github.com/CloudHub-Social/Charm/pull/339). This does not yet
+complete Spec 45. Real-homeserver verification remains open. Repository and
+Playwright tests for DTO mapping, stage/session validation, direct email-token
+submission, browser-owner isolation, cancellation, and UI navigation are not
+live-homeserver evidence.
 
 The login-choice slice now also discovers advertised password, token, and SSO
 flows; renders one action per advertised identity provider; revalidates a
