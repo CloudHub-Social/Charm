@@ -92,7 +92,7 @@ describe("Sentry release artifact workflow", () => {
     expect(workflow).toContain('SENTRY_ANDROID_AUTO_UPLOAD: "false"');
     expect(workflow).toContain("timeout-minutes: 120");
     expect(workflow).toContain(
-      "timeout --signal=TERM --kill-after=1m 40m pnpm tauri android build --ci",
+      "timeout --signal=TERM --kill-after=1m 65m pnpm tauri android build --ci",
     );
     expect(workflow).toContain(":app:uploadSentryProguardMappingsUniversalRelease");
     expect(workflow).toContain(":app:uploadSentryNativeSymbolsForUniversalRelease");

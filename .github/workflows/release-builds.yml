@@ -536,7 +536,8 @@ jobs:
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           # Build the generated default Android ABI set so uploaded native symbols
           # match the universal release artifact.
-          timeout --signal=TERM --kill-after=1m 40m pnpm tauri android build --ci
+          # Cold four-ABI APK+AAB builds take about 50 minutes on hosted runners.
+          timeout --signal=TERM --kill-after=1m 65m pnpm tauri android build --ci
 
       - name: Upload Android mappings and native symbols
         env:
