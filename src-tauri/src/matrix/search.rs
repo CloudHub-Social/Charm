@@ -4,7 +4,10 @@
 //! store. Callers must pass only acknowledged, decrypted text, notice, or
 //! emote events after applying Matrix reply and HTML normalization.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 use hkdf::Hkdf;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -42,7 +45,7 @@ impl SearchIndex {
     ///
     /// Returns an error when the keychain-backed store secret is unavailable,
     /// the private directory cannot be created, SQLCipher cannot open the
-    /// database, FTS5 is unavailable, or schema setup fails.
+    /// database, or schema setup and validation fails.
     pub fn open(
         app_data_dir: &Path,
         account_store_key: &str,
@@ -85,7 +88,7 @@ impl SearchIndex {
     }
 
     /// Inserts a renderer-selected message version and atomically updates the
-    /// visible FTS row.
+    /// visible search row.
     ///
     /// # Errors
     ///
@@ -95,7 +98,7 @@ impl SearchIndex {
         let transaction = self.connection.transaction().map_err(safe_storage_error)?;
         // Check before binding `body` into any write. A replay or late edit of
         // an already-redacted original must not reintroduce decrypted text into
-        // provenance even when the visible FTS row remains suppressed.
+        // provenance even when the visible search row remains suppressed.
         if is_tombstoned(&transaction, &document.room_id, &document.event_id)? {
             return transaction.commit().map_err(safe_storage_error);
         }
@@ -388,7 +391,19 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 PRIMARY KEY(room_id, event_id)
              );"
         ))
-        .map_err(safe_storage_error)
+        .map_err(safe_storage_error)?;
+
+    let (row_count, schema_version) = connection
+        .query_row(
+            "SELECT COUNT(*), MIN(schema_version) FROM search_metadata",
+            [],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+        )
+        .map_err(safe_storage_error)?;
+    if row_count != 1 || schema_version != SCHEMA_VERSION {
+        return Err("message search schema version mismatch".to_string());
+    }
+    Ok(())
 }
 
 fn compact(connection: &Connection) -> Result<(), String> {
@@ -418,7 +433,11 @@ fn index_directory(app_data_dir: &Path, account_store_key: &str, device_id: &str
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {
@@ -477,6 +496,23 @@ mod tests {
         assert_ne!(*baseline, *other_account);
         assert_ne!(*baseline, *other_device);
         assert_ne!(*baseline, *other_secret);
+    }
+
+    #[test]
+    fn open_rejects_an_unknown_schema_version() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 999", [])
+            .expect("change schema version");
+        drop(index);
+
+        let error =
+            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("unknown schema must be rejected");
+        assert_eq!(error, "message search schema version mismatch");
     }
 
     #[test]

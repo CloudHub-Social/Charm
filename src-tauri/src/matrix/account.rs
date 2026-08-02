@@ -219,9 +219,10 @@ where
 /// in-memory client. Deliberately does *not* delete the account's SQLCipher
 /// store — see Spec 08's "Logout store retention": this is a sign-out, not a
 /// device wipe, so a later re-login onto the same account reuses the
-/// existing store instead of starting cold. Spec 28's separate plaintext
-/// search index is different: logout removes the current device index and
-/// deactivation removes every index for the account.
+/// existing store instead of starting cold. Spec 28's separate decrypted-content
+/// search index, which is independently encrypted at rest, is different: logout
+/// removes the current device index and deactivation removes every index for the
+/// account.
 async fn clear_local_session(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
