@@ -59,6 +59,7 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
 const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
 const LOGOUT_TOMBSTONE_PREFIX: &str = ".logout-pending-";
+const FALLBACK_LOGOUT_TOMBSTONE_PREFIX: &str = ".matrix-logout-pending-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -158,6 +159,18 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
             keys.push(name);
         }
     }
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    for entry in std::fs::read_dir(app_data_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(account_key) = name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+        }
+    }
     keys.retain(|key| !logout_tombstones.contains(key));
     // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
     // isn't creation order) — sort so callers that iterate multiple known
@@ -193,7 +206,31 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
 /// empty marker exists, so a transient credential deletion failure cannot
 /// resurrect the session on the next launch.
 pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    mark_logout_tombstone_at(&matrix_store_root(app)?, account_key)
+    let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    mark_logout_tombstone_with_fallback_at(&root, &app_data_dir, account_key)
+}
+
+fn mark_logout_tombstone_with_fallback_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    match mark_logout_tombstone_at(&root, account_key) {
+        Ok(()) => Ok(()),
+        Err(primary_error) => {
+            let marker =
+                app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+            std::fs::write(marker, []).map_err(|fallback_error| {
+                format!(
+                    "failed to persist logout intent in primary ({primary_error}) and fallback ({fallback_error}) locations"
+                )
+            })
+        }
+    }
 }
 
 pub(crate) fn mark_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
@@ -202,11 +239,30 @@ pub(crate) fn mark_logout_tombstone_at(root: &Path, account_key: &str) -> Result
 }
 
 pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    clear_logout_tombstone_at(&matrix_store_root(app)?, account_key)
+    let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    clear_logout_tombstones_at(&root, &app_data_dir, account_key)
 }
 
 fn clear_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
     let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn clear_logout_tombstones_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    clear_logout_tombstone_at(root, account_key)?;
+    let marker = app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
     match std::fs::remove_file(marker) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -226,6 +282,7 @@ fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
 fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
     let entries = std::fs::read_dir(root).map_err(|error| error.to_string())?;
     let mut first_error = None;
+    let mut account_keys = HashSet::new();
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
@@ -241,16 +298,42 @@ fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), St
         else {
             continue;
         };
+        account_keys.insert(account_key.to_string());
+    }
+    match std::fs::read_dir(app_data_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        first_error.get_or_insert_with(|| error.to_string());
+                        continue;
+                    }
+                };
+                let name = entry.file_name();
+                if let Some(account_key) = name
+                    .to_str()
+                    .and_then(|name| name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX))
+                {
+                    account_keys.insert(account_key.to_string());
+                }
+            }
+        }
+        Err(error) => {
+            first_error.get_or_insert_with(|| error.to_string());
+        }
+    }
+    for account_key in account_keys {
         // Attempt both independently. The marker remains unless both
         // credential kinds are confirmed absent and it too is removable.
-        let matrix_cleared = match clear_session(account_key) {
+        let matrix_cleared = match clear_session(&account_key) {
             Ok(()) => true,
             Err(error) => {
                 first_error.get_or_insert(error);
                 false
             }
         };
-        let oauth_cleared = match clear_oauth_session(account_key) {
+        let oauth_cleared = match clear_oauth_session(&account_key) {
             Ok(()) => true,
             Err(error) => {
                 first_error.get_or_insert(error);
@@ -262,8 +345,8 @@ fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), St
             // tombstone, before ordinary logout reached derived-index
             // cleanup. Do not clear the only durable logout intent until
             // every account-scoped search index is gone or durably queued.
-            let cleanup_result = super::search::purge_account_indexes(app_data_dir, account_key)
-                .and_then(|()| clear_logout_tombstone_at(root, account_key));
+            let cleanup_result = super::search::purge_account_indexes(app_data_dir, &account_key)
+                .and_then(|()| clear_logout_tombstones_at(root, app_data_dir, &account_key));
             if let Err(error) = cleanup_result {
                 first_error.get_or_insert(error);
             }
@@ -2129,6 +2212,30 @@ mod tests {
         .unwrap();
 
         assert!(!known_account_keys_at(&root.0)
+            .unwrap()
+            .contains(&account_key));
+    }
+
+    #[test]
+    fn fallback_logout_tombstone_suppresses_restore_when_primary_write_fails() {
+        let app_data = ScratchRoot::new("fallback-logout-tombstone");
+        let store_root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&store_root).unwrap();
+        let account_key = account_key("@charm-fallback-logout:localhost");
+        store_path_at(&store_root, &account_key).unwrap();
+
+        // A directory at the primary marker path makes the file write fail
+        // deterministically on every supported platform.
+        std::fs::create_dir(store_root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")))
+            .unwrap();
+        mark_logout_tombstone_with_fallback_at(&store_root, &app_data.0, &account_key)
+            .expect("fallback marker");
+
+        assert!(app_data
+            .0
+            .join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"))
+            .is_file());
+        assert!(!known_account_keys_at(&store_root)
             .unwrap()
             .contains(&account_key));
     }

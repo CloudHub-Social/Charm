@@ -673,30 +673,59 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
     } else {
         false
     };
+    let app_data_dir = app.path().app_data_dir().ok();
+    let credential_cleanup_authorized = if terminal_session_is_active && !tombstone_marked {
+        match app_data_dir.as_ref() {
+            Some(app_data_dir) => match search::mark_device_index_purge_pending(
+                app_data_dir,
+                &account_key,
+                &device_id,
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!(
+                        "failed to persist terminal-auth search cleanup before credential removal: {error}"
+                    );
+                    false
+                }
+            },
+            None => false,
+        }
+    } else {
+        true
+    };
 
     // A stale sync task must never clear a newer login for the same account.
     // Only remove a persisted entry when it still belongs to this exact
     // revoked device; the derived device index is always safe to remove.
     let matrix_credential_cleared = match persistence::load_session(&account_key) {
-        Ok(Some(saved)) if saved.session.meta.device_id.as_str() == device_id.as_str() => {
+        Ok(Some(saved))
+            if credential_cleanup_authorized
+                && saved.session.meta.device_id.as_str() == device_id.as_str() =>
+        {
             persistence::clear_session(&account_key).is_ok()
         }
-        Err(_) if terminal_session_is_active => persistence::clear_session(&account_key).is_ok(),
+        Err(_) if terminal_session_is_active && credential_cleanup_authorized => {
+            persistence::clear_session(&account_key).is_ok()
+        }
         Ok(None) => true,
         _ => !terminal_session_is_active,
     };
     let oauth_credential_cleared = match persistence::load_oauth_session(&account_key) {
-        Ok(Some(saved)) if saved.user.meta.device_id.as_str() == device_id.as_str() => {
+        Ok(Some(saved))
+            if credential_cleanup_authorized
+                && saved.user.meta.device_id.as_str() == device_id.as_str() =>
+        {
             persistence::clear_oauth_session(&account_key).is_ok()
         }
-        Err(_) if terminal_session_is_active => {
+        Err(_) if terminal_session_is_active && credential_cleanup_authorized => {
             persistence::clear_oauth_session(&account_key).is_ok()
         }
         Ok(None) => true,
         _ => !terminal_session_is_active,
     };
-    let search_index_cleared = match app.path().app_data_dir() {
-        Ok(app_data_dir) => {
+    let search_index_cleared = match app_data_dir {
+        Some(app_data_dir) => {
             if let Err(error) = search::purge_device_index(&app_data_dir, &account_key, &device_id)
             {
                 eprintln!(
@@ -707,10 +736,8 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
                 true
             }
         }
-        Err(error) => {
-            eprintln!(
-                "failed to purge message search after terminal authentication error: {error}"
-            );
+        None => {
+            eprintln!("failed to resolve app data for terminal-auth search cleanup");
             false
         }
     };

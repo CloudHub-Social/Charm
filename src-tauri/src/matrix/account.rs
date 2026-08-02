@@ -243,46 +243,8 @@ async fn clear_local_session(
     // account search index instead of restoring or stranding data for a
     // session the user already signed out of.
     let mut cleanup_errors = Vec::new();
-    let tombstone_marked = match persistence::mark_logout_tombstone(app, &account_key) {
-        Ok(()) => true,
-        Err(error) => {
-            // Remote deactivation may already have succeeded. Preserve this
-            // durability failure and establish a secondary search-purge
-            // marker below before deciding whether credentials can be
-            // removed safely.
-            cleanup_errors.push(error);
-            false
-        }
-    };
+    persistence::mark_logout_tombstone(app, &account_key)?;
     let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
-    // If the account tombstone itself cannot be written, establish the
-    // narrower search-purge intent before deleting either credential. This
-    // preserves startup cleanup authority across a crash without retaining
-    // account identifiers in the search marker. If neither marker can be
-    // made durable, retain the credentials so a later restore/rejection path
-    // can still identify and purge the derived index.
-    let fallback_purge_marked = if tombstone_marked {
-        false
-    } else {
-        let result = app_data_dir
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|app_data_dir| {
-                if purge_all_search_indexes {
-                    search::mark_account_indexes_purge_pending(app_data_dir, &account_key)
-                } else {
-                    search::mark_device_index_purge_pending(app_data_dir, &account_key, device_id)
-                }
-            });
-        match result {
-            Ok(()) => true,
-            Err(error) => {
-                cleanup_errors.push(error);
-                false
-            }
-        }
-    };
-    let teardown_intent_durable = tombstone_marked || fallback_purge_marked;
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -296,29 +258,25 @@ async fn clear_local_session(
 
     // Preserve credential-store failures but never let one short-circuit the
     // rest of local teardown. Do not remove the credentials unless startup
-    // has durable cleanup authority through either marker; retaining them in
-    // that exceptional case lets restore/rejection recover the device/account
-    // identity instead of stranding its derived search index.
-    let mut credentials_cleared = false;
-    if teardown_intent_durable {
-        credentials_cleared = true;
-        if let Err(error) = persistence::clear_session(&account_key) {
-            credentials_cleared = false;
-            cleanup_errors.push(error);
-        }
-        if let Err(error) = persistence::clear_oauth_session(&account_key) {
-            credentials_cleared = false;
-            cleanup_errors.push(error);
-        }
+    // has durable restore-suppression and cleanup authority through the
+    // primary or fallback logout tombstone.
+    let mut credentials_cleared = true;
+    if let Err(error) = persistence::clear_session(&account_key) {
+        credentials_cleared = false;
+        cleanup_errors.push(error);
+    }
+    if let Err(error) = persistence::clear_oauth_session(&account_key) {
+        credentials_cleared = false;
+        cleanup_errors.push(error);
     }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
     // that happens to run concurrently. By this point the persisted session
-    // is either gone or retained solely as startup cleanup authority because
-    // neither marker could be written; in both cases, a command that grabbed
-    // the old live client during the (now-multi-await) teardown window must
-    // not let the signed-out account keep sending/fetching.
+    // is either gone or excluded from restoration by a durable tombstone; a
+    // command that grabbed the old live client during the (now-multi-await)
+    // teardown window must not let the signed-out account keep sending or
+    // fetching.
     *state.client.lock().await = None;
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
@@ -382,7 +340,7 @@ async fn clear_local_session(
     // in". Successful explicit logout keeps using the command caller's
     // callback, avoiding a duplicate invalidation event on the normal path.
     match search_purge_result {
-        Ok(()) if credentials_cleared && tombstone_marked => {
+        Ok(()) if credentials_cleared => {
             if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
                 cleanup_errors.push(error);
             }
