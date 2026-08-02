@@ -22,12 +22,13 @@ name: Codex review gate
 # pull_request from a fork would deny. It does not check out or execute any
 # PR code — see the action's own docs for why this is safe.
 #
-# Pinned to a commit SHA, not the `v1.2` tag, since this grants a third-party
+# Pinned to a commit SHA, not the `v1.3.5` tag, since this grants a third-party
 # action issues/pull-requests/statuses write on pull_request_target — a tag
 # can be moved to point at different code later; a SHA can't. Re-pin
-# deliberately (verify the new commit first) rather than trusting `@v1.2` to
-# always mean the same thing. Currently v1.2.1 per the action's own release
-# commit message.
+# deliberately (verify the new commit first) rather than trusting `@v1.3.5`
+# to always mean the same thing. Currently v1.3.5; this version reconciles
+# Codex inline-review evidence through the review-thread metadata instead of
+# requiring the finding body to contain a full-SHA blob link.
 #
 # First-time setup: merge this workflow to the default branch and let it run
 # once on a real PR before adding `codex/review-gate` to the repository
@@ -211,9 +212,9 @@ jobs:
           github.event_name != 'merge_group'
           && env.IS_BOT_PR != 'true'
           && (github.event_name != 'workflow_dispatch' || steps.resolve-dispatch.outputs.is_bot != 'true')
-        # v1.2 (v1.2.1 per its release commit message) — see the header
+        # v1.3.5 — see the header
         # comment for why this is pinned to a SHA rather than the mutable tag.
-        uses: JoeyTeng/codex-review-gate-action@bdb524a7ca7e0d5780dd396144f76f04e4bf770c
+        uses: JoeyTeng/codex-review-gate-action@2a7f9d8cd98f90cb56dc1540bf54d9dc7484afc6
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
