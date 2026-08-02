@@ -14,6 +14,7 @@ use super::{
     ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
     verification, MatrixState,
 };
+use crate::push;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -687,6 +688,7 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         is_same_device
     };
     if cleared_active_client {
+        push::clear_local_state_after_terminal_auth(app, &state, &account_key).await;
         state.clear_timelines().await;
         state.clear_pinned_event_cache().await;
         let _ = shell::apply_native_badge(app, 0);

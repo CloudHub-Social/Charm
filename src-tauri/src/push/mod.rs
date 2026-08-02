@@ -322,6 +322,36 @@ fn clear_persisted_endpoint(app: &AppHandle, account_key: &str) {
     }
 }
 
+/// Drops every local push-registration artifact after the homeserver has
+/// already revoked a session. Unlike [`unregister_push_impl`], this cannot
+/// delete the homeserver pusher because the access token is no longer valid;
+/// it still unregisters the platform transport, removes the account-scoped
+/// endpoint, and resets the process-wide status before another account can
+/// adopt this [`MatrixState`].
+pub(crate) async fn clear_local_state_after_terminal_auth(
+    app: &AppHandle,
+    state: &MatrixState,
+    account_key: &str,
+) {
+    let registered_transport = state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let transport = registered_transport.or_else(|| active_transport(app));
+    if let Some(transport) = transport {
+        if let Err(error) = transport.unregister().await {
+            eprintln!(
+                "failed to unregister local push transport after terminal authentication error: {error}"
+            );
+        }
+    }
+
+    clear_persisted_endpoint(app, account_key);
+    let status = finalize_and_emit(app, PushStatus::default());
+    *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+}
+
 /// Builds the `PusherInit` every platform's registration converges on: an
 /// HTTP pusher pointed at [`PUSH_GATEWAY_URL`], `event_id_only` format (see
 /// this spec's acceptance criteria — the gateway payload must never carry

@@ -20,7 +20,8 @@ device index and account deactivation deletes every retained index for that
 account. Opening a replacement device index first purges any superseded device
 indexes for that account; rejected session restore and terminal
 `M_UNKNOWN_TOKEN` sync errors clear the affected device index as part of session
-teardown. For this sensitive flag only, a trusted remote `false` vetoes a
+teardown, including the revoked account's local push registration state. For
+this sensitive flag only, a trusted remote `false` vetoes a
 persisted local Labs override; disabled startup removes every retained index
 before any search surface can be used (iOS preserves only its empty,
 backup-excluded root and native success marker).
