@@ -242,8 +242,17 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    persistence::clear_session(&account_key)?;
-    persistence::clear_oauth_session(&account_key)?;
+    // Preserve credential-store failures but never let one short-circuit the
+    // rest of local teardown. This matters most after successful remote
+    // deactivation: the account may no longer exist, so there may never be a
+    // later authenticated cleanup opportunity for its derived search index.
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = persistence::clear_session(&account_key) {
+        cleanup_errors.push(error);
+    }
+    if let Err(error) = persistence::clear_oauth_session(&account_key) {
+        cleanup_errors.push(error);
+    }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -318,11 +327,18 @@ async fn clear_local_session(
     // logout callback never runs and retrying can only return "not logged
     // in". Successful explicit logout keeps using the command caller's
     // callback, avoiding a duplicate invalidation event on the normal path.
-    if search_purge_result.is_err() {
+    if let Err(error) = search_purge_result {
+        cleanup_errors.push(error);
+    }
+    if !cleanup_errors.is_empty() {
         let _ = app.emit("session:invalidated", ());
+        for error in cleanup_errors.iter().skip(1) {
+            eprintln!("additional local session cleanup failure: {error}");
+        }
+        return Err(cleanup_errors.remove(0));
     }
 
-    search_purge_result
+    Ok(())
 }
 
 /// Signs the current session out: best-effort server-side revoke (an

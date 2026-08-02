@@ -22,7 +22,9 @@ indexes for that account; rejected session restore and terminal
 `M_UNKNOWN_TOKEN` sync errors clear the affected device index as part of session
 teardown, including the revoked account's local push registration state, and
 invalidate the renderer session. Explicit logout does the same if index purge
-fails after credentials have already been cleared. A device-scoped key verifier lets Charm
+or credential deletion fails, while still completing the remaining teardown.
+The renderer registers that invalidation listener before session restoration
+and ignores a restore response invalidated during initial sync. A device-scoped key verifier lets Charm
 rebuild a corrupt encrypted header with the confirmed current key without
 mistaking a wrong-key or transient storage failure for disposable corruption.
 For this sensitive flag only, a trusted remote `false` vetoes a

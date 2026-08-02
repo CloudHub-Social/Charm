@@ -46,11 +46,38 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   }, [onLoggedOut]);
 
   useEffect(() => {
-    tryRestoreSession()
-      .then(setSession)
+    let active = true;
+    let invalidated = false;
+    let stopListening: (() => void) | undefined;
+
+    // Listener readiness must precede restore: Rust starts initial sync
+    // before returning the restored session, so an immediately revoked token
+    // can otherwise emit into the gap before Tauri's async `listen` resolves.
+    onSessionInvalidated(() => {
+      invalidated = true;
+      if (active) handleLoggedOut();
+    })
+      .then((unlisten) => {
+        if (!active) {
+          unlisten();
+          return null;
+        }
+        stopListening = unlisten;
+        return tryRestoreSession();
+      })
+      .then((restoredSession) => {
+        if (active && !invalidated) setSession(restoredSession);
+      })
       .catch(logAndIgnore)
-      .finally(() => setRestoring(false));
-  }, []);
+      .finally(() => {
+        if (active) setRestoring(false);
+      });
+
+    return () => {
+      active = false;
+      stopListening?.();
+    };
+  }, [handleLoggedOut]);
 
   useEffect(() => {
     // Held here (above the login gate) so a deep link received before sign-in
@@ -60,13 +87,6 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
-
-  useEffect(() => {
-    const unlisten = onSessionInvalidated(handleLoggedOut);
-    return () => {
-      unlisten.then((fn) => fn()).catch(logAndIgnore);
-    };
-  }, [handleLoggedOut]);
 
   if (restoring) {
     return <div className="flex min-h-[100dvh] items-center justify-center bg-background" />;

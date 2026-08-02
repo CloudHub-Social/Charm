@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { queryClient } from "./providers";
@@ -7,6 +7,7 @@ const tryRestoreSession = vi.fn();
 const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
+const onSessionInvalidated = vi.fn();
 let sessionInvalidatedCallback: (() => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
@@ -18,10 +19,7 @@ vi.mock("@/lib/matrix", () => ({
   setLocalOnboardingFlag: () => Promise.resolve(),
   onVerificationRequest: () => Promise.resolve(() => {}),
   onSasUpdate: () => Promise.resolve(() => {}),
-  onSessionInvalidated: (callback: () => void) => {
-    sessionInvalidatedCallback = callback;
-    return Promise.resolve(() => {});
-  },
+  onSessionInvalidated: (callback: () => void) => onSessionInvalidated(callback),
 }));
 
 vi.mock("@/lib/deepLink", () => ({
@@ -62,6 +60,10 @@ beforeEach(() => {
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
   sessionInvalidatedCallback = undefined;
+  onSessionInvalidated.mockReset().mockImplementation((callback: () => void) => {
+    sessionInvalidatedCallback = callback;
+    return Promise.resolve(() => {});
+  });
 });
 
 describe("App", () => {
@@ -111,6 +113,41 @@ describe("App", () => {
     expect(clearSpy).toHaveBeenCalled();
     expect(await screen.findByText("login screen")).toBeInTheDocument();
     clearSpy.mockRestore();
+  });
+
+  it("waits for the invalidation listener before restoring the session", async () => {
+    let markListenerReady: (() => void) | undefined;
+    onSessionInvalidated.mockImplementation((callback: () => void) => {
+      sessionInvalidatedCallback = callback;
+      return new Promise<() => void>((resolve) => {
+        markListenerReady = () => resolve(() => {});
+      });
+    });
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+
+    render(<App />);
+    expect(tryRestoreSession).not.toHaveBeenCalled();
+    markListenerReady?.();
+
+    await waitFor(() => expect(tryRestoreSession).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("button", { name: "trigger logout" })).toBeInTheDocument();
+  });
+
+  it("ignores a restore response invalidated during initial sync", async () => {
+    let finishRestore: ((session: { user_id: string; device_id: string }) => void) | undefined;
+    tryRestoreSession.mockReturnValue(
+      new Promise((resolve) => {
+        finishRestore = resolve;
+      }),
+    );
+
+    render(<App />);
+    await waitFor(() => expect(tryRestoreSession).toHaveBeenCalledOnce());
+    sessionInvalidatedCallback?.();
+    finishRestore?.({ user_id: "@revoked:localhost", device_id: "DEVICE1" });
+
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "trigger logout" })).not.toBeInTheDocument();
   });
 
   it("routes an account with zero rooms and no onboarding flags to OnboardingScreen instead of RoomsScreen", async () => {
