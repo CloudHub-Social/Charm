@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
+const SEARCH_KEY_VERIFIER: &str = ".key-verifier";
 #[cfg(any(target_os = "ios", test))]
 const IOS_BACKUP_EXCLUSION_MARKER: &str = ".ios-backup-excluded";
 const SCHEMA_VERSION: u32 = 2;
@@ -25,6 +26,24 @@ const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 enum MigrationError {
     IncompatibleSchema,
     Storage(String),
+}
+
+fn is_transient_storage_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(
+            ErrorCode::PermissionDenied
+                | ErrorCode::DatabaseBusy
+                | ErrorCode::DatabaseLocked
+                | ErrorCode::OutOfMemory
+                | ErrorCode::ReadOnly
+                | ErrorCode::OperationInterrupted
+                | ErrorCode::SystemIoFailure
+                | ErrorCode::DiskFull
+                | ErrorCode::CannotOpen
+                | ErrorCode::FileLockingProtocolFailed
+        )
+    )
 }
 
 impl MigrationError {
@@ -36,22 +55,7 @@ impl MigrationError {
     }
 
     fn from_sqlite(error: rusqlite::Error) -> Self {
-        let transient_storage_failure = matches!(
-            error.sqlite_error_code(),
-            Some(
-                ErrorCode::PermissionDenied
-                    | ErrorCode::DatabaseBusy
-                    | ErrorCode::DatabaseLocked
-                    | ErrorCode::OutOfMemory
-                    | ErrorCode::ReadOnly
-                    | ErrorCode::OperationInterrupted
-                    | ErrorCode::SystemIoFailure
-                    | ErrorCode::DiskFull
-                    | ErrorCode::CannotOpen
-                    | ErrorCode::FileLockingProtocolFailed
-            )
-        );
-        if transient_storage_failure {
+        if is_transient_storage_error(&error) {
             Self::Storage(safe_storage_error(error))
         } else {
             // Migration runs only fixed schema statements. Corruption,
@@ -125,10 +129,30 @@ impl SearchIndex {
         purge_account_indexes_except(app_data_dir, account_store_key, Some(&directory))?;
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
+        let verifier_path = directory.join(SEARCH_KEY_VERIFIER);
+        let expected_verifier =
+            search_key_verifier(account_store_key, device_id, store_passphrase)?;
+        let verifier_matches = match std::fs::read(&verifier_path) {
+            Ok(stored) if stored.as_slice() == expected_verifier => true,
+            // A missing/partial verifier can result from an interrupted first
+            // open. Probe the database without rebuild authority; a correct
+            // key repairs the verifier below, while a wrong key still fails
+            // closed without deleting the existing index.
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(safe_io_error(error)),
+        };
         let mut connection = Connection::open(&database_path).map_err(safe_storage_error)?;
-        apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
-        configure(&connection)?;
-        match migrate(&connection) {
+        let setup_result = apply_encryption_key(
+            &connection,
+            account_store_key,
+            device_id,
+            store_passphrase,
+            verifier_matches,
+        )
+        .and_then(|()| configure(&connection).map_err(MigrationError::Storage))
+        .and_then(|()| migrate(&connection));
+        match setup_result {
             Ok(()) => {}
             Err(MigrationError::Storage(message)) => return Err(message),
             Err(MigrationError::IncompatibleSchema) => {
@@ -141,11 +165,19 @@ impl SearchIndex {
                 std::fs::remove_dir_all(&directory).map_err(safe_io_error)?;
                 create_private_directory(&directory)?;
                 connection = Connection::open(&database_path).map_err(safe_storage_error)?;
-                apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
+                apply_encryption_key(
+                    &connection,
+                    account_store_key,
+                    device_id,
+                    store_passphrase,
+                    false,
+                )
+                .map_err(MigrationError::into_message)?;
                 configure(&connection)?;
                 migrate(&connection).map_err(MigrationError::into_message)?;
             }
         }
+        std::fs::write(verifier_path, expected_verifier).map_err(safe_io_error)?;
         Ok(Self {
             connection,
             database_path,
@@ -495,25 +527,47 @@ fn apply_encryption_key(
     account_store_key: &str,
     device_id: &str,
     store_passphrase: &str,
-) -> Result<(), String> {
-    let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)?;
+    verifier_matches: bool,
+) -> Result<(), MigrationError> {
+    let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)
+        .map_err(MigrationError::Storage)?;
     let key_literal = Zeroizing::new(sqlcipher_raw_key_literal(derived_key.as_ref()));
     connection
         .pragma_update(None, "key", key_literal.as_str())
-        .map_err(safe_storage_error)?;
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
 
     let cipher_version = connection
         .query_row("PRAGMA cipher_version", [], |row| row.get::<_, String>(0))
-        .map_err(safe_storage_error)?;
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
     if cipher_version.is_empty() {
-        return Err("message search encryption unavailable".to_string());
+        return Err(MigrationError::Storage(
+            "message search encryption unavailable".to_string(),
+        ));
     }
     connection
         .query_row("SELECT count(*) FROM sqlite_master", [], |row| {
             row.get::<_, i64>(0)
         })
         .map(|_| ())
-        .map_err(safe_storage_error)
+        .map_err(|error| {
+            if verifier_matches && !is_transient_storage_error(&error) {
+                MigrationError::IncompatibleSchema
+            } else {
+                MigrationError::Storage(safe_storage_error(error))
+            }
+        })
+}
+
+fn search_key_verifier(
+    account_store_key: &str,
+    device_id: &str,
+    store_passphrase: &str,
+) -> Result<[u8; 32], String> {
+    let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)?;
+    let mut digest = Sha256::new();
+    digest.update(b"Charm message search key verifier v1");
+    digest.update(derived_key.as_ref());
+    Ok(digest.finalize().into())
 }
 
 fn derive_search_key(
@@ -814,13 +868,41 @@ mod tests {
     }
 
     #[test]
+    fn open_rebuilds_a_corrupt_encrypted_header_with_the_verified_key() {
+        use std::io::{Seek, Write};
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("discarded content"), "$original"))
+            .expect("insert content");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+
+        let mut database = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&database_path)
+            .expect("open encrypted database");
+        database.rewind().expect("rewind database");
+        database
+            .write_all(&[0_u8; 32])
+            .expect("damage encrypted header");
+        database.sync_all().expect("persist corruption");
+        drop(database);
+
+        let rebuilt = open_index(directory.path(), "account", "DEVICE");
+        assert_eq!(rebuilt.visible_body("!room:example.org", "$original"), None);
+    }
+
+    #[test]
     fn open_migrates_v1_and_preserves_version_order() {
         let directory = tempfile::tempdir().expect("tempdir");
         let index_directory = index_directory(directory.path(), "account", "DEVICE");
         create_private_directory(&index_directory).expect("private directory");
         let connection =
             Connection::open(index_directory.join(SEARCH_DATABASE)).expect("open v1 database");
-        apply_encryption_key(&connection, "account", "DEVICE", TEST_STORE_SECRET)
+        apply_encryption_key(&connection, "account", "DEVICE", TEST_STORE_SECRET, false)
+            .map_err(MigrationError::into_message)
             .expect("apply encryption key");
         configure(&connection).expect("configure");
         connection

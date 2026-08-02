@@ -692,6 +692,7 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         state.clear_timelines().await;
         state.clear_pinned_event_cache().await;
         let _ = shell::apply_native_badge(app, 0);
+        let _ = app.emit("session:invalidated", ());
     }
 }
 

@@ -365,6 +365,11 @@ export function onSyncState(callback: (event: SyncStateEvent) => void): Promise<
   return listen<SyncStateEvent>("sync:state", (e) => callback(e.payload));
 }
 
+/** The active Matrix access token was revoked outside the explicit logout flow. */
+export function onSessionInvalidated(callback: () => void): Promise<UnlistenFn> {
+  return listen("session:invalidated", callback);
+}
+
 /** Tells the Rust side which room (if any) currently has focus, so the timeline listener can suppress a local notification for whatever room the user is already looking at (Spec 10). Pass `null` when no room is focused (e.g. the room list or settings has focus). */
 export function setFocusedRoom(roomId: string | null): Promise<void> {
   return invoke("set_focused_room", { roomId });

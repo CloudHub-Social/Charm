@@ -7,6 +7,7 @@ const tryRestoreSession = vi.fn();
 const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
+let sessionInvalidatedCallback: (() => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
   tryRestoreSession: (...args: unknown[]) => tryRestoreSession(...args),
@@ -17,6 +18,10 @@ vi.mock("@/lib/matrix", () => ({
   setLocalOnboardingFlag: () => Promise.resolve(),
   onVerificationRequest: () => Promise.resolve(() => {}),
   onSasUpdate: () => Promise.resolve(() => {}),
+  onSessionInvalidated: (callback: () => void) => {
+    sessionInvalidatedCallback = callback;
+    return Promise.resolve(() => {});
+  },
 }));
 
 vi.mock("@/lib/deepLink", () => ({
@@ -56,6 +61,7 @@ beforeEach(() => {
   listRooms.mockReset().mockResolvedValue([{ room_id: "!seeded:localhost", membership: "join" }]);
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
+  sessionInvalidatedCallback = undefined;
 });
 
 describe("App", () => {
@@ -92,6 +98,19 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
 
     expect(onLoggedOut).toHaveBeenCalled();
+  });
+
+  it("returns to login and clears account state when the backend invalidates the session", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const clearSpy = vi.spyOn(queryClient, "clear");
+
+    render(<App />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    sessionInvalidatedCallback?.();
+
+    expect(clearSpy).toHaveBeenCalled();
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+    clearSpy.mockRestore();
   });
 
   it("routes an account with zero rooms and no onboarding flags to OnboardingScreen instead of RoomsScreen", async () => {
