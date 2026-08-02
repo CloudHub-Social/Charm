@@ -16,7 +16,7 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::media;
@@ -311,6 +311,16 @@ async fn clear_local_session(
         .unwrap_or_else(|e| e.into_inner()) = None;
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
+
+    // Credentials and the active client are already gone at this point. If
+    // the derived-index purge failed, the command must still tell the
+    // renderer to leave its authenticated surface; otherwise its explicit
+    // logout callback never runs and retrying can only return "not logged
+    // in". Successful explicit logout keeps using the command caller's
+    // callback, avoiding a duplicate invalidation event on the normal path.
+    if search_purge_result.is_err() {
+        let _ = app.emit("session:invalidated", ());
+    }
 
     search_purge_result
 }
