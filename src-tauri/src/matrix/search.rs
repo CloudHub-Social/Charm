@@ -417,9 +417,9 @@ fn apply_encryption_key(
     store_passphrase: &str,
 ) -> Result<(), String> {
     let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)?;
-    let key_hex = Zeroizing::new(hex(derived_key.as_ref()));
+    let key_literal = Zeroizing::new(sqlcipher_raw_key_literal(derived_key.as_ref()));
     connection
-        .pragma_update(None, "key", key_hex.as_str())
+        .pragma_update(None, "key", key_literal.as_str())
         .map_err(safe_storage_error)?;
 
     let cipher_version = connection
@@ -534,6 +534,16 @@ fn hex(bytes: &[u8]) -> String {
     encoded
 }
 
+fn sqlcipher_raw_key_literal(bytes: &[u8]) -> String {
+    let mut literal = String::with_capacity(bytes.len() * 2 + 3);
+    literal.push_str("x'");
+    for byte in bytes {
+        write!(&mut literal, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    literal.push('\'');
+    literal
+}
+
 fn create_private_directory(path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(safe_io_error)?;
     #[cfg(unix)]
@@ -590,6 +600,12 @@ mod tests {
         assert_ne!(*baseline, *other_account);
         assert_ne!(*baseline, *other_device);
         assert_ne!(*baseline, *other_secret);
+    }
+
+    #[test]
+    fn sqlcipher_key_literal_uses_the_raw_key_form() {
+        let literal = Zeroizing::new(sqlcipher_raw_key_literal(&[0x01, 0xab, 0xff]));
+        assert_eq!(literal.as_str(), "x'01abff'");
     }
 
     #[test]
