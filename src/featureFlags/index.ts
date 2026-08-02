@@ -137,10 +137,17 @@ export async function initializeFeatureFlags(): Promise<void> {
   // reconcile that durable enabled-to-disabled transition now; otherwise the
   // startup purge may already have been skipped. A failed purge leaves the
   // shared retry marker set for the next persisted flag mutation.
-  await reconcileMessageSearchTransition(
-    searchWasEnabled,
-    resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
-  );
+  try {
+    await reconcileMessageSearchTransition(
+      searchWasEnabled,
+      resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+    );
+  } catch {
+    // The helper retains its pending retry marker. Keep the rest of feature
+    // flag initialization alive so the refresh loop or a later Labs mutation
+    // can retry, without exposing renderer-visible filesystem details.
+    console.error("Message search initialization reconciliation failed");
+  }
   startRemoteRefresh();
   initialized = true;
   emit();

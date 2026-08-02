@@ -358,7 +358,7 @@ describe("initializeFeatureFlags", () => {
     mocks.invoke.mockRejectedValueOnce(new Error("index locked")).mockResolvedValueOnce(undefined);
 
     const mod = await import("./index");
-    await expect(mod.initializeFeatureFlags()).rejects.toThrow("index locked");
+    await mod.initializeFeatureFlags();
     await mod.setFeatureFlagOverride("canary", false);
 
     expect(
