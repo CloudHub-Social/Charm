@@ -579,7 +579,7 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), String> {
 
 fn compact(connection: &Connection) -> Result<(), String> {
     connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+        .execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
         .map_err(safe_storage_error)
 }
 
@@ -896,6 +896,13 @@ mod tests {
             .expect("late edit");
 
         assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+        let mut wal_path = index.database_path().as_os_str().to_os_string();
+        wal_path.push("-wal");
+        let wal_path = PathBuf::from(wal_path);
+        assert!(
+            !wal_path.exists() || wal_path.metadata().expect("WAL metadata").len() == 0,
+            "compaction must truncate the WAL after VACUUM"
+        );
         for entry in std::fs::read_dir(index.database_path().parent().expect("parent"))
             .expect("index directory")
         {
