@@ -813,6 +813,17 @@ pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
     }
 }
 
+/// Reads an existing SQLCipher store passphrase without creating one.
+///
+/// Consumers of an already-created Matrix store must use this accessor: a
+/// missing keychain entry means the retained database cannot be decrypted,
+/// and minting a replacement would permanently pair it with the wrong key.
+pub fn load_passphrase(store_key: &str) -> Result<String, String> {
+    SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(store_key))
+        .and_then(|entry| entry.get_password())
+        .map_err(|error| error.to_string())
+}
+
 /// What [`relocate_store`] actually did. Both variants leave the temp-backed
 /// `Client` that was already using it valid — a fresh interactive login
 /// (password/SSO/QR) always mints a brand-new `device_id` from the
@@ -1702,6 +1713,8 @@ mod tests {
     const TEST_MXID_OAUTH: &str = "@charm-persistence-test-oauth:localhost";
     const TEST_MXID_PASSPHRASE_A: &str = "@charm-persistence-test-passphrase-a:localhost";
     const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
+    const TEST_MXID_PASSPHRASE_READ_ONLY: &str =
+        "@charm-persistence-test-passphrase-read-only:localhost";
     const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
     const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
     const TEST_MXID_BOOKMARKS_SECRET: &str = "@charm-persistence-test-bookmarks-secret:localhost";
@@ -1848,6 +1861,23 @@ mod tests {
 
         let other_account = get_or_create_passphrase(&key_b).unwrap();
         assert_ne!(first, other_account);
+    }
+
+    #[test]
+    fn load_passphrase_never_creates_a_missing_credential() {
+        let key = account_key(TEST_MXID_PASSPHRASE_READ_ONLY);
+        let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&key)).unwrap();
+        let _ = entry.delete_credential();
+
+        assert!(load_passphrase(&key).is_err());
+        assert!(matches!(
+            entry.get_password(),
+            Err(SecretStoreError::NotFound)
+        ));
+
+        entry.set_password("existing-passphrase").unwrap();
+        assert_eq!(load_passphrase(&key).unwrap(), "existing-passphrase");
+        entry.delete_credential().unwrap();
     }
 
     /// Review fix regression test: `bookmarks_encryption_key` used to derive

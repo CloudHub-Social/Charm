@@ -104,7 +104,7 @@ impl SearchIndex {
         device_id: &str,
     ) -> Result<Self, String> {
         let store_passphrase = Zeroizing::new(
-            super::persistence::get_or_create_passphrase(account_store_key)
+            super::persistence::load_passphrase(account_store_key)
                 .map_err(|_| "message search encryption key unavailable".to_string())?,
         );
         Self::open_with_secret(
