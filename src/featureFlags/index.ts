@@ -28,6 +28,7 @@ let persistedOverridesCache: FeatureFlagOverrides = {};
 let remoteCache: FeatureFlagRemote = {};
 let initialized = false;
 let cacheMutationId = 0;
+let messageSearchReconciliationPending = false;
 const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
@@ -53,6 +54,29 @@ function recordPersistedOverrides(next: FeatureFlagOverrides): void {
     }
   }
   persistedOverridesCache = next;
+}
+
+async function reconcileMessageSearchTransition(
+  wasEnabled: boolean,
+  isEnabled: boolean,
+): Promise<void> {
+  if (isEnabled) {
+    messageSearchReconciliationPending = false;
+    return;
+  }
+  if (!wasEnabled && !messageSearchReconciliationPending) return;
+  if (!isTauri()) {
+    messageSearchReconciliationPending = false;
+    return;
+  }
+
+  // Keep the retry marker set until the bounded native purge succeeds. This
+  // lets a later OFREP refresh or Labs mutation retry a transient filesystem
+  // failure even though the durable flag already resolves disabled.
+  messageSearchReconciliationPending = true;
+  const { invoke } = await import("@/lib/matrixTransport");
+  await invoke("reconcile_message_search_flag");
+  messageSearchReconciliationPending = false;
 }
 
 /**
@@ -149,6 +173,11 @@ export function useFeatureFlagsInitialized(): boolean {
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
   const mutationId = ++cacheMutationId;
+  const searchWasEnabled = resolveFlag(
+    "encrypted_local_message_search",
+    persistedOverridesCache,
+    remoteCache,
+  );
   const next = { ...overridesCache, [key]: value };
   overridesCache = next;
   emit();
@@ -156,6 +185,10 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
     if (await persistOverrides(next)) {
       recordPersistedOverrides(next);
       emit();
+      await reconcileMessageSearchTransition(
+        searchWasEnabled,
+        resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+      );
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -169,6 +202,11 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
 /** Clears a local override, reverting the flag to remote/default resolution. */
 export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
   const mutationId = ++cacheMutationId;
+  const searchWasEnabled = resolveFlag(
+    "encrypted_local_message_search",
+    persistedOverridesCache,
+    remoteCache,
+  );
   const next = { ...overridesCache };
   delete next[key];
   overridesCache = next;
@@ -177,6 +215,10 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
     if (await persistOverrides(next)) {
       recordPersistedOverrides(next);
       emit();
+      await reconcileMessageSearchTransition(
+        searchWasEnabled,
+        resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+      );
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -249,10 +291,7 @@ export async function refreshRemoteFlags(): Promise<void> {
         // already disabled. Reconcile the sensitive derived store before
         // this refresh completes so a trusted runtime kill switch does not
         // retain data until restart. The web companion has no local index.
-        if (searchWasEnabled && !searchIsEnabled && isTauri()) {
-          const { invoke } = await import("@/lib/matrixTransport");
-          await invoke("reconcile_message_search_flag");
-        }
+        await reconcileMessageSearchTransition(searchWasEnabled, searchIsEnabled);
       }
     }
   } finally {
@@ -286,6 +325,7 @@ export const featureFlagTestHooks = {
     remoteCache = {};
     initialized = false;
     cacheMutationId = 0;
+    messageSearchReconciliationPending = false;
     refreshStarted = false;
     refreshInFlight = false;
     listeners.clear();
