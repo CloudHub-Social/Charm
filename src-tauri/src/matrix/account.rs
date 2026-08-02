@@ -242,7 +242,18 @@ async fn clear_local_session(
     // startup excludes this account, retries both deletes, and purges every
     // account search index instead of restoring or stranding data for a
     // session the user already signed out of.
-    persistence::mark_logout_tombstone(app, &account_key)?;
+    let mut cleanup_errors = Vec::new();
+    let tombstone_marked = match persistence::mark_logout_tombstone(app, &account_key) {
+        Ok(()) => true,
+        Err(error) => {
+            // Remote deactivation may already have succeeded. Preserve this
+            // durability failure, but never let it prevent the one remaining
+            // opportunity to clear credentials, stop the client, and purge
+            // the account's derived search data.
+            cleanup_errors.push(error);
+            false
+        }
+    };
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -258,14 +269,15 @@ async fn clear_local_session(
     // rest of local teardown. This matters most after successful remote
     // deactivation: the account may no longer exist, so there may never be a
     // later authenticated cleanup opportunity for its derived search index.
-    let mut cleanup_errors = Vec::new();
+    let mut credentials_cleared = true;
     if let Err(error) = persistence::clear_session(&account_key) {
+        credentials_cleared = false;
         cleanup_errors.push(error);
     }
     if let Err(error) = persistence::clear_oauth_session(&account_key) {
+        credentials_cleared = false;
         cleanup_errors.push(error);
     }
-    let credentials_cleared = cleanup_errors.is_empty();
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -341,7 +353,7 @@ async fn clear_local_session(
     // in". Successful explicit logout keeps using the command caller's
     // callback, avoiding a duplicate invalidation event on the normal path.
     match search_purge_result {
-        Ok(()) if credentials_cleared => {
+        Ok(()) if credentials_cleared && tombstone_marked => {
             if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
                 cleanup_errors.push(error);
             }
