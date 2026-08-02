@@ -99,19 +99,32 @@ impl SearchIndex {
         // Check before binding `body` into any write. A replay or late edit of
         // an already-redacted original must not reintroduce decrypted text into
         // provenance even when the visible search row remains suppressed.
-        if is_tombstoned(&transaction, &document.room_id, &document.event_id)? {
+        if is_tombstoned(&transaction, &document.room_id, &document.event_id)?
+            || is_tombstoned(&transaction, &document.room_id, &document.version_event_id)?
+        {
             return transaction.commit().map_err(safe_storage_error);
         }
+        let selection_order = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(selection_order), 0) + 1
+                 FROM message_versions
+                 WHERE room_id = ?1 AND original_event_id = ?2",
+                params![&document.room_id, &document.event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(safe_storage_error)?;
         transaction
             .execute(
                 "INSERT INTO message_versions (
-                    room_id, original_event_id, version_event_id, sender, body, origin_server_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    room_id, original_event_id, version_event_id, sender, body,
+                    origin_server_ts, selection_order
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(room_id, version_event_id) DO UPDATE SET
                     original_event_id = excluded.original_event_id,
                     sender = excluded.sender,
                     body = excluded.body,
-                    origin_server_ts = excluded.origin_server_ts",
+                    origin_server_ts = excluded.origin_server_ts,
+                    selection_order = excluded.selection_order",
                 params![
                     &document.room_id,
                     &document.event_id,
@@ -119,6 +132,7 @@ impl SearchIndex {
                     &document.sender,
                     &document.body,
                     timestamp_to_i64(document.origin_server_ts),
+                    selection_order,
                 ],
             )
             .map_err(safe_storage_error)?;
@@ -126,27 +140,59 @@ impl SearchIndex {
         transaction.commit().map_err(safe_storage_error)
     }
 
-    /// Removes one original event and all of its edit content, then
-    /// compacts SQLite before returning.
+    /// Removes a redacted original or edit. Original redactions remove every
+    /// version; edit redactions restore the previously selected version.
     ///
     /// # Errors
     ///
     /// Returns an error when deletion, WAL truncation, or compaction fails.
     pub fn redact(&mut self, room_id: &str, event_id: &str) -> Result<(), String> {
         let transaction = self.connection.transaction().map_err(safe_storage_error)?;
-        delete_visible_row(&transaction, room_id, event_id)?;
-        transaction
-            .execute(
-                "DELETE FROM message_versions WHERE room_id = ?1 AND original_event_id = ?2",
-                params![room_id, event_id],
-            )
-            .map_err(safe_storage_error)?;
         transaction
             .execute(
                 "INSERT OR IGNORE INTO redacted_events (room_id, event_id) VALUES (?1, ?2)",
                 params![room_id, event_id],
             )
             .map_err(safe_storage_error)?;
+
+        let is_original = transaction
+            .query_row(
+                "SELECT 1 FROM message_versions
+                 WHERE room_id = ?1 AND original_event_id = ?2 LIMIT 1",
+                params![room_id, event_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(safe_storage_error)?
+            .is_some();
+        if is_original {
+            delete_visible_row(&transaction, room_id, event_id)?;
+            transaction
+                .execute(
+                    "DELETE FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2",
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+        } else if let Some(original_event_id) = transaction
+            .query_row(
+                "SELECT original_event_id FROM message_versions
+                 WHERE room_id = ?1 AND version_event_id = ?2",
+                params![room_id, event_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(safe_storage_error)?
+        {
+            transaction
+                .execute(
+                    "DELETE FROM message_versions
+                     WHERE room_id = ?1 AND version_event_id = ?2",
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+            restore_visible_row(&transaction, room_id, &original_event_id)?;
+        }
         transaction.commit().map_err(safe_storage_error)?;
         compact(&self.connection)
     }
@@ -251,7 +297,9 @@ fn replace_visible_row(
     transaction: &Transaction<'_>,
     document: &SearchDocument,
 ) -> Result<(), String> {
-    if is_tombstoned(transaction, &document.room_id, &document.event_id)? {
+    if is_tombstoned(transaction, &document.room_id, &document.event_id)?
+        || is_tombstoned(transaction, &document.room_id, &document.version_event_id)?
+    {
         return Ok(());
     }
     delete_visible_row(transaction, &document.room_id, &document.event_id)?;
@@ -268,6 +316,51 @@ fn replace_visible_row(
                     &document.version_event_id,
                     &document.sender,
                     timestamp_to_i64(document.origin_server_ts),
+                ],
+            )
+            .map_err(safe_storage_error)?;
+    }
+    Ok(())
+}
+
+fn restore_visible_row(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    original_event_id: &str,
+) -> Result<(), String> {
+    delete_visible_row(transaction, room_id, original_event_id)?;
+    let previous = transaction
+        .query_row(
+            "SELECT version_event_id, sender, body, origin_server_ts
+             FROM message_versions
+             WHERE room_id = ?1 AND original_event_id = ?2
+             ORDER BY selection_order DESC
+             LIMIT 1",
+            params![room_id, original_event_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(safe_storage_error)?;
+    if let Some((version_event_id, sender, Some(body), origin_server_ts)) = previous {
+        transaction
+            .execute(
+                "INSERT INTO searchable_messages (
+                    body, room_id, event_id, version_event_id, sender, origin_server_ts
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    body,
+                    room_id,
+                    original_event_id,
+                    version_event_id,
+                    sender,
+                    origin_server_ts,
                 ],
             )
             .map_err(safe_storage_error)?;
@@ -374,6 +467,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 sender TEXT NOT NULL,
                 body TEXT,
                 origin_server_ts INTEGER NOT NULL,
+                selection_order INTEGER NOT NULL,
                 PRIMARY KEY(room_id, version_event_id)
              );
              CREATE TABLE IF NOT EXISTS redacted_events (
@@ -647,6 +741,51 @@ mod tests {
                 .windows(b"secret-marker".len())
                 .any(|window| window == b"secret-marker"));
         }
+    }
+
+    #[test]
+    fn redacting_edits_restores_the_previously_selected_version() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        index
+            .apply_document(&document(Some("first edit"), "$edit-1"))
+            .expect("insert first edit");
+        index
+            .apply_document(&document(Some("second edit"), "$edit-2"))
+            .expect("insert second edit");
+
+        index
+            .redact("!room:example.org", "$edit-2")
+            .expect("redact second edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first edit")
+        );
+
+        index
+            .redact("!room:example.org", "$edit-1")
+            .expect("redact first edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("original")
+        );
+
+        index
+            .apply_document(&document(Some("replayed edit"), "$edit-1"))
+            .expect("replay redacted edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("original")
+        );
     }
 
     #[test]
