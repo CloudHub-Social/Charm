@@ -223,6 +223,27 @@ describe("message search Labs reconciliation", () => {
     expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
   });
 
+  it("rejects re-enable until a failed disable cleanup can be retried", async () => {
+    mocks.invoke
+      .mockRejectedValueOnce(new Error("cleanup unavailable"))
+      .mockRejectedValueOnce(new Error("cleanup still unavailable"))
+      .mockResolvedValue(undefined);
+
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setCache({ encrypted_local_message_search: true });
+    await expect(
+      mod.setFeatureFlagOverride("encrypted_local_message_search", false),
+    ).rejects.toThrow("cleanup unavailable");
+
+    await expect(
+      mod.setFeatureFlagOverride("encrypted_local_message_search", true),
+    ).rejects.toThrow("cleanup still unavailable");
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(false);
+
+    await mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
+  });
+
   it("does not persist a remote re-enable until Labs disable cleanup finishes", async () => {
     vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
     let finishCleanup: (() => void) | undefined;

@@ -34,7 +34,19 @@ const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
 function serializeMessageSearchMutation(mutation: () => Promise<void>): Promise<void> {
-  const pending = messageSearchMutationQueue.then(mutation, mutation);
+  const run = async (): Promise<void> => {
+    // A prior disable may have persisted successfully but failed before Rust
+    // could create its own durable purge marker. Retry while the authoritative
+    // flag is still disabled; never let the next mutation persist a re-enable
+    // first and erase the only remaining cleanup intent.
+    if (messageSearchReconciliationPending) {
+      const { invoke } = await import("@/lib/matrixTransport");
+      await invoke("reconcile_message_search_flag");
+      messageSearchReconciliationPending = false;
+    }
+    await mutation();
+  };
+  const pending = messageSearchMutationQueue.then(run, run);
   messageSearchMutationQueue = pending.catch(() => undefined);
   return pending;
 }
