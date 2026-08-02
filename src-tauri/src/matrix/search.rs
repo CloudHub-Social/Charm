@@ -532,7 +532,11 @@ pub fn mark_device_index_purge_pending(
 ///
 /// Returns the first filesystem error after attempting every pending purge.
 pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
-    if app_data_dir.join(PENDING_ALL_PURGE).exists() {
+    let whole_root_pending = app_data_dir
+        .join(PENDING_ALL_PURGE)
+        .try_exists()
+        .map_err(safe_io_error)?;
+    if whole_root_pending {
         // A whole-root kill-switch purge supersedes every device marker. It
         // also removes the device queue as part of the bounded root deletion.
         return purge_all_indexes(app_data_dir);
@@ -1595,6 +1599,15 @@ mod tests {
         assert!(purge_all_indexes(directory.path()).is_err());
         assert!(retry_pending_device_purges(directory.path()).is_err());
         assert!(marker.exists());
+    }
+
+    #[test]
+    fn purge_marker_metadata_errors_remain_fail_closed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let not_a_directory = directory.path().join("not-a-directory");
+        std::fs::write(&not_a_directory, b"placeholder").expect("placeholder");
+
+        assert!(retry_pending_device_purges(&not_a_directory).is_err());
     }
 
     #[test]

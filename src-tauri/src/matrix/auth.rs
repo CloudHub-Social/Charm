@@ -571,8 +571,17 @@ fn cleanup_rejected_restore(
             return;
         }
     };
+    cleanup_rejected_restore_at(&app_data_dir, account_key, device_id, clear_credential);
+}
+
+fn cleanup_rejected_restore_at(
+    app_data_dir: &std::path::Path,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) {
     if let Err(error) =
-        search::mark_device_index_purge_pending(&app_data_dir, account_key, device_id)
+        search::mark_device_index_purge_pending(app_data_dir, account_key, device_id)
     {
         eprintln!(
             "failed to prepare message search cleanup after session restore rejection: {error}"
@@ -582,7 +591,7 @@ fn cleanup_rejected_restore(
     if let Err(error) = clear_credential(account_key) {
         eprintln!("failed to clear rejected session credential: {error}");
     }
-    if let Err(error) = search::purge_device_index(&app_data_dir, account_key, device_id) {
+    if let Err(error) = search::purge_device_index(app_data_dir, account_key, device_id) {
         eprintln!("failed to purge message search after session restore rejection: {error}");
     }
 }
@@ -627,6 +636,7 @@ pub(crate) async fn restore_session_for_push_at(
     account_key: &str,
 ) -> Result<Option<Client>, String> {
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
+        let device_id = saved.user.meta.device_id.to_string();
         let client =
             build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
         let session = saved.into_oauth_session();
@@ -638,6 +648,12 @@ pub(crate) async fn restore_session_for_push_at(
         {
             return Ok(Some(client));
         }
+        cleanup_rejected_push_restore(
+            store_root,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        )?;
         // Deliberately not returning here: see `try_restore_session`'s
         // identical fall-through for why a stale OAuth entry that fails to
         // restore isn't proof this account has no restorable session —
@@ -647,6 +663,7 @@ pub(crate) async fn restore_session_for_push_at(
     let Some(saved) = persistence::load_session(account_key)? else {
         return Ok(None);
     };
+    let device_id = saved.session.meta.device_id.to_string();
     let client = build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
     if client
         .matrix_auth()
@@ -654,9 +671,28 @@ pub(crate) async fn restore_session_for_push_at(
         .await
         .is_err()
     {
+        cleanup_rejected_push_restore(
+            store_root,
+            account_key,
+            &device_id,
+            persistence::clear_session,
+        )?;
         return Ok(None);
     }
     Ok(Some(client))
+}
+
+fn cleanup_rejected_push_restore(
+    store_root: &std::path::Path,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let app_data_dir = store_root
+        .parent()
+        .ok_or_else(|| "message search app-data directory unavailable".to_string())?;
+    cleanup_rejected_restore_at(app_data_dir, account_key, device_id, clear_credential);
+    Ok(())
 }
 
 /// Accepts either a bare server name (`matrix.org`) or a full homeserver URL —
