@@ -273,15 +273,20 @@ async fn clear_local_session(
     // to await, but the task itself could still be running.
     sync::abort_current_sync_loop(app).await;
 
-    let app_data_dir = app
+    // Preserve a search-cleanup failure until all account-scoped in-memory
+    // state has been reset below. Returning early here could otherwise leave
+    // the next login with the signed-out account's presence or push state.
+    let search_purge_result = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    if purge_all_search_indexes {
-        search::purge_account_indexes(&app_data_dir, &account_key)?;
-    } else {
-        search::purge_device_index(&app_data_dir, &account_key, device_id)?;
-    }
+        .map_err(|error| error.to_string())
+        .and_then(|app_data_dir| {
+            if purge_all_search_indexes {
+                search::purge_account_indexes(&app_data_dir, &account_key)
+            } else {
+                search::purge_device_index(&app_data_dir, &account_key, device_id)
+            }
+        });
 
     // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
     // iteration and isn't tied to any particular client — without resetting
@@ -307,7 +312,7 @@ async fn clear_local_session(
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
 
-    Ok(())
+    search_purge_result
 }
 
 /// Signs the current session out: best-effort server-side revoke (an
