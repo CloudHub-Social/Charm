@@ -678,14 +678,16 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
 
     let cleared_active_client = {
         let mut active_client = state.client.lock().await;
-        let is_same_device = active_client
-            .as_ref()
-            .and_then(Client::device_id)
-            .is_some_and(|active_device_id| active_device_id.as_str() == device_id.as_str());
-        if is_same_device {
+        // Matrix device IDs are scoped to an account, not globally unique.
+        // A stale task for account A must not clear account B merely because
+        // both homeservers issued the same device-ID string.
+        let is_same_session = active_client.as_ref().is_some_and(|active| {
+            active.user_id() == client.user_id() && active.device_id() == client.device_id()
+        });
+        if is_same_session {
             *active_client = None;
         }
-        is_same_device
+        is_same_session
     };
     if cleared_active_client {
         push::clear_local_state_after_terminal_auth(app, &state, &account_key).await;

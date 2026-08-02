@@ -210,7 +210,16 @@ pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), 
 fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
     let root = matrix_store_root(app)?;
     let entries = std::fs::read_dir(&root).map_err(|error| error.to_string())?;
-    for entry in entries.flatten() {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
+    let mut first_error = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
         let name = entry.file_name();
         let Some(account_key) = name
             .to_str()
@@ -220,22 +229,38 @@ fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
         };
         // Attempt both independently. The marker remains unless both
         // credential kinds are confirmed absent and it too is removable.
-        let matrix_cleared = clear_session(account_key).is_ok();
-        let oauth_cleared = clear_oauth_session(account_key).is_ok();
+        let matrix_cleared = match clear_session(account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                false
+            }
+        };
+        let oauth_cleared = match clear_oauth_session(account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                false
+            }
+        };
         if matrix_cleared && oauth_cleared {
             // The process may have exited immediately after writing the
             // tombstone, before ordinary logout reached derived-index
             // cleanup. Do not clear the only durable logout intent until
             // every account-scoped search index is gone or durably queued.
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|error| error.to_string())?;
-            super::search::purge_account_indexes(&app_data_dir, account_key)?;
-            clear_logout_tombstone(app, account_key)?;
+            let cleanup_result = app_data_dir
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|app_data_dir| {
+                    super::search::purge_account_indexes(app_data_dir, account_key)
+                })
+                .and_then(|()| clear_logout_tombstone(app, account_key));
+            if let Err(error) = cleanup_result {
+                first_error.get_or_insert(error);
+            }
         }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
