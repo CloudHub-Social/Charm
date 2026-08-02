@@ -71,8 +71,11 @@ Android and iOS use the same Rust-owned database under Tauri's app-data
 directory, keyed by both the account store key and the current Matrix device
 ID. A superseding device or logout deletes the prior device's encrypted index
 before another index can be opened. The mobile build verifies this lifecycle,
-bundled SQLCipher FTS5/tokenizer availability, key custody, and backup exclusion before enabling
-the flag.
+bundled SQLCipher FTS5/tokenizer availability, key custody, and backup exclusion
+before enabling the flag. Android excludes the search root from cloud backup,
+device transfer, and legacy full backup. The native iOS launcher applies
+`NSURLIsExcludedFromBackupKey` to the dedicated search root before Rust starts;
+Rust refuses to open an index unless that native step records success.
 Each web-companion session derives a separate search-encryption key from its
 persisted random `crypto_store_key` with the same search-specific HKDF domain
 separation and a session-bound context. The raw crypto key is never used as a

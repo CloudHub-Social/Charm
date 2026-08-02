@@ -17,6 +17,8 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
+#[cfg(any(target_os = "ios", test))]
+const IOS_BACKUP_EXCLUSION_MARKER: &str = ".ios-backup-excluded";
 const SCHEMA_VERSION: u32 = 2;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 
@@ -112,6 +114,8 @@ impl SearchIndex {
         device_id: &str,
         store_passphrase: &str,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "ios")]
+        require_ios_backup_exclusion(&app_data_dir.join(SEARCH_ROOT))?;
         let directory = index_directory(app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
@@ -317,15 +321,46 @@ pub fn purge_account_indexes(app_data_dir: &Path, account_store_key: &str) -> Re
     Ok(())
 }
 
-/// Deletes the entire Charm-owned encrypted search root.
+/// Deletes every encrypted index under the Charm-owned search root.
 ///
 /// Used by the default-off/kill-switch startup path; the explicit constant
-/// keeps deletion bounded to Charm's own search directory.
+/// keeps deletion bounded to Charm's own search directory. iOS preserves the
+/// empty root and native backup-exclusion marker; other platforms remove the
+/// root itself.
 ///
 /// # Errors
 ///
 /// Returns an error when the search root exists but cannot be removed.
 pub fn purge_all_indexes(app_data_dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        // The native launcher applies NSURLIsExcludedFromBackupKey to this
+        // parent and writes the marker Rust requires before opening an index.
+        // Preserve only that empty excluded root so a flag-off startup does
+        // not undo the safety property before Labs is enabled later in the
+        // same process.
+        let root = app_data_dir.join(SEARCH_ROOT);
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(safe_io_error(error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(safe_io_error)?;
+            if entry.file_name() == IOS_BACKUP_EXCLUSION_MARKER {
+                continue;
+            }
+            let file_type = entry.file_type().map_err(safe_io_error)?;
+            if file_type.is_dir() {
+                std::fs::remove_dir_all(entry.path()).map_err(safe_io_error)?;
+            } else {
+                std::fs::remove_file(entry.path()).map_err(safe_io_error)?;
+            }
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "ios"))]
     match std::fs::remove_dir_all(app_data_dir.join(SEARCH_ROOT)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -634,6 +669,15 @@ fn create_private_directory(path: &Path) -> Result<(), String> {
             .map_err(safe_io_error)?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "ios")]
+fn require_ios_backup_exclusion(search_root: &Path) -> Result<(), String> {
+    if search_root.join(IOS_BACKUP_EXCLUSION_MARKER).is_file() {
+        Ok(())
+    } else {
+        Err("message search backup exclusion unavailable".to_string())
+    }
 }
 
 fn safe_storage_error(error: rusqlite::Error) -> String {
@@ -1099,5 +1143,18 @@ mod tests {
 
         assert!(!database_path.exists());
         assert!(!directory.path().join(SEARCH_ROOT).exists());
+    }
+
+    #[test]
+    fn ios_launcher_excludes_the_search_root_before_rust_starts() {
+        let launcher = include_str!("../../gen/apple/Sources/charm/main.mm");
+
+        assert!(launcher.contains("NSURLIsExcludedFromBackupKey"));
+        assert!(launcher.contains(SEARCH_ROOT));
+        assert!(launcher.contains(IOS_BACKUP_EXCLUSION_MARKER));
+        assert!(
+            launcher.find("prepareMessageSearchDirectory();").unwrap()
+                < launcher.find("ffi::start_app();").unwrap()
+        );
     }
 }
