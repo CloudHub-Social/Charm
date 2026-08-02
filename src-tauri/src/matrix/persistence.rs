@@ -900,7 +900,9 @@ pub fn relocate_store(
 /// whole relocation is rolled back (see [`relocate_store_at_locked_with`])
 /// rather than leaving a fully-installed new store paired with whatever
 /// session was previously saved (which — if this was a supersede — is a
-/// *different* device's session than the one now installed).
+/// *different* device's session than the one now installed). A logout
+/// tombstone is removed only after that pair commits; failure there keeps
+/// restore fail-closed without attempting an unsafe store-only rollback.
 pub fn relocate_store_and_save_session(
     app: &AppHandle,
     temp_key: &str,
@@ -909,15 +911,18 @@ pub fn relocate_store_and_save_session(
     session: &MatrixSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
-        || {
-            save_session(account_key, homeserver_url, session)?;
-            clear_logout_tombstone(app, account_key)
-        },
-    )
+        || save_session(account_key, homeserver_url, session),
+    )?;
+    // The session credential and SDK store are now one committed pair. A
+    // locked tombstone must keep the new session fail-closed, but must never
+    // enter relocation rollback: rollback cannot restore the overwritten
+    // session credential and would mismatch it with the previous store.
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
@@ -931,15 +936,14 @@ pub fn relocate_store_and_save_oauth_session(
     session: &OAuthSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
-        || {
-            save_oauth_session(account_key, homeserver_url, session)?;
-            clear_logout_tombstone(app, account_key)
-        },
-    )
+        || save_oauth_session(account_key, homeserver_url, session),
+    )?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// Error from a failed [`relocate_store_and_save_session`]/
@@ -966,6 +970,15 @@ impl RelocationFailure {
         Self {
             message: message.to_string(),
             safe_to_resume_previous: true,
+        }
+    }
+
+    fn committed(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            // The new store/session pair is internally consistent, but the
+            // previous client no longer matches it and must not be resumed.
+            safe_to_resume_previous: false,
         }
     }
 }
