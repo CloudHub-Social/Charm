@@ -349,11 +349,6 @@ pub async fn login(
                     .to_string(),
             );
         }
-        // Enforces the single-account invariant: only one session kind
-        // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-        // present at a time.
-        let _ = persistence::clear_oauth_session(&account_key);
-
         let response = LoginResponse {
             user_id: session.meta.user_id.to_string(),
             device_id: session.meta.device_id.to_string(),
@@ -926,11 +921,6 @@ async fn finish_registration(
                 .to_string(),
         );
     }
-    // Enforces the single-account invariant: only one session kind
-    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-    // present at a time.
-    let _ = persistence::clear_oauth_session(&account_key);
-
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),
@@ -3755,11 +3745,6 @@ pub async fn complete_sso_login(
                 .to_string(),
         );
     }
-    // Enforces the single-account invariant: only one session kind
-    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-    // present at a time.
-    let _ = persistence::clear_oauth_session(&account_key);
-
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),

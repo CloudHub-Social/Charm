@@ -193,7 +193,11 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
 /// empty marker exists, so a transient credential deletion failure cannot
 /// resurrect the session on the next launch.
 pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    let marker = matrix_store_root(app)?.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    mark_logout_tombstone_at(&matrix_store_root(app)?, account_key)
+}
+
+pub(crate) fn mark_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
+    let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
     std::fs::write(marker, []).map_err(|error| error.to_string())
 }
 
@@ -952,8 +956,9 @@ pub fn relocate_store(
 /// rather than leaving a fully-installed new store paired with whatever
 /// session was previously saved (which — if this was a supersede — is a
 /// *different* device's session than the one now installed). A logout
-/// tombstone is removed only after that pair commits; failure there keeps
-/// restore fail-closed without attempting an unsafe store-only rollback.
+/// tombstone is removed only after that pair commits and the conflicting
+/// OAuth credential is confirmed absent; failure there keeps restore
+/// fail-closed without attempting an unsafe store-only rollback.
 pub fn relocate_store_and_save_session(
     app: &AppHandle,
     temp_key: &str,
@@ -968,10 +973,13 @@ pub fn relocate_store_and_save_session(
         account_key,
         || save_session(account_key, homeserver_url, session),
     )?;
-    // The session credential and SDK store are now one committed pair. A
-    // locked tombstone must keep the new session fail-closed, but must never
-    // enter relocation rollback: rollback cannot restore the overwritten
-    // session credential and would mismatch it with the previous store.
+    // The session credential and SDK store are now one committed pair. Clear
+    // the conflicting session kind before removing logout intent; otherwise
+    // startup (which probes OAuth first) could restore an older credential
+    // against this newly-relocated Matrix store. Either failure keeps the new
+    // pair fail-closed behind the tombstone and must not enter relocation
+    // rollback: rollback cannot restore the overwritten session credential.
+    clear_oauth_session(account_key).map_err(RelocationFailure::committed)?;
     clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
     Ok(outcome)
 }
@@ -993,6 +1001,7 @@ pub fn relocate_store_and_save_oauth_session(
         account_key,
         || save_oauth_session(account_key, homeserver_url, session),
     )?;
+    clear_session(account_key).map_err(RelocationFailure::committed)?;
     clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
     Ok(outcome)
 }
@@ -1433,9 +1442,10 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
 /// True if `account_key`'s currently-saved [`MatrixSession`] is the one this
 /// caller just relocated/saved (matched by `device_id`) — used right after
 /// [`relocate_store_and_save_session`] returns, before a login flow adopts
-/// its `Client` and clears the other session kind, to check whether a
-/// concurrent completion for the *same* account (e.g. a double-submitted
-/// login) has already superseded it since. Now that every caller holds
+/// its `Client`, to check whether a concurrent completion for the *same*
+/// account (e.g. a double-submitted login) has already superseded it since.
+/// The relocation helper has already confirmed the conflicting session kind
+/// is absent before it can remove logout intent. Now that every caller holds
 /// `MatrixState::login_completion_lock` across its whole completion
 /// sequence, no concurrent completion can actually be running at this
 /// point — this is defense-in-depth, not load-bearing synchronization

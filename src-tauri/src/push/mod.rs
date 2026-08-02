@@ -870,7 +870,11 @@ pub(crate) async fn handle_headless_push(
     // Maintenance must run even when notification delivery is suppressed.
     // In particular, interrupted logout cleanup is security-sensitive and
     // cannot wait indefinitely for Focus/DND to end.
-    persistence::sweep_orphan_temp_stores_at(store_root)?;
+    if let Err(error) = persistence::sweep_orphan_temp_stores_at(store_root) {
+        // Cleanup markers remain durable for a later retry. A stale or locked
+        // account must not suppress notifications for an unrelated valid one.
+        eprintln!("headless startup cleanup deferred: {error}");
+    }
 
     // Spec 30: same DND suppression as `handle_push`, but there's no live
     // `AppHandle`/`MatrixState` in the headless (Android) path, so this
@@ -1392,8 +1396,8 @@ mod tests {
     }
 
     /// Logout-tombstone and orphan-store maintenance must not be skipped by
-    /// DND. A missing store root makes that maintenance return a deterministic
-    /// error before the DND short-circuit, without needing a restorable client.
+    /// DND. The marker disappearing proves maintenance ran before delivery
+    /// suppression, without needing a restorable client.
     #[tokio::test]
     async fn headless_push_runs_maintenance_while_dnd_is_active() {
         let app_data_dir = std::env::temp_dir().join(format!(
@@ -1403,7 +1407,7 @@ mod tests {
         ));
         let store_root = app_data_dir.join("matrix_store");
         let _ = std::fs::remove_dir_all(&app_data_dir);
-        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::create_dir_all(&store_root).unwrap();
         std::fs::write(
             app_data_dir.join("focus.json"),
             r#"{"focus":{"state":{"enabled":true,"until":null}}}"#,
@@ -1414,6 +1418,10 @@ mod tests {
             r#"{"featureFlags":{"state":{"overrides":{"focus_mode":true}}}}"#,
         )
         .unwrap();
+        let account_key =
+            persistence::account_key("@charm-headless-push-dnd-maintenance:localhost");
+        persistence::mark_logout_tombstone_at(&store_root, &account_key).unwrap();
+        let tombstone = store_root.join(format!(".logout-pending-{account_key}"));
 
         let result = handle_headless_push(
             &store_root,
@@ -1424,8 +1432,9 @@ mod tests {
         )
         .await;
 
+        assert_eq!(result.unwrap(), None);
         assert!(
-            result.is_err(),
+            !tombstone.exists(),
             "DND must suppress delivery only after startup maintenance runs"
         );
 
