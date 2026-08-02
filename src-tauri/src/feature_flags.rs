@@ -155,6 +155,8 @@ define_feature_flag_keys!(
         /// Spec 45 registration UIA, password recovery, provider-aware SSO,
         /// and standalone token login.
         RegistrationAndRecovery,
+        /// Spec 28 decrypted-message indexing and local message search.
+        EncryptedLocalMessageSearch,
     }
 );
 
@@ -184,6 +186,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::UserProfileCards => false,
             FeatureFlagKey::TimelineStateEvents => false,
             FeatureFlagKey::RegistrationAndRecovery => false,
+            FeatureFlagKey::EncryptedLocalMessageSearch => false,
         }
     }
 
@@ -254,6 +257,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RegistrationAndRecovery => {
                 "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login."
             }
+            FeatureFlagKey::EncryptedLocalMessageSearch => {
+                "Build and query an encrypted device-local index of decrypted Matrix messages."
+            }
         }
     }
 
@@ -292,6 +298,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RegistrationAndRecovery => {
                 "Spec 45 (registration and password-reset flows)"
             }
+            FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
         }
     }
 
@@ -320,6 +327,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::UserProfileCards => "user_profile_cards",
             FeatureFlagKey::TimelineStateEvents => "timeline_state_events",
             FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
+            FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
         }
     }
 }
@@ -461,6 +469,14 @@ pub fn resolve(
     overrides: &BTreeMap<String, bool>,
     remote: &BTreeMap<String, bool>,
 ) -> bool {
+    // Spec 28 controls a sensitive derived-content index. Unlike an ordinary
+    // preview flag, a trusted remote `false` is a privacy kill
+    // switch and must veto a persisted Labs override that still says true.
+    if key == FeatureFlagKey::EncryptedLocalMessageSearch
+        && remote.get(key.as_wire_key()) == Some(&false)
+    {
+        return false;
+    }
     if let Some(&value) = overrides.get(key.as_wire_key()) {
         return value;
     }
@@ -576,6 +592,17 @@ mod tests {
         let override_off = overrides(&[("canary", false)]);
         let remote_on = overrides(&[("canary", true)]);
         assert!(!resolve(FeatureFlagKey::Canary, &override_off, &remote_on));
+    }
+
+    #[test]
+    fn sensitive_search_remote_false_vetoes_a_local_override() {
+        let override_on = overrides(&[("encrypted_local_message_search", true)]);
+        let remote_off = overrides(&[("encrypted_local_message_search", false)]);
+        assert!(!resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &override_on,
+            &remote_off
+        ));
     }
 
     #[test]

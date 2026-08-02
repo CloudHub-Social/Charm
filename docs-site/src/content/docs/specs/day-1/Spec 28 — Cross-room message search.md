@@ -8,17 +8,26 @@ status: in-progress
 
 ## Implementation status
 
-The storage and API architecture is now decision-ready. Charm will use a dedicated
-per-account SQLite FTS5 database owned by Charm, not tables or connections owned by
-matrix-sdk. The first code slice is indexing and lifecycle only; the global and
-current-room search UI follows after the index contract is stable.
+The storage and API architecture is decision-ready. Charm uses a dedicated,
+per-account and per-device SQLCipher database owned by Charm, not tables or
+connections owned by matrix-sdk. The first storage/lifecycle foundation now adds
+the approved direct desktop `rusqlite`/SQLCipher dependency, a domain-separated
+per-device key derived from the keychain-backed matrix-sdk store passphrase,
+opaque device-scoped private directories, visible-message and edit-provenance tables, persistent redaction
+tombstones, physical redaction/room cleanup, account/device purge helpers, and a
+default-off `encrypted_local_message_search` flag. Logout deletes the current
+device index and account deactivation deletes every retained index for that
+account. For this sensitive flag only, a trusted remote `false` vetoes a
+persisted local Labs override; disabled startup removes the entire Charm-owned
+search root before any search surface can be used.
 
-Implementation has not started in this PR. `rusqlite` is already used by the web
-companion and present in the repository lockfile, but making it a direct desktop
-dependency still requires the repository's explicit dependency approval before the
-indexing PR changes `src-tauri/Cargo.toml`.
+This foundation does not yet ingest timeline/sync events or expose the search
+command. The next backend slice owns the bounded off-runtime worker, FTS5 tokenizer,
+startup reconciliation, joined-room/ignored-user enforcement, and desktop/web
+session wiring. The global and current-room search UI follows only after that
+indexing contract is stable.
 
-**Workstream:** two ordered PRs: Rust/shared indexing and lifecycle first, then the
+**Workstream:** ordered backend foundation and ingestion/query PRs, followed by the
 frontend search UI and result navigation — see Trade-offs.
 
 ## Problem & why now
@@ -60,17 +69,17 @@ to Charm as decrypted timeline content. Each desktop account gets a dedicated
 `message-search.sqlite3` database in that account's Charm-owned data directory.
 Android and iOS use the same Rust-owned database under Tauri's app-data
 directory, keyed by both the account store key and the current Matrix device
-ID. A superseding device or logout deletes the prior device's plaintext index
+ID. A superseding device or logout deletes the prior device's encrypted index
 before another index can be opened. The mobile build verifies this lifecycle,
-bundled SQLite FTS5/tokenizer availability, and backup exclusion before enabling
+bundled SQLCipher FTS5/tokenizer availability, key custody, and backup exclusion before enabling
 the flag.
-Each web-companion session gets its own persisted random `search_store_key`,
-separate from `crypto_store_key`, and a matching index directory. On first
-restore of a legacy session whose persisted record predates Spec 25 and has no
-crypto key, generate and durably save this search key before enabling search;
-if that migration cannot be persisted, require re-login and do not open an
-MXID-derived fallback. Indexes are never shared merely because two sessions use
-the same MXID. Spec 25's session cleanup removes both random-key lifecycles.
+Each web-companion session derives a separate search-encryption key from its
+persisted random `crypto_store_key` with the same search-specific HKDF domain
+separation and a session-bound context. The raw crypto key is never used as a
+SQLCipher key. A legacy session without a crypto key must complete Spec 25's
+existing migration or re-login before search can open; there is no MXID-derived
+fallback. Indexes are never shared merely because two sessions use the same MXID.
+Spec 25's session cleanup removes the source key and the search index.
 Never open matrix-sdk's database directly, add tables to its schema, or share its
 connection: the SDK owns that schema and migration lifecycle.
 
@@ -111,7 +120,7 @@ connection: the SDK owns that schema and migration lifecycle.
   projection is available, defer that original event until timeline
   reconciliation resolves it rather than choosing by local arrival or event ID.
   Redacting the original writes a persistent
-  tombstone, deletes the visible row, and purges every original/edit plaintext body
+  tombstone, deletes the visible row, and purges every original/edit decrypted body
   in provenance; later edits and replay must remain suppressed by that tombstone.
   Redacting an edit removes that candidate and atomically recomputes the row from
   the preceding valid edit or original content only when the original is not
@@ -124,7 +133,7 @@ connection: the SDK owns that schema and migration lifecycle.
   organically as the user scrolls/syncs, same behavior as Seshat.
 - Redaction/edit handling follows the provenance rules above; replacement events
   never become independent search results.
-- Because the index contains decrypted plaintext, deletion is physical as well as
+- Although SQLCipher encrypts index pages at rest, deletion is physical as well as
   logical: redaction and room/account purge rebuild affected FTS storage, enable
   `secure_delete`, checkpoint and truncate WAL sidecars, and compact freelist pages
   before reporting cleanup complete. Tests place a unique marker in an indexed
@@ -141,30 +150,33 @@ connection: the SDK owns that schema and migration lifecycle.
   use the same core index abstraction but resolve their account roots through their
   existing, separate persistence layers.
 - Derive the desktop index directory from an opaque hash of the account store key
-  plus Matrix device ID, and the web directory from the session's dedicated
-  `search_store_key`; never
+  plus Matrix device ID, and the web directory from its opaque session identity; never
   put an MXID, homeserver, access token, or raw account identifier in a filename.
-  A new/superseding desktop device never reopens a previous device's plaintext
+  A new/superseding desktop device never reopens a previous device's encrypted
   index; supersession closes and deletes the old device index.
 - Create the directory and database with owner-only permissions where the platform
-  supports Unix modes. The database contains decrypted message text, so the privacy
-  model and docs must state that local search expands the plaintext-at-rest surface
-  beyond matrix-sdk's encrypted store. OS full-disk/user-account protection is the
-  initial boundary; SQLCipher is not silently implied.
+  supports Unix modes. Encrypt the complete database, including its FTS and
+  provenance tables, with SQLCipher. On desktop/mobile, derive a distinct per-device
+  search key from matrix-sdk's keychain-backed random store passphrase using HKDF-SHA256
+  with an explicit Charm search domain and account/device context. On web, derive it
+  from the session's random `crypto_store_key` with a session-bound context. Never use,
+  persist, log, or transport either source secret or derived key as application data.
+  Decrypted text exists in process memory while indexing or querying, but database,
+  WAL, and SHM pages must not expose it at rest.
 - Desktop logout closes and deletes the current device's index, because Charm's
   logout flow revokes and removes that session and a later interactive login creates
-  a new device that cannot safely reopen the old device-keyed plaintext. Creating a
+  a new device that cannot safely reopen the old device-keyed index. Creating a
   superseding device likewise closes and deletes the prior device index. Account
   deactivation must close and delete every retained index.
   PR 1 owns an explicit account-management "Forget local data" control that closes
   the account, removes both the retained SDK store and every search index, and
   tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
-  plaintext index separately from the encrypted SDK store. Web logout, session
+  separately encrypted search index and key lifecycle. Web logout, session
   expiry, and administrative session removal close and delete that session's
   index. A failed/corrupt migration records only non-sensitive diagnostics
   (schema version, error category, and a random incident ID), securely removes the
   search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
-  no plaintext quarantine is retained and an SDK store is never modified.
+  no decrypted-content quarantine is retained and an SDK store is never modified.
 - A terminal Matrix authentication error, including remote deletion of the
   current device from another session, is session teardown rather than a
   retryable sync failure. Desktop, mobile, and web immediately stop serving
@@ -174,12 +186,12 @@ connection: the SDK owns that schema and migration lifecycle.
 - Web indexes are intentionally session-ephemeral in the first slice. They are not
   copied into the crypto-store backup and may be rebuilt only from decrypted
   history available to that same session after restart. The UI must disclose
-  incomplete results after a deployment/restart; durable plaintext search backup
-  is out of scope until an encrypted, session-bound backup design exists. In a
-  hosted deployment this plaintext lives on the companion server, not the
-  browser or user's device, and is therefore visible to the operator and anyone
-  with server-disk access. Web operations guidance and the UI must disclose that
-  trust boundary; companion search directories are excluded from host backups,
+  incomplete results after a deployment/restart; durable search-index backup is
+  out of scope. In a hosted deployment decrypted text exists in the companion
+  process while indexing and querying, not in the browser or user's device.
+  SQLCipher protects disk snapshots but does not protect against an operator or
+  attacker with access to live process memory. Web operations guidance and the UI
+  must disclose that trust boundary; companion search directories are excluded from host backups,
   deleted on session expiry/removal, and retained no longer than the owning
   session.
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
@@ -192,7 +204,7 @@ connection: the SDK owns that schema and migration lifecycle.
 - Persist a Charm-owned indexing journal/checkpoint before acknowledging a sync
   position as searchable. The journal contains only opaque event/room identifiers
   and checkpoints; it never stores message bodies, normalized text, snippets, or
-  other plaintext and rehydrates work from the encrypted SDK store. Startup
+  other decrypted content and rehydrates work from the encrypted SDK store. Startup
   replays incomplete journal entries and reconciles the index against decrypted
   events in the SDK store before serving queries; this includes redactions and
   edit provenance. An index file existing is never sufficient evidence that
@@ -206,7 +218,7 @@ connection: the SDK owns that schema and migration lifecycle.
   newly ignored senders are purged transactionally before the updated ignore list
   becomes visible to queries. Unignoring permits future live writes and a bounded
   rebuild of locally retained eligible events, but never restores text from a
-  plaintext quarantine. Initial and recovery backfill enumerate each joined room's
+  decrypted-content quarantine. Initial and recovery backfill enumerate each joined room's
   locally persisted SDK event cache and pass encrypted events through the SDK's
   decryption machinery; the indexer never scrapes mounted React timelines. Tests
   cover an encrypted message arriving in an unopened room and becoming searchable
@@ -288,18 +300,18 @@ without the user knowing which is which.
 
 ## API/contract changes
 
-- New shared Rust search module with a small storage trait and a SQLite FTS5
+- New shared Rust search module with a small storage trait and a SQLCipher FTS5
   implementation. Desktop and web session layers own account-specific handles;
   neither transport owns indexing semantics.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off. An enabled-to-disabled transition first closes every
-  account/session handle, securely removes the Charm-owned plaintext database
+  account/session handle, securely removes the Charm-owned encrypted database
   and its WAL/SHM files, and records no reusable quarantine. Startup also purges
   a leftover index before serving other account work when the effective flag is
   false. Kill-switch tests cover an active handle, restart cleanup, and failure
   reporting without reopening the index.
-- Because this flag controls a new plaintext-at-rest surface, a trusted remote
+- Because this flag controls a sensitive derived-content index, a trusted remote
   `false` is a hard veto over any persisted Labs/local override. The veto closes
   active handles and triggers the same purge even when Labs previously persisted
   `true`; tests cover that exact transition on every transport.
@@ -331,7 +343,7 @@ without the user knowing which is which.
   matrix-sdk files.
 - Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
   ordering, cursor TTL expiry and index-incarnation mismatch, local leave/forget and remote kick/ban
-  purge, deactivation wipe, legacy web-session search-key migration, and
+  purge, deactivation wipe, legacy web-session crypto-key migration, and
   web-session isolation/cleanup. Include substring word queries within unsegmented
   Chinese and Japanese sentences, not just whole-message queries.
 - Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
@@ -354,7 +366,7 @@ without the user knowing which is which.
 - **SDK database vs a dedicated database**: decided in favor of a dedicated
   Charm-owned database. This keeps SDK schema migrations, backup/restore, and
   corruption recovery outside the feature's blast radius at the cost of one extra
-  per-account file and an explicit plaintext-at-rest disclosure.
+  per-account file and a separate SQLCipher/key-derivation lifecycle.
 - **Local index vs relying on homeserver `/search`**: local index is strictly
   necessary for encrypted rooms (the majority case) and is the only path to parity
   with Charm 1.0's actual behavior; a server-only implementation would look "done"
