@@ -1275,6 +1275,21 @@ pub fn run() {
                     eprintln!("legacy single-account store migration failed: {e}");
                 }
             }
+            // Spec 28's flag protects a sensitive decrypted-content index. Its
+            // default-off state is therefore destructive on startup: a
+            // leftover index from an earlier enabled run is removed before
+            // any session restore or search work can serve it. The search
+            // root is Charm-owned and separate from matrix-sdk's store.
+            if let Ok(app_data_dir) = handle.path().app_data_dir() {
+                if !feature_flags::flag(
+                    &app_data_dir,
+                    feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+                ) {
+                    if let Err(error) = matrix::search::purge_all_indexes(&app_data_dir) {
+                        eprintln!("message-search disabled-state cleanup failed: {error}");
+                    }
+                }
+            }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
             // Spawned rather than `block_on`'d: this used to block the whole

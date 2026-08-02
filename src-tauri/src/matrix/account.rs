@@ -16,12 +16,13 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::media;
 use super::persistence;
 use super::presence;
+use super::search;
 use super::shell;
 use super::sync;
 use super::MatrixState;
@@ -218,11 +219,15 @@ where
 /// in-memory client. Deliberately does *not* delete the account's SQLCipher
 /// store — see Spec 08's "Logout store retention": this is a sign-out, not a
 /// device wipe, so a later re-login onto the same account reuses the
-/// existing store instead of starting cold.
+/// existing store instead of starting cold. Spec 28's separate plaintext
+/// search index is different: logout removes the current device index and
+/// deactivation removes every index for the account.
 async fn clear_local_session(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
     user_id: &str,
+    device_id: &str,
+    purge_all_search_indexes: bool,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
 
@@ -267,6 +272,16 @@ async fn clear_local_session(
     // to await, but the task itself could still be running.
     sync::abort_current_sync_loop(app).await;
 
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    if purge_all_search_indexes {
+        search::purge_account_indexes(&app_data_dir, &account_key)?;
+    } else {
+        search::purge_device_index(&app_data_dir, &account_key, device_id)?;
+    }
+
     // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
     // iteration and isn't tied to any particular client — without resetting
     // it, a different account logging in next (in the same app process)
@@ -309,6 +324,10 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
 
     let revoke_client = client.clone();
     tokio::spawn(async move {
@@ -319,7 +338,7 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         }
     });
 
-    clear_local_session(&app, &state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str(), device_id.as_str(), false).await
 }
 
 #[tauri::command]
@@ -630,6 +649,10 @@ pub async fn deactivate_account(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
     let account = client.account();
 
     retry_uia_with_session(&user_id, password, |auth| {
@@ -637,7 +660,7 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&app, &state, user_id.as_str())
+    clear_local_session(&app, &state, user_id.as_str(), device_id.as_str(), true)
         .await
         .map_err(UiaCommandError::from)
 }
