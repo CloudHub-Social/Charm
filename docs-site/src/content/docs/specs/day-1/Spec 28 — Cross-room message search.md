@@ -22,7 +22,9 @@ indexes for that account; rejected session restore and terminal
 `M_UNKNOWN_TOKEN` sync errors clear the affected device index as part of session
 teardown, including the revoked account's local push registration state, and
 invalidate the renderer session. Explicit logout does the same if index purge
-or credential deletion fails, while still completing the remaining teardown.
+or credential deletion fails, while still completing the remaining teardown;
+an empty account-scoped logout tombstone prevents startup restoration until both
+keychain session kinds are confirmed absent.
 The renderer registers that invalidation listener before session restoration
 and ignores a restore response invalidated during initial sync. A device-scoped key verifier lets Charm
 rebuild a corrupt encrypted header with the confirmed current key without
@@ -36,6 +38,8 @@ Device-scoped purge failures retain only opaque durable retry markers, while a f
 whole-root kill-switch purge retains an empty marker outside that root. Account sweeps
 attempt and queue every matching device; startup and the next index open retry all
 pending deletions before search can become usable.
+Room purge deletes searchable bodies and version provenance but retains non-content
+redaction tombstones so a delayed replay cannot resurrect previously redacted text.
 
 This foundation does not yet ingest timeline/sync events or expose the search
 command. The next backend slice owns the bounded off-runtime worker, FTS5 tokenizer,

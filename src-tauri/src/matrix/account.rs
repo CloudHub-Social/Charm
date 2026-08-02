@@ -231,6 +231,17 @@ async fn clear_local_session(
     purge_all_search_indexes: bool,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    // Serialize the tombstone + credential deletion sequence against every
+    // login/registration completion that can replace this account's saved
+    // session. Otherwise a completion could clear the tombstone for its new
+    // session just before this logout deletes that same entry (or vice versa).
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // Write this empty filesystem tombstone before touching either keychain
+    // entry. If a credential delete fails or the process exits mid-teardown,
+    // startup excludes this account and retries both deletes instead of
+    // restoring a session the user already signed out of.
+    persistence::mark_logout_tombstone(app, &account_key)?;
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -252,6 +263,11 @@ async fn clear_local_session(
     }
     if let Err(error) = persistence::clear_oauth_session(&account_key) {
         cleanup_errors.push(error);
+    }
+    if cleanup_errors.is_empty() {
+        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+            cleanup_errors.push(error);
+        }
     }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`

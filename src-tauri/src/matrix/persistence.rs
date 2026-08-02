@@ -58,6 +58,7 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
 const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
+const LOGOUT_TOMBSTONE_PREFIX: &str = ".logout-pending-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -125,10 +126,9 @@ pub fn store_path_at(root: &Path, store_key: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Lists every real per-account store key under `matrix_store/` (i.e. every
-/// subdirectory *except* in-flight [`temp_store_key`] ones), for
-/// `try_restore_session` to iterate when it doesn't yet know which account's
-/// session (if any) is worth restoring.
+/// Lists every restorable per-account store key under `matrix_store/`,
+/// excluding in-flight temp stores, stale backups, and accounts with a
+/// durable logout tombstone, for `try_restore_session` to iterate.
 pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
     known_account_keys_at(&matrix_store_root(app)?)
 }
@@ -136,18 +136,29 @@ pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Pure, `AppHandle`-free variant of [`known_account_keys`].
 pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
+    let mut logout_tombstones = HashSet::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            continue;
-        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX) && !name.ends_with(STALE_BACKUP_SUFFIX) {
+        // Treat any filesystem entry with the tombstone name as authoritative.
+        // A malformed marker (for example, a directory left by corruption or
+        // interference) must keep restore fail-closed rather than silently
+        // making the account eligible again.
+        if let Some(account_key) = name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+            continue;
+        }
+        if file_type.is_dir()
+            && !name.starts_with(TEMP_STORE_PREFIX)
+            && !name.ends_with(STALE_BACKUP_SUFFIX)
+        {
             keys.push(name);
         }
     }
+    keys.retain(|key| !logout_tombstones.contains(key));
     // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
     // isn't creation order) — sort so callers that iterate multiple known
     // accounts (e.g. `try_restore_session`) get a stable, reproducible
@@ -167,6 +178,7 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
 /// failed — same "leftover from an interrupted run" shape, so it's handled
 /// alongside orphan temp stores rather than via a separate startup hook.
 pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
+    sweep_logout_tombstones(app)?;
     sweep_cancelled_account_cleanups(app)?;
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
@@ -175,6 +187,46 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
     let marker =
         matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
     std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+/// Durably records local logout intent before touching either keychain
+/// session entry. `known_account_keys_at` excludes the account while this
+/// empty marker exists, so a transient credential deletion failure cannot
+/// resurrect the session on the next launch.
+pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let marker = matrix_store_root(app)?.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let marker = matrix_store_root(app)?.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
+    let root = matrix_store_root(app)?;
+    let entries = std::fs::read_dir(&root).map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(account_key) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX))
+        else {
+            continue;
+        };
+        // Attempt both independently. The marker remains unless both
+        // credential kinds are confirmed absent and it too is removable.
+        let matrix_cleared = clear_session(account_key).is_ok();
+        let oauth_cleared = clear_oauth_session(account_key).is_ok();
+        if matrix_cleared && oauth_cleared {
+            clear_logout_tombstone(app, account_key)?;
+        }
+    }
+    Ok(())
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
@@ -407,6 +459,7 @@ pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscard
     // Process durable cancelled-account markers before startup is allowed to
     // restore a session, rather than relying on the legacy combined sweep
     // wrapper (which production startup intentionally does not call).
+    sweep_logout_tombstones(app)?;
     sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
     let entries = recover_stale_backups_at(&root)?;
@@ -851,7 +904,10 @@ pub fn relocate_store_and_save_session(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
-        || save_session(account_key, homeserver_url, session),
+        || {
+            save_session(account_key, homeserver_url, session)?;
+            clear_logout_tombstone(app, account_key)
+        },
     )
 }
 
@@ -870,7 +926,10 @@ pub fn relocate_store_and_save_oauth_session(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
-        || save_oauth_session(account_key, homeserver_url, session),
+        || {
+            save_oauth_session(account_key, homeserver_url, session)?;
+            clear_logout_tombstone(app, account_key)
+        },
     )
 }
 
@@ -1947,6 +2006,23 @@ mod tests {
         assert!(keys.contains(&account_key));
         assert!(!keys.contains(&temp_key));
         assert!(!keys.contains(&backup_key));
+    }
+
+    #[test]
+    fn known_account_keys_excludes_a_logout_tombstone() {
+        let root = ScratchRoot::new("known-logout-tombstone");
+        let account_key = account_key("@charm-persistence-test-logout:localhost");
+        store_path_at(&root.0, &account_key).unwrap();
+        std::fs::write(
+            root.0
+                .join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+            [],
+        )
+        .unwrap();
+
+        assert!(!known_account_keys_at(&root.0)
+            .unwrap()
+            .contains(&account_key));
     }
 
     #[test]

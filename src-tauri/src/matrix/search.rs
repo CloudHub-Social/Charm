@@ -319,9 +319,9 @@ impl SearchIndex {
         transaction
             .execute("DELETE FROM message_versions WHERE room_id = ?1", [room_id])
             .map_err(safe_storage_error)?;
-        transaction
-            .execute("DELETE FROM redacted_events WHERE room_id = ?1", [room_id])
-            .map_err(safe_storage_error)?;
+        // Deliberately retain non-content redaction tombstones. A leave,
+        // rejoin, or delayed replay must not resurrect text whose redaction
+        // was already observed before this room purge.
         transaction.commit().map_err(safe_storage_error)?;
         compact(&self.connection)
     }
@@ -379,9 +379,15 @@ fn purge_account_indexes_except(
         {
             let marker = pending_device_purge_marker(app_data_dir, &entry.path())?;
             match std::fs::remove_dir_all(entry.path()) {
-                Ok(()) => remove_pending_marker(&marker),
+                Ok(()) => {
+                    if let Err(error) = remove_pending_marker(&marker) {
+                        first_error.get_or_insert(error);
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    remove_pending_marker(&marker);
+                    if let Err(error) = remove_pending_marker(&marker) {
+                        first_error.get_or_insert(error);
+                    }
                 }
                 Err(error) => {
                     if let Err(marker_error) = persist_pending_marker(&marker) {
@@ -410,10 +416,7 @@ pub fn purge_all_indexes(app_data_dir: &Path) -> Result<(), String> {
     let result = purge_all_indexes_inner(app_data_dir);
     let marker = app_data_dir.join(PENDING_ALL_PURGE);
     match result {
-        Ok(()) => {
-            remove_pending_marker(&marker);
-            Ok(())
-        }
+        Ok(()) => remove_pending_marker(&marker),
         Err(error) => {
             persist_pending_marker(&marker)?;
             Err(error)
@@ -471,13 +474,9 @@ pub fn purge_device_index(
     let directory = index_directory(app_data_dir, account_store_key, device_id);
     let marker = pending_device_purge_marker(app_data_dir, &directory)?;
     match std::fs::remove_dir_all(&directory) {
-        Ok(()) => {
-            remove_pending_marker(&marker);
-            Ok(())
-        }
+        Ok(()) => remove_pending_marker(&marker),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_pending_marker(&marker);
-            Ok(())
+            remove_pending_marker(&marker)
         }
         Err(error) => {
             persist_pending_marker(&marker)?;
@@ -496,7 +495,7 @@ pub fn purge_device_index(
 ///
 /// Returns the first filesystem error after attempting every pending purge.
 pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
-    if app_data_dir.join(PENDING_ALL_PURGE).is_file() {
+    if app_data_dir.join(PENDING_ALL_PURGE).exists() {
         // A whole-root kill-switch purge supersedes every device marker. It
         // also removes the device queue as part of the bounded root deletion.
         return purge_all_indexes(app_data_dir);
@@ -525,9 +524,15 @@ pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
         }
         let target = search_root.join(&name);
         match std::fs::remove_dir_all(&target) {
-            Ok(()) => remove_pending_marker(&entry.path()),
+            Ok(()) => {
+                if let Err(error) = remove_pending_marker(&entry.path()) {
+                    first_error.get_or_insert(error);
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                remove_pending_marker(&entry.path());
+                if let Err(error) = remove_pending_marker(&entry.path()) {
+                    first_error.get_or_insert(error);
+                }
             }
             Err(error) => {
                 first_error.get_or_insert_with(|| safe_io_error(error));
@@ -559,14 +564,11 @@ fn persist_pending_marker(marker: &Path) -> Result<(), String> {
     std::fs::write(marker, []).map_err(safe_io_error)
 }
 
-fn remove_pending_marker(marker: &Path) {
-    if let Err(error) = std::fs::remove_file(marker) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            eprintln!(
-                "failed to clear message search purge marker: {}",
-                safe_io_error(error)
-            );
-        }
+fn remove_pending_marker(marker: &Path) -> Result<(), String> {
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
     }
 }
 
@@ -1248,6 +1250,24 @@ mod tests {
     }
 
     #[test]
+    fn room_purge_retains_redaction_tombstones_against_replay() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("secret-marker"), "$original"))
+            .expect("insert");
+        index
+            .redact("!room:example.org", "$original")
+            .expect("redact");
+        index.purge_room("!room:example.org").expect("purge room");
+        index
+            .apply_document(&document(Some("replayed secret"), "$original"))
+            .expect("replay");
+
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+    }
+
+    #[test]
     fn redacting_edits_restores_the_previously_selected_version() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
@@ -1441,6 +1461,17 @@ mod tests {
         std::fs::remove_file(search_root).expect("release root");
         retry_pending_device_purges(directory.path()).expect("retry all purge");
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn locked_all_purge_marker_keeps_later_open_fail_closed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let marker = directory.path().join(PENDING_ALL_PURGE);
+        std::fs::create_dir(&marker).expect("locked marker placeholder");
+
+        assert!(purge_all_indexes(directory.path()).is_err());
+        assert!(retry_pending_device_purges(directory.path()).is_err());
+        assert!(marker.exists());
     }
 
     #[test]
