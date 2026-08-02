@@ -94,11 +94,11 @@ export function initializeFeatureFlags(): Promise<void> {
   // Enqueue synchronously, before the first store read yields, so a Labs or
   // OFREP re-enable requested during startup cannot overtake stale-cache
   // cleanup and its native destructive reconciliation.
-  return serializeMessageSearchMutation(initializeFeatureFlagsInner);
+  const mutationId = cacheMutationId;
+  return serializeMessageSearchMutation(() => initializeFeatureFlagsInner(mutationId));
 }
 
-async function initializeFeatureFlagsInner(): Promise<void> {
-  const mutationId = cacheMutationId;
+async function initializeFeatureFlagsInner(mutationId: number): Promise<void> {
   const [persistedOverrides, cachedRemote] = await Promise.all([
     readOverrides(),
     readRemoteFlags(),
