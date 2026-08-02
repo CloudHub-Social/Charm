@@ -239,8 +239,9 @@ async fn clear_local_session(
 
     // Write this empty filesystem tombstone before touching either keychain
     // entry. If a credential delete fails or the process exits mid-teardown,
-    // startup excludes this account and retries both deletes instead of
-    // restoring a session the user already signed out of.
+    // startup excludes this account, retries both deletes, and purges every
+    // account search index instead of restoring or stranding data for a
+    // session the user already signed out of.
     persistence::mark_logout_tombstone(app, &account_key)?;
 
     // Best-effort, and must run before the client is cleared below (it needs
@@ -264,11 +265,7 @@ async fn clear_local_session(
     if let Err(error) = persistence::clear_oauth_session(&account_key) {
         cleanup_errors.push(error);
     }
-    if cleanup_errors.is_empty() {
-        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
-            cleanup_errors.push(error);
-        }
-    }
+    let credentials_cleared = cleanup_errors.is_empty();
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -343,8 +340,14 @@ async fn clear_local_session(
     // logout callback never runs and retrying can only return "not logged
     // in". Successful explicit logout keeps using the command caller's
     // callback, avoiding a duplicate invalidation event on the normal path.
-    if let Err(error) = search_purge_result {
-        cleanup_errors.push(error);
+    match search_purge_result {
+        Ok(()) if credentials_cleared => {
+            if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+                cleanup_errors.push(error);
+            }
+        }
+        Ok(()) => {}
+        Err(error) => cleanup_errors.push(error),
     }
     if !cleanup_errors.is_empty() {
         let _ = app.emit("session:invalidated", ());

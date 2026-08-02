@@ -397,6 +397,41 @@ describe("initializeFeatureFlags", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
   });
 
+  it("does not allow Labs to re-enable search during startup cleanup", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn(async (key: string) =>
+        key === "featureFlagsRemote"
+          ? {
+              state: { remote: { encrypted_local_message_search: true } },
+              updatedAt: 1,
+            }
+          : undefined,
+      ),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    let finishCleanup: (() => void) | undefined;
+    mocks.invoke.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCleanup = resolve;
+        }),
+    );
+
+    const mod = await import("./index");
+    const initialization = mod.initializeFeatureFlags();
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+
+    const reenable = mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+
+    finishCleanup?.();
+    await Promise.all([initialization, reenable]);
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(true);
+  });
+
   it("retries a failed initialization purge on the next persisted mutation", async () => {
     vi.stubEnv("VITE_CHARM_OFREP_URL", "");
     mocks.isTauri.mockReturnValue(true);

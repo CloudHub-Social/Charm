@@ -90,7 +90,14 @@ async function reconcileMessageSearchTransition(
  * Loads persisted overrides + the last-known-good remote cache, then starts the
  * OFREP refresh loop. Call once, early (main.tsx).
  */
-export async function initializeFeatureFlags(): Promise<void> {
+export function initializeFeatureFlags(): Promise<void> {
+  // Enqueue synchronously, before the first store read yields, so a Labs or
+  // OFREP re-enable requested during startup cannot overtake stale-cache
+  // cleanup and its native destructive reconciliation.
+  return serializeMessageSearchMutation(initializeFeatureFlagsInner);
+}
+
+async function initializeFeatureFlagsInner(): Promise<void> {
   const mutationId = cacheMutationId;
   const [persistedOverrides, cachedRemote] = await Promise.all([
     readOverrides(),
