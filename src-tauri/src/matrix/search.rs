@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 
 /// One renderer-selected searchable version of a Matrix message.
