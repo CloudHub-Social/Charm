@@ -43,6 +43,16 @@ describe("resolveFlag", () => {
     expect(resolveFlag("canary", { canary: false })).toBe(false);
   });
 
+  it("lets trusted remote off veto a local search override", () => {
+    expect(
+      resolveFlag(
+        "encrypted_local_message_search",
+        { encrypted_local_message_search: true },
+        { encrypted_local_message_search: false },
+      ),
+    ).toBe(false);
+  });
+
   it("has a catalog key for every exported flag key", () => {
     // FEATURE_FLAG_KEYS is derived from the record; this also fails to compile
     // if the record and the ts-rs union drift (the record is typed by it).
