@@ -10,7 +10,7 @@ use std::{
 };
 
 use hkdf::Hkdf;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 use sha2_compat::Sha256 as HkdfSha256;
 use zeroize::Zeroizing;
@@ -32,6 +32,33 @@ impl MigrationError {
             Self::Storage(message) => message,
         }
     }
+
+    fn from_sqlite(error: rusqlite::Error) -> Self {
+        let transient_storage_failure = matches!(
+            error.sqlite_error_code(),
+            Some(
+                ErrorCode::PermissionDenied
+                    | ErrorCode::DatabaseBusy
+                    | ErrorCode::DatabaseLocked
+                    | ErrorCode::OutOfMemory
+                    | ErrorCode::ReadOnly
+                    | ErrorCode::OperationInterrupted
+                    | ErrorCode::SystemIoFailure
+                    | ErrorCode::DiskFull
+                    | ErrorCode::CannotOpen
+                    | ErrorCode::FileLockingProtocolFailed
+            )
+        );
+        if transient_storage_failure {
+            Self::Storage(safe_storage_error(error))
+        } else {
+            // Migration runs only fixed schema statements. Corruption,
+            // missing/wrong columns, invalid types, and constraint failures
+            // therefore describe an incompatible derived index, not a
+            // transient filesystem failure.
+            Self::IncompatibleSchema
+        }
+    }
 }
 
 /// One renderer-selected searchable version of a Matrix message.
@@ -44,6 +71,8 @@ pub struct SearchDocument {
     /// `None` means the visible replacement is a non-searchable msgtype.
     pub body: Option<String>,
     pub origin_server_ts: u64,
+    /// Renderer-authoritative ordering of the selected original/edit event.
+    pub selection_order: u64,
 }
 
 /// A Charm-owned, device-scoped SQLCipher message index.
@@ -148,15 +177,6 @@ impl SearchIndex {
         if already_indexed {
             return transaction.commit().map_err(safe_storage_error);
         }
-        let selection_order = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(selection_order), 0) + 1
-                 FROM message_versions
-                 WHERE room_id = ?1 AND original_event_id = ?2",
-                params![&document.room_id, &document.event_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(safe_storage_error)?;
         transaction
             .execute(
                 "INSERT INTO message_versions (
@@ -170,11 +190,11 @@ impl SearchIndex {
                     &document.sender,
                     &document.body,
                     timestamp_to_i64(document.origin_server_ts),
-                    selection_order,
+                    timestamp_to_i64(document.selection_order),
                 ],
             )
             .map_err(safe_storage_error)?;
-        replace_visible_row(&transaction, document)?;
+        restore_visible_row(&transaction, &document.room_id, &document.event_id)?;
         transaction.commit().map_err(safe_storage_error)
     }
 
@@ -331,36 +351,6 @@ pub fn purge_device_index(
     }
 }
 
-fn replace_visible_row(
-    transaction: &Transaction<'_>,
-    document: &SearchDocument,
-) -> Result<(), String> {
-    if is_tombstoned(transaction, &document.room_id, &document.event_id)?
-        || is_tombstoned(transaction, &document.room_id, &document.version_event_id)?
-    {
-        return Ok(());
-    }
-    delete_visible_row(transaction, &document.room_id, &document.event_id)?;
-    if let Some(body) = &document.body {
-        transaction
-            .execute(
-                "INSERT INTO searchable_messages (
-                    body, room_id, event_id, version_event_id, sender, origin_server_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    body,
-                    &document.room_id,
-                    &document.event_id,
-                    &document.version_event_id,
-                    &document.sender,
-                    timestamp_to_i64(document.origin_server_ts),
-                ],
-            )
-            .map_err(safe_storage_error)?;
-    }
-    Ok(())
-}
-
 fn restore_visible_row(
     transaction: &Transaction<'_>,
     room_id: &str,
@@ -493,14 +483,14 @@ fn derive_search_key(
 fn migrate(connection: &Connection) -> Result<(), MigrationError> {
     let transaction = connection
         .unchecked_transaction()
-        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+        .map_err(MigrationError::from_sqlite)?;
     transaction
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS search_metadata (
                 schema_version INTEGER NOT NULL
              );",
         )
-        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+        .map_err(MigrationError::from_sqlite)?;
 
     let (row_count, schema_version) = transaction
         .query_row(
@@ -508,16 +498,16 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
             [],
             |row| Ok((row.get::<_, u32>(0)?, row.get::<_, Option<u32>>(1)?)),
         )
-        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+        .map_err(MigrationError::from_sqlite)?;
     match (row_count, schema_version) {
         (0, None) => {
-            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
+            create_current_schema(&transaction)?;
             transaction
                 .execute(
                     "INSERT INTO search_metadata(schema_version) VALUES (?1)",
                     [SCHEMA_VERSION],
                 )
-                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+                .map_err(MigrationError::from_sqlite)?;
         }
         (1, Some(1)) => {
             transaction
@@ -526,26 +516,24 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                         ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0;
                      UPDATE message_versions SET selection_order = rowid;",
                 )
-                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+                .map_err(MigrationError::from_sqlite)?;
             transaction
                 .execute(
                     "UPDATE search_metadata SET schema_version = ?1",
                     [SCHEMA_VERSION],
                 )
-                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
-            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
+                .map_err(MigrationError::from_sqlite)?;
+            create_current_schema(&transaction)?;
         }
         (1, Some(SCHEMA_VERSION)) => {
-            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
+            create_current_schema(&transaction)?;
         }
         _ => return Err(MigrationError::IncompatibleSchema),
     }
-    transaction
-        .commit()
-        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))
+    transaction.commit().map_err(MigrationError::from_sqlite)
 }
 
-fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), String> {
+fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
     transaction
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS message_versions (
@@ -573,7 +561,23 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), String> {
                 PRIMARY KEY(room_id, event_id)
              );",
         )
-        .map_err(safe_storage_error)?;
+        .map_err(MigrationError::from_sqlite)?;
+    transaction
+        .prepare(
+            "SELECT room_id, original_event_id, version_event_id, sender, body,
+                    origin_server_ts, selection_order
+             FROM message_versions LIMIT 0",
+        )
+        .map_err(MigrationError::from_sqlite)?;
+    transaction
+        .prepare("SELECT room_id, event_id FROM redacted_events LIMIT 0")
+        .map_err(MigrationError::from_sqlite)?;
+    transaction
+        .prepare(
+            "SELECT body, room_id, event_id, version_event_id, sender, origin_server_ts
+             FROM searchable_messages LIMIT 0",
+        )
+        .map_err(MigrationError::from_sqlite)?;
     Ok(())
 }
 
@@ -654,6 +658,12 @@ mod tests {
     }
 
     fn document(body: Option<&str>, version_event_id: &str) -> SearchDocument {
+        let selection_order = match version_event_id {
+            "$original" => 1,
+            "$edit" | "$edit-1" => 2,
+            "$edit-2" => 3,
+            _ => 4,
+        };
         SearchDocument {
             room_id: "!room:example.org".to_string(),
             event_id: "$original".to_string(),
@@ -661,6 +671,7 @@ mod tests {
             sender: "@alice:example.org".to_string(),
             body: body.map(str::to_string),
             origin_server_ts: 42,
+            selection_order,
         }
     }
 
@@ -707,6 +718,38 @@ mod tests {
             })
             .expect("schema version");
         assert_eq!(schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn open_rebuilds_a_malformed_schema_but_not_transient_storage_errors() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .connection
+            .execute(
+                "ALTER TABLE search_metadata
+                 RENAME COLUMN schema_version TO wrong_version",
+                [],
+            )
+            .expect("corrupt metadata schema");
+        drop(index);
+
+        let rebuilt = open_index(directory.path(), "account", "DEVICE");
+        let schema_version = rebuilt
+            .connection
+            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .expect("rebuilt schema version");
+        assert_eq!(schema_version, SCHEMA_VERSION);
+
+        assert!(matches!(
+            MigrationError::from_sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            )),
+            MigrationError::Storage(_)
+        ));
     }
 
     #[test]
@@ -978,6 +1021,37 @@ mod tests {
         index
             .apply_document(&document(Some("replayed first edit"), "$edit-1"))
             .expect("replay first edit");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("second edit")
+        );
+        index
+            .redact("!room:example.org", "$edit-2")
+            .expect("redact second edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first edit")
+        );
+    }
+
+    #[test]
+    fn out_of_order_edits_preserve_renderer_authoritative_order() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        index
+            .apply_document(&document(Some("second edit"), "$edit-2"))
+            .expect("insert second edit first");
+        index
+            .apply_document(&document(Some("first edit"), "$edit-1"))
+            .expect("insert first edit late");
 
         assert_eq!(
             index
