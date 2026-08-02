@@ -1875,8 +1875,13 @@ mod tests {
             Err(SecretStoreError::NotFound)
         ));
 
-        entry.set_password("existing-passphrase").unwrap();
-        assert_eq!(load_passphrase(&key).unwrap(), "existing-passphrase");
+        let existing_passphrase: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+        entry.set_password(&existing_passphrase).unwrap();
+        assert_eq!(load_passphrase(&key).unwrap(), existing_passphrase);
         entry.delete_credential().unwrap();
     }
 
