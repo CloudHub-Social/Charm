@@ -497,16 +497,29 @@ pub fn purge_device_index(
 ) -> Result<(), String> {
     let directory = index_directory(app_data_dir, account_store_key, device_id);
     let marker = pending_device_purge_marker(app_data_dir, &directory)?;
+    // Intent first: callers may remove the only persisted session that
+    // identifies this device immediately after this returns. A crash during
+    // deletion must therefore leave enough opaque state for startup retry.
+    persist_pending_marker(&marker)?;
     match std::fs::remove_dir_all(&directory) {
         Ok(()) => remove_pending_marker(&marker),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             remove_pending_marker(&marker)
         }
-        Err(error) => {
-            persist_pending_marker(&marker)?;
-            Err(safe_io_error(error))
-        }
+        Err(error) => Err(safe_io_error(error)),
     }
+}
+
+/// Durably queues one device index for deletion before its identifying
+/// session credential is removed.
+pub fn mark_device_index_purge_pending(
+    app_data_dir: &Path,
+    account_store_key: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    let directory = index_directory(app_data_dir, account_store_key, device_id);
+    let marker = pending_device_purge_marker(app_data_dir, &directory)?;
+    persist_pending_marker(&marker)
 }
 
 /// Retries opaque device-index deletions that could not complete during an
@@ -1491,6 +1504,22 @@ mod tests {
 
         std::fs::remove_file(&target).expect("release placeholder");
         retry_pending_device_purges(directory.path()).expect("retry purge");
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn device_purge_intent_can_precede_credential_removal() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let target = index_directory(directory.path(), "account", "DEVICE");
+        create_private_directory(&target).expect("device index");
+
+        mark_device_index_purge_pending(directory.path(), "account", "DEVICE")
+            .expect("durable intent");
+        let marker = pending_device_purge_marker(directory.path(), &target).expect("marker");
+        assert!(marker.is_file());
+
+        retry_pending_device_purges(directory.path()).expect("retry purge");
+        assert!(!target.exists());
         assert!(!marker.exists());
     }
 

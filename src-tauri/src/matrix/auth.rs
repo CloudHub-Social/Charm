@@ -480,11 +480,11 @@ pub async fn try_restore_session(
             .await
             .is_err()
         {
-            let _ = persistence::clear_session(&account_key);
-            purge_failed_restore_search_index(
+            cleanup_rejected_restore(
                 &app,
                 &account_key,
                 saved.session.meta.device_id.as_str(),
+                persistence::clear_session,
             );
             continue;
         }
@@ -520,14 +520,22 @@ async fn restore_oauth_session(
         .await
         .is_err()
     {
-        let _ = persistence::clear_oauth_session(account_key);
-        purge_failed_restore_search_index(app, account_key, &device_id);
+        cleanup_rejected_restore(
+            app,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        );
         return Ok(None);
     }
 
     let Some(session_meta) = client.session_meta().cloned() else {
-        let _ = persistence::clear_oauth_session(account_key);
-        purge_failed_restore_search_index(app, account_key, &device_id);
+        cleanup_rejected_restore(
+            app,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        );
         return Ok(None);
     };
 
@@ -548,13 +556,33 @@ async fn restore_oauth_session(
     Ok(Some(response))
 }
 
-fn purge_failed_restore_search_index(app: &AppHandle, account_key: &str, device_id: &str) {
-    let result = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "message search app-data directory unavailable".to_string())
-        .and_then(|app_data_dir| search::purge_device_index(&app_data_dir, account_key, device_id));
-    if let Err(error) = result {
+fn cleanup_rejected_restore(
+    app: &AppHandle,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) {
+    let app_data_dir = match app.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(_) => {
+            // Keep the rejected credential as the retry authority when no
+            // durable derived-index cleanup intent can be written.
+            eprintln!("failed to prepare message search cleanup after session restore rejection");
+            return;
+        }
+    };
+    if let Err(error) =
+        search::mark_device_index_purge_pending(&app_data_dir, account_key, device_id)
+    {
+        eprintln!(
+            "failed to prepare message search cleanup after session restore rejection: {error}"
+        );
+        return;
+    }
+    if let Err(error) = clear_credential(account_key) {
+        eprintln!("failed to clear rejected session credential: {error}");
+    }
+    if let Err(error) = search::purge_device_index(&app_data_dir, account_key, device_id) {
         eprintln!("failed to purge message search after session restore rejection: {error}");
     }
 }
