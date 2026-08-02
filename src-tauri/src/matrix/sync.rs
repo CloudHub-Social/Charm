@@ -653,25 +653,75 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
     // new login that landed between that read and the delete.
     let _completion_guard = state.login_completion_lock.lock().await;
 
+    // If this is still the renderer's active session, persist invalidation
+    // before touching either credential. A keychain read/delete failure must
+    // not make the revoked account restorable on the next launch. Stale sync
+    // tasks for a superseded session deliberately do not create an
+    // account-wide tombstone, because that would invalidate the replacement
+    // login which now owns the same account key.
+    let terminal_session_is_active = state.client.lock().await.as_ref().is_some_and(|active| {
+        active.user_id() == client.user_id() && active.device_id() == client.device_id()
+    });
+    let tombstone_marked = if terminal_session_is_active {
+        match persistence::mark_logout_tombstone(app, &account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("failed to persist cleanup after terminal authentication error: {error}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     // A stale sync task must never clear a newer login for the same account.
     // Only remove a persisted entry when it still belongs to this exact
     // revoked device; the derived device index is always safe to remove.
-    if matches!(
-        persistence::load_session(&account_key),
-        Ok(Some(saved)) if saved.session.meta.device_id.as_str() == device_id.as_str()
-    ) {
-        let _ = persistence::clear_session(&account_key);
-    }
-    if matches!(
-        persistence::load_oauth_session(&account_key),
-        Ok(Some(saved)) if saved.user.meta.device_id.as_str() == device_id.as_str()
-    ) {
-        let _ = persistence::clear_oauth_session(&account_key);
-    }
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
-        if let Err(error) = search::purge_device_index(&app_data_dir, &account_key, &device_id) {
+    let matrix_credential_cleared = match persistence::load_session(&account_key) {
+        Ok(Some(saved)) if saved.session.meta.device_id.as_str() == device_id.as_str() => {
+            persistence::clear_session(&account_key).is_ok()
+        }
+        Err(_) if terminal_session_is_active => persistence::clear_session(&account_key).is_ok(),
+        Ok(None) => true,
+        _ => !terminal_session_is_active,
+    };
+    let oauth_credential_cleared = match persistence::load_oauth_session(&account_key) {
+        Ok(Some(saved)) if saved.user.meta.device_id.as_str() == device_id.as_str() => {
+            persistence::clear_oauth_session(&account_key).is_ok()
+        }
+        Err(_) if terminal_session_is_active => {
+            persistence::clear_oauth_session(&account_key).is_ok()
+        }
+        Ok(None) => true,
+        _ => !terminal_session_is_active,
+    };
+    let search_index_cleared = match app.path().app_data_dir() {
+        Ok(app_data_dir) => {
+            if let Err(error) = search::purge_device_index(&app_data_dir, &account_key, &device_id)
+            {
+                eprintln!(
+                    "failed to purge message search after terminal authentication error: {error}"
+                );
+                false
+            } else {
+                true
+            }
+        }
+        Err(error) => {
             eprintln!(
                 "failed to purge message search after terminal authentication error: {error}"
+            );
+            false
+        }
+    };
+    if tombstone_marked
+        && matrix_credential_cleared
+        && oauth_credential_cleared
+        && search_index_cleared
+    {
+        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+            eprintln!(
+                "failed to clear cleanup marker after terminal authentication error: {error}"
             );
         }
     }
