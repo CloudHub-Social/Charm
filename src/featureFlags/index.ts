@@ -89,6 +89,11 @@ export async function initializeFeatureFlags(): Promise<void> {
     readOverrides(),
     readRemoteFlags(),
   ]);
+  const searchWasEnabled = resolveFlag(
+    "encrypted_local_message_search",
+    persistedOverrides,
+    cachedRemote.remote,
+  );
   // Apply the cached remote only when (a) an endpoint is configured and (b) the
   // cache was computed for the *current* install id. A removed endpoint makes
   // the layer inert; a mismatched id means a different percentage-rollout cohort
@@ -127,6 +132,15 @@ export async function initializeFeatureFlags(): Promise<void> {
     persistedOverridesCache = persistedOverrides;
   }
   emit();
+  // Native startup reads the durable flag file before this asynchronous JS
+  // initialization. If initialization just removed a stale remote `true`,
+  // reconcile that durable enabled-to-disabled transition now; otherwise the
+  // startup purge may already have been skipped. A failed purge leaves the
+  // shared retry marker set for the next persisted flag mutation.
+  await reconcileMessageSearchTransition(
+    searchWasEnabled,
+    resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+  );
   startRemoteRefresh();
   initialized = true;
   emit();

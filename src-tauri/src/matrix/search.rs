@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const SEARCH_KEY_VERIFIER: &str = ".key-verifier";
+const PENDING_DEVICE_PURGES: &str = ".pending-device-purges";
 #[cfg(any(target_os = "ios", test))]
 const IOS_BACKUP_EXCLUSION_MARKER: &str = ".ios-backup-excluded";
 const SCHEMA_VERSION: u32 = 2;
@@ -118,6 +119,10 @@ impl SearchIndex {
         device_id: &str,
         store_passphrase: &str,
     ) -> Result<Self, String> {
+        // Terminal authentication cleanup can be temporarily blocked by an
+        // open filesystem handle. Never open another derived index while an
+        // opaque, durable device purge remains outstanding.
+        retry_pending_device_purges(app_data_dir)?;
         #[cfg(target_os = "ios")]
         require_ios_backup_exclusion(&app_data_dir.join(SEARCH_ROOT))?;
         let directory = index_directory(app_data_dir, account_store_key, device_id);
@@ -428,11 +433,107 @@ pub fn purge_device_index(
     device_id: &str,
 ) -> Result<(), String> {
     let directory = index_directory(app_data_dir, account_store_key, device_id);
-    match std::fs::remove_dir_all(directory) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(safe_io_error(error)),
+    let marker = pending_device_purge_marker(app_data_dir, &directory)?;
+    match std::fs::remove_dir_all(&directory) {
+        Ok(()) => {
+            remove_pending_marker(&marker);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            remove_pending_marker(&marker);
+            Ok(())
+        }
+        Err(error) => {
+            persist_pending_marker(&marker)?;
+            Err(safe_io_error(error))
+        }
     }
+}
+
+/// Retries opaque device-index deletions that could not complete during an
+/// earlier terminal-authentication or logout teardown.
+///
+/// Markers contain only the already-opaque device directory name. Invalid
+/// names are ignored rather than ever being joined into a deletion target.
+///
+/// # Errors
+///
+/// Returns the first filesystem error after attempting every pending purge.
+pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
+    let search_root = app_data_dir.join(SEARCH_ROOT);
+    let pending_root = search_root.join(PENDING_DEVICE_PURGES);
+    let entries = match std::fs::read_dir(&pending_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(safe_io_error(error)),
+    };
+    let mut first_error = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                first_error.get_or_insert_with(|| safe_io_error(error));
+                continue;
+            }
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_opaque_device_directory_name(&name) {
+            continue;
+        }
+        let target = search_root.join(&name);
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => remove_pending_marker(&entry.path()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                remove_pending_marker(&entry.path());
+            }
+            Err(error) => {
+                first_error.get_or_insert_with(|| safe_io_error(error));
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn pending_device_purge_marker(app_data_dir: &Path, directory: &Path) -> Result<PathBuf, String> {
+    let name = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| is_opaque_device_directory_name(name))
+        .ok_or_else(|| "message search purge target unavailable".to_string())?;
+    Ok(app_data_dir
+        .join(SEARCH_ROOT)
+        .join(PENDING_DEVICE_PURGES)
+        .join(name))
+}
+
+fn persist_pending_marker(marker: &Path) -> Result<(), String> {
+    let parent = marker
+        .parent()
+        .ok_or_else(|| "message search purge queue unavailable".to_string())?;
+    create_private_directory(parent)?;
+    std::fs::write(marker, []).map_err(safe_io_error)
+}
+
+fn remove_pending_marker(marker: &Path) {
+    if let Err(error) = std::fs::remove_file(marker) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "failed to clear message search purge marker: {}",
+                safe_io_error(error)
+            );
+        }
+    }
+}
+
+fn is_opaque_device_directory_name(name: &str) -> bool {
+    name.len() == 65
+        && name.as_bytes()[32] == b'-'
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 32 || byte.is_ascii_hexdigit())
 }
 
 fn restore_visible_row(
@@ -1233,6 +1334,27 @@ mod tests {
 
         assert!(!second_path.exists());
         assert!(other_path.exists());
+    }
+
+    #[test]
+    fn failed_device_purge_is_retried_from_an_opaque_durable_marker() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let target = index_directory(directory.path(), "account", "DEVICE");
+        create_private_directory(target.parent().expect("search root")).expect("search root");
+        // A file at the directory path makes remove_dir_all fail without
+        // depending on platform-specific permissions or open-handle behavior.
+        std::fs::write(&target, b"locked-placeholder").expect("placeholder");
+
+        assert!(purge_device_index(directory.path(), "account", "DEVICE").is_err());
+        let marker = pending_device_purge_marker(directory.path(), &target).expect("marker");
+        assert!(marker.is_file());
+        let marker_name = marker.file_name().expect("marker name").to_string_lossy();
+        assert!(!marker_name.contains("account"));
+        assert!(!marker_name.contains("DEVICE"));
+
+        std::fs::remove_file(&target).expect("release placeholder");
+        retry_pending_device_purges(directory.path()).expect("retry purge");
+        assert!(!marker.exists());
     }
 
     #[test]

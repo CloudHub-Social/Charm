@@ -1309,6 +1309,10 @@ pub fn run() {
                     if let Err(error) = matrix::search::purge_all_indexes(&app_data_dir) {
                         eprintln!("message-search disabled-state cleanup failed: {error}");
                     }
+                } else if let Err(error) =
+                    matrix::search::retry_pending_device_purges(&app_data_dir)
+                {
+                    eprintln!("message-search deferred cleanup failed: {error}");
                 }
             }
             // Best-effort sweep of any per-account temp stores stranded by a

@@ -314,4 +314,55 @@ describe("initializeFeatureFlags", () => {
     expect(fetchMock).toHaveBeenCalled();
     expect(mod.getFlag("canary")).toBe(true);
   });
+
+  it("purges after initialization durably clears a stale enabled remote cache", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    mocks.isTauri.mockReturnValue(true);
+    const get = vi.fn(async (key: string) =>
+      key === "featureFlagsRemote"
+        ? {
+            state: { remote: { encrypted_local_message_search: true } },
+            updatedAt: 1,
+          }
+        : undefined,
+    );
+    mocks.load.mockResolvedValue({
+      get,
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.invoke.mockResolvedValue(undefined);
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
+  });
+
+  it("retries a failed initialization purge on the next persisted mutation", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn(async (key: string) =>
+        key === "featureFlagsRemote"
+          ? {
+              state: { remote: { encrypted_local_message_search: true } },
+              updatedAt: 1,
+            }
+          : undefined,
+      ),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.invoke.mockRejectedValueOnce(new Error("index locked")).mockResolvedValueOnce(undefined);
+
+    const mod = await import("./index");
+    await expect(mod.initializeFeatureFlags()).rejects.toThrow("index locked");
+    await mod.setFeatureFlagOverride("canary", false);
+
+    expect(
+      mocks.invoke.mock.calls.filter(([name]) => name === "reconcile_message_search_flag"),
+    ).toHaveLength(2);
+  });
 });
