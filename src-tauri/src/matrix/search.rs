@@ -19,6 +19,7 @@ const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const SEARCH_KEY_VERIFIER: &str = ".key-verifier";
 const PENDING_DEVICE_PURGES: &str = ".pending-device-purges";
+const PENDING_ACCOUNT_PURGES: &str = ".message-search-account-purges";
 const PENDING_ALL_PURGE: &str = ".message-search-purge-pending";
 #[cfg(any(target_os = "ios", test))]
 const IOS_BACKUP_EXCLUSION_MARKER: &str = ".ios-backup-excluded";
@@ -346,12 +347,29 @@ impl SearchIndex {
 /// Returns an error when the search root cannot be inspected or a matching
 /// private directory cannot be removed.
 pub fn purge_account_indexes(app_data_dir: &Path, account_store_key: &str) -> Result<(), String> {
-    purge_account_indexes_except(app_data_dir, account_store_key, None)
+    let prefix = account_directory_prefix(account_store_key);
+    let marker = pending_account_purge_marker(app_data_dir, &prefix)?;
+    match purge_account_indexes_except_prefix(app_data_dir, &prefix, None) {
+        Ok(()) => remove_pending_marker(&marker),
+        Err(error) => {
+            persist_pending_marker(&marker)?;
+            Err(error)
+        }
+    }
 }
 
 fn purge_account_indexes_except(
     app_data_dir: &Path,
     account_store_key: &str,
+    retained_directory: Option<&Path>,
+) -> Result<(), String> {
+    let prefix = account_directory_prefix(account_store_key);
+    purge_account_indexes_except_prefix(app_data_dir, &prefix, retained_directory)
+}
+
+fn purge_account_indexes_except_prefix(
+    app_data_dir: &Path,
+    prefix: &str,
     retained_directory: Option<&Path>,
 ) -> Result<(), String> {
     let root = app_data_dir.join(SEARCH_ROOT);
@@ -360,7 +378,6 @@ fn purge_account_indexes_except(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(safe_io_error(error)),
     };
-    let prefix = account_directory_prefix(account_store_key);
     let mut first_error = None;
     for entry in entries {
         let entry = match entry {
@@ -373,7 +390,7 @@ fn purge_account_indexes_except(
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if name.starts_with(&prefix)
+        if name.starts_with(prefix)
             && is_opaque_device_directory_name(&name)
             && retained_directory != Some(entry.path().as_path())
         {
@@ -413,7 +430,14 @@ fn purge_account_indexes_except(
 ///
 /// Returns an error when the search root exists but cannot be removed.
 pub fn purge_all_indexes(app_data_dir: &Path) -> Result<(), String> {
-    let result = purge_all_indexes_inner(app_data_dir);
+    let result =
+        purge_all_indexes_inner(app_data_dir).and_then(|()| {
+            match std::fs::remove_dir_all(app_data_dir.join(PENDING_ACCOUNT_PURGES)) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(safe_io_error(error)),
+            }
+        });
     let marker = app_data_dir.join(PENDING_ALL_PURGE);
     match result {
         Ok(()) => remove_pending_marker(&marker),
@@ -500,6 +524,7 @@ pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
         // also removes the device queue as part of the bounded root deletion.
         return purge_all_indexes(app_data_dir);
     }
+    retry_pending_account_purges(app_data_dir)?;
     let search_root = app_data_dir.join(SEARCH_ROOT);
     let pending_root = search_root.join(PENDING_DEVICE_PURGES);
     let entries = match std::fs::read_dir(&pending_root) {
@@ -542,6 +567,42 @@ pub fn retry_pending_device_purges(app_data_dir: &Path) -> Result<(), String> {
     first_error.map_or(Ok(()), Err)
 }
 
+fn retry_pending_account_purges(app_data_dir: &Path) -> Result<(), String> {
+    let pending_root = app_data_dir.join(PENDING_ACCOUNT_PURGES);
+    let entries = match std::fs::read_dir(&pending_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(safe_io_error(error)),
+    };
+    let mut first_error = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                first_error.get_or_insert_with(|| safe_io_error(error));
+                continue;
+            }
+        };
+        let Some(prefix) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_opaque_account_directory_prefix(&prefix) {
+            continue;
+        }
+        match purge_account_indexes_except_prefix(app_data_dir, &prefix, None) {
+            Ok(()) => {
+                if let Err(error) = remove_pending_marker(&entry.path()) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn pending_device_purge_marker(app_data_dir: &Path, directory: &Path) -> Result<PathBuf, String> {
     let name = directory
         .file_name()
@@ -552,6 +613,13 @@ fn pending_device_purge_marker(app_data_dir: &Path, directory: &Path) -> Result<
         .join(SEARCH_ROOT)
         .join(PENDING_DEVICE_PURGES)
         .join(name))
+}
+
+fn pending_account_purge_marker(app_data_dir: &Path, prefix: &str) -> Result<PathBuf, String> {
+    if !is_opaque_account_directory_prefix(prefix) {
+        return Err("message search account purge target unavailable".to_string());
+    }
+    Ok(app_data_dir.join(PENDING_ACCOUNT_PURGES).join(prefix))
 }
 
 fn persist_pending_marker(marker: &Path) -> Result<(), String> {
@@ -579,6 +647,12 @@ fn is_opaque_device_directory_name(name: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(index, byte)| index == 32 || byte.is_ascii_hexdigit())
+}
+
+fn is_opaque_account_directory_prefix(prefix: &str) -> bool {
+    prefix.len() == 33
+        && prefix.as_bytes()[32] == b'-'
+        && prefix[..32].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn restore_visible_row(
@@ -1444,6 +1518,26 @@ mod tests {
         retry_pending_device_purges(directory.path()).expect("retry account purge");
         assert!(!first_marker.exists());
         assert!(!second_marker.exists());
+    }
+
+    #[test]
+    fn account_purge_queues_enumeration_failure_for_later_retry() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let search_root = directory.path().join(SEARCH_ROOT);
+        std::fs::write(&search_root, b"locked-root").expect("root placeholder");
+        let account = "account";
+        let prefix = account_directory_prefix(account);
+
+        assert!(purge_account_indexes(directory.path(), account).is_err());
+        let marker = pending_account_purge_marker(directory.path(), &prefix).expect("marker");
+        assert!(marker.is_file());
+
+        std::fs::remove_file(&search_root).expect("release root");
+        let target = index_directory(directory.path(), account, "DEVICE");
+        create_private_directory(&target).expect("device index");
+        retry_pending_device_purges(directory.path()).expect("retry account purge");
+        assert!(!target.exists());
+        assert!(!marker.exists());
     }
 
     #[test]

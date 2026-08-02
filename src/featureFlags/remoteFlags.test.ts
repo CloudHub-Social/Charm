@@ -196,6 +196,32 @@ describe("message search Labs reconciliation", () => {
 
     expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
   });
+
+  it("does not persist a re-enable until disable cleanup finishes", async () => {
+    let finishCleanup: (() => void) | undefined;
+    mocks.invoke.mockImplementation(
+      (command: string) =>
+        new Promise<void>((resolve, reject) => {
+          if (command === "reconcile_message_search_flag") {
+            finishCleanup = resolve;
+          } else {
+            reject(new Error(`unexpected command: ${command}`));
+          }
+        }),
+    );
+
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setCache({ encrypted_local_message_search: true });
+    const disable = mod.setFeatureFlagOverride("encrypted_local_message_search", false);
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+
+    const reenable = mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(false);
+
+    finishCleanup?.();
+    await Promise.all([disable, reenable]);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
+  });
 });
 
 describe("remote cache when no endpoint is configured", () => {

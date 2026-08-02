@@ -29,6 +29,7 @@ let remoteCache: FeatureFlagRemote = {};
 let initialized = false;
 let cacheMutationId = 0;
 let messageSearchReconciliationPending = false;
+let messageSearchMutationQueue: Promise<void> = Promise.resolve();
 const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
@@ -192,7 +193,19 @@ export function useFeatureFlagsInitialized(): boolean {
 }
 
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
-export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
+export function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
+  if (key === "encrypted_local_message_search") {
+    const mutation = messageSearchMutationQueue.then(
+      () => setFeatureFlagOverrideInner(key, value),
+      () => setFeatureFlagOverrideInner(key, value),
+    );
+    messageSearchMutationQueue = mutation.catch(() => undefined);
+    return mutation;
+  }
+  return setFeatureFlagOverrideInner(key, value);
+}
+
+async function setFeatureFlagOverrideInner(key: FeatureFlagKey, value: boolean): Promise<void> {
   const mutationId = ++cacheMutationId;
   const searchWasEnabled = resolveFlag(
     "encrypted_local_message_search",
@@ -221,7 +234,19 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
 }
 
 /** Clears a local override, reverting the flag to remote/default resolution. */
-export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
+export function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
+  if (key === "encrypted_local_message_search") {
+    const mutation = messageSearchMutationQueue.then(
+      () => clearFeatureFlagOverrideInner(key),
+      () => clearFeatureFlagOverrideInner(key),
+    );
+    messageSearchMutationQueue = mutation.catch(() => undefined);
+    return mutation;
+  }
+  return clearFeatureFlagOverrideInner(key);
+}
+
+async function clearFeatureFlagOverrideInner(key: FeatureFlagKey): Promise<void> {
   const mutationId = ++cacheMutationId;
   const searchWasEnabled = resolveFlag(
     "encrypted_local_message_search",

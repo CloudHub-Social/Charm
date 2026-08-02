@@ -33,10 +33,12 @@ For this sensitive flag only, a trusted remote `false` vetoes a
 persisted local Labs override; disabled startup removes every retained index
 before any search surface can be used, and a runtime enabled-to-disabled
 transition immediately purges the native derived-index root (iOS preserves only its empty,
-backup-excluded root and native success marker).
+backup-excluded root and native success marker). Labs serializes a later re-enable
+behind that cleanup so durable flag writes cannot overtake the purge.
 Device-scoped purge failures retain only opaque durable retry markers, while a failed
 whole-root kill-switch purge retains an empty marker outside that root. Account sweeps
-attempt and queue every matching device; startup and the next index open retry all
+attempt and queue every matching device, and retain an opaque account-wide marker when
+the search root itself cannot be enumerated; startup and the next index open retry all
 pending deletions before search can become usable.
 Room purge deletes searchable bodies and version provenance but retains non-content
 redaction tombstones so a delayed replay cannot resurrect previously redacted text.
