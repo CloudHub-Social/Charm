@@ -29,7 +29,8 @@ rebuild a corrupt encrypted header with the confirmed current key without
 mistaking a wrong-key or transient storage failure for disposable corruption.
 For this sensitive flag only, a trusted remote `false` vetoes a
 persisted local Labs override; disabled startup removes every retained index
-before any search surface can be used (iOS preserves only its empty,
+before any search surface can be used, and a runtime enabled-to-disabled
+transition immediately purges the native derived-index root (iOS preserves only its empty,
 backup-excluded root and native success marker).
 
 This foundation does not yet ingest timeline/sync events or expose the search

@@ -639,6 +639,27 @@ fn get_feature_flag_catalog() -> Vec<feature_flags::FeatureFlagCatalogEntry> {
     feature_flags::catalog()
 }
 
+/// Applies Spec 28's destructive privacy kill switch after the frontend has
+/// durably persisted a runtime flag refresh. Re-read the Rust resolver and
+/// refuse deletion while search still resolves on; the purge itself is
+/// bounded to the Charm-owned derived-index root.
+#[tauri::command]
+fn reconcile_message_search_flag<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search filesystem unavailable".to_string())?;
+    if feature_flags::flag(
+        &app_data_dir,
+        feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+    ) {
+        return Ok(());
+    }
+    matrix::search::purge_all_indexes(&app_data_dir)
+}
+
 /// The trusted GO Feature Flag OFREP proxy origin. `fetch_remote_flags` builds
 /// its request URL from this constant and **does not** accept a URL from the
 /// webview — otherwise a compromised or XSS'd frontend could use the
@@ -1453,6 +1474,7 @@ pub fn run() {
             update_observability_sentry_consent,
             get_feature_flags,
             get_feature_flag_catalog,
+            reconcile_message_search_flag,
             fetch_remote_flags,
             had_unclean_previous_session,
             forward_sentry_envelope,

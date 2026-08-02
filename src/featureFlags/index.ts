@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
+import { isTauri } from "@/lib/platform";
 import { getInstallId } from "./installId";
 import { fetchRemoteFlags, isRemoteConfigured } from "./ofrep";
 import { resolveFlag, type FeatureFlagOverrides, type FeatureFlagRemote } from "./resolve";
@@ -229,11 +230,29 @@ export async function refreshRemoteFlags(): Promise<void> {
       // reads only that file) hasn't seen yet. If the durable write fails, keep
       // the previous cache; the next tick retries.
       if (await persistRemoteFlags(result, getInstallId())) {
+        const searchWasEnabled = resolveFlag(
+          "encrypted_local_message_search",
+          overridesCache,
+          remoteCache,
+        );
+        const searchIsEnabled = resolveFlag(
+          "encrypted_local_message_search",
+          overridesCache,
+          result,
+        );
         remoteCache = result;
         for (const key of changedKeys) {
           persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
         }
         emit();
+        // The durable file is now authoritative for Rust and the UI is
+        // already disabled. Reconcile the sensitive derived store before
+        // this refresh completes so a trusted runtime kill switch does not
+        // retain data until restart. The web companion has no local index.
+        if (searchWasEnabled && !searchIsEnabled && isTauri()) {
+          const { invoke } = await import("@/lib/matrixTransport");
+          await invoke("reconcile_message_search_flag");
+        }
       }
     }
   } finally {
