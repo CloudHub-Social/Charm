@@ -522,6 +522,17 @@ pub fn mark_device_index_purge_pending(
     persist_pending_marker(&marker)
 }
 
+/// Durably queues every device index for an account for deletion before its
+/// identifying session credential is removed.
+pub fn mark_account_indexes_purge_pending(
+    app_data_dir: &Path,
+    account_store_key: &str,
+) -> Result<(), String> {
+    let prefix = account_directory_prefix(account_store_key);
+    let marker = pending_account_purge_marker(app_data_dir, &prefix)?;
+    persist_pending_marker(&marker)
+}
+
 /// Retries opaque device-index deletions that could not complete during an
 /// earlier terminal-authentication or logout teardown.
 ///
@@ -1524,6 +1535,26 @@ mod tests {
 
         retry_pending_device_purges(directory.path()).expect("retry purge");
         assert!(!target.exists());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn account_purge_intent_can_precede_credential_removal() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = index_directory(directory.path(), "account", "DEVICE-A");
+        let second = index_directory(directory.path(), "account", "DEVICE-B");
+        create_private_directory(&first).expect("first device index");
+        create_private_directory(&second).expect("second device index");
+
+        mark_account_indexes_purge_pending(directory.path(), "account")
+            .expect("durable account intent");
+        let prefix = account_directory_prefix("account");
+        let marker = pending_account_purge_marker(directory.path(), &prefix).expect("marker");
+        assert!(marker.is_file());
+
+        retry_pending_device_purges(directory.path()).expect("retry account purge");
+        assert!(!first.exists());
+        assert!(!second.exists());
         assert!(!marker.exists());
     }
 
