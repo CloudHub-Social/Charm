@@ -223,7 +223,7 @@ fn mark_logout_tombstone_with_fallback_at(
     app_data_dir: &Path,
     account_key: &str,
 ) -> Result<(), String> {
-    match mark_logout_tombstone_at(&root, account_key) {
+    match mark_logout_tombstone_at(root, account_key) {
         Ok(()) => Ok(()),
         Err(primary_error) => {
             let marker =
