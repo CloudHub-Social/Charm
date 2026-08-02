@@ -1337,7 +1337,15 @@ pub fn run() {
                 // `try_restore_session`'s wait only ever blocks on the part
                 // it actually needs.
                 let recovery_result = async {
+                    let matrix_state = sweep_handle.state::<matrix::MatrixState>();
+                    // Match try_restore_session/login's lock order. The
+                    // recovery pass processes durable logout tombstones and
+                    // can therefore delete account credentials; serializing
+                    // it with login completion ensures it either finishes
+                    // before a replacement SSO/QR session commits, or sees
+                    // that completion's cleared tombstone afterward.
                     let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    let _completion_guard = matrix_state.login_completion_lock.lock().await;
                     matrix::persistence::recover_stale_backups(&sweep_handle)
                 }
                 .await;
