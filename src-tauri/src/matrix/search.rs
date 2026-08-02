@@ -117,6 +117,12 @@ impl SearchIndex {
         #[cfg(target_os = "ios")]
         require_ios_backup_exclusion(&app_data_dir.join(SEARCH_ROOT))?;
         let directory = index_directory(app_data_dir, account_store_key, device_id);
+        // A fresh interactive login receives a fresh Matrix device ID and
+        // supersedes the account's SDK store. Its old search index is derived
+        // from that discarded store and must be gone before this replacement
+        // can open. Keep a same-device restart intact, but remove every other
+        // device directory for the account first.
+        purge_account_indexes_except(app_data_dir, account_store_key, Some(&directory))?;
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
         let mut connection = Connection::open(&database_path).map_err(safe_storage_error)?;
@@ -302,6 +308,14 @@ impl SearchIndex {
 /// Returns an error when the search root cannot be inspected or a matching
 /// private directory cannot be removed.
 pub fn purge_account_indexes(app_data_dir: &Path, account_store_key: &str) -> Result<(), String> {
+    purge_account_indexes_except(app_data_dir, account_store_key, None)
+}
+
+fn purge_account_indexes_except(
+    app_data_dir: &Path,
+    account_store_key: &str,
+    retained_directory: Option<&Path>,
+) -> Result<(), String> {
     let root = app_data_dir.join(SEARCH_ROOT);
     let entries = match std::fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -314,7 +328,10 @@ pub fn purge_account_indexes(app_data_dir: &Path, account_store_key: &str) -> Re
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if name.starts_with(&prefix) && entry.file_type().map_err(safe_io_error)?.is_dir() {
+        if name.starts_with(&prefix)
+            && retained_directory != Some(entry.path().as_path())
+            && entry.file_type().map_err(safe_io_error)?.is_dir()
+        {
             std::fs::remove_dir_all(entry.path()).map_err(safe_io_error)?;
         }
     }
@@ -867,9 +884,9 @@ mod tests {
     fn open_uses_an_opaque_device_scoped_private_path() {
         let directory = tempfile::tempdir().expect("tempdir");
         let first = open_index(directory.path(), "account-key", "DEVICE-A");
-        let second = open_index(directory.path(), "account-key", "DEVICE-B");
+        let second_path = index_directory(directory.path(), "account-key", "DEVICE-B");
 
-        assert_ne!(first.database_path(), second.database_path());
+        assert_ne!(first.database_path().parent(), Some(second_path.as_path()));
         let rendered = first.database_path().to_string_lossy();
         assert!(!rendered.contains("DEVICE-A"));
         assert!(!rendered.contains("account-key"));
@@ -1118,16 +1135,20 @@ mod tests {
     fn account_purge_removes_each_device_index_but_not_another_account() {
         let directory = tempfile::tempdir().expect("tempdir");
         let first = open_index(directory.path(), "account-a", "A");
-        let second = open_index(directory.path(), "account-a", "B");
-        let other = open_index(directory.path(), "account-b", "A");
         let first_path = first.database_path().to_owned();
+        drop(first);
+
+        // Opening a newly authenticated device for the same account first
+        // removes the superseded device's derived index.
+        let second = open_index(directory.path(), "account-a", "B");
+        assert!(!first_path.exists());
+        let other = open_index(directory.path(), "account-b", "A");
         let second_path = second.database_path().to_owned();
         let other_path = other.database_path().to_owned();
-        drop((first, second, other));
+        drop((second, other));
 
         purge_account_indexes(directory.path(), "account-a").expect("purge");
 
-        assert!(!first_path.exists());
         assert!(!second_path.exists());
         assert!(other_path.exists());
     }

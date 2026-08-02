@@ -25,7 +25,7 @@ use std::hash::{BuildHasher, Hasher};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
-use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
+use super::{persistence, search, sync, MatrixState, ReservedTempStoreGuard};
 
 /// The `charm://` deep-link the homeserver's SSO flow redirects back to with
 /// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
@@ -481,6 +481,11 @@ pub async fn try_restore_session(
             .is_err()
         {
             let _ = persistence::clear_session(&account_key);
+            purge_failed_restore_search_index(
+                &app,
+                &account_key,
+                saved.session.meta.device_id.as_str(),
+            );
             continue;
         }
 
@@ -505,6 +510,7 @@ async fn restore_oauth_session(
     saved: persistence::SavedOAuthSession,
 ) -> Result<Option<LoginResponse>, String> {
     let homeserver_url = saved.homeserver_url.clone();
+    let device_id = saved.user.meta.device_id.to_string();
     let client = build_client(app, &homeserver_url, account_key).await?;
     let session = saved.into_oauth_session();
 
@@ -515,11 +521,13 @@ async fn restore_oauth_session(
         .is_err()
     {
         let _ = persistence::clear_oauth_session(account_key);
+        purge_failed_restore_search_index(app, account_key, &device_id);
         return Ok(None);
     }
 
     let Some(session_meta) = client.session_meta().cloned() else {
         let _ = persistence::clear_oauth_session(account_key);
+        purge_failed_restore_search_index(app, account_key, &device_id);
         return Ok(None);
     };
 
@@ -538,6 +546,17 @@ async fn restore_oauth_session(
     sync::spawn_sync_loop(app.clone(), client);
 
     Ok(Some(response))
+}
+
+fn purge_failed_restore_search_index(app: &AppHandle, account_key: &str, device_id: &str) {
+    let result = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search app-data directory unavailable".to_string())
+        .and_then(|app_data_dir| search::purge_device_index(&app_data_dir, account_key, device_id));
+    if let Err(error) = result {
+        eprintln!("failed to purge message search after session restore rejection: {error}");
+    }
 }
 
 /// Headlessly builds and restores a client for `account_key` — no

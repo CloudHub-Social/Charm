@@ -17,9 +17,13 @@ opaque device-scoped private directories, visible-message and edit-provenance ta
 tombstones, physical redaction/room cleanup, account/device purge helpers, and a
 default-off `encrypted_local_message_search` flag. Logout deletes the current
 device index and account deactivation deletes every retained index for that
-account. For this sensitive flag only, a trusted remote `false` vetoes a
-persisted local Labs override; disabled startup removes the entire Charm-owned
-search root before any search surface can be used.
+account. Opening a replacement device index first purges any superseded device
+indexes for that account; rejected session restore and terminal
+`M_UNKNOWN_TOKEN` sync errors clear the affected device index as part of session
+teardown. For this sensitive flag only, a trusted remote `false` vetoes a
+persisted local Labs override; disabled startup removes every retained index
+before any search surface can be used (iOS preserves only its empty,
+backup-excluded root and native success marker).
 
 This foundation does not yet ingest timeline/sync events or expose the search
 command. The next backend slice owns the bounded off-runtime worker, FTS5 tokenizer,
