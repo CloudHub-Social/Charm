@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
@@ -33,6 +33,8 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
   const [crashRecoveryPromptOpen, setCrashRecoveryPromptOpen] = useState(showCrashRecoveryPrompt);
   const onboarding = useOnboardingGate(session?.user_id ?? null);
+  const onLoggedOutRef = useRef(onLoggedOut);
+  onLoggedOutRef.current = onLoggedOut;
 
   const handleLoggedOut = useCallback(() => {
     // Clears every account-scoped cache entry (profile, devices,
@@ -41,9 +43,9 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
     queryClient.clear();
     resetPrivacySettingsWriteQueue();
     clearSettingsHash();
-    onLoggedOut?.();
+    onLoggedOutRef.current?.();
     setSession(null);
-  }, [onLoggedOut]);
+  }, []);
 
   useEffect(() => {
     let active = true;

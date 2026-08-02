@@ -102,6 +102,22 @@ describe("App", () => {
     expect(onLoggedOut).toHaveBeenCalled();
   });
 
+  it("does not restore again when the outer logout-reset callback changes identity", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const firstReset = vi.fn();
+    const latestReset = vi.fn();
+
+    const { rerender } = render(<App onLoggedOut={firstReset} />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    rerender(<App onLoggedOut={latestReset} />);
+    fireEvent.click(screen.getByRole("button", { name: "trigger logout" }));
+
+    expect(latestReset).toHaveBeenCalledOnce();
+    expect(firstReset).not.toHaveBeenCalled();
+    expect(tryRestoreSession).toHaveBeenCalledOnce();
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+  });
+
   it("returns to login and clears account state when the backend invalidates the session", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
     const clearSpy = vi.spyOn(queryClient, "clear");
