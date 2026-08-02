@@ -206,11 +206,15 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
 /// empty marker exists, so a transient credential deletion failure cannot
 /// resurrect the session on the next launch.
 pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    let root = matrix_store_root(app)?;
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    // Derive the primary path directly instead of returning early through
+    // `matrix_store_root`: failure to create or access that directory is
+    // precisely when the app-data sibling fallback is required.
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
     mark_logout_tombstone_with_fallback_at(&root, &app_data_dir, account_key)
 }
 

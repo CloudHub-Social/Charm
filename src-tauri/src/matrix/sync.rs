@@ -674,25 +674,28 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         false
     };
     let app_data_dir = app.path().app_data_dir().ok();
-    let credential_cleanup_authorized = if terminal_session_is_active && !tombstone_marked {
-        match app_data_dir.as_ref() {
-            Some(app_data_dir) => match search::mark_device_index_purge_pending(
-                app_data_dir,
-                &account_key,
-                &device_id,
-            ) {
+    // Queue the device purge before any matching credential deletion for
+    // both the active task and stale superseded tasks. The account tombstone
+    // already protects an active session when present; stale tasks cannot use
+    // an account-wide tombstone without invalidating the replacement login.
+    let device_purge_marked = match app_data_dir.as_ref() {
+        Some(app_data_dir) => {
+            match search::mark_device_index_purge_pending(app_data_dir, &account_key, &device_id) {
                 Ok(()) => true,
                 Err(error) => {
                     eprintln!(
-                        "failed to persist terminal-auth search cleanup before credential removal: {error}"
-                    );
+                    "failed to persist terminal-auth search cleanup before credential removal: {error}"
+                );
                     false
                 }
-            },
-            None => false,
+            }
         }
+        None => false,
+    };
+    let credential_cleanup_authorized = if terminal_session_is_active {
+        tombstone_marked || device_purge_marked
     } else {
-        true
+        device_purge_marked
     };
 
     // A stale sync task must never clear a newer login for the same account.
