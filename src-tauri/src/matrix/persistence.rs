@@ -178,7 +178,6 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
 /// failed — same "leftover from an interrupted run" shape, so it's handled
 /// alongside orphan temp stores rather than via a separate startup hook.
 pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
-    sweep_logout_tombstones(app)?;
     sweep_cancelled_account_cleanups(app)?;
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
@@ -199,7 +198,11 @@ pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), S
 }
 
 pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    let marker = matrix_store_root(app)?.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    clear_logout_tombstone_at(&matrix_store_root(app)?, account_key)
+}
+
+fn clear_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
+    let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
     match std::fs::remove_file(marker) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -209,8 +212,15 @@ pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), 
 
 fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
     let root = matrix_store_root(app)?;
-    let entries = std::fs::read_dir(&root).map_err(|error| error.to_string())?;
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_logout_tombstones_at(&root, &app_data_dir)
+}
+
+fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(root).map_err(|error| error.to_string())?;
     let mut first_error = None;
     for entry in entries {
         let entry = match entry {
@@ -248,13 +258,8 @@ fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
             // tombstone, before ordinary logout reached derived-index
             // cleanup. Do not clear the only durable logout intent until
             // every account-scoped search index is gone or durably queued.
-            let cleanup_result = app_data_dir
-                .as_ref()
-                .map_err(Clone::clone)
-                .and_then(|app_data_dir| {
-                    super::search::purge_account_indexes(app_data_dir, account_key)
-                })
-                .and_then(|()| clear_logout_tombstone(app, account_key));
+            let cleanup_result = super::search::purge_account_indexes(app_data_dir, account_key)
+                .and_then(|()| clear_logout_tombstone_at(root, account_key));
             if let Err(error) = cleanup_result {
                 first_error.get_or_insert(error);
             }
@@ -352,8 +357,18 @@ pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
 pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
     std::time::Duration::from_secs(5 * 60);
 
-/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
+/// `AppHandle`-free variant of [`sweep_orphan_temp_stores`] used by Android
+/// cold-start push handling. It also finishes durable logout tombstones
+/// before the caller enumerates restorable accounts.
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    // Android cold-start push launches never construct an AppHandle, but
+    // they must still finish durable logout cleanup before enumerating
+    // restorable accounts. The production root is
+    // `<app_data_dir>/matrix_store`, so its parent is the search-store root.
+    sweep_logout_tombstones_at(root, app_data_dir)?;
     sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
 }
 
@@ -1715,6 +1730,7 @@ mod tests {
     const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
     const TEST_MXID_PASSPHRASE_READ_ONLY: &str =
         "@charm-persistence-test-passphrase-read-only:localhost";
+    const TEST_MXID_HEADLESS_LOGOUT: &str = "@charm-persistence-test-headless-logout:localhost";
     const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
     const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
     const TEST_MXID_BOOKMARKS_SECRET: &str = "@charm-persistence-test-bookmarks-secret:localhost";
@@ -2105,6 +2121,38 @@ mod tests {
         assert!(!known_account_keys_at(&root.0)
             .unwrap()
             .contains(&account_key));
+    }
+
+    #[test]
+    fn headless_sweep_finishes_logout_credentials_and_search_cleanup() {
+        let app_data = ScratchRoot::new("headless-logout");
+        let store_root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&store_root).unwrap();
+        let account_key = account_key(TEST_MXID_HEADLESS_LOGOUT);
+        store_path_at(&store_root, &account_key).unwrap();
+
+        let session = dummy_session(TEST_MXID_HEADLESS_LOGOUT);
+        save_session(&account_key, "https://example.invalid", &session).unwrap();
+        get_or_create_passphrase(&account_key).unwrap();
+        let index = super::super::search::SearchIndex::open(
+            &app_data.0,
+            &account_key,
+            session.meta.device_id.as_str(),
+        )
+        .unwrap();
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let tombstone = store_root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+        std::fs::write(&tombstone, []).unwrap();
+
+        sweep_orphan_temp_stores_at(&store_root).unwrap();
+
+        assert!(load_session(&account_key).unwrap().is_none());
+        assert!(!database_path.exists());
+        assert!(!tombstone.exists());
+        if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key)) {
+            let _ = entry.delete_credential();
+        }
     }
 
     #[test]
