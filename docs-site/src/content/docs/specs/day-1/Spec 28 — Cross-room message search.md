@@ -32,8 +32,10 @@ persisted local Labs override; disabled startup removes every retained index
 before any search surface can be used, and a runtime enabled-to-disabled
 transition immediately purges the native derived-index root (iOS preserves only its empty,
 backup-excluded root and native success marker).
-Device-scoped purge failures retain only an opaque durable retry marker; startup and
-the next index open retry those deletions before search can become usable.
+Device-scoped purge failures retain only opaque durable retry markers, while a failed
+whole-root kill-switch purge retains an empty marker outside that root. Account sweeps
+attempt and queue every matching device; startup and the next index open retry all
+pending deletions before search can become usable.
 
 This foundation does not yet ingest timeline/sync events or expose the search
 command. The next backend slice owns the bounded off-runtime worker, FTS5 tokenizer,
