@@ -104,6 +104,19 @@ impl SearchIndex {
         {
             return transaction.commit().map_err(safe_storage_error);
         }
+        let already_indexed = transaction
+            .query_row(
+                "SELECT 1 FROM message_versions
+                 WHERE room_id = ?1 AND version_event_id = ?2",
+                params![&document.room_id, &document.version_event_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(safe_storage_error)?
+            .is_some();
+        if already_indexed {
+            return transaction.commit().map_err(safe_storage_error);
+        }
         let selection_order = transaction
             .query_row(
                 "SELECT COALESCE(MAX(selection_order), 0) + 1
@@ -118,13 +131,7 @@ impl SearchIndex {
                 "INSERT INTO message_versions (
                     room_id, original_event_id, version_event_id, sender, body,
                     origin_server_ts, selection_order
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(room_id, version_event_id) DO UPDATE SET
-                    original_event_id = excluded.original_event_id,
-                    sender = excluded.sender,
-                    body = excluded.body,
-                    origin_server_ts = excluded.origin_server_ts,
-                    selection_order = excluded.selection_order",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     &document.room_id,
                     &document.event_id,
@@ -453,14 +460,60 @@ fn derive_search_key(
 }
 
 fn migrate(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(&format!(
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(safe_storage_error)?;
+    transaction
+        .execute_batch(
             "CREATE TABLE IF NOT EXISTS search_metadata (
                 schema_version INTEGER NOT NULL
-             );
-             INSERT INTO search_metadata(schema_version)
-                SELECT {SCHEMA_VERSION} WHERE NOT EXISTS (SELECT 1 FROM search_metadata);
-             CREATE TABLE IF NOT EXISTS message_versions (
+             );",
+        )
+        .map_err(safe_storage_error)?;
+
+    let (row_count, schema_version) = transaction
+        .query_row(
+            "SELECT COUNT(*), MIN(schema_version) FROM search_metadata",
+            [],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, Option<u32>>(1)?)),
+        )
+        .map_err(safe_storage_error)?;
+    match (row_count, schema_version) {
+        (0, None) => {
+            create_current_schema(&transaction)?;
+            transaction
+                .execute(
+                    "INSERT INTO search_metadata(schema_version) VALUES (?1)",
+                    [SCHEMA_VERSION],
+                )
+                .map_err(safe_storage_error)?;
+        }
+        (1, Some(1)) => {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE message_versions
+                        ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0;
+                     UPDATE message_versions SET selection_order = rowid;",
+                )
+                .map_err(safe_storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE search_metadata SET schema_version = ?1",
+                    [SCHEMA_VERSION],
+                )
+                .map_err(safe_storage_error)?;
+            create_current_schema(&transaction)?;
+        }
+        (1, Some(SCHEMA_VERSION)) => create_current_schema(&transaction)?,
+        _ => return Err("message search schema version mismatch".to_string()),
+    }
+    transaction.commit().map_err(safe_storage_error)
+}
+
+fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS message_versions (
                 room_id TEXT NOT NULL,
                 original_event_id TEXT NOT NULL,
                 version_event_id TEXT NOT NULL,
@@ -483,20 +536,9 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 sender TEXT NOT NULL,
                 origin_server_ts INTEGER NOT NULL,
                 PRIMARY KEY(room_id, event_id)
-             );"
-        ))
-        .map_err(safe_storage_error)?;
-
-    let (row_count, schema_version) = connection
-        .query_row(
-            "SELECT COUNT(*), MIN(schema_version) FROM search_metadata",
-            [],
-            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+             );",
         )
         .map_err(safe_storage_error)?;
-    if row_count != 1 || schema_version != SCHEMA_VERSION {
-        return Err("message search schema version mismatch".to_string());
-    }
     Ok(())
 }
 
@@ -623,6 +665,73 @@ mod tests {
                 .err()
                 .expect("unknown schema must be rejected");
         assert_eq!(error, "message search schema version mismatch");
+    }
+
+    #[test]
+    fn open_migrates_v1_and_preserves_version_order() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index_directory = index_directory(directory.path(), "account", "DEVICE");
+        create_private_directory(&index_directory).expect("private directory");
+        let connection =
+            Connection::open(index_directory.join(SEARCH_DATABASE)).expect("open v1 database");
+        apply_encryption_key(&connection, "account", "DEVICE", TEST_STORE_SECRET)
+            .expect("apply encryption key");
+        configure(&connection).expect("configure");
+        connection
+            .execute_batch(
+                "CREATE TABLE search_metadata (schema_version INTEGER NOT NULL);
+                 INSERT INTO search_metadata VALUES (1);
+                 CREATE TABLE message_versions (
+                    room_id TEXT NOT NULL,
+                    original_event_id TEXT NOT NULL,
+                    version_event_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    body TEXT,
+                    origin_server_ts INTEGER NOT NULL,
+                    PRIMARY KEY(room_id, version_event_id)
+                 );
+                 CREATE TABLE redacted_events (
+                    room_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    PRIMARY KEY(room_id, event_id)
+                 );
+                 CREATE TABLE searchable_messages (
+                    body TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    version_event_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    origin_server_ts INTEGER NOT NULL,
+                    PRIMARY KEY(room_id, event_id)
+                 );
+                 INSERT INTO message_versions VALUES
+                    ('!room:example.org', '$original', '$original', '@alice:example.org', 'original', 1),
+                    ('!room:example.org', '$original', '$edit-1', '@alice:example.org', 'first edit', 2),
+                    ('!room:example.org', '$original', '$edit-2', '@alice:example.org', 'second edit', 3);
+                 INSERT INTO searchable_messages VALUES
+                    ('second edit', '!room:example.org', '$original', '$edit-2', '@alice:example.org', 3);",
+            )
+            .expect("create v1 schema");
+        drop(connection);
+
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let schema_version = index
+            .connection
+            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .expect("schema version");
+        assert_eq!(schema_version, SCHEMA_VERSION);
+
+        index
+            .redact("!room:example.org", "$edit-2")
+            .expect("redact latest migrated edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first edit")
+        );
     }
 
     #[test]
@@ -801,6 +910,40 @@ mod tests {
                 .visible_body("!room:example.org", "$original")
                 .as_deref(),
             Some("original")
+        );
+    }
+
+    #[test]
+    fn duplicate_edit_delivery_does_not_change_version_order_or_visibility() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        index
+            .apply_document(&document(Some("first edit"), "$edit-1"))
+            .expect("insert first edit");
+        index
+            .apply_document(&document(Some("second edit"), "$edit-2"))
+            .expect("insert second edit");
+        index
+            .apply_document(&document(Some("replayed first edit"), "$edit-1"))
+            .expect("replay first edit");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("second edit")
+        );
+        index
+            .redact("!room:example.org", "$edit-2")
+            .expect("redact second edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first edit")
         );
     }
 
