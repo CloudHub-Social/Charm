@@ -223,6 +223,15 @@ fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
         let matrix_cleared = clear_session(account_key).is_ok();
         let oauth_cleared = clear_oauth_session(account_key).is_ok();
         if matrix_cleared && oauth_cleared {
+            // The process may have exited immediately after writing the
+            // tombstone, before ordinary logout reached derived-index
+            // cleanup. Do not clear the only durable logout intent until
+            // every account-scoped search index is gone or durably queued.
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?;
+            super::search::purge_account_indexes(&app_data_dir, account_key)?;
             clear_logout_tombstone(app, account_key)?;
         }
     }

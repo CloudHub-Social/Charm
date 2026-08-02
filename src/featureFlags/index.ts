@@ -33,6 +33,12 @@ let messageSearchMutationQueue: Promise<void> = Promise.resolve();
 const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
+function serializeMessageSearchMutation(mutation: () => Promise<void>): Promise<void> {
+  const pending = messageSearchMutationQueue.then(mutation, mutation);
+  messageSearchMutationQueue = pending.catch(() => undefined);
+  return pending;
+}
+
 function emit(): void {
   for (const listener of listeners) listener();
 }
@@ -195,12 +201,7 @@ export function useFeatureFlagsInitialized(): boolean {
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
   if (key === "encrypted_local_message_search") {
-    const mutation = messageSearchMutationQueue.then(
-      () => setFeatureFlagOverrideInner(key, value),
-      () => setFeatureFlagOverrideInner(key, value),
-    );
-    messageSearchMutationQueue = mutation.catch(() => undefined);
-    return mutation;
+    return serializeMessageSearchMutation(() => setFeatureFlagOverrideInner(key, value));
   }
   return setFeatureFlagOverrideInner(key, value);
 }
@@ -236,12 +237,7 @@ async function setFeatureFlagOverrideInner(key: FeatureFlagKey, value: boolean):
 /** Clears a local override, reverting the flag to remote/default resolution. */
 export function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
   if (key === "encrypted_local_message_search") {
-    const mutation = messageSearchMutationQueue.then(
-      () => clearFeatureFlagOverrideInner(key),
-      () => clearFeatureFlagOverrideInner(key),
-    );
-    messageSearchMutationQueue = mutation.catch(() => undefined);
-    return mutation;
+    return serializeMessageSearchMutation(() => clearFeatureFlagOverrideInner(key));
   }
   return clearFeatureFlagOverrideInner(key);
 }
@@ -308,37 +304,39 @@ export async function refreshRemoteFlags(): Promise<void> {
   try {
     const result = await fetchRemoteFlags(getInstallId());
     if (result) {
-      const changedKeys = FEATURE_FLAG_KEYS.filter(
-        (key) =>
-          resolveFlag(key, overridesCache, remoteCache) !==
-          resolveFlag(key, overridesCache, result),
-      );
-      // Persist to the shared durable file first, then apply to the UI — so the
-      // frontend never enables a rolled-out feature that the Rust core (which
-      // reads only that file) hasn't seen yet. If the durable write fails, keep
-      // the previous cache; the next tick retries.
-      if (await persistRemoteFlags(result, getInstallId())) {
-        const searchWasEnabled = resolveFlag(
-          "encrypted_local_message_search",
-          overridesCache,
-          remoteCache,
+      await serializeMessageSearchMutation(async () => {
+        const changedKeys = FEATURE_FLAG_KEYS.filter(
+          (key) =>
+            resolveFlag(key, overridesCache, remoteCache) !==
+            resolveFlag(key, overridesCache, result),
         );
-        const searchIsEnabled = resolveFlag(
-          "encrypted_local_message_search",
-          overridesCache,
-          result,
-        );
-        remoteCache = result;
-        for (const key of changedKeys) {
-          persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+        // Persist to the shared durable file first, then apply to the UI — so
+        // the frontend never enables a rolled-out feature that the Rust core
+        // hasn't seen yet. The search mutation queue also prevents a remote
+        // re-enable from overtaking an earlier destructive Labs transition.
+        if (await persistRemoteFlags(result, getInstallId())) {
+          const searchWasEnabled = resolveFlag(
+            "encrypted_local_message_search",
+            overridesCache,
+            remoteCache,
+          );
+          const searchIsEnabled = resolveFlag(
+            "encrypted_local_message_search",
+            overridesCache,
+            result,
+          );
+          remoteCache = result;
+          for (const key of changedKeys) {
+            persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+          }
+          emit();
+          // The durable file is now authoritative for Rust and the UI is
+          // already disabled. Reconcile the sensitive derived store before
+          // this refresh completes so a trusted runtime kill switch does not
+          // retain data until restart. The web companion has no local index.
+          await reconcileMessageSearchTransition(searchWasEnabled, searchIsEnabled);
         }
-        emit();
-        // The durable file is now authoritative for Rust and the UI is
-        // already disabled. Reconcile the sensitive derived store before
-        // this refresh completes so a trusted runtime kill switch does not
-        // retain data until restart. The web companion has no local index.
-        await reconcileMessageSearchTransition(searchWasEnabled, searchIsEnabled);
-      }
+      });
     }
   } finally {
     refreshInFlight = false;

@@ -222,6 +222,37 @@ describe("message search Labs reconciliation", () => {
     await Promise.all([disable, reenable]);
     expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
   });
+
+  it("does not persist a remote re-enable until Labs disable cleanup finishes", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    let finishCleanup: (() => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "fetch_remote_flags") {
+        return Promise.resolve({
+          flags: [{ key: "encrypted_local_message_search", value: true }],
+        });
+      }
+      if (command === "reconcile_message_search_flag") {
+        return new Promise<void>((resolve) => {
+          finishCleanup = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setCache({ encrypted_local_message_search: true });
+    const disable = mod.clearFeatureFlagOverride("encrypted_local_message_search");
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+
+    const refresh = mod.refreshRemoteFlags();
+    await Promise.resolve();
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+
+    finishCleanup?.();
+    await Promise.all([disable, refresh]);
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(true);
+  });
 });
 
 describe("remote cache when no endpoint is configured", () => {

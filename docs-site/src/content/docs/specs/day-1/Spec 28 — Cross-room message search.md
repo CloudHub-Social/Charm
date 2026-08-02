@@ -24,7 +24,8 @@ teardown, including the revoked account's local push registration state, and
 invalidate the renderer session. Explicit logout does the same if index purge
 or credential deletion fails, while still completing the remaining teardown;
 an empty account-scoped logout tombstone prevents startup restoration until both
-keychain session kinds are confirmed absent.
+keychain session kinds are confirmed absent and every account search index is
+removed or durably queued for deletion.
 The renderer registers that invalidation listener before session restoration
 and ignores a restore response invalidated during initial sync. A device-scoped key verifier lets Charm
 rebuild a corrupt encrypted header with the confirmed current key without
@@ -33,8 +34,8 @@ For this sensitive flag only, a trusted remote `false` vetoes a
 persisted local Labs override; disabled startup removes every retained index
 before any search surface can be used, and a runtime enabled-to-disabled
 transition immediately purges the native derived-index root (iOS preserves only its empty,
-backup-excluded root and native success marker). Labs serializes a later re-enable
-behind that cleanup so durable flag writes cannot overtake the purge.
+backup-excluded root and native success marker). Labs and OFREP serialize every later
+re-enable behind that cleanup so durable flag writes cannot overtake the purge.
 Device-scoped purge failures retain only opaque durable retry markers, while a failed
 whole-root kill-switch purge retains an empty marker outside that root. Account sweeps
 attempt and queue every matching device, and retain an opaque account-wide marker when
