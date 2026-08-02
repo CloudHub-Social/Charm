@@ -20,6 +20,20 @@ const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const SCHEMA_VERSION: u32 = 2;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 
+enum MigrationError {
+    IncompatibleSchema,
+    Storage(String),
+}
+
+impl MigrationError {
+    fn into_message(self) -> String {
+        match self {
+            Self::IncompatibleSchema => "message search schema version mismatch".to_string(),
+            Self::Storage(message) => message,
+        }
+    }
+}
+
 /// One renderer-selected searchable version of a Matrix message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchDocument {
@@ -72,10 +86,27 @@ impl SearchIndex {
         let directory = index_directory(app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
-        let connection = Connection::open(&database_path).map_err(safe_storage_error)?;
+        let mut connection = Connection::open(&database_path).map_err(safe_storage_error)?;
         apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
         configure(&connection)?;
-        migrate(&connection)?;
+        match migrate(&connection) {
+            Ok(()) => {}
+            Err(MigrationError::Storage(message)) => return Err(message),
+            Err(MigrationError::IncompatibleSchema) => {
+                // An encrypted search index is derived data. If its schema is
+                // corrupt or newer than this client understands, close and
+                // remove the bounded device index before rebuilding it. This
+                // avoids retaining an unreadable plaintext-content index while
+                // ensuring transient storage errors never trigger deletion.
+                drop(connection);
+                std::fs::remove_dir_all(&directory).map_err(safe_io_error)?;
+                create_private_directory(&directory)?;
+                connection = Connection::open(&database_path).map_err(safe_storage_error)?;
+                apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
+                configure(&connection)?;
+                migrate(&connection).map_err(MigrationError::into_message)?;
+            }
+        }
         Ok(Self {
             connection,
             database_path,
@@ -459,17 +490,17 @@ fn derive_search_key(
     Ok(derived_key)
 }
 
-fn migrate(connection: &Connection) -> Result<(), String> {
+fn migrate(connection: &Connection) -> Result<(), MigrationError> {
     let transaction = connection
         .unchecked_transaction()
-        .map_err(safe_storage_error)?;
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
     transaction
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS search_metadata (
                 schema_version INTEGER NOT NULL
              );",
         )
-        .map_err(safe_storage_error)?;
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
 
     let (row_count, schema_version) = transaction
         .query_row(
@@ -477,16 +508,16 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             [],
             |row| Ok((row.get::<_, u32>(0)?, row.get::<_, Option<u32>>(1)?)),
         )
-        .map_err(safe_storage_error)?;
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
     match (row_count, schema_version) {
         (0, None) => {
-            create_current_schema(&transaction)?;
+            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
             transaction
                 .execute(
                     "INSERT INTO search_metadata(schema_version) VALUES (?1)",
                     [SCHEMA_VERSION],
                 )
-                .map_err(safe_storage_error)?;
+                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
         }
         (1, Some(1)) => {
             transaction
@@ -495,19 +526,23 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                         ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0;
                      UPDATE message_versions SET selection_order = rowid;",
                 )
-                .map_err(safe_storage_error)?;
+                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
             transaction
                 .execute(
                     "UPDATE search_metadata SET schema_version = ?1",
                     [SCHEMA_VERSION],
                 )
-                .map_err(safe_storage_error)?;
-            create_current_schema(&transaction)?;
+                .map_err(|error| MigrationError::Storage(safe_storage_error(error)))?;
+            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
         }
-        (1, Some(SCHEMA_VERSION)) => create_current_schema(&transaction)?,
-        _ => return Err("message search schema version mismatch".to_string()),
+        (1, Some(SCHEMA_VERSION)) => {
+            create_current_schema(&transaction).map_err(MigrationError::Storage)?;
+        }
+        _ => return Err(MigrationError::IncompatibleSchema),
     }
-    transaction.commit().map_err(safe_storage_error)
+    transaction
+        .commit()
+        .map_err(|error| MigrationError::Storage(safe_storage_error(error)))
 }
 
 fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -651,20 +686,27 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_an_unknown_schema_version() {
+    fn open_rebuilds_an_unknown_schema_version() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let index = open_index(directory.path(), "account", "DEVICE");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("discarded content"), "$original"))
+            .expect("insert content");
         index
             .connection
             .execute("UPDATE search_metadata SET schema_version = 999", [])
             .expect("change schema version");
         drop(index);
 
-        let error =
-            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
-                .err()
-                .expect("unknown schema must be rejected");
-        assert_eq!(error, "message search schema version mismatch");
+        let rebuilt = open_index(directory.path(), "account", "DEVICE");
+        assert_eq!(rebuilt.visible_body("!room:example.org", "$original"), None);
+        let schema_version = rebuilt
+            .connection
+            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .expect("schema version");
+        assert_eq!(schema_version, SCHEMA_VERSION);
     }
 
     #[test]
