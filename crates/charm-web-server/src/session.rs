@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use charm_lib::matrix::timeline::RoomTimelineUpdate;
@@ -172,6 +173,12 @@ pub struct Session {
     /// on the very next re-save, permanently orphaning a store that might
     /// still be perfectly readable.
     pub persisted_crypto: Option<CryptoStoreHandle>,
+    /// Session-scoped encrypted local-message index. It is intentionally not
+    /// part of durable crypto backup and is discarded with this web session.
+    pub message_search_index: Arc<std::sync::Mutex<Option<charm_lib::matrix::search::SearchIndex>>>,
+    /// Sticky disclosure that at least one live-sync batch could not be queued.
+    /// It stays set until this ephemeral session and its index are rebuilt.
+    pub message_search_incomplete: Arc<AtomicBool>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -529,6 +536,8 @@ impl Session {
             client,
             user_id,
             persisted_crypto,
+            message_search_index: Arc::new(std::sync::Mutex::new(None)),
+            message_search_incomplete: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),

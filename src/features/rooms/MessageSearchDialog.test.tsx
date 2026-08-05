@@ -1,0 +1,223 @@
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderWithProviders } from "@/test/renderWithProviders";
+import type * as MatrixModule from "@/lib/matrix";
+import { MessageSearchDialog } from "./MessageSearchDialog";
+
+const searchMessages = vi.fn();
+
+vi.mock("@/lib/matrix", async (importOriginal) => ({
+  ...(await importOriginal<typeof MatrixModule>()),
+  searchMessages: (...args: unknown[]) => searchMessages(...args),
+}));
+
+const room = {
+  room_id: "!room:example.org",
+  name: "Security",
+  membership: "join",
+} as MatrixModule.RoomSummary;
+
+describe("MessageSearchDialog", () => {
+  beforeEach(() => {
+    searchMessages.mockReset();
+  });
+
+  it("searches the active room and navigates to the selected event", async () => {
+    searchMessages.mockResolvedValue({
+      results: [
+        {
+          room_id: room.room_id,
+          event_id: "$event",
+          sender: "@alice:example.org",
+          origin_server_ts: 1_700_000_000_000,
+          snippet: "hello Matrix world",
+          match_ranges: [{ start: 6, end: 12 }],
+        },
+      ],
+      next_cursor: null,
+      incomplete: false,
+    });
+    const onSelectResult = vi.fn();
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={onSelectResult}
+      />,
+    );
+
+    const queryInput = screen.getByLabelText("Message search query");
+    fireEvent.submit(queryInput.closest("form")!);
+    expect(searchMessages).not.toHaveBeenCalled();
+    fireEvent.change(queryInput, {
+      target: { value: "Matrix" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(searchMessages).toHaveBeenCalledWith("Matrix", room.room_id, 30, null),
+    );
+    expect(screen.getByText("Matrix", { selector: "mark" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Security/ }));
+    expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({ event_id: "$event" }));
+  });
+
+  it("discloses an incomplete local index", async () => {
+    searchMessages.mockResolvedValue({ results: [], next_cursor: null, incomplete: true });
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={null}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "history" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/may be incomplete/i);
+  });
+
+  it("searches all rooms and appends a cursor page", async () => {
+    searchMessages
+      .mockResolvedValueOnce({
+        results: [
+          {
+            room_id: "!unknown:example.org",
+            event_id: "$first",
+            sender: "@alice:example.org",
+            origin_server_ts: 1,
+            snippet: "first result",
+            match_ranges: [],
+          },
+        ],
+        next_cursor: "next-page",
+        incomplete: false,
+      })
+      .mockResolvedValueOnce({
+        results: [
+          {
+            room_id: room.room_id,
+            event_id: "$second",
+            sender: "@bob:example.org",
+            origin_server_ts: 2,
+            snippet: "second result",
+            match_ranges: [{ start: 50, end: 60 }],
+          },
+        ],
+        next_cursor: null,
+        incomplete: false,
+      });
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: "All rooms" }));
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "result" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByText("first result")).toBeInTheDocument();
+    expect(screen.getByText(/!unknown:example.org/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() =>
+      expect(searchMessages).toHaveBeenLastCalledWith("result", null, 30, "next-page"),
+    );
+    expect(screen.getByText("first result")).toBeInTheDocument();
+    expect(await screen.findByText("second result")).toBeInTheDocument();
+  });
+
+  it("shows a generic error after an asynchronous backend failure", async () => {
+    let rejectSearch: (reason?: unknown) => void = () => {};
+    searchMessages.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSearch = reject;
+        }),
+    );
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "private phrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(searchMessages).toHaveBeenCalledOnce());
+    await act(async () => rejectSearch(new Error("sensitive backend detail")));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Message search is temporarily unavailable.");
+    expect(alert).not.toHaveTextContent("private phrase");
+  });
+
+  it("ignores a stale result after a newer search finishes", async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    searchMessages
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        results: [],
+        next_cursor: null,
+        incomplete: false,
+      });
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message search query");
+    fireEvent.change(input, { target: { value: "first" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(input, { target: { value: "second" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(searchMessages).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("No messages found.")).toBeInTheDocument();
+
+    await act(async () =>
+      resolveFirst({
+        results: [
+          {
+            room_id: room.room_id,
+            event_id: "$stale",
+            sender: "@alice:example.org",
+            origin_server_ts: 1,
+            snippet: "stale result",
+            match_ranges: [],
+          },
+        ],
+        next_cursor: null,
+        incomplete: false,
+      }),
+    );
+    expect(screen.queryByText("stale result")).not.toBeInTheDocument();
+  });
+});

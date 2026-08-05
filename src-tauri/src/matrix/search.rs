@@ -5,20 +5,43 @@
 //! emote events after applying Matrix reply and HTML normalization.
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use hkdf::Hkdf;
+use matrix_sdk::{
+    deserialized_responses::{TimelineEvent, TimelineEventKind},
+    ruma::{
+        events::{
+            room::message::{MessageType, Relation, RoomMessageEventContent},
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+        },
+        html::{HtmlSanitizerMode, RemoveReplyFallback},
+        serde::Raw,
+    },
+    Client,
+};
+use rand::{distr::Alphanumeric, RngExt};
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sha2_compat::Sha256 as HkdfSha256;
+use tauri::{AppHandle, Manager, State};
+use ts_rs::TS;
 use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
+const MAX_QUERY_BYTES: usize = 512;
+const MAX_RESULTS_PER_PAGE: usize = 100;
+const MAX_SNAPSHOT_RESULTS: usize = 2_000;
+const MAX_LIVE_SNAPSHOTS: usize = 8;
+const SNAPSHOT_TTL: Duration = Duration::from_secs(5 * 60);
 
 enum MigrationError {
     IncompatibleSchema,
@@ -75,10 +98,104 @@ pub struct SearchDocument {
     pub selection_order: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct SearchMatchRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct SearchResult {
+    pub room_id: String,
+    pub event_id: String,
+    pub sender: String,
+    #[ts(type = "number")]
+    pub origin_server_ts: u64,
+    pub snippet: String,
+    pub match_ranges: Vec<SearchMatchRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct SearchResultPage {
+    pub results: Vec<SearchResult>,
+    pub next_cursor: Option<String>,
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "code", rename_all = "snake_case")]
+#[ts(export, export_to = "../src/bindings/")]
+pub enum SearchCommandError {
+    InvalidQuery { message: String },
+    StaleCursor { message: String },
+    Unavailable { message: String },
+}
+
+impl SearchCommandError {
+    fn invalid_query(message: &str) -> Self {
+        Self::InvalidQuery {
+            message: message.to_string(),
+        }
+    }
+
+    fn stale_cursor() -> Self {
+        Self::StaleCursor {
+            message: "message search cursor is stale; restart the search".to_string(),
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self::Unavailable {
+            message: "message search is unavailable".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SearchSnapshotEntry {
+    room_id: String,
+    event_id: String,
+    version_event_id: String,
+}
+
+#[derive(Debug)]
+struct SearchSnapshot {
+    query: String,
+    room_id: Option<String>,
+    created_at: Instant,
+    entries: Vec<SearchSnapshotEntry>,
+}
+
 /// A Charm-owned, device-scoped SQLCipher message index.
 pub struct SearchIndex {
     connection: Connection,
     database_path: PathBuf,
+    incarnation: String,
+    snapshots: HashMap<String, SearchSnapshot>,
+}
+
+pub(crate) struct ActiveSearchIndex {
+    account_store_key: String,
+    device_id: String,
+    pub(crate) index: SearchIndex,
+}
+
+#[derive(Debug)]
+pub(crate) enum SearchMutation {
+    Apply(SearchDocument),
+    Redact { room_id: String, event_id: String },
+    PurgeRoom { room_id: String },
+}
+
+#[derive(Debug)]
+pub struct SearchWork {
+    account_store_key: String,
+    device_id: String,
+    mutations: Vec<SearchMutation>,
+    ignored_senders: HashSet<String>,
 }
 
 impl SearchIndex {
@@ -98,7 +215,7 @@ impl SearchIndex {
             super::persistence::get_or_create_passphrase(account_store_key)
                 .map_err(|_| "message search encryption key unavailable".to_string())?,
         );
-        Self::open_with_secret(
+        Self::open_with_source_secret(
             app_data_dir,
             account_store_key,
             device_id,
@@ -106,7 +223,7 @@ impl SearchIndex {
         )
     }
 
-    fn open_with_secret(
+    pub fn open_with_source_secret(
         app_data_dir: &Path,
         account_store_key: &str,
         device_id: &str,
@@ -134,12 +251,44 @@ impl SearchIndex {
         Ok(Self {
             connection,
             database_path,
+            incarnation: random_id(),
+            snapshots: HashMap::new(),
         })
+    }
+
+    #[cfg(test)]
+    fn open_with_secret(
+        app_data_dir: &Path,
+        account_store_key: &str,
+        device_id: &str,
+        store_passphrase: &str,
+    ) -> Result<Self, String> {
+        Self::open_with_source_secret(app_data_dir, account_store_key, device_id, store_passphrase)
     }
 
     /// Returns the opaque database path for lifecycle coordination and tests.
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    /// Closes and physically removes this derived index and SQLite sidecars.
+    pub fn delete(self) -> Result<(), String> {
+        let database_path = self.database_path.clone();
+        drop(self);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = database_path.as_os_str().to_os_string();
+            path.push(suffix);
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(safe_io_error(error)),
+            }
+        }
+        match std::fs::remove_dir(database_path.parent().expect("index database has parent")) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(safe_io_error(error)),
+        }
     }
 
     /// Inserts a renderer-selected message version and atomically updates the
@@ -171,6 +320,21 @@ impl SearchIndex {
             .is_some();
         if already_indexed {
             return transaction.commit().map_err(safe_storage_error);
+        }
+        if document.version_event_id != document.event_id {
+            let original_sender = transaction
+                .query_row(
+                    "SELECT sender FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2
+                       AND version_event_id = original_event_id",
+                    params![&document.room_id, &document.event_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(safe_storage_error)?;
+            if original_sender.as_deref() != Some(document.sender.as_str()) {
+                return transaction.commit().map_err(safe_storage_error);
+            }
         }
         transaction
             .execute(
@@ -259,6 +423,12 @@ impl SearchIndex {
         let transaction = self.connection.transaction().map_err(safe_storage_error)?;
         transaction
             .execute(
+                "DELETE FROM searchable_messages_fts WHERE room_id = ?1",
+                [room_id],
+            )
+            .map_err(safe_storage_error)?;
+        transaction
+            .execute(
                 "DELETE FROM searchable_messages WHERE room_id = ?1",
                 [room_id],
             )
@@ -273,6 +443,224 @@ impl SearchIndex {
         compact(&self.connection)
     }
 
+    fn purge_senders(&mut self, senders: &HashSet<String>) -> Result<(), String> {
+        if senders.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction().map_err(safe_storage_error)?;
+        let mut originals = Vec::new();
+        {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT DISTINCT room_id, original_event_id
+                     FROM message_versions WHERE sender = ?1",
+                )
+                .map_err(safe_storage_error)?;
+            for sender in senders {
+                let rows = statement
+                    .query_map([sender], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(safe_storage_error)?;
+                for row in rows {
+                    originals.push(row.map_err(safe_storage_error)?);
+                }
+            }
+        }
+        if originals.is_empty() {
+            return transaction.commit().map_err(safe_storage_error);
+        }
+        for (room_id, event_id) in originals {
+            delete_visible_row(&transaction, &room_id, &event_id)?;
+            transaction
+                .execute(
+                    "DELETE FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2",
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+        }
+        transaction.commit().map_err(safe_storage_error)?;
+        compact(&self.connection)
+    }
+
+    /// Searches the current encrypted index without issuing Matrix requests.
+    /// The first page captures an identifier-only snapshot; later pages use
+    /// its cursor so concurrent indexing cannot duplicate or skip entries.
+    pub fn search(
+        &mut self,
+        query: &str,
+        room_id: Option<&str>,
+        allowed_rooms: &HashSet<String>,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<SearchResultPage, SearchCommandError> {
+        let query = validate_query(query)?;
+        let limit = limit.clamp(1, MAX_RESULTS_PER_PAGE);
+        self.snapshots
+            .retain(|_, snapshot| snapshot.created_at.elapsed() <= SNAPSHOT_TTL);
+
+        let (snapshot_id, offset) = if let Some(cursor) = cursor {
+            parse_cursor(cursor, &self.incarnation)?
+        } else {
+            let entries = self.collect_snapshot_entries(&query, room_id, allowed_rooms)?;
+            while self.snapshots.len() >= MAX_LIVE_SNAPSHOTS {
+                let Some(oldest) = self
+                    .snapshots
+                    .iter()
+                    .min_by_key(|(_, snapshot)| snapshot.created_at)
+                    .map(|(id, _)| id.clone())
+                else {
+                    break;
+                };
+                self.snapshots.remove(&oldest);
+            }
+            let snapshot_id = random_id();
+            self.snapshots.insert(
+                snapshot_id.clone(),
+                SearchSnapshot {
+                    query: query.clone(),
+                    room_id: room_id.map(str::to_owned),
+                    created_at: Instant::now(),
+                    entries,
+                },
+            );
+            (snapshot_id, 0)
+        };
+
+        let snapshot = self
+            .snapshots
+            .get(&snapshot_id)
+            .ok_or_else(SearchCommandError::stale_cursor)?;
+        if snapshot.query != query || snapshot.room_id.as_deref() != room_id {
+            return Err(SearchCommandError::stale_cursor());
+        }
+
+        let mut results = Vec::with_capacity(limit);
+        let mut next_offset = offset;
+        while next_offset < snapshot.entries.len() && results.len() < limit {
+            let entry = &snapshot.entries[next_offset];
+            next_offset += 1;
+            if !allowed_rooms.contains(&entry.room_id) {
+                continue;
+            }
+            let resolved = self
+                .connection
+                .query_row(
+                    "SELECT sender, body, origin_server_ts
+                     FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2
+                       AND version_event_id = ?3 AND body IS NOT NULL",
+                    params![&entry.room_id, &entry.event_id, &entry.version_event_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| SearchCommandError::unavailable())?;
+            let Some((sender, body, timestamp)) = resolved else {
+                continue;
+            };
+            let (snippet, match_ranges) = snippet_and_ranges(&body, &query);
+            results.push(SearchResult {
+                room_id: entry.room_id.clone(),
+                event_id: entry.event_id.clone(),
+                sender,
+                origin_server_ts: timestamp.max(0) as u64,
+                snippet,
+                match_ranges,
+            });
+        }
+
+        let next_cursor = (next_offset < snapshot.entries.len())
+            .then(|| format!("{snapshot_id}:{next_offset}:{}", self.incarnation));
+        Ok(SearchResultPage {
+            results,
+            next_cursor,
+            incomplete: false,
+        })
+    }
+
+    fn collect_snapshot_entries(
+        &self,
+        query: &str,
+        room_id: Option<&str>,
+        allowed_rooms: &HashSet<String>,
+    ) -> Result<Vec<SearchSnapshotEntry>, SearchCommandError> {
+        let mut entries = Vec::new();
+        if query.chars().count() >= 3 {
+            let literal = format!("\"{}\"", query.replace('"', "\"\""));
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT room_id, event_id, version_event_id
+                     FROM searchable_messages_fts
+                     WHERE searchable_messages_fts MATCH ?1
+                       AND (?2 IS NULL OR room_id = ?2)
+                     ORDER BY bm25(searchable_messages_fts) ASC,
+                              CAST(origin_server_ts AS INTEGER) DESC,
+                              room_id ASC, event_id ASC
+                     LIMIT ?3",
+                )
+                .map_err(|_| SearchCommandError::unavailable())?;
+            let rows = statement
+                .query_map(
+                    params![literal, room_id, MAX_SNAPSHOT_RESULTS as i64],
+                    |row| {
+                        Ok(SearchSnapshotEntry {
+                            room_id: row.get(0)?,
+                            event_id: row.get(1)?,
+                            version_event_id: row.get(2)?,
+                        })
+                    },
+                )
+                .map_err(|_| SearchCommandError::unavailable())?;
+            for row in rows {
+                let entry = row.map_err(|_| SearchCommandError::unavailable())?;
+                if allowed_rooms.contains(&entry.room_id) {
+                    entries.push(entry);
+                }
+            }
+        } else {
+            let escaped = escape_like(query);
+            let pattern = format!("%{escaped}%");
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT room_id, event_id, version_event_id
+                     FROM searchable_messages
+                     WHERE body LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                       AND (?2 IS NULL OR room_id = ?2)
+                     ORDER BY origin_server_ts DESC, room_id ASC, event_id ASC
+                     LIMIT ?3",
+                )
+                .map_err(|_| SearchCommandError::unavailable())?;
+            let rows = statement
+                .query_map(
+                    params![pattern, room_id, MAX_SNAPSHOT_RESULTS as i64],
+                    |row| {
+                        Ok(SearchSnapshotEntry {
+                            room_id: row.get(0)?,
+                            event_id: row.get(1)?,
+                            version_event_id: row.get(2)?,
+                        })
+                    },
+                )
+                .map_err(|_| SearchCommandError::unavailable())?;
+            for row in rows {
+                let entry = row.map_err(|_| SearchCommandError::unavailable())?;
+                if allowed_rooms.contains(&entry.room_id) {
+                    entries.push(entry);
+                }
+            }
+        }
+        Ok(entries)
+    }
+
     #[cfg(test)]
     fn visible_body(&self, room_id: &str, event_id: &str) -> Option<String> {
         self.connection
@@ -284,6 +672,434 @@ impl SearchIndex {
             .optional()
             .expect("test query should succeed")
     }
+}
+
+impl SearchWork {
+    /// Applies one ordered sync batch to an already-open index.
+    pub fn apply_to(self, index: &mut SearchIndex) -> Result<(), String> {
+        index.purge_senders(&self.ignored_senders)?;
+        for mutation in self.mutations {
+            match mutation {
+                SearchMutation::Apply(document) => index.apply_document(&document)?,
+                SearchMutation::Redact { room_id, event_id } => {
+                    index.redact(&room_id, &event_id)?
+                }
+                SearchMutation::PurgeRoom { room_id } => index.purge_room(&room_id)?,
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mutations.is_empty() && self.ignored_senders.is_empty()
+    }
+}
+
+impl ActiveSearchIndex {
+    fn matches(&self, account_store_key: &str, device_id: &str) -> bool {
+        self.account_store_key == account_store_key && self.device_id == device_id
+    }
+}
+
+fn feature_enabled(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|directory| {
+        crate::feature_flags::flag(
+            &directory,
+            crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+        )
+    })
+}
+
+fn active_identity(client: &Client) -> Option<(String, String)> {
+    let user_id = client.user_id()?;
+    let device_id = client.device_id()?;
+    Some((
+        super::persistence::account_key(user_id.as_str()),
+        device_id.to_string(),
+    ))
+}
+
+fn ensure_index<'a>(
+    app: &AppHandle,
+    slot: &'a mut Option<ActiveSearchIndex>,
+    account_store_key: &str,
+    device_id: &str,
+) -> Result<&'a mut SearchIndex, String> {
+    if slot
+        .as_ref()
+        .is_some_and(|active| !active.matches(account_store_key, device_id))
+    {
+        if let Some(active) = slot.take() {
+            active.index.delete()?;
+        }
+    }
+    if slot.is_none() {
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "message search application data directory unavailable".to_string())?;
+        let index = SearchIndex::open(&app_data_dir, account_store_key, device_id)?;
+        *slot = Some(ActiveSearchIndex {
+            account_store_key: account_store_key.to_owned(),
+            device_id: device_id.to_owned(),
+            index,
+        });
+    }
+    Ok(&mut slot.as_mut().expect("search index initialized").index)
+}
+
+fn searchable_body(mut content: RoomMessageEventContent) -> Option<String> {
+    content.sanitize(HtmlSanitizerMode::Compat, RemoveReplyFallback::Yes);
+    let (body, formatted) = match content.msgtype {
+        MessageType::Text(message) => (message.body, message.formatted.map(|body| body.body)),
+        MessageType::Notice(message) => (message.body, message.formatted.map(|body| body.body)),
+        MessageType::Emote(message) => (message.body, message.formatted.map(|body| body.body)),
+        _ => return None,
+    };
+    // The plain fallback contains spoiler text. Until the search result UI can
+    // preserve per-range spoiler semantics, fail closed for the whole event.
+    if formatted.is_some_and(|html| html.contains("data-mx-spoiler")) {
+        return None;
+    }
+    (!body.trim().is_empty()).then_some(body)
+}
+
+pub fn work_from_sync(
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+    ignored_senders: HashSet<String>,
+) -> Option<SearchWork> {
+    let (account_store_key, device_id) = active_identity(client)?;
+    let mut mutations = Vec::new();
+    for room_id in response.rooms.left.keys() {
+        mutations.push(SearchMutation::PurgeRoom {
+            room_id: room_id.to_string(),
+        });
+    }
+    for (room_id, update) in &response.rooms.joined {
+        for (position, raw_event) in update.timeline.events.iter().enumerate() {
+            append_raw_event_mutation(
+                room_id.as_str(),
+                raw_event.raw(),
+                position,
+                &ignored_senders,
+                &mut mutations,
+            );
+        }
+    }
+    Some(SearchWork {
+        account_store_key,
+        device_id,
+        mutations,
+        ignored_senders,
+    })
+}
+
+/// Builds one room-sized backfill batch from matrix-sdk's already-decrypted
+/// local event cache. It never paginates or performs Matrix protocol traffic.
+pub fn work_from_cached_room(
+    client: &Client,
+    room_id: &str,
+    events: &[TimelineEvent],
+    ignored_senders: HashSet<String>,
+) -> Option<SearchWork> {
+    let (account_store_key, device_id) = active_identity(client)?;
+    let mut mutations = Vec::new();
+    for (position, event) in events.iter().enumerate() {
+        if matches!(&event.kind, TimelineEventKind::UnableToDecrypt { .. }) {
+            continue;
+        }
+        append_raw_event_mutation(
+            room_id,
+            event.raw(),
+            position,
+            &ignored_senders,
+            &mut mutations,
+        );
+    }
+    Some(SearchWork {
+        account_store_key,
+        device_id,
+        mutations,
+        ignored_senders,
+    })
+}
+
+fn append_raw_event_mutation(
+    room_id: &str,
+    raw_event: &Raw<AnySyncTimelineEvent>,
+    position: usize,
+    ignored_senders: &HashSet<String>,
+    mutations: &mut Vec<SearchMutation>,
+) {
+    let Ok(event) = raw_event.deserialize() else {
+        return;
+    };
+    match event {
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+            SyncMessageLikeEvent::Original(original),
+        )) => {
+            if ignored_senders.contains(original.sender.as_str()) {
+                return;
+            }
+            let timestamp: u64 = original.origin_server_ts.get().into();
+            let selection_order = timestamp
+                .saturating_mul(65_536)
+                .saturating_add(u64::try_from(position).unwrap_or(u64::MAX).min(65_535));
+            let (event_id, content) = match original.content.relates_to.clone() {
+                Some(Relation::Replacement(replacement)) => (
+                    replacement.event_id.to_string(),
+                    replacement.new_content.with_relation(None),
+                ),
+                _ => (original.event_id.to_string(), original.content),
+            };
+            mutations.push(SearchMutation::Apply(SearchDocument {
+                room_id: room_id.to_string(),
+                event_id,
+                version_event_id: original.event_id.to_string(),
+                sender: original.sender.to_string(),
+                body: searchable_body(content),
+                origin_server_ts: timestamp,
+                selection_order,
+            }));
+        }
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomRedaction(redaction)) => {
+            let Some(original) = redaction.as_original() else {
+                return;
+            };
+            if let Some(redacted_event_id) = original
+                .redacts
+                .as_ref()
+                .or(original.content.redacts.as_ref())
+            {
+                mutations.push(SearchMutation::Redact {
+                    room_id: room_id.to_string(),
+                    event_id: redacted_event_id.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn apply_work(app: &AppHandle, work: SearchWork) -> Result<(), String> {
+    if !feature_enabled(app) {
+        if let Some(active) = app
+            .state::<super::MatrixState>()
+            .search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            active.index.delete()?;
+        }
+        return Ok(());
+    }
+    let state = app.state::<super::MatrixState>();
+    let mut slot = state
+        .search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
+    work.apply_to(index)
+}
+
+pub(crate) async fn submit_sync_response(
+    app: &AppHandle,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    let state = app.state::<super::MatrixState>();
+    if !feature_enabled(app) {
+        state
+            .search_backfill_started
+            .store(false, std::sync::atomic::Ordering::Release);
+        state
+            .search_incomplete
+            .store(false, std::sync::atomic::Ordering::Release);
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let active = app
+                .state::<super::MatrixState>()
+                .search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(active) = active {
+                let _ = active.index.delete();
+            }
+        });
+        return;
+    }
+    if state
+        .search_backfill_started
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        submit_cached_history(app, client).await;
+    }
+    let ignored_senders = super::account::ignored_user_ids(client)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|sender| sender.to_string())
+        .collect();
+    let Some(work) = work_from_sync(client, response, ignored_senders) else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+
+    let sender = search_work_sender(app).await;
+    if sender.try_send(work).is_err() {
+        state
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(command = "message_search_index", status = "queue_full");
+    }
+}
+
+async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<SearchWork> {
+    app.state::<super::MatrixState>()
+        .search_work_tx
+        .get_or_init(|| async {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel::<SearchWork>(32);
+            let worker_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(work) = receiver.recv().await {
+                    let app = worker_app.clone();
+                    if !matches!(
+                        tauri::async_runtime::spawn_blocking(move || apply_work(&app, work)).await,
+                        Ok(Ok(()))
+                    ) {
+                        tracing::warn!(command = "message_search_index", status = "worker_failed");
+                    }
+                }
+            });
+            sender
+        })
+        .await
+        .clone()
+}
+
+/// Seeds the index with history already present in matrix-sdk's decrypted
+/// event cache. Awaiting queue capacity bounds plaintext memory without
+/// performing SQLite work on the async runtime or requesting server history.
+pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client) {
+    if !feature_enabled(app) {
+        return;
+    }
+    let ignored_senders: HashSet<String> = super::account::ignored_user_ids(client)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|sender| sender.to_string())
+        .collect();
+    let sender = search_work_sender(app).await;
+    for room in client.joined_rooms() {
+        let events = match room.event_cache().await {
+            Ok((cache, _drop_handles)) => cache.events().await,
+            Err(_) => {
+                app.state::<super::MatrixState>()
+                    .search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                continue;
+            }
+        };
+        let Ok(events) = events else {
+            app.state::<super::MatrixState>()
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            continue;
+        };
+        let Some(work) = work_from_cached_room(
+            client,
+            room.room_id().as_str(),
+            &events,
+            ignored_senders.clone(),
+        ) else {
+            return;
+        };
+        if work.is_empty() {
+            continue;
+        }
+        if sender.send(work).await.is_err() {
+            app.state::<super::MatrixState>()
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            return;
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn search_messages(
+    app: AppHandle,
+    state: State<'_, super::MatrixState>,
+    query: String,
+    room_id: Option<String>,
+    limit: usize,
+    cursor: Option<String>,
+) -> Result<SearchResultPage, SearchCommandError> {
+    if !feature_enabled(&app) {
+        return Err(SearchCommandError::unavailable());
+    }
+    validate_query(&query)?;
+    let client = state
+        .require_client()
+        .await
+        .map_err(|_| SearchCommandError::unavailable())?;
+    let (account_store_key, device_id) =
+        active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
+    let expected_identity = (account_store_key.clone(), device_id.clone());
+    let allowed_rooms: HashSet<String> = client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    if room_id
+        .as_ref()
+        .is_some_and(|room_id| !allowed_rooms.contains(room_id))
+    {
+        return Err(SearchCommandError::unavailable());
+    }
+
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<super::MatrixState>();
+        let mut slot = state
+            .search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let index = ensure_index(&app, &mut slot, &account_store_key, &device_id)
+            .map_err(|_| SearchCommandError::unavailable())?;
+        let mut page = index.search(
+            &query,
+            room_id.as_deref(),
+            &allowed_rooms,
+            limit,
+            cursor.as_deref(),
+        )?;
+        page.incomplete = state
+            .search_incomplete
+            .load(std::sync::atomic::Ordering::Acquire);
+        Ok(page)
+    })
+    .await
+    .map_err(|_| SearchCommandError::unavailable())??;
+    let current_client = state
+        .require_client()
+        .await
+        .map_err(|_| SearchCommandError::unavailable())?;
+    if active_identity(&current_client).as_ref() != Some(&expected_identity) {
+        return Err(SearchCommandError::unavailable());
+    }
+    Ok(page)
 }
 
 fn restore_visible_row(
@@ -327,6 +1143,21 @@ fn restore_visible_row(
                 ],
             )
             .map_err(safe_storage_error)?;
+        transaction
+            .execute(
+                "INSERT INTO searchable_messages_fts (
+                    body, room_id, event_id, version_event_id, sender, origin_server_ts
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    body,
+                    room_id,
+                    original_event_id,
+                    version_event_id,
+                    sender,
+                    origin_server_ts,
+                ],
+            )
+            .map_err(safe_storage_error)?;
     }
     Ok(())
 }
@@ -352,6 +1183,12 @@ fn delete_visible_row(
     room_id: &str,
     event_id: &str,
 ) -> Result<(), String> {
+    transaction
+        .execute(
+            "DELETE FROM searchable_messages_fts WHERE room_id = ?1 AND event_id = ?2",
+            params![room_id, event_id],
+        )
+        .map_err(safe_storage_error)?;
     transaction
         .execute(
             "DELETE FROM searchable_messages WHERE room_id = ?1 AND event_id = ?2",
@@ -452,13 +1289,24 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                      UPDATE message_versions SET selection_order = rowid;",
                 )
                 .map_err(MigrationError::from_sqlite)?;
+            create_current_schema(&transaction)?;
+            rebuild_search_fts(&transaction)?;
             transaction
                 .execute(
                     "UPDATE search_metadata SET schema_version = ?1",
                     [SCHEMA_VERSION],
                 )
                 .map_err(MigrationError::from_sqlite)?;
+        }
+        (1, Some(2)) => {
             create_current_schema(&transaction)?;
+            rebuild_search_fts(&transaction)?;
+            transaction
+                .execute(
+                    "UPDATE search_metadata SET schema_version = ?1",
+                    [SCHEMA_VERSION],
+                )
+                .map_err(MigrationError::from_sqlite)?;
         }
         (1, Some(SCHEMA_VERSION)) => {
             create_current_schema(&transaction)?;
@@ -494,6 +1342,15 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
                 sender TEXT NOT NULL,
                 origin_server_ts INTEGER NOT NULL,
                 PRIMARY KEY(room_id, event_id)
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS searchable_messages_fts USING fts5(
+                body,
+                room_id UNINDEXED,
+                event_id UNINDEXED,
+                version_event_id UNINDEXED,
+                sender UNINDEXED,
+                origin_server_ts UNINDEXED,
+                tokenize = 'trigram'
              );",
         )
         .map_err(MigrationError::from_sqlite)?;
@@ -513,7 +1370,26 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
              FROM searchable_messages LIMIT 0",
         )
         .map_err(MigrationError::from_sqlite)?;
+    transaction
+        .prepare(
+            "SELECT body, room_id, event_id, version_event_id, sender, origin_server_ts
+             FROM searchable_messages_fts LIMIT 0",
+        )
+        .map_err(MigrationError::from_sqlite)?;
     Ok(())
+}
+
+fn rebuild_search_fts(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
+    transaction
+        .execute_batch(
+            "DELETE FROM searchable_messages_fts;
+             INSERT INTO searchable_messages_fts (
+                body, room_id, event_id, version_event_id, sender, origin_server_ts
+             )
+             SELECT body, room_id, event_id, version_event_id, sender, origin_server_ts
+             FROM searchable_messages;",
+        )
+        .map_err(MigrationError::from_sqlite)
 }
 
 fn compact(connection: &Connection) -> Result<(), String> {
@@ -524,6 +1400,110 @@ fn compact(connection: &Connection) -> Result<(), String> {
 
 fn timestamp_to_i64(timestamp: u64) -> i64 {
     i64::try_from(timestamp).unwrap_or(i64::MAX)
+}
+
+fn validate_query(query: &str) -> Result<String, SearchCommandError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(SearchCommandError::invalid_query(
+            "message search query cannot be empty",
+        ));
+    }
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(SearchCommandError::invalid_query(
+            "message search query is too long",
+        ));
+    }
+    Ok(query.to_owned())
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn random_id() -> String {
+    rand::rng()
+        .sample_iter(Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect()
+}
+
+fn parse_cursor(cursor: &str, incarnation: &str) -> Result<(String, usize), SearchCommandError> {
+    let mut parts = cursor.split(':');
+    let snapshot_id = parts.next().filter(|part| !part.is_empty());
+    let offset = parts.next().and_then(|part| part.parse::<usize>().ok());
+    let cursor_incarnation = parts.next();
+    if parts.next().is_some() || cursor_incarnation != Some(incarnation) {
+        return Err(SearchCommandError::stale_cursor());
+    }
+    match (snapshot_id, offset) {
+        (Some(snapshot_id), Some(offset)) => Ok((snapshot_id.to_owned(), offset)),
+        _ => Err(SearchCommandError::stale_cursor()),
+    }
+}
+
+fn snippet_and_ranges(body: &str, query: &str) -> (String, Vec<SearchMatchRange>) {
+    const CONTEXT_CHARS: usize = 100;
+    let body_chars: Vec<(usize, char)> = body.char_indices().collect();
+    let query_char_count = query.chars().count();
+    let folded_query = query.to_lowercase();
+    let match_at = (0..body_chars.len()).find(|start| {
+        let end = start.saturating_add(query_char_count);
+        if end > body_chars.len() {
+            return false;
+        }
+        let start_byte = body_chars[*start].0;
+        let end_byte = body_chars
+            .get(end)
+            .map_or(body.len(), |(offset, _)| *offset);
+        body[start_byte..end_byte].to_lowercase() == folded_query
+    });
+    let Some(match_start_char) = match_at else {
+        return (body.chars().take(CONTEXT_CHARS * 2).collect(), Vec::new());
+    };
+
+    let match_end_char = match_start_char + query_char_count;
+    let snippet_start_char = match_start_char.saturating_sub(CONTEXT_CHARS);
+    let snippet_end_char = (match_end_char + CONTEXT_CHARS).min(body_chars.len());
+    let snippet_start_byte = body_chars
+        .get(snippet_start_char)
+        .map_or(body.len(), |(offset, _)| *offset);
+    let snippet_end_byte = body_chars
+        .get(snippet_end_char)
+        .map_or(body.len(), |(offset, _)| *offset);
+    let prefix = if snippet_start_char > 0 { "…" } else { "" };
+    let suffix = if snippet_end_char < body_chars.len() {
+        "…"
+    } else {
+        ""
+    };
+    let snippet = format!(
+        "{prefix}{}{suffix}",
+        &body[snippet_start_byte..snippet_end_byte]
+    );
+
+    let range_start = prefix.encode_utf16().count()
+        + body[snippet_start_byte..body_chars[match_start_char].0]
+            .encode_utf16()
+            .count();
+    let match_end_byte = body_chars
+        .get(match_end_char)
+        .map_or(body.len(), |(offset, _)| *offset);
+    let range_end = range_start
+        + body[body_chars[match_start_char].0..match_end_byte]
+            .encode_utf16()
+            .count();
+    (
+        snippet,
+        vec![SearchMatchRange {
+            start: u32::try_from(range_start).unwrap_or(u32::MAX),
+            end: u32::try_from(range_end).unwrap_or(u32::MAX),
+        }],
+    )
 }
 
 fn account_directory_prefix(account_store_key: &str) -> String {
@@ -637,6 +1617,111 @@ mod tests {
     fn sqlcipher_key_literal_uses_the_raw_key_form() {
         let literal = Zeroizing::new(sqlcipher_raw_key_literal(&[0x01, 0xab, 0xff]));
         assert_eq!(literal.as_str(), "x'01abff'");
+    }
+
+    #[test]
+    fn cached_event_ingestion_accepts_plaintext_and_fails_closed_on_spoilers() {
+        let plain: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$plain:example.org",
+                "sender": "@alice:example.org",
+                "origin_server_ts": 1,
+                "content": { "msgtype": "m.text", "body": "searchable words" }
+            })
+            .to_string(),
+        )
+        .expect("plain event");
+        let spoiler: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$spoiler:example.org",
+                "sender": "@alice:example.org",
+                "origin_server_ts": 2,
+                "content": {
+                    "msgtype": "m.text",
+                    "body": "hidden words",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": "<span data-mx-spoiler>hidden words</span>"
+                }
+            })
+            .to_string(),
+        )
+        .expect("spoiler event");
+        let mut mutations = Vec::new();
+        append_raw_event_mutation(
+            "!room:example.org",
+            &plain,
+            0,
+            &HashSet::new(),
+            &mut mutations,
+        );
+        append_raw_event_mutation(
+            "!room:example.org",
+            &spoiler,
+            1,
+            &HashSet::new(),
+            &mut mutations,
+        );
+
+        let SearchMutation::Apply(plain) = &mutations[0] else {
+            panic!("plain event should be indexed");
+        };
+        assert_eq!(plain.body.as_deref(), Some("searchable words"));
+        let SearchMutation::Apply(spoiler) = &mutations[1] else {
+            panic!("spoiler should retain non-searchable provenance");
+        };
+        assert_eq!(spoiler.body, None);
+    }
+
+    #[test]
+    fn cached_event_ingestion_applies_ignore_and_redaction_rules() {
+        let ignored: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$ignored:example.org",
+                "sender": "@ignored:example.org",
+                "origin_server_ts": 1,
+                "content": { "msgtype": "m.text", "body": "do not retain" }
+            })
+            .to_string(),
+        )
+        .expect("ignored event");
+        let redaction: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.redaction",
+                "event_id": "$redaction:example.org",
+                "sender": "@alice:example.org",
+                "origin_server_ts": 2,
+                "redacts": "$target:example.org",
+                "content": {}
+            })
+            .to_string(),
+        )
+        .expect("redaction event");
+        let ignored_senders = HashSet::from(["@ignored:example.org".to_string()]);
+        let mut mutations = Vec::new();
+        append_raw_event_mutation(
+            "!room:example.org",
+            &ignored,
+            0,
+            &ignored_senders,
+            &mut mutations,
+        );
+        append_raw_event_mutation(
+            "!room:example.org",
+            &redaction,
+            1,
+            &ignored_senders,
+            &mut mutations,
+        );
+
+        assert_eq!(mutations.len(), 1);
+        let SearchMutation::Redact { room_id, event_id } = &mutations[0] else {
+            panic!("redaction should be preserved");
+        };
+        assert_eq!(room_id, "!room:example.org");
+        assert_eq!(event_id, "$target:example.org");
     }
 
     #[test]
@@ -1069,6 +2154,92 @@ mod tests {
                 .visible_body("!room:example.org", "$original")
                 .as_deref(),
             Some("first edit")
+        );
+    }
+
+    #[test]
+    fn search_is_literal_scoped_and_reports_utf16_match_ranges() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("before 🦀 Matrix_100% after"), "$original"))
+            .expect("insert searchable content");
+        let allowed = HashSet::from(["!room:example.org".to_string()]);
+
+        let page = index
+            .search("Matrix_100%", Some("!room:example.org"), &allowed, 20, None)
+            .expect("search");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].event_id, "$original");
+        assert_eq!(
+            page.results[0].match_ranges,
+            vec![SearchMatchRange { start: 10, end: 21 }]
+        );
+
+        assert!(index
+            .search("Matrix", Some("!other:example.org"), &allowed, 20, None)
+            .expect("scoped search")
+            .results
+            .is_empty());
+        assert_eq!(
+            index
+                .search("%", None, &allowed, 20, None)
+                .expect("literal wildcard search")
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn search_cursor_is_stable_and_bound_to_query_and_index_instance() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        for (event_id, order) in [("$one", 1), ("$two", 2)] {
+            let mut searchable = document(Some("searchable phrase"), "$original");
+            searchable.event_id = event_id.to_string();
+            searchable.version_event_id = event_id.to_string();
+            searchable.selection_order = order;
+            index.apply_document(&searchable).expect("insert");
+        }
+        let allowed = HashSet::from(["!room:example.org".to_string()]);
+        let first = index
+            .search("searchable", None, &allowed, 1, None)
+            .expect("first page");
+        let cursor = first.next_cursor.expect("next cursor");
+        let second = index
+            .search("searchable", None, &allowed, 1, Some(&cursor))
+            .expect("second page");
+        assert_eq!(second.results.len(), 1);
+        assert_ne!(first.results[0].event_id, second.results[0].event_id);
+        assert!(matches!(
+            index.search("different", None, &allowed, 1, Some(&cursor)),
+            Err(SearchCommandError::StaleCursor { .. })
+        ));
+
+        drop(index);
+        let mut reopened = open_index(directory.path(), "account", "DEVICE");
+        assert!(matches!(
+            reopened.search("searchable", None, &allowed, 1, Some(&cursor)),
+            Err(SearchCommandError::StaleCursor { .. })
+        ));
+    }
+
+    #[test]
+    fn forged_edit_from_another_sender_is_ignored() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        let mut forged = document(Some("forged replacement"), "$edit");
+        forged.sender = "@mallory:example.org".to_string();
+        index.apply_document(&forged).expect("ignore forged edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("original")
         );
     }
 }

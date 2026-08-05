@@ -81,7 +81,7 @@ pub async fn get_3pids(state: State<'_, MatrixState>) -> Result<Vec<ThirdPartyId
 /// (rather than `Client::subscribe_to_ignore_user_list_changes`, which only
 /// yields a value on the next change, not the current one) — same pattern
 /// as `matrix_sdk::Account::ignore_user`'s own internal lookup.
-async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
+pub async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
     let content = client
         .account()
         .account_data::<IgnoredUserListEventContent>()
@@ -291,7 +291,17 @@ async fn clear_local_session(
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
 
-    Ok(())
+    let search_index = state
+        .search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    match search_index {
+        Some(active) => tokio::task::spawn_blocking(move || active.index.delete())
+            .await
+            .map_err(|_| "message search cleanup worker failed".to_string())?,
+        None => Ok(()),
+    }
 }
 
 /// Signs the current session out: best-effort server-side revoke (an

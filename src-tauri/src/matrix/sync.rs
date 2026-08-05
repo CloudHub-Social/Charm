@@ -10,8 +10,8 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, shell, verification,
-    MatrixState,
+    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    verification, MatrixState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -725,6 +725,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
+        search::submit_sync_response(&app, &client, &initial_response).await;
         // Review fix (P2): snapshotted here, before `emit_room_list_and_badge`'s
         // own await — see `emit_room_updates`'s `seq_before_response` param doc
         // comment for why capturing it any later (even at the top of
@@ -814,6 +815,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
+                    search::submit_sync_response(&app, &client, &response).await;
                     // Review fix (P2): same reasoning as the initial-response
                     // call site above — snapshotted before
                     // `emit_room_list_and_badge`'s own await.

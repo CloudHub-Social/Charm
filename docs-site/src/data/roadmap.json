@@ -865,7 +865,7 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 325,

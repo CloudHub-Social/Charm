@@ -74,6 +74,17 @@ type TimelineEntry = (
 /// `persistence::account_key`.
 pub struct MatrixState {
     pub(crate) client: Mutex<Option<Client>>,
+    /// SQLCipher-backed decrypted-message index for the active account/device.
+    /// SQLite work is always performed from `spawn_blocking`; the mutex keeps
+    /// the non-`Sync` connection isolated from async workers and IPC calls.
+    pub(crate) search_index: std::sync::Mutex<Option<search::ActiveSearchIndex>>,
+    /// Bounded FIFO feeding the blocking search-index worker from `/sync`.
+    pub(crate) search_work_tx: tokio::sync::OnceCell<tokio::sync::mpsc::Sender<search::SearchWork>>,
+    /// Set when the bounded queue overflows; surfaced on result pages so the
+    /// UI never presents a partial local index as complete.
+    pub(crate) search_incomplete: std::sync::atomic::AtomicBool,
+    /// Guards the one-time local event-cache seed for each enabled lifecycle.
+    pub(crate) search_backfill_started: std::sync::atomic::AtomicBool,
     /// Serializes an interactive login's *entire* completion sequence —
     /// stopping the previous sync loop/client, relocating the account's
     /// store, saving the session, and adopting the new client — across
@@ -378,6 +389,10 @@ impl Default for MatrixState {
     fn default() -> Self {
         Self {
             client: Mutex::default(),
+            search_index: std::sync::Mutex::default(),
+            search_work_tx: tokio::sync::OnceCell::default(),
+            search_incomplete: std::sync::atomic::AtomicBool::default(),
+            search_backfill_started: std::sync::atomic::AtomicBool::default(),
             login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
