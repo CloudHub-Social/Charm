@@ -769,6 +769,18 @@ impl SearchWork {
     pub fn is_empty(&self) -> bool {
         self.mutations.is_empty() && self.ignored_senders.is_empty()
     }
+
+    /// Returns true when dropping this batch could retain content that Matrix
+    /// says is no longer visible. Callers must apply backpressure instead of
+    /// using a best-effort queue send for these mutations.
+    pub fn requires_reliable_delivery(&self) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+            )
+        })
+    }
 }
 
 impl ActiveSearchIndex {
@@ -1374,19 +1386,33 @@ pub(crate) async fn submit_sync_response(
     }
 
     let sender = search_work_sender(app).await;
-    if sender
-        .try_send(QueuedSearchWork {
-            generation,
-            work,
-            completes_backfill: false,
-            completion: None,
-        })
-        .is_err()
-    {
+    let requires_reliable_delivery = work.requires_reliable_delivery();
+    let queued = QueuedSearchWork {
+        generation,
+        work,
+        completes_backfill: false,
+        completion: None,
+    };
+    let delivered = if requires_reliable_delivery {
+        // Redactions and departed-room purges are privacy removals. Waiting
+        // for bounded capacity preserves FIFO ordering with earlier writes and
+        // prevents queue pressure from retaining content indefinitely.
+        sender.send(queued).await.is_ok()
+    } else {
+        sender.try_send(queued).is_ok()
+    };
+    if !delivered {
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
-        tracing::warn!(command = "message_search_index", status = "queue_full");
+        tracing::warn!(
+            command = "message_search_index",
+            status = if requires_reliable_delivery {
+                "worker_unavailable"
+            } else {
+                "queue_full"
+            }
+        );
     }
 }
 
@@ -2370,6 +2396,34 @@ mod tests {
             origin_server_ts: 42,
             selection_order,
         }
+    }
+
+    fn work_with(mutations: Vec<SearchMutation>) -> SearchWork {
+        SearchWork {
+            account_store_key: "account".to_string(),
+            device_id: "DEVICE".to_string(),
+            mutations,
+            ignored_senders: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn privacy_removals_require_reliable_queue_delivery() {
+        let apply = work_with(vec![SearchMutation::Apply(document(
+            Some("hello"),
+            "$original",
+        ))]);
+        let redact = work_with(vec![SearchMutation::Redact {
+            room_id: "!room:example.org".to_string(),
+            event_id: "$original".to_string(),
+        }]);
+        let purge = work_with(vec![SearchMutation::PurgeRoom {
+            room_id: "!room:example.org".to_string(),
+        }]);
+
+        assert!(!apply.requires_reliable_delivery());
+        assert!(redact.requires_reliable_delivery());
+        assert!(purge.requires_reliable_delivery());
     }
 
     #[test]

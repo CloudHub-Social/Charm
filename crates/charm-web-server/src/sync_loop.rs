@@ -219,19 +219,32 @@ async fn submit_message_search(
     if work.is_empty() {
         return;
     }
-    if context
-        .sender
-        .try_send(QueuedSearchWork {
-            work,
-            completes_backfill: false,
-            completion: None,
-        })
-        .is_err()
-    {
+    let requires_reliable_delivery = work.requires_reliable_delivery();
+    let queued = QueuedSearchWork {
+        work,
+        completes_backfill: false,
+        completion: None,
+    };
+    let delivered = if requires_reliable_delivery {
+        // Privacy-removal mutations must not be lost behind a saturated
+        // backfill queue. Awaiting capacity keeps them ordered after earlier
+        // writes while ordinary indexing remains best-effort and non-blocking.
+        context.sender.send(queued).await.is_ok()
+    } else {
+        context.sender.try_send(queued).is_ok()
+    };
+    if !delivered {
         context
             .incomplete
             .store(true, std::sync::atomic::Ordering::Release);
-        tracing::warn!(command = "web_message_search_index", status = "queue_full");
+        tracing::warn!(
+            command = "web_message_search_index",
+            status = if requires_reliable_delivery {
+                "worker_unavailable"
+            } else {
+                "queue_full"
+            }
+        );
     }
 }
 
