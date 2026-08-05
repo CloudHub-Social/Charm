@@ -18,7 +18,7 @@ use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
 use super::members;
@@ -1567,9 +1567,14 @@ pub async fn remove_alt_alias_impl(
 /// [`kick_member`], which removes a *different* member — this always acts on
 /// the signed-in user.
 #[tauri::command]
-pub async fn leave_room(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+pub async fn leave_room(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<(), String> {
     let client = state.require_client().await?;
-    leave_room_impl(&client, &room_id).await
+    leave_room_impl(&client, &room_id).await?;
+    super::search::purge_room_after_leave(&app, &client, &room_id).await
 }
 
 /// Core logic behind [`leave_room`].

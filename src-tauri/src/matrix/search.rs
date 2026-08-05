@@ -202,6 +202,7 @@ pub(crate) struct QueuedSearchWork {
     generation: u64,
     work: SearchWork,
     completes_backfill: bool,
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 impl SearchIndex {
@@ -701,6 +702,20 @@ impl SearchIndex {
 }
 
 impl SearchWork {
+    /// Builds an identity-bound physical room purge for an explicit local
+    /// leave/forget transition.
+    pub fn purge_room_for_client(client: &Client, room_id: &str) -> Option<Self> {
+        let (account_store_key, device_id) = active_identity(client)?;
+        Some(Self {
+            account_store_key,
+            device_id,
+            mutations: vec![SearchMutation::PurgeRoom {
+                room_id: room_id.to_string(),
+            }],
+            ignored_senders: HashSet::new(),
+        })
+    }
+
     /// Creates an identity-bound empty marker for FIFO lifecycle signaling.
     /// Applying it is a no-op, but placing it after cached-room batches lets a
     /// transport know the initial backfill has drained without exposing index
@@ -961,9 +976,9 @@ fn append_raw_event_mutation(
     }
 }
 
-fn apply_work(app: &AppHandle, queued: QueuedSearchWork) -> Result<(), String> {
+fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), String> {
     let state = app.state::<super::MatrixState>();
-    if queued.generation
+    if generation
         != state
             .search_generation
             .load(std::sync::atomic::Ordering::Acquire)
@@ -990,20 +1005,48 @@ fn apply_work(app: &AppHandle, queued: QueuedSearchWork) -> Result<(), String> {
     // index. This closes the check-then-lock race where cleanup could finish
     // between the first check and `ensure_index`, after which stale work
     // would otherwise recreate the signed-out account's database.
-    if queued.generation
+    if generation
         != state
             .search_generation
             .load(std::sync::atomic::Ordering::Acquire)
     {
         return Ok(());
     }
-    let index = ensure_index(
-        app,
-        &mut slot,
-        &queued.work.account_store_key,
-        &queued.work.device_id,
-    )?;
-    queued.work.apply_to(index)
+    let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
+    work.apply_to(index)
+}
+
+/// Orders a successful leave purge behind already-queued sync mutations and
+/// waits until SQLCipher has physically removed the room before returning.
+pub(crate) async fn purge_room_after_leave(
+    app: &AppHandle,
+    client: &Client,
+    room_id: &str,
+) -> Result<(), String> {
+    if !feature_enabled(app) {
+        return Ok(());
+    }
+    let Some(work) = SearchWork::purge_room_for_client(client, room_id) else {
+        return Ok(());
+    };
+    let state = app.state::<super::MatrixState>();
+    let generation = state
+        .search_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let (completion, completed) = tokio::sync::oneshot::channel();
+    search_work_sender(app)
+        .await
+        .send(QueuedSearchWork {
+            generation,
+            work,
+            completes_backfill: false,
+            completion: Some(completion),
+        })
+        .await
+        .map_err(|_| "message search purge worker unavailable".to_string())?;
+    completed
+        .await
+        .map_err(|_| "message search purge worker unavailable".to_string())?
 }
 
 pub(crate) async fn submit_sync_response(
@@ -1086,6 +1129,7 @@ pub(crate) async fn submit_sync_response(
             generation,
             work,
             completes_backfill: false,
+            completion: None,
         })
         .is_err()
     {
@@ -1103,14 +1147,23 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
             let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
             let worker_app = app.clone();
             tauri::async_runtime::spawn(async move {
-                while let Some(work) = receiver.recv().await {
-                    let generation = work.generation;
-                    let completes_backfill = work.completes_backfill;
+                while let Some(queued) = receiver.recv().await {
+                    let QueuedSearchWork {
+                        generation,
+                        work,
+                        completes_backfill,
+                        completion,
+                    } = queued;
                     let app = worker_app.clone();
-                    let applied = matches!(
-                        tauri::async_runtime::spawn_blocking(move || apply_work(&app, work)).await,
-                        Ok(Ok(()))
-                    );
+                    let result = match tauri::async_runtime::spawn_blocking(move || {
+                        apply_work(&app, generation, work)
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err("message search worker failed".to_string()),
+                    };
+                    let applied = result.is_ok();
                     let state = worker_app.state::<super::MatrixState>();
                     if !applied {
                         state
@@ -1127,6 +1180,9 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                         state
                             .search_backfill_pending
                             .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    if let Some(completion) = completion {
+                        let _ = completion.send(result);
                     }
                 }
             });
@@ -1198,6 +1254,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
                 generation,
                 work,
                 completes_backfill: false,
+                completion: None,
             })
             .is_err()
         {
@@ -1222,6 +1279,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             generation,
             work: completion,
             completes_backfill: true,
+            completion: None,
         })
         .is_err()
     {
@@ -1304,6 +1362,7 @@ pub(crate) fn schedule_cached_room(
                     generation,
                     work,
                     completes_backfill: false,
+                    completion: None,
                 })
                 .is_err()
             {
@@ -2313,6 +2372,36 @@ mod tests {
             .expect("purge ignored sender");
 
         assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+    }
+
+    #[test]
+    fn explicit_room_purge_removes_only_the_departed_rooms_rows() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let departed = document(Some("departed room"), "$original");
+        let mut retained = document(Some("retained room"), "$original");
+        retained.room_id = "!retained:example.org".to_string();
+        index.apply_document(&departed).expect("insert departed");
+        index.apply_document(&retained).expect("insert retained");
+
+        SearchWork {
+            account_store_key: "account".to_string(),
+            device_id: "DEVICE".to_string(),
+            mutations: vec![SearchMutation::PurgeRoom {
+                room_id: departed.room_id.clone(),
+            }],
+            ignored_senders: HashSet::new(),
+        }
+        .apply_to(&mut index)
+        .expect("purge departed room");
+
+        assert_eq!(index.visible_body(&departed.room_id, "$original"), None);
+        assert_eq!(
+            index
+                .visible_body(&retained.room_id, "$original")
+                .as_deref(),
+            Some("retained room")
+        );
     }
 
     #[test]

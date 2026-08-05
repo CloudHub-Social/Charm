@@ -47,6 +47,7 @@ pub struct MessageSearchContext {
 pub(crate) struct QueuedSearchWork {
     work: charm_lib::matrix::search::SearchWork,
     completes_backfill: bool,
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 fn record_search_work_outcome(
@@ -91,44 +92,54 @@ pub fn message_search_context(
     tokio::spawn(async move {
         while let Some(queued) = receiver.recv().await {
             if closed.load(std::sync::atomic::Ordering::Acquire) {
+                if let Some(completion) = queued.completion {
+                    let _ = completion.send(Ok(()));
+                }
                 continue;
             }
-            let completes_backfill = queued.completes_backfill;
+            let QueuedSearchWork {
+                work,
+                completes_backfill,
+                completion,
+            } = queued;
             let index = Arc::clone(&index);
             let closed = Arc::clone(&closed);
             let app_data_dir = app_data_dir.clone();
             let store_key = crypto.store_key.clone();
             let passphrase = crypto.passphrase.clone();
             let device_id = device_id.clone();
-            let applied = matches!(
-                tokio::task::spawn_blocking(move || {
-                    let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
-                    // Logout sets `closed` before waiting for this lock and
-                    // deleting the index. Rechecking under the lock prevents
-                    // buffered work from recreating it after deletion.
-                    if closed.load(std::sync::atomic::Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    if slot.is_none() {
-                        *slot = Some(
-                            charm_lib::matrix::search::SearchIndex::open_with_source_secret(
-                                &app_data_dir,
-                                &store_key,
-                                &device_id,
-                                &passphrase,
-                            )?,
-                        );
-                    }
-                    queued
-                        .work
-                        .apply_to(slot.as_mut().expect("web search index initialized"))
-                })
-                .await,
-                Ok(Ok(()))
-            );
+            let result = match tokio::task::spawn_blocking(move || {
+                let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+                // Logout sets `closed` before waiting for this lock and
+                // deleting the index. Rechecking under the lock prevents
+                // buffered work from recreating it after deletion.
+                if closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(());
+                }
+                if slot.is_none() {
+                    *slot = Some(
+                        charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+                            &app_data_dir,
+                            &store_key,
+                            &device_id,
+                            &passphrase,
+                        )?,
+                    );
+                }
+                work.apply_to(slot.as_mut().expect("web search index initialized"))
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("web message search worker failed".to_string()),
+            };
+            let applied = result.is_ok();
             record_search_work_outcome(&incomplete, &backfill_pending, applied, completes_backfill);
             if !applied {
                 tracing::warn!(command = "web_message_search_index", status = "failed");
+            }
+            if let Some(completion) = completion {
+                let _ = completion.send(result);
             }
         }
     });
@@ -137,6 +148,40 @@ pub fn message_search_context(
         incomplete: Arc::clone(&session.message_search_incomplete),
         backfill_pending: Arc::clone(&session.message_search_backfill_pending),
     })
+}
+
+/// Orders a successful leave purge behind already-queued sync mutations and
+/// waits until SQLCipher has physically removed the room before returning.
+pub async fn purge_room_after_leave(
+    session: &crate::session::Session,
+    room_id: &str,
+) -> Result<(), String> {
+    let Some(work) =
+        charm_lib::matrix::search::SearchWork::purge_room_for_client(&session.client, room_id)
+    else {
+        return Ok(());
+    };
+    let Some(sender) = session
+        .message_search_sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+    else {
+        // Without the feature's worker this session never opened an index.
+        return Ok(());
+    };
+    let (completion, completed) = tokio::sync::oneshot::channel();
+    sender
+        .send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+            completion: Some(completion),
+        })
+        .await
+        .map_err(|_| "web message search purge worker unavailable".to_string())?;
+    completed
+        .await
+        .map_err(|_| "web message search purge worker unavailable".to_string())?
 }
 
 async fn submit_message_search(
@@ -162,6 +207,7 @@ async fn submit_message_search(
         .try_send(QueuedSearchWork {
             work,
             completes_backfill: false,
+            completion: None,
         })
         .is_err()
     {
@@ -222,6 +268,7 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             .try_send(QueuedSearchWork {
                 work,
                 completes_backfill: false,
+                completion: None,
             })
             .is_err()
         {
@@ -252,6 +299,7 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         .try_send(QueuedSearchWork {
             work: completion,
             completes_backfill: true,
+            completion: None,
         })
         .is_err()
     {
@@ -341,6 +389,7 @@ pub fn schedule_cached_room_search(
                 .try_send(QueuedSearchWork {
                     work,
                     completes_backfill: false,
+                    completion: None,
                 })
                 .is_err()
             {
