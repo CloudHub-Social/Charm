@@ -198,58 +198,79 @@ pub fn schedule_cached_room_search(
         {
             return;
         }
-        let ignored = charm_lib::matrix::account::ignored_user_ids(&session.client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|user_id| user_id.to_string())
-            .collect();
-        let Some(room) = session.client.get_room(&room_id) else {
+        if session
+            .message_search_pagination_seed_running
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            session
+                .message_search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
             return;
-        };
-        let events = match room.event_cache().await {
-            Ok((cache, _drop_handles)) => cache.events().await,
-            Err(_) => {
+        }
+        async {
+            let ignored = charm_lib::matrix::account::ignored_user_ids(&session.client)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|user_id| user_id.to_string())
+                .collect();
+            let Some(room) = session.client.get_room(&room_id) else {
+                return;
+            };
+            let events = match room.event_cache().await {
+                Ok((cache, _drop_handles)) => cache.events().await,
+                Err(_) => {
+                    session
+                        .message_search_incomplete
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    return;
+                }
+            };
+            let Ok(events) = events else {
                 session
                     .message_search_incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
                 return;
+            };
+            let Some(work) = charm_lib::matrix::search::work_from_cached_room(
+                &session.client,
+                room_id.as_str(),
+                &events,
+                ignored,
+            ) else {
+                return;
+            };
+            if work.is_empty() {
+                return;
             }
-        };
-        let Ok(events) = events else {
-            session
-                .message_search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
-            return;
-        };
-        let Some(work) = charm_lib::matrix::search::work_from_cached_room(
-            &session.client,
-            room_id.as_str(),
-            &events,
-            ignored,
-        ) else {
-            return;
-        };
-        if work.is_empty() {
-            return;
+            let Some(sender) = session
+                .message_search_sender
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            else {
+                return;
+            };
+            if sender.try_send(work).is_err() {
+                session
+                    .message_search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::warn!(
+                    command = "web_message_search_pagination",
+                    status = "queue_full"
+                );
+            }
         }
-        let Some(sender) = session
-            .message_search_sender
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-        else {
-            return;
-        };
-        if sender.try_send(work).is_err() {
-            session
-                .message_search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
-            tracing::warn!(
-                command = "web_message_search_pagination",
-                status = "queue_full"
-            );
-        }
+        .await;
+        session
+            .message_search_pagination_seed_running
+            .store(false, std::sync::atomic::Ordering::Release);
     });
 }
 

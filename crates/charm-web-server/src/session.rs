@@ -184,6 +184,9 @@ pub struct Session {
     pub message_search_sender: Arc<
         std::sync::Mutex<Option<tokio::sync::mpsc::Sender<charm_lib::matrix::search::SearchWork>>>,
     >,
+    /// Coalesces pagination re-seeds so detached plaintext snapshots stay
+    /// bounded to one per web session.
+    pub message_search_pagination_seed_running: Arc<AtomicBool>,
     /// Revokes queued plaintext work before explicit logout deletes the
     /// session index. The worker rechecks this while holding the index lock.
     pub message_search_closed: Arc<AtomicBool>,
@@ -552,6 +555,7 @@ impl Session {
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
             message_search_incomplete: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
+            message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
             message_search_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(

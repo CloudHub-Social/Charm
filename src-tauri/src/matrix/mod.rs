@@ -90,6 +90,9 @@ pub struct MatrixState {
     pub(crate) search_incomplete: std::sync::atomic::AtomicBool,
     /// Guards the one-time local event-cache seed for each enabled lifecycle.
     pub(crate) search_backfill_started: std::sync::atomic::AtomicBool,
+    /// Coalesces timeline-pagination re-seeds so decrypted room snapshots
+    /// cannot accumulate in an unbounded set of detached tasks.
+    pub(crate) search_pagination_seed_running: std::sync::atomic::AtomicBool,
     /// Serializes an interactive login's *entire* completion sequence —
     /// stopping the previous sync loop/client, relocating the account's
     /// store, saving the session, and adopting the new client — across
@@ -399,6 +402,7 @@ impl Default for MatrixState {
             search_generation: std::sync::atomic::AtomicU64::default(),
             search_incomplete: std::sync::atomic::AtomicBool::default(),
             search_backfill_started: std::sync::atomic::AtomicBool::default(),
+            search_pagination_seed_running: std::sync::atomic::AtomicBool::default(),
             login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
