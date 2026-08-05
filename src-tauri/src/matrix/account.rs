@@ -313,21 +313,28 @@ async fn clear_local_session(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .take();
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "message search application data directory unavailable".to_string())?;
-    tokio::task::spawn_blocking(move || {
-        if let Some(active) = search_index {
-            active.index.delete()?;
-        }
-        if let Some(device_id) = search_device_id {
-            super::search::SearchIndex::delete_for_source(&app_data_dir, &account_key, &device_id)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|_| "message search cleanup worker failed".to_string())?
+    let cleanup = match app.path().app_data_dir() {
+        Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
+            if let Some(active) = search_index {
+                active.index.delete()?;
+            }
+            if let Some(device_id) = search_device_id {
+                super::search::SearchIndex::delete_for_source(
+                    &app_data_dir,
+                    &account_key,
+                    &device_id,
+                )?;
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .is_ok_and(|result| result.is_ok()),
+        Err(_) => false,
+    };
+    if !cleanup {
+        tracing::warn!(command = "message_search_logout", status = "cleanup_failed");
+    }
+    Ok(())
 }
 
 /// Signs the current session out: best-effort server-side revoke (an

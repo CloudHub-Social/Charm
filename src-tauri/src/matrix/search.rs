@@ -1318,9 +1318,13 @@ pub(crate) async fn submit_sync_response(
     {
         submit_cached_history(app, client, generation).await;
     }
-    let ignored_senders = super::account::ignored_user_ids(client)
-        .await
-        .unwrap_or_default()
+    let Ok(ignored_senders) = super::account::ignored_user_ids(client).await else {
+        state
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let ignored_senders = ignored_senders
         .into_iter()
         .map(|sender| sender.to_string())
         .collect();
@@ -1420,9 +1424,16 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             .store(false, std::sync::atomic::Ordering::Release);
         return;
     };
-    let ignored_senders: HashSet<String> = super::account::ignored_user_ids(client)
-        .await
-        .unwrap_or_default()
+    let Ok(ignored_senders) = super::account::ignored_user_ids(client).await else {
+        state
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let ignored_senders: HashSet<String> = ignored_senders
         .into_iter()
         .map(|sender| sender.to_string())
         .collect();
@@ -1551,9 +1562,13 @@ pub(crate) fn schedule_cached_room(
             return;
         }
         async {
-            let ignored_senders = super::account::ignored_user_ids(&client)
-                .await
-                .unwrap_or_default()
+            let Ok(ignored_senders) = super::account::ignored_user_ids(&client).await else {
+                state
+                    .search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return;
+            };
+            let ignored_senders = ignored_senders
                 .into_iter()
                 .map(|sender| sender.to_string())
                 .collect();

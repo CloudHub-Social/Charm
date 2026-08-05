@@ -203,9 +203,13 @@ async fn submit_message_search(
     response: &matrix_sdk::sync::SyncResponse,
 ) {
     let Some(context) = context else { return };
-    let ignored = charm_lib::matrix::account::ignored_user_ids(client)
-        .await
-        .unwrap_or_default()
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let ignored = ignored
         .into_iter()
         .map(|user_id| user_id.to_string())
         .collect();
@@ -236,13 +240,19 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     context
         .backfill_pending
         .store(true, std::sync::atomic::Ordering::Release);
-    let ignored: std::collections::HashSet<String> =
-        charm_lib::matrix::account::ignored_user_ids(client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|user_id| user_id.to_string())
-            .collect();
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let ignored: std::collections::HashSet<String> = ignored
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
     for room in client.joined_rooms() {
         let events = match room.event_cache().await {
             Ok((cache, _drop_handles)) => cache.events().await,
@@ -361,9 +371,14 @@ pub fn schedule_cached_room_search(
             return;
         }
         async {
-            let ignored = charm_lib::matrix::account::ignored_user_ids(&session.client)
-                .await
-                .unwrap_or_default()
+            let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(&session.client).await
+            else {
+                session
+                    .message_search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return;
+            };
+            let ignored = ignored
                 .into_iter()
                 .map(|user_id| user_id.to_string())
                 .collect();
