@@ -385,6 +385,14 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/rooms/${encodeSegment(String(args.roomId))}/timeline${query({
           limit: args.limit as number | undefined,
           paginate: args.paginate as boolean | undefined,
+          force_live: args.forceLive as boolean | undefined,
+        })}`,
+      );
+    case "load_timeline_around_event":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/timeline/around${query({
+          event_id: String(args.eventId),
         })}`,
       );
     case "search_messages":

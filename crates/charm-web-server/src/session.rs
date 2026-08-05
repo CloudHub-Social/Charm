@@ -204,6 +204,11 @@ pub struct Session {
     /// shared across sessions, keeping the same "session A can't see
     /// session B's state" isolation every other field on `Session` has).
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, Arc<Timeline>>>,
+    /// Most recently requested historical jump per room. A slower earlier
+    /// `/context` response must not replace the timeline selected by a newer
+    /// search-result click in the same session.
+    latest_jump_targets:
+        Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, matrix_sdk::ruma::OwnedEventId>>,
     /// Fan-out for this session's WebSocket event channel (sub-PR B) — the
     /// sync loop and per-room timeline listeners below push onto this;
     /// `crate::routes::ws_handler` subscribes one receiver per connected
@@ -551,6 +556,7 @@ impl Session {
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            latest_jump_targets: Mutex::new(HashMap::new()),
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -693,11 +699,14 @@ impl Session {
     pub async fn get_or_create_timeline(
         &self,
         room_id: &matrix_sdk::ruma::RoomId,
+        force_live: bool,
     ) -> Result<Arc<Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if let Some(existing) = self.timelines.lock().await.get(room_id) {
-            return Ok(Arc::clone(existing));
+        if !force_live {
+            if let Some(existing) = self.timelines.lock().await.get(room_id) {
+                return Ok(Arc::clone(existing));
+            }
         }
 
         let room = self
@@ -707,6 +716,17 @@ impl Session {
         let timeline = Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
 
         let mut timelines = self.timelines.lock().await;
+        if force_live {
+            spawn_timeline_listener(
+                self.client.clone(),
+                Arc::downgrade(&timeline),
+                room_id.to_owned(),
+                self.events.clone(),
+                self.room_snapshots.clone(),
+            );
+            timelines.put(room_id.to_owned(), Arc::clone(&timeline));
+            return Ok(timeline);
+        }
         // Re-check: another concurrent call may have built and inserted one
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
@@ -724,6 +744,59 @@ impl Session {
         );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
+    }
+
+    /// Installs an event-focused timeline for search/bookmark navigation.
+    /// The listener generation prevents the replaced live listener from
+    /// clearing this newer snapshot when its final handle drops.
+    pub async fn begin_timeline_jump(
+        &self,
+        room_id: matrix_sdk::ruma::OwnedRoomId,
+        event_id: matrix_sdk::ruma::OwnedEventId,
+    ) {
+        self.latest_jump_targets
+            .lock()
+            .await
+            .insert(room_id, event_id);
+    }
+
+    pub async fn timeline_jump_is_latest(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+        event_id: &matrix_sdk::ruma::EventId,
+    ) -> bool {
+        self.latest_jump_targets
+            .lock()
+            .await
+            .get(room_id)
+            .is_some_and(|latest| latest == event_id)
+    }
+
+    pub async fn replace_timeline_if_latest(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+        event_id: &matrix_sdk::ruma::EventId,
+        timeline: Arc<Timeline>,
+    ) -> bool {
+        let latest_jump_targets = self.latest_jump_targets.lock().await;
+        if latest_jump_targets
+            .get(room_id)
+            .is_none_or(|latest| latest != event_id)
+        {
+            return false;
+        }
+        spawn_timeline_listener(
+            self.client.clone(),
+            Arc::downgrade(&timeline),
+            room_id.to_owned(),
+            self.events.clone(),
+            self.room_snapshots.clone(),
+        );
+        self.timelines
+            .lock()
+            .await
+            .put(room_id.to_owned(), timeline);
+        true
     }
 }
 

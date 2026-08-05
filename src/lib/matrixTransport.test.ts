@@ -182,6 +182,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "load_timeline_around_event",
+      { roomId: "!r:example.org", eventId: "$older" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/timeline/around?event_id=%24older",
+      undefined,
+    ],
+    [
       "list_space_hierarchy",
       { spaceId: "!space:example.org" },
       "GET",

@@ -61,7 +61,7 @@ use charm_lib::matrix::spaces::{
     list_manageable_space_children_impl, list_space_children_impl, list_space_hierarchy_impl,
     remove_space_child_impl, set_space_child_suggested_impl, set_space_parent_impl,
 };
-use charm_lib::matrix::timeline::get_timeline_page_impl;
+use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
@@ -150,6 +150,10 @@ pub fn router(state: AppState) -> Router {
             get(get_room_member_list),
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
+        .route(
+            "/api/rooms/{room_id}/timeline/around",
+            get(load_timeline_around_event),
+        )
         .route("/api/rooms/{room_id}/invite/accept", post(accept_invite))
         .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
@@ -2572,9 +2576,17 @@ async fn search_messages(
         return Err(ApiError::bad_request("message search is unavailable"));
     }
     let index = Arc::clone(&session.message_search_index);
+    let closed = Arc::clone(&session.message_search_closed);
     let app_data_dir = crate::crypto_store::data_root_path();
     let mut page = tokio::task::spawn_blocking(move || {
         let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+        // Logout sets this marker before waiting for the index lock and
+        // deleting the database. Checking while holding the same lock keeps
+        // an already-authenticated in-flight request from reopening it after
+        // teardown.
+        if closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("message search is unavailable".to_string());
+        }
         if slot.is_none() {
             *slot = Some(
                 charm_lib::matrix::search::SearchIndex::open_with_source_secret(
@@ -2682,6 +2694,7 @@ async fn get_room_member_list(
 struct TimelineQuery {
     limit: Option<u32>,
     paginate: Option<bool>,
+    force_live: Option<bool>,
 }
 
 async fn get_timeline_page(
@@ -2699,7 +2712,7 @@ async fn get_timeline_page(
     // brand-new one on every call silently reset pagination and made
     // "load older messages" always return the same first page.
     let timeline = session
-        .get_or_create_timeline(&parsed_room_id)
+        .get_or_create_timeline(&parsed_room_id, query.force_live.unwrap_or(false))
         .await
         .map_err(|e| {
             if e == format!("room {room_id} not found") {
@@ -2722,6 +2735,107 @@ async fn get_timeline_page(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(page))
+}
+
+#[derive(Deserialize)]
+struct TimelineAroundQuery {
+    event_id: String,
+}
+
+const MAX_WEB_LOAD_AROUND_ITERATIONS: usize = 20;
+const WEB_LOAD_AROUND_EVENTS_PER_BATCH: u16 = 50;
+
+async fn load_timeline_around_event(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Query(query): Query<TimelineAroundQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
+
+    let session = require_session(&state, &jar).await?;
+    let parsed_room_id =
+        RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&query.event_id)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    session
+        .begin_timeline_jump(parsed_room_id.clone(), parsed_event_id.clone())
+        .await;
+    let timeline = session
+        .get_or_create_timeline(&parsed_room_id, false)
+        .await
+        .map_err(ApiError::bad_request)?;
+
+    if timeline_contains_event(&timeline, &query.event_id).await {
+        let found = session
+            .timeline_jump_is_latest(&parsed_room_id, &parsed_event_id)
+            .await;
+        return Ok(Json(JumpToEventResult {
+            found,
+            installed_focused_view: false,
+        }));
+    }
+
+    for _ in 0..MAX_WEB_LOAD_AROUND_ITERATIONS {
+        let hit_start = timeline
+            .paginate_backwards(WEB_LOAD_AROUND_EVENTS_PER_BATCH)
+            .await
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        if timeline_contains_event(&timeline, &query.event_id).await {
+            let found = session
+                .timeline_jump_is_latest(&parsed_room_id, &parsed_event_id)
+                .await;
+            return Ok(Json(JumpToEventResult {
+                found,
+                installed_focused_view: false,
+            }));
+        }
+        if hit_start {
+            break;
+        }
+    }
+
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    let focused = room
+        .timeline_builder()
+        .with_focus(TimelineFocus::Event {
+            target: parsed_event_id.clone(),
+            num_context_events: WEB_LOAD_AROUND_EVENTS_PER_BATCH,
+            thread_mode: TimelineEventFocusThreadMode::Automatic {
+                hide_threaded_events: false,
+            },
+        })
+        .build()
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let focused = Arc::new(focused);
+    if !timeline_contains_event(&focused, &query.event_id).await {
+        return Ok(Json(JumpToEventResult {
+            found: false,
+            installed_focused_view: false,
+        }));
+    }
+    let installed = session
+        .replace_timeline_if_latest(&parsed_room_id, &parsed_event_id, focused)
+        .await;
+    Ok(Json(JumpToEventResult {
+        found: installed,
+        installed_focused_view: installed,
+    }))
+}
+
+async fn timeline_contains_event(
+    timeline: &matrix_sdk_ui::timeline::Timeline,
+    event_id: &str,
+) -> bool {
+    let (items, _stream) = timeline.subscribe().await;
+    items
+        .iter()
+        .filter_map(|item| item.as_event())
+        .any(|item| item.event_id().is_some_and(|id| id.as_str() == event_id))
 }
 
 async fn list_space_hierarchy(

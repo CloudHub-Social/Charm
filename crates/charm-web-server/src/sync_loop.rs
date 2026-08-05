@@ -518,8 +518,11 @@ pub fn spawn(
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
-        submit_message_search(&message_search, &client, &initial_response).await;
         backfill_message_search(&message_search, &client).await;
+        // Cache provenance must enter the FIFO before the initial live batch.
+        // Otherwise an edit in that batch can arrive before its cached
+        // original and be rejected as an unresolved replacement.
+        submit_message_search(&message_search, &client, &initial_response).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
         // actually saved on disk right now — not `None` and not the

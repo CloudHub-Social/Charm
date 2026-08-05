@@ -280,20 +280,31 @@ impl SearchIndex {
     pub fn delete(self) -> Result<(), String> {
         let database_path = self.database_path.clone();
         drop(self);
-        for suffix in ["", "-wal", "-shm"] {
-            let mut path = database_path.as_os_str().to_os_string();
-            path.push(suffix);
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        delete_database_path(&database_path)
+    }
+
+    /// Removes one derived account/device index without opening it or
+    /// requiring its encryption secret. Persisted-session teardown uses this
+    /// when no live [`SearchIndex`] handle remains.
+    pub fn delete_for_source(
+        app_data_dir: &Path,
+        account_store_key: &str,
+        device_id: &str,
+    ) -> Result<(), String> {
+        let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
+        let search_root = app_data_dir.join(SEARCH_ROOT);
+        let directory = index_directory(&app_data_dir, account_store_key, device_id);
+        for path in [&search_root, &directory] {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_dir() => {}
+                Ok(_) => {
+                    return Err("message search filesystem path is not a directory".to_string())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(safe_io_error(error)),
             }
         }
-        match std::fs::remove_dir(database_path.parent().expect("index database has parent")) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(safe_io_error(error)),
-        }
+        delete_database_path(&directory.join(SEARCH_DATABASE))
     }
 
     /// Inserts a renderer-selected message version and atomically updates the
@@ -1558,6 +1569,23 @@ fn snippet_and_ranges(body: &str, query: &str) -> (String, Vec<SearchMatchRange>
             end: u32::try_from(range_end).unwrap_or(u32::MAX),
         }],
     )
+}
+
+fn delete_database_path(database_path: &Path) -> Result<(), String> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut path = database_path.as_os_str().to_os_string();
+        path.push(suffix);
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(safe_io_error(error)),
+        }
+    }
+    match std::fs::remove_dir(database_path.parent().expect("index database has parent")) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
 }
 
 fn account_directory_prefix(account_store_key: &str) -> String {
