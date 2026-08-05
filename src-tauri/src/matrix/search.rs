@@ -459,7 +459,12 @@ impl SearchIndex {
         compact(&self.connection)
     }
 
-    fn purge_senders(&mut self, senders: &HashSet<String>) -> Result<(), String> {
+    /// Removes every indexed version authored by an ignored sender.
+    ///
+    /// Sync workers call this before applying queued mutations. Search
+    /// commands also call it with the account's freshly-read ignore list so
+    /// a full or delayed worker queue cannot expose a newly ignored sender.
+    pub fn purge_ignored_senders(&mut self, senders: &HashSet<String>) -> Result<(), String> {
         if senders.is_empty() {
             return Ok(());
         }
@@ -693,7 +698,7 @@ impl SearchIndex {
 impl SearchWork {
     /// Applies one ordered sync batch to an already-open index.
     pub fn apply_to(self, index: &mut SearchIndex) -> Result<(), String> {
-        index.purge_senders(&self.ignored_senders)?;
+        index.purge_ignored_senders(&self.ignored_senders)?;
         for mutation in self.mutations {
             match mutation {
                 SearchMutation::Apply(document) => index.apply_document(&document)?,
@@ -1123,6 +1128,12 @@ pub async fn search_messages(
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
+    let ignored_senders: HashSet<String> = super::account::ignored_user_ids(&client)
+        .await
+        .map_err(|_| SearchCommandError::unavailable())?
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
     let allowed_rooms: HashSet<String> = client
         .joined_rooms()
         .into_iter()
@@ -1142,6 +1153,9 @@ pub async fn search_messages(
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let index = ensure_index(&app, &mut slot, &account_store_key, &device_id)
+            .map_err(|_| SearchCommandError::unavailable())?;
+        index
+            .purge_ignored_senders(&ignored_senders)
             .map_err(|_| SearchCommandError::unavailable())?;
         let mut page = index.search(
             &query,
@@ -2045,6 +2059,21 @@ mod tests {
         index
             .apply_document(&document(None, "$edit"))
             .expect("edit");
+
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+    }
+
+    #[test]
+    fn fresh_ignore_list_purges_an_already_indexed_sender_before_search() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("previously searchable"), "$original"))
+            .expect("insert");
+
+        index
+            .purge_ignored_senders(&HashSet::from(["@alice:example.org".to_string()]))
+            .expect("purge ignored sender");
 
         assert_eq!(index.visible_body("!room:example.org", "$original"), None);
     }

@@ -2568,6 +2568,13 @@ async fn search_messages(
         .into_iter()
         .map(|room| room.room_id().to_string())
         .collect();
+    let ignored_senders: std::collections::HashSet<String> =
+        charm_lib::matrix::account::ignored_user_ids(&session.client)
+            .await
+            .map_err(|_| ApiError::bad_request("message search is unavailable"))?
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
     if request
         .room_id
         .as_ref()
@@ -2598,8 +2605,11 @@ async fn search_messages(
                 .map_err(|_| "message search is unavailable".to_string())?,
             );
         }
-        slot.as_mut()
-            .expect("web search index initialized")
+        let index = slot.as_mut().expect("web search index initialized");
+        index
+            .purge_ignored_senders(&ignored_senders)
+            .map_err(|_| "message search is unavailable".to_string())?;
+        index
             .search(
                 &request.query,
                 request.room_id.as_deref(),

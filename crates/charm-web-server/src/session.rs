@@ -1168,6 +1168,14 @@ impl SessionStore {
             {
                 true
             } else {
+                // Revokes the detached message-search worker before this
+                // session leaves the live map. A later persisted-session
+                // restore gets a fresh marker and worker, while buffered
+                // plaintext from this evicted lifecycle can no longer
+                // reopen the encrypted index after expiry/logout cleanup.
+                session
+                    .message_search_closed
+                    .store(true, std::sync::atomic::Ordering::Release);
                 // Abort the sync loop right here — synchronously, still
                 // under this write lock, in the same statement as the
                 // `has_pending_verification_events` check above — rather
@@ -1350,6 +1358,13 @@ mod tests {
         assert!(
             store.get(&active_token).await.is_some(),
             "a recently-touched session must survive the sweep"
+        );
+        assert!(
+            evicted[0]
+                .1
+                .message_search_closed
+                .load(std::sync::atomic::Ordering::Acquire),
+            "idle eviction must revoke the detached search worker"
         );
     }
 
