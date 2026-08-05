@@ -520,6 +520,25 @@ impl MatrixState {
             .ok_or_else(|| "not logged in".to_string())
     }
 
+    /// Returns the active client and message-search generation from one
+    /// client-lock epoch. Logout clears `client` under this same lock before
+    /// advancing the generation, so callers that will await Matrix work cannot
+    /// accidentally pair an old client with a newer post-logout generation.
+    pub(crate) async fn require_client_with_search_generation(
+        &self,
+    ) -> Result<(Client, u64), String> {
+        let client = self
+            .client
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "not logged in".to_string())?;
+        let generation = self
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        Ok((client, generation))
+    }
+
     /// Whether `room_id` already has a live `Timeline` cached — a cheap peek
     /// (`LruCache::contains`, which doesn't touch recency order) for callers
     /// that want to tell a cold open (this returns `false`, then

@@ -1304,7 +1304,7 @@ pub async fn get_timeline_page(
     paginate: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
-    let client = state.require_client().await?;
+    let (client, search_generation) = state.require_client_with_search_generation().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
 
     // Distinguishes a cold open (`timeline.get_page.cold_open` — this room
@@ -1359,6 +1359,7 @@ pub async fn get_timeline_page(
                 app.clone(),
                 client.clone(),
                 parsed_room_id.clone(),
+                search_generation,
             );
         }
         Ok(page)
@@ -1482,7 +1483,7 @@ pub async fn load_timeline_around_event(
     room_id: String,
     event_id: String,
 ) -> Result<JumpToEventResult, String> {
-    let client = state.require_client().await?;
+    let (client, search_generation) = state.require_client_with_search_generation().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
     let room = client
@@ -1529,6 +1530,7 @@ pub async fn load_timeline_around_event(
                 app.clone(),
                 client.clone(),
                 parsed_room_id.clone(),
+                search_generation,
             );
             return Ok(JumpToEventResult {
                 found: true,
@@ -1564,7 +1566,12 @@ pub async fn load_timeline_around_event(
             .await?;
     require_room_still_joined(&room)?;
     if found {
-        super::search::schedule_cached_room(app.clone(), client.clone(), parsed_room_id.clone());
+        super::search::schedule_cached_room(
+            app.clone(),
+            client.clone(),
+            parsed_room_id.clone(),
+            search_generation,
+        );
     }
     Ok(JumpToEventResult {
         found,

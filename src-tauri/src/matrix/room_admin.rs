@@ -1572,9 +1572,9 @@ pub async fn leave_room(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
-    let client = state.require_client().await?;
+    let (client, search_generation) = state.require_client_with_search_generation().await?;
     leave_room_impl(&client, &room_id).await?;
-    super::search::purge_room_after_leave(&app, &client, &room_id).await
+    super::search::purge_room_after_leave(&app, &client, &room_id, search_generation).await
 }
 
 /// Core logic behind [`leave_room`].

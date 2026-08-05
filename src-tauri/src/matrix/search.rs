@@ -1031,6 +1031,7 @@ pub(crate) async fn purge_room_after_leave(
     app: &AppHandle,
     client: &Client,
     room_id: &str,
+    generation: u64,
 ) -> Result<(), String> {
     if !feature_enabled(app) {
         return Ok(());
@@ -1039,6 +1040,17 @@ pub(crate) async fn purge_room_after_leave(
         return Ok(());
     };
     let state = app.state::<super::MatrixState>();
+    let Some(expected_identity) = active_identity(client) else {
+        return Ok(());
+    };
+    if !client_identity_is_current(&state, &expected_identity).await
+        || generation
+            != state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
     while state
         .search_pagination_seed_running
         .load(std::sync::atomic::Ordering::Acquire)
@@ -1052,12 +1064,25 @@ pub(crate) async fn purge_room_after_leave(
         }
         notified.await;
     }
-    let generation = state
-        .search_generation
-        .load(std::sync::atomic::Ordering::Acquire);
+    if !client_identity_is_current(&state, &expected_identity).await
+        || generation
+            != state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
     let (completion, completed) = tokio::sync::oneshot::channel();
-    search_work_sender(app)
-        .await
+    let sender = search_work_sender(app).await;
+    if !client_identity_is_current(&state, &expected_identity).await
+        || generation
+            != state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
+    sender
         .send(QueuedSearchWork {
             generation,
             work,
@@ -1344,6 +1369,7 @@ pub(crate) fn schedule_cached_room(
     app: AppHandle,
     client: Client,
     room_id: matrix_sdk::ruma::OwnedRoomId,
+    generation: u64,
 ) {
     tauri::async_runtime::spawn(async move {
         if !feature_enabled(&app) {
@@ -1353,12 +1379,10 @@ pub(crate) fn schedule_cached_room(
         let Some(expected_identity) = active_identity(&client) else {
             return;
         };
-        // Capture the generation before any cache/ignore-list await. The
+        // The caller captured this generation under the same client lock that
+        // yielded `client`, before its pagination/load-around awaits. The
         // detached task must never adopt a newer post-logout generation while
         // still holding the old Client clone.
-        let generation = state
-            .search_generation
-            .load(std::sync::atomic::Ordering::Acquire);
         if !client_identity_is_current(&state, &expected_identity).await
             || generation
                 != state
@@ -2597,6 +2621,24 @@ mod tests {
                 .as_deref(),
             Some("retained room")
         );
+        let departed_fts_rows = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM searchable_messages_fts WHERE room_id = ?1",
+                [&departed.room_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count departed FTS rows");
+        let retained_fts_rows = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM searchable_messages_fts WHERE room_id = ?1",
+                [&retained.room_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count retained FTS rows");
+        assert_eq!(departed_fts_rows, 0);
+        assert_eq!(retained_fts_rows, 1);
     }
 
     #[test]
