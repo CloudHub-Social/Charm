@@ -10,7 +10,7 @@ use std::{
 };
 
 use hkdf::Hkdf;
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 use sha2_compat::Sha256 as HkdfSha256;
 use zeroize::Zeroizing;
@@ -112,11 +112,19 @@ impl SearchIndex {
         device_id: &str,
         store_passphrase: &str,
     ) -> Result<Self, String> {
+        // `SQLITE_OPEN_NOFOLLOW` rejects a symlink in any path component. Resolve
+        // the trusted app-data root once, then continue to reject symlinks in
+        // every Charm-owned component beneath it.
+        let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
         create_private_directory(&app_data_dir.join(SEARCH_ROOT))?;
-        let directory = index_directory(app_data_dir, account_store_key, device_id);
+        let directory = index_directory(&app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
-        let connection = Connection::open(&database_path).map_err(safe_storage_error)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(safe_storage_error)?;
         apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
         configure(&connection)?;
         // This storage-only slice fails closed on an incompatible schema.
@@ -809,6 +817,35 @@ mod tests {
                 .expect("read outside directory")
                 .count(),
             0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_a_symlinked_database_file() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().expect("app data");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        let outside_path = outside.path().to_path_buf();
+        std::fs::write(&outside_path, b"outside content").expect("seed outside file");
+
+        let search_root = app_data.path().join(SEARCH_ROOT);
+        create_private_directory(&search_root).expect("private root");
+        let device_directory = index_directory(app_data.path(), "account", "DEVICE");
+        create_private_directory(&device_directory).expect("private device directory");
+        symlink(&outside_path, device_directory.join(SEARCH_DATABASE))
+            .expect("create database symlink");
+
+        let error =
+            SearchIndex::open_with_secret(app_data.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("symlinked database must fail closed");
+
+        assert!(error.starts_with("message search storage error"));
+        assert_eq!(
+            std::fs::read(&outside_path).expect("read outside file"),
+            b"outside content"
         );
     }
 
