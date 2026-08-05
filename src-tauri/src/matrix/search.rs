@@ -291,7 +291,11 @@ impl SearchIndex {
         account_store_key: &str,
         device_id: &str,
     ) -> Result<(), String> {
-        let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
+        let app_data_dir = match std::fs::canonicalize(app_data_dir) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(safe_io_error(error)),
+        };
         let search_root = app_data_dir.join(SEARCH_ROOT);
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
         for path in [&search_root, &directory] {
@@ -785,6 +789,42 @@ fn searchable_body(mut content: RoomMessageEventContent) -> Option<String> {
     (!body.trim().is_empty()).then_some(body)
 }
 
+#[derive(Deserialize)]
+struct RawReplacementContent {
+    #[serde(rename = "m.new_content")]
+    new_content: RawReplacementNewContent,
+}
+
+#[derive(Deserialize)]
+struct RawReplacementNewContent {
+    #[serde(rename = "m.relates_to")]
+    relates_to: Option<RawReplyRelation>,
+}
+
+#[derive(Deserialize)]
+struct RawReplyRelation {
+    #[serde(rename = "m.in_reply_to")]
+    in_reply_to: Option<RawInReplyTo>,
+}
+
+#[derive(Deserialize)]
+struct RawInReplyTo {
+    event_id: matrix_sdk::ruma::OwnedEventId,
+}
+
+fn replacement_reply_relation(
+    raw_event: &Raw<AnySyncTimelineEvent>,
+) -> Option<Relation<matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation>>
+{
+    let content = raw_event
+        .get_field::<RawReplacementContent>("content")
+        .ok()??;
+    let event_id = content.new_content.relates_to?.in_reply_to?.event_id;
+    Some(Relation::Reply(
+        matrix_sdk::ruma::events::relation::Reply::with_event_id(event_id),
+    ))
+}
+
 pub fn work_from_sync(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
@@ -868,10 +908,13 @@ fn append_raw_event_mutation(
                 .saturating_mul(65_536)
                 .saturating_add(u64::try_from(position).unwrap_or(u64::MAX).min(65_535));
             let (event_id, content) = match original.content.relates_to.clone() {
-                Some(Relation::Replacement(replacement)) => (
-                    replacement.event_id.to_string(),
-                    replacement.new_content.with_relation(None),
-                ),
+                Some(Relation::Replacement(replacement)) => {
+                    let reply_relation = replacement_reply_relation(raw_event);
+                    (
+                        replacement.event_id.to_string(),
+                        replacement.new_content.with_relation(reply_relation),
+                    )
+                }
                 _ => (original.event_id.to_string(), original.content),
             };
             mutations.push(SearchMutation::Apply(SearchDocument {
@@ -2334,6 +2377,51 @@ mod tests {
             reopened.search("searchable", None, &allowed, 1, Some(&cursor)),
             Err(SearchCommandError::StaleCursor { .. })
         ));
+    }
+
+    #[test]
+    fn reply_edit_indexes_only_the_replacement_body_without_quoted_fallback() {
+        let raw: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$edit:example.org",
+                "sender": "@alice:example.org",
+                "origin_server_ts": 2,
+                "content": {
+                    "msgtype": "m.text",
+                    "body": "* edited answer",
+                    "m.new_content": {
+                        "msgtype": "m.text",
+                        "body": "> <@bob:example.org> quoted text\n\nedited answer",
+                        "format": "org.matrix.custom.html",
+                        "formatted_body": "<mx-reply><blockquote>quoted text</blockquote></mx-reply><p>edited answer</p>",
+                        "m.relates_to": {
+                            "m.in_reply_to": { "event_id": "$reply:example.org" }
+                        }
+                    },
+                    "m.relates_to": {
+                        "rel_type": "m.replace",
+                        "event_id": "$original:example.org"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("reply edit event");
+        let mut mutations = Vec::new();
+
+        append_raw_event_mutation(
+            "!room:example.org",
+            &raw,
+            0,
+            &HashSet::new(),
+            &mut mutations,
+        );
+
+        let SearchMutation::Apply(document) = &mutations[0] else {
+            panic!("reply edit should be indexed");
+        };
+        assert_eq!(document.body.as_deref(), Some("edited answer"));
     }
 
     #[test]

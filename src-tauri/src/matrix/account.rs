@@ -16,7 +16,7 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::media;
@@ -225,6 +225,11 @@ async fn clear_local_session(
     user_id: &str,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    let search_device_id = state
+        .require_client()
+        .await
+        .ok()
+        .and_then(|client| client.device_id().map(ToString::to_string));
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -305,12 +310,21 @@ async fn clear_local_session(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .take();
-    match search_index {
-        Some(active) => tokio::task::spawn_blocking(move || active.index.delete())
-            .await
-            .map_err(|_| "message search cleanup worker failed".to_string())?,
-        None => Ok(()),
-    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search application data directory unavailable".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        if let Some(active) = search_index {
+            active.index.delete()?;
+        }
+        if let Some(device_id) = search_device_id {
+            super::search::SearchIndex::delete_for_source(&app_data_dir, &account_key, &device_id)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "message search cleanup worker failed".to_string())?
 }
 
 /// Signs the current session out: best-effort server-side revoke (an

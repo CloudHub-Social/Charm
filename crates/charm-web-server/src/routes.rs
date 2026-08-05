@@ -2584,6 +2584,7 @@ async fn search_messages(
     }
     let index = Arc::clone(&session.message_search_index);
     let closed = Arc::clone(&session.message_search_closed);
+    let closed_during_search = Arc::clone(&closed);
     let app_data_dir = crate::crypto_store::data_root_path();
     let mut page = tokio::task::spawn_blocking(move || {
         let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
@@ -2591,7 +2592,7 @@ async fn search_messages(
         // deleting the database. Checking while holding the same lock keeps
         // an already-authenticated in-flight request from reopening it after
         // teardown.
-        if closed.load(std::sync::atomic::Ordering::Acquire) {
+        if closed_during_search.load(std::sync::atomic::Ordering::Acquire) {
             return Err("message search is unavailable".to_string());
         }
         if slot.is_none() {
@@ -2622,6 +2623,9 @@ async fn search_messages(
     .await
     .map_err(|_| ApiError::bad_request("message search is unavailable"))?
     .map_err(ApiError::bad_request)?;
+    if closed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
     page.incomplete = session
         .message_search_incomplete
         .load(std::sync::atomic::Ordering::Acquire);
