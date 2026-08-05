@@ -776,6 +776,20 @@ fn active_identity(client: &Client) -> Option<(String, String)> {
     ))
 }
 
+async fn client_identity_is_current(
+    state: &super::MatrixState,
+    expected_identity: &(String, String),
+) -> bool {
+    state
+        .client
+        .lock()
+        .await
+        .as_ref()
+        .and_then(active_identity)
+        .as_ref()
+        == Some(expected_identity)
+}
+
 fn ensure_index<'a>(
     app: &AppHandle,
     slot: &'a mut Option<ActiveSearchIndex>,
@@ -1336,6 +1350,23 @@ pub(crate) fn schedule_cached_room(
             return;
         }
         let state = app.state::<super::MatrixState>();
+        let Some(expected_identity) = active_identity(&client) else {
+            return;
+        };
+        // Capture the generation before any cache/ignore-list await. The
+        // detached task must never adopt a newer post-logout generation while
+        // still holding the old Client clone.
+        let generation = state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if !client_identity_is_current(&state, &expected_identity).await
+            || generation
+                != state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         let Some(room) = client.get_room(&room_id) else {
             return;
         };
@@ -1358,9 +1389,6 @@ pub(crate) fn schedule_cached_room(
             return;
         }
         async {
-            let generation = state
-                .search_generation
-                .load(std::sync::atomic::Ordering::Acquire);
             let ignored_senders = super::account::ignored_user_ids(&client)
                 .await
                 .unwrap_or_default()
@@ -1397,6 +1425,19 @@ pub(crate) fn schedule_cached_room(
                 return;
             }
             let sender = search_work_sender(&app).await;
+            // `ignored_user_ids`, event-cache reads, and worker setup all
+            // suspend. Revalidate both the active account/device and the
+            // pre-await generation after the final await, immediately before
+            // enqueueing decrypted work.
+            if !client_identity_is_current(&state, &expected_identity).await
+                || generation
+                    != state
+                        .search_generation
+                        .load(std::sync::atomic::Ordering::Acquire)
+                || room.state() != matrix_sdk::RoomState::Joined
+            {
+                return;
+            }
             if sender
                 .try_send(QueuedSearchWork {
                     generation,
