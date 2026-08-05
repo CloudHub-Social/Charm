@@ -790,6 +790,34 @@ async fn client_identity_is_current(
         == Some(expected_identity)
 }
 
+/// Invalidates every detached/queued search task owned by the session being
+/// replaced, resets lifecycle disclosure for the next session, and closes the
+/// process-local index handle without deleting the account/device database.
+///
+/// Call only after `MatrixState::client` has been cleared. Advancing the
+/// generation before taking the index lock makes an old worker fail its first
+/// or lock-protected second generation check; if it already passed both, this
+/// waits for that final apply to release the slot and then closes the handle.
+pub(crate) fn invalidate_for_session_replacement(state: &super::MatrixState) {
+    state
+        .search_generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    state
+        .search_backfill_started
+        .store(false, std::sync::atomic::Ordering::Release);
+    state
+        .search_backfill_pending
+        .store(false, std::sync::atomic::Ordering::Release);
+    state
+        .search_incomplete
+        .store(false, std::sync::atomic::Ordering::Release);
+    state
+        .search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+}
+
 fn ensure_index<'a>(
     app: &AppHandle,
     slot: &'a mut Option<ActiveSearchIndex>,
@@ -2178,6 +2206,38 @@ mod tests {
         assert_ne!(*baseline, *other_account);
         assert_ne!(*baseline, *other_device);
         assert_ne!(*baseline, *other_secret);
+    }
+
+    #[test]
+    fn session_replacement_invalidates_search_work_and_resets_lifecycle() {
+        let state = super::super::MatrixState::default();
+        state
+            .search_backfill_started
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_backfill_pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        invalidate_for_session_replacement(&state);
+
+        assert_eq!(
+            state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        assert!(!state
+            .search_backfill_started
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(!state
+            .search_backfill_pending
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(!state
+            .search_incomplete
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

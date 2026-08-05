@@ -577,7 +577,13 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // `clear_timelines` above, for pin/unpin's own cache instead of the
     // timeline listeners.
     app.state::<MatrixState>().clear_pinned_event_cache().await;
-    *app.state::<MatrixState>().client.lock().await = None;
+    let state = app.state::<MatrixState>();
+    *state.client.lock().await = None;
+    // Interactive login/registration/QR/SSO all use this teardown before
+    // adopting a replacement client. Invalidate search work here, at the
+    // shared supersession boundary, so no queued/deferred task from the old
+    // client can borrow the replacement session's generation or index slot.
+    super::search::invalidate_for_session_replacement(&state);
 }
 
 /// Decides what the sync loop's next `sync_once` call should report as this
