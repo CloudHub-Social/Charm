@@ -82,7 +82,7 @@ pub fn message_search_context(
     let incomplete = Arc::clone(&session.message_search_incomplete);
     let backfill_pending = Arc::clone(&session.message_search_backfill_pending);
     backfill_pending.store(true, std::sync::atomic::Ordering::Release);
-    let closed = Arc::clone(&session.message_search_closed);
+    let closed = Arc::clone(&session.session_closed);
     let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
     *session
@@ -321,7 +321,7 @@ pub fn schedule_cached_room_search(
 ) {
     tokio::spawn(async move {
         if session
-            .message_search_closed
+            .session_closed
             .load(std::sync::atomic::Ordering::Acquire)
         {
             return;

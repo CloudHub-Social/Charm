@@ -2095,9 +2095,6 @@ async fn logout(
         // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
             live_crypto = session.persisted_crypto.clone();
-            session
-                .message_search_closed
-                .store(true, std::sync::atomic::Ordering::Release);
             if let Some(handle) = session
                 .sync_handle
                 .lock()
@@ -2583,7 +2580,7 @@ async fn search_messages(
         return Err(ApiError::bad_request("message search is unavailable"));
     }
     let index = Arc::clone(&session.message_search_index);
-    let closed = Arc::clone(&session.message_search_closed);
+    let closed = Arc::clone(&session.session_closed);
     let closed_during_search = Arc::clone(&closed);
     let app_data_dir = crate::crypto_store::data_root_path();
     let mut page = tokio::task::spawn_blocking(move || {
@@ -2802,29 +2799,20 @@ async fn load_timeline_around_event(
         .map_err(ApiError::bad_request)?;
 
     if timeline_contains_event(&timeline, &query.event_id).await {
-        let found = session
-            .timeline_jump_is_latest(&parsed_room_id, &parsed_event_id)
-            .await;
-        return Ok(Json(JumpToEventResult {
-            found,
-            installed_focused_view: false,
-        }));
+        require_session_still_open(&session)?;
+        return Ok(Json(found_jump_result(false)));
     }
 
     for _ in 0..MAX_WEB_LOAD_AROUND_ITERATIONS {
+        require_session_still_open(&session)?;
         let hit_start = timeline
             .paginate_backwards(WEB_LOAD_AROUND_EVENTS_PER_BATCH)
             .await
             .map_err(|error| ApiError::bad_request(error.to_string()))?;
         if timeline_contains_event(&timeline, &query.event_id).await {
+            require_session_still_open(&session)?;
             crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
-            let found = session
-                .timeline_jump_is_latest(&parsed_room_id, &parsed_event_id)
-                .await;
-            return Ok(Json(JumpToEventResult {
-                found,
-                installed_focused_view: false,
-            }));
+            return Ok(Json(found_jump_result(false)));
         }
         if hit_start {
             break;
@@ -2835,6 +2823,10 @@ async fn load_timeline_around_event(
         .client
         .get_room(&parsed_room_id)
         .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    // The focused builder can disclose the target event id via `/context`.
+    // Logout/idle eviction closes the retained session before cleanup, so
+    // recheck immediately before starting that Matrix request.
+    require_session_still_open(&session)?;
     let focused = room
         .timeline_builder()
         .with_focus(TimelineFocus::Event {
@@ -2847,6 +2839,10 @@ async fn load_timeline_around_event(
         .build()
         .await
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    // The request may have been logged out while the focused timeline was
+    // building. Never install or broadcast decrypted results from a session
+    // that no longer exists in the live store.
+    require_session_still_open(&session)?;
     let focused = Arc::new(focused);
     if !timeline_contains_event(&focused, &query.event_id).await {
         return Ok(Json(JumpToEventResult {
@@ -2857,13 +2853,40 @@ async fn load_timeline_around_event(
     let installed = session
         .replace_timeline_if_latest(&parsed_room_id, &parsed_event_id, focused)
         .await;
+    require_session_still_open(&session)?;
     if installed {
         crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
     }
-    Ok(Json(JumpToEventResult {
-        found: installed,
-        installed_focused_view: installed,
-    }))
+    Ok(Json(found_jump_result(installed)))
+}
+
+fn found_jump_result(installed_focused_view: bool) -> JumpToEventResult {
+    JumpToEventResult {
+        found: true,
+        installed_focused_view,
+    }
+}
+
+#[cfg(test)]
+mod timeline_jump_result_tests {
+    #[test]
+    fn a_stale_focused_install_does_not_turn_a_located_event_into_not_found() {
+        let result = super::found_jump_result(false);
+
+        assert!(result.found);
+        assert!(!result.installed_focused_view);
+    }
+}
+
+fn require_session_still_open(session: &Session) -> Result<(), ApiError> {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        Err(ApiError::unauthorized("session closed"))
+    } else {
+        Ok(())
+    }
 }
 
 async fn timeline_contains_event(

@@ -1068,8 +1068,11 @@ pub(crate) async fn submit_sync_response(
         state
             .search_incomplete
             .store(false, std::sync::atomic::Ordering::Release);
+        let source = active_identity(client);
+        let app_data_dir = app.path().app_data_dir().ok();
         let app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        let deleted = tauri::async_runtime::spawn_blocking(move || {
+            let mut deleted = true;
             let active = app
                 .state::<super::MatrixState>()
                 .search_index
@@ -1077,9 +1080,29 @@ pub(crate) async fn submit_sync_response(
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
             if let Some(active) = active {
-                let _ = active.index.delete();
+                deleted &= active.index.delete().is_ok();
             }
-        });
+            match (app_data_dir, source) {
+                (Some(app_data_dir), Some((account_store_key, device_id))) => {
+                    deleted &= SearchIndex::delete_for_source(
+                        &app_data_dir,
+                        &account_store_key,
+                        &device_id,
+                    )
+                    .is_ok();
+                }
+                (None, Some(_)) => deleted = false,
+                _ => {}
+            }
+            deleted
+        })
+        .await;
+        if !matches!(deleted, Ok(true)) {
+            tracing::warn!(
+                command = "message_search_kill_switch",
+                status = "cleanup_failed"
+            );
+        }
         return;
     }
     let Some(client_identity) = active_identity(client) else {
@@ -2176,6 +2199,21 @@ mod tests {
             )),
             MigrationError::Storage(_)
         ));
+    }
+
+    #[test]
+    fn delete_for_source_removes_an_index_that_is_not_currently_open() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_path_buf();
+        drop(index);
+
+        SearchIndex::delete_for_source(directory.path(), "account", "DEVICE")
+            .expect("delete unopened index");
+
+        assert!(!database_path.exists());
+        assert!(!database_path.with_extension("sqlite3-wal").exists());
+        assert!(!database_path.with_extension("sqlite3-shm").exists());
     }
 
     #[test]

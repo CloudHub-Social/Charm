@@ -191,9 +191,10 @@ pub struct Session {
     /// Coalesces pagination re-seeds so detached plaintext snapshots stay
     /// bounded to one per web session.
     pub message_search_pagination_seed_running: Arc<AtomicBool>,
-    /// Revokes queued plaintext work before explicit logout deletes the
-    /// session index. The worker rechecks this while holding the index lock.
-    pub message_search_closed: Arc<AtomicBool>,
+    /// Revokes all detached work before logout or idle eviction removes this
+    /// session. Search workers and timeline listeners recheck it immediately
+    /// before writing storage or broadcasting decrypted state.
+    pub session_closed: Arc<AtomicBool>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -561,7 +562,7 @@ impl Session {
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
-            message_search_closed: Arc::new(AtomicBool::new(false)),
+            session_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -749,6 +750,7 @@ impl Session {
                 room_id.to_owned(),
                 self.events.clone(),
                 self.room_snapshots.clone(),
+                Arc::clone(&self.session_closed),
             );
             timelines.put(room_id.to_owned(), Arc::clone(&timeline));
             return Ok(timeline);
@@ -767,6 +769,7 @@ impl Session {
             room_id.to_owned(),
             self.events.clone(),
             self.room_snapshots.clone(),
+            Arc::clone(&self.session_closed),
         );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
@@ -786,28 +789,28 @@ impl Session {
             .insert(room_id, event_id);
     }
 
-    pub async fn timeline_jump_is_latest(
-        &self,
-        room_id: &matrix_sdk::ruma::RoomId,
-        event_id: &matrix_sdk::ruma::EventId,
-    ) -> bool {
-        self.latest_jump_targets
-            .lock()
-            .await
-            .get(room_id)
-            .is_some_and(|latest| latest == event_id)
-    }
-
     pub async fn replace_timeline_if_latest(
         &self,
         room_id: &matrix_sdk::ruma::RoomId,
         event_id: &matrix_sdk::ruma::EventId,
         timeline: Arc<Timeline>,
     ) -> bool {
+        if self
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
         let latest_jump_targets = self.latest_jump_targets.lock().await;
         if latest_jump_targets
             .get(room_id)
             .is_none_or(|latest| latest != event_id)
+        {
+            return false;
+        }
+        if self
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
         {
             return false;
         }
@@ -817,6 +820,7 @@ impl Session {
             room_id.to_owned(),
             self.events.clone(),
             self.room_snapshots.clone(),
+            Arc::clone(&self.session_closed),
         );
         self.timelines
             .lock()
@@ -867,6 +871,7 @@ fn spawn_timeline_listener(
     room_snapshots: Arc<
         std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>,
     >,
+    session_closed: Arc<AtomicBool>,
 ) {
     use futures_util::StreamExt;
 
@@ -881,6 +886,9 @@ fn spawn_timeline_listener(
     let own_user_id = client.user_id().map(ToOwned::to_owned);
 
     tokio::spawn(async move {
+        if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let Some(strong) = timeline.upgrade() else {
             return;
         };
@@ -904,6 +912,9 @@ fn spawn_timeline_listener(
             None,
         )
         .await;
+        if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let initial_messages = initial_items
             .iter()
             .filter_map(|item| match item {
@@ -932,6 +943,9 @@ fn spawn_timeline_listener(
         // `routes.rs`).
         liveness_check.tick().await;
         loop {
+            if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             let diffs = tokio::select! {
                 diffs = stream.next() => diffs,
                 _ = liveness_check.tick() => {
@@ -959,6 +973,9 @@ fn spawn_timeline_listener(
                 None,
             )
             .await;
+            if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             let messages = timeline_items
                 .iter()
                 .filter_map(|item| match item {
@@ -1165,7 +1182,13 @@ impl SessionStore {
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
-        self.inner.write().await.remove(token)
+        let mut inner = self.inner.write().await;
+        if let Some(session) = inner.get(token) {
+            session
+                .session_closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        inner.remove(token)
     }
 
     /// Stable snapshot of the currently-live sessions for graceful process
@@ -1214,7 +1237,7 @@ impl SessionStore {
                 // plaintext from this evicted lifecycle can no longer
                 // reopen the encrypted index after expiry/logout cleanup.
                 session
-                    .message_search_closed
+                    .session_closed
                     .store(true, std::sync::atomic::Ordering::Release);
                 // Abort the sync loop right here — synchronously, still
                 // under this write lock, in the same statement as the
@@ -1397,6 +1420,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_a_session_revokes_its_detached_decrypted_work() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@removed:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+
+        store.remove(&token).await.expect("removed session");
+
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
     async fn sweep_idle_evicts_only_sessions_past_the_timeout_with_no_open_connection() {
         let store = SessionStore::new();
         let idle_timeout = std::time::Duration::from_secs(60);
@@ -1424,7 +1462,7 @@ mod tests {
         assert!(
             evicted[0]
                 .1
-                .message_search_closed
+                .session_closed
                 .load(std::sync::atomic::Ordering::Acquire),
             "idle eviction must revoke the detached search worker"
         );
