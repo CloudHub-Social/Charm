@@ -1484,6 +1484,17 @@ pub async fn search_messages(
             .search_index
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // Logout/account switch increments the generation before taking this
+        // same mutex to delete the index. Recheck while holding it so a stale
+        // query cannot run after cleanup and recreate the signed-out
+        // account's database via `ensure_index`.
+        if generation
+            != state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(SearchCommandError::unavailable());
+        }
         let index = ensure_index(&app, &mut slot, &account_store_key, &device_id)
             .map_err(|_| SearchCommandError::unavailable())?;
         index
