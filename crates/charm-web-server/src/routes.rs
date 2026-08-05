@@ -3067,9 +3067,12 @@ async fn leave_room(
         .await
         .map_err(ApiError::bad_request)?;
     if state.encrypted_local_message_search_enabled {
-        crate::sync_loop::purge_room_after_leave(&session, &room_id)
-            .await
-            .map_err(ApiError::internal)?;
+        let purge_result = crate::sync_loop::purge_room_after_leave(&session, &room_id).await;
+        charm_lib::matrix::search::record_room_leave_purge_result(
+            &session.message_search_incomplete,
+            purge_result,
+            "web_leave_room",
+        );
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -5777,13 +5780,6 @@ impl ApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
-            message: message.into(),
-            kind: None,
-        }
-    }
-    fn internal(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
             kind: None,
         }

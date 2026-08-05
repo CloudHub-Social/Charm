@@ -1574,7 +1574,14 @@ pub async fn leave_room(
 ) -> Result<(), String> {
     let (client, search_generation) = state.require_client_with_search_generation().await?;
     leave_room_impl(&client, &room_id).await?;
-    super::search::purge_room_after_leave(&app, &client, &room_id, search_generation).await
+    let purge_result =
+        super::search::purge_room_after_leave(&app, &client, &room_id, search_generation).await;
+    super::search::record_room_leave_purge_result(
+        &state.search_incomplete,
+        purge_result,
+        "leave_room",
+    );
+    Ok(())
 }
 
 /// Core logic behind [`leave_room`].

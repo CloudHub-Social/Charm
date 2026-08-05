@@ -1253,6 +1253,25 @@ pub(crate) async fn purge_room_after_leave(
         .map_err(|_| "message search purge worker unavailable".to_string())?
 }
 
+/// Records a secondary search-purge failure after the homeserver has already
+/// accepted a room leave. The authoritative leave must stay successful; joined
+/// room filtering keeps the departed room out of queries while the incomplete
+/// marker discloses that derived storage still needs reconciliation.
+pub fn record_room_leave_purge_result(
+    incomplete: &std::sync::atomic::AtomicBool,
+    result: Result<(), String>,
+    command: &'static str,
+) {
+    if result.is_err() {
+        incomplete.store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(
+            command,
+            cleanup = "message_search_room_purge",
+            status = "failed"
+        );
+    }
+}
+
 pub(crate) async fn submit_sync_response(
     app: &AppHandle,
     client: &Client,
@@ -2594,6 +2613,19 @@ mod tests {
         assert!(!database_path.exists());
         assert!(!database_path.with_extension("sqlite3-wal").exists());
         assert!(!database_path.with_extension("sqlite3-shm").exists());
+    }
+
+    #[test]
+    fn leave_purge_failure_marks_search_incomplete_without_propagating_content() {
+        let incomplete = std::sync::atomic::AtomicBool::new(false);
+
+        record_room_leave_purge_result(
+            &incomplete,
+            Err("sensitive storage detail".to_string()),
+            "test_leave_room",
+        );
+
+        assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
