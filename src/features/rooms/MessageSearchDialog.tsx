@@ -85,8 +85,22 @@ export function MessageSearchDialog({
       setPage((current) =>
         cursor && current ? { ...next, results: [...current.results, ...next.results] } : next,
       );
-    } catch {
-      if (id === requestId.current) setError("Message search is temporarily unavailable.");
+    } catch (caught) {
+      if (id === requestId.current) {
+        const code =
+          caught && typeof caught === "object"
+            ? "code" in caught && typeof caught.code === "string"
+              ? caught.code
+              : "kind" in caught && typeof caught.kind === "string"
+                ? caught.kind
+                : null
+            : null;
+        setError(
+          code === "stale_cursor"
+            ? "Search results expired. Run the search again."
+            : "Message search is temporarily unavailable.",
+        );
+      }
     } finally {
       if (id === requestId.current) setLoading(false);
     }

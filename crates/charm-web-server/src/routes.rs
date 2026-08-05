@@ -2590,7 +2590,7 @@ async fn search_messages(
         // an already-authenticated in-flight request from reopening it after
         // teardown.
         if closed_during_search.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("message search is unavailable".to_string());
+            return Err(charm_lib::matrix::search::SearchCommandError::unavailable());
         }
         if slot.is_none() {
             *slot = Some(
@@ -2600,26 +2600,26 @@ async fn search_messages(
                     &device_id,
                     &crypto.passphrase,
                 )
-                .map_err(|_| "message search is unavailable".to_string())?,
+                .map_err(|_| charm_lib::matrix::search::SearchCommandError::unavailable())?,
             );
         }
         let index = slot.as_mut().expect("web search index initialized");
         index
             .purge_ignored_senders(&ignored_senders)
-            .map_err(|_| "message search is unavailable".to_string())?;
-        index
-            .search(
-                &request.query,
-                request.room_id.as_deref(),
-                &allowed_rooms,
-                request.limit,
-                request.cursor.as_deref(),
-            )
-            .map_err(|_| "message search is unavailable".to_string())
+            .map_err(|_| charm_lib::matrix::search::SearchCommandError::unavailable())?;
+        index.search(
+            &request.query,
+            request.room_id.as_deref(),
+            &allowed_rooms,
+            request.limit,
+            request.cursor.as_deref(),
+        )
     })
     .await
-    .map_err(|_| ApiError::bad_request("message search is unavailable"))?
-    .map_err(ApiError::bad_request)?;
+    .map_err(|_| {
+        ApiError::message_search(charm_lib::matrix::search::SearchCommandError::unavailable())
+    })?
+    .map_err(ApiError::message_search)?;
     if closed.load(std::sync::atomic::Ordering::Acquire) {
         return Err(ApiError::bad_request("message search is unavailable"));
     }
@@ -5800,6 +5800,24 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
             kind: Some("Other"),
+        }
+    }
+    fn message_search(error: charm_lib::matrix::search::SearchCommandError) -> Self {
+        let (kind, message) = match error {
+            charm_lib::matrix::search::SearchCommandError::InvalidQuery { message } => {
+                ("invalid_query", message)
+            }
+            charm_lib::matrix::search::SearchCommandError::StaleCursor { message } => {
+                ("stale_cursor", message)
+            }
+            charm_lib::matrix::search::SearchCommandError::Unavailable { message } => {
+                ("unavailable", message)
+            }
+        };
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+            kind: Some(kind),
         }
     }
 }

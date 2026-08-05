@@ -173,6 +173,38 @@ describe("MessageSearchDialog", () => {
     expect(alert).not.toHaveTextContent("private phrase");
   });
 
+  it("prompts the user to restart after a stale pagination cursor", async () => {
+    searchMessages
+      .mockResolvedValueOnce({
+        results: [],
+        next_cursor: "expired-cursor",
+        incomplete: false,
+      })
+      .mockRejectedValueOnce({
+        code: "stale_cursor",
+        message: "message search cursor is stale; restart the search",
+      });
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "history" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Search results expired. Run the search again.",
+    );
+  });
+
   it("ignores a stale result after a newer search finishes", async () => {
     let resolveFirst: (value: unknown) => void = () => {};
     searchMessages

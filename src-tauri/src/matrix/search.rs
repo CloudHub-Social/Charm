@@ -818,6 +818,34 @@ pub(crate) fn invalidate_for_session_replacement(state: &super::MatrixState) {
         .take();
 }
 
+/// Removes the encrypted search database for a client that has been
+/// successfully superseded. Authentication flows call this only after their
+/// rollback/cancellation window has closed and before publishing the
+/// replacement client, so a failed login can still resume the previous index
+/// while a committed replacement cannot orphan it indefinitely.
+pub(crate) async fn delete_for_superseded_client(app: &AppHandle, client: Option<&Client>) {
+    let Some((account_store_key, device_id)) = client.and_then(active_identity) else {
+        return;
+    };
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        tracing::warn!(
+            command = "message_search_supersession",
+            status = "cleanup_failed"
+        );
+        return;
+    };
+    let deleted = tokio::task::spawn_blocking(move || {
+        SearchIndex::delete_for_source(&app_data_dir, &account_store_key, &device_id)
+    })
+    .await;
+    if !matches!(deleted, Ok(Ok(()))) {
+        tracing::warn!(
+            command = "message_search_supersession",
+            status = "cleanup_failed"
+        );
+    }
+}
+
 fn ensure_index<'a>(
     app: &AppHandle,
     slot: &'a mut Option<ActiveSearchIndex>,
