@@ -37,8 +37,10 @@ export function MessageSearchDialog({
   const [page, setPage] = useState<SearchResultPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingResult, setPendingResult] = useState<SearchResult | null>(null);
   const requestId = useRef(0);
   const queryInput = useRef<HTMLInputElement>(null);
+  const jumpDisclosureAcknowledged = useRef(false);
   const roomNames = useMemo(
     () => new Map(rooms.map((room) => [room.room_id, displayName(room.room_id, room.name)])),
     [rooms],
@@ -49,8 +51,22 @@ export function MessageSearchDialog({
     setScope(activeRoomId ? "room" : "all");
     setPage(null);
     setError(null);
+    setPendingResult(null);
     queryInput.current?.focus();
   }, [open, activeRoomId]);
+
+  function navigateToResult(result: SearchResult) {
+    onSelectResult(result);
+    onOpenChange(false);
+  }
+
+  function requestResultNavigation(result: SearchResult) {
+    if (jumpDisclosureAcknowledged.current) {
+      navigateToResult(result);
+      return;
+    }
+    setPendingResult(result);
+  }
 
   async function runSearch(cursor: string | null = null) {
     const normalized = query.trim();
@@ -142,6 +158,36 @@ export function MessageSearchDialog({
             Results may be incomplete while the local index catches up.
           </output>
         )}
+        {pendingResult && (
+          <section
+            role="alert"
+            aria-labelledby="message-search-jump-disclosure-title"
+            className="rounded-md border bg-muted/40 p-3 text-sm"
+          >
+            <h3 id="message-search-jump-disclosure-title" className="font-medium">
+              Opening this result may contact your homeserver
+            </h3>
+            <p className="mt-1 text-muted-foreground">
+              If the message is not already loaded, Charm asks your homeserver for context around
+              it, which reveals the event ID.
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setPendingResult(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  jumpDisclosureAcknowledged.current = true;
+                  navigateToResult(pendingResult);
+                  setPendingResult(null);
+                }}
+              >
+                Open message
+              </Button>
+            </div>
+          </section>
+        )}
         <div className="min-h-24 flex-1 overflow-y-auto" aria-live="polite">
           {page && page.results.length === 0 && !loading ? (
             <p className="py-8 text-center text-sm text-muted-foreground">No messages found.</p>
@@ -152,10 +198,7 @@ export function MessageSearchDialog({
                   <button
                     type="button"
                     className="w-full rounded-md px-3 py-2 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    onClick={() => {
-                      onSelectResult(result);
-                      onOpenChange(false);
-                    }}
+                    onClick={() => requestResultNavigation(result)}
                   >
                     <span className="block text-xs text-muted-foreground">
                       {roomNames.get(result.room_id) ?? result.room_id} · {result.sender} ·{" "}

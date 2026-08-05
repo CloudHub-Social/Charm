@@ -1189,7 +1189,7 @@ pub async fn search_messages(
         return Err(SearchCommandError::unavailable());
     }
 
-    let page = tauri::async_runtime::spawn_blocking(move || {
+    let mut page = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<super::MatrixState>();
         let mut slot = state
             .search_index
@@ -1221,6 +1221,13 @@ pub async fn search_messages(
     if active_identity(&current_client).as_ref() != Some(&expected_identity) {
         return Err(SearchCommandError::unavailable());
     }
+    let current_allowed_rooms: HashSet<String> = current_client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    page.results
+        .retain(|result| current_allowed_rooms.contains(&result.room_id));
     Ok(page)
 }
 

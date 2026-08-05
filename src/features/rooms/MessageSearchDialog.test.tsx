@@ -61,6 +61,9 @@ describe("MessageSearchDialog", () => {
     );
     expect(screen.getByText("Matrix", { selector: "mark" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Security/ }));
+    expect(onSelectResult).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/reveals the event ID/i);
+    fireEvent.click(screen.getByRole("button", { name: "Open message" }));
     expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({ event_id: "$event" }));
   });
 

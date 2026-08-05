@@ -2626,6 +2626,14 @@ async fn search_messages(
     if closed.load(std::sync::atomic::Ordering::Acquire) {
         return Err(ApiError::bad_request("message search is unavailable"));
     }
+    let current_allowed_rooms: std::collections::HashSet<String> = session
+        .client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    page.results
+        .retain(|result| current_allowed_rooms.contains(&result.room_id));
     page.incomplete = session
         .message_search_incomplete
         .load(std::sync::atomic::Ordering::Acquire);
