@@ -2,4 +2,4 @@
 "charm": minor
 ---
 
-Add encrypted local message search on desktop and web, including SQLCipher FTS5 indexing, edit/redaction handling, scoped queries, and result navigation.
+Add the SQLCipher-encrypted, device-scoped storage and redaction foundation for encrypted local message search.
