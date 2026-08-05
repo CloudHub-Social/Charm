@@ -94,9 +94,10 @@ connection: the SDK owns that schema and migration lifecycle.
 - Index fields: room ID, event ID, sender, plain-text body, origin timestamp.
   Normalize formatted Matrix content with Ruma's sanitizer and
   `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
-  stripper or index hidden/disallowed elements. Remove the descendants of
-  `data-mx-spoiler` elements before extraction, so concealed text cannot appear in
-  either matches or plain snippets. When normalizing an edit of a reply, carry
+  stripper or index hidden/disallowed elements. Because the result DTO cannot
+  preserve concealed ranges, fail closed for any event containing a
+  `data-mx-spoiler` element, so concealed text cannot appear in either matches or
+  plain snippets. When normalizing an edit of a reply, carry
   the original event's reply relation into the replacement content before
   removing the fallback; `m.new_content` alone does not preserve that context.
   Cross-spec tests must cover Spec 58 spoilers and edited replies whose quoted

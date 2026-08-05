@@ -16,10 +16,10 @@ use matrix_sdk::{
     deserialized_responses::{TimelineEvent, TimelineEventKind},
     ruma::{
         events::{
-            room::message::{MessageType, Relation, RoomMessageEventContent},
+            room::message::{MessageFormat, MessageType, Relation, RoomMessageEventContent},
             AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
         },
-        html::{HtmlSanitizerMode, RemoveReplyFallback},
+        html::{Html, HtmlSanitizerMode, NodeRef, RemoveReplyFallback, SanitizerConfig},
         serde::Raw,
     },
     Client,
@@ -889,19 +889,88 @@ fn ensure_index<'a>(
 }
 
 fn searchable_body(mut content: RoomMessageEventContent) -> Option<String> {
+    let formatted = match &content.msgtype {
+        MessageType::Text(message) => message.formatted.as_ref(),
+        MessageType::Notice(message) => message.formatted.as_ref(),
+        MessageType::Emote(message) => message.formatted.as_ref(),
+        _ => return None,
+    }
+    .filter(|formatted| formatted.format == MessageFormat::Html)
+    .map(|formatted| formatted.body.clone());
     content.sanitize(HtmlSanitizerMode::Compat, RemoveReplyFallback::Yes);
-    let (body, formatted) = match content.msgtype {
-        MessageType::Text(message) => (message.body, message.formatted.map(|body| body.body)),
-        MessageType::Notice(message) => (message.body, message.formatted.map(|body| body.body)),
-        MessageType::Emote(message) => (message.body, message.formatted.map(|body| body.body)),
+    let body = match content.msgtype {
+        MessageType::Text(message) => message.body,
+        MessageType::Notice(message) => message.body,
+        MessageType::Emote(message) => message.body,
         _ => return None,
     };
-    // The plain fallback contains spoiler text. Until the search result UI can
-    // preserve per-range spoiler semantics, fail closed for the whole event.
-    if formatted.is_some_and(|html| html.contains("data-mx-spoiler")) {
+    let body = match formatted {
+        Some(formatted) => sanitized_html_text(&formatted)?,
+        None => body,
+    };
+    (!body.trim().is_empty()).then_some(body)
+}
+
+/// Mirrors the renderer's `DOMParser(...).body.textContent` extraction after
+/// Matrix sanitization, using Ruma's maintained parser and sanitizer rather
+/// than a bespoke tag stripper. The explicit removal list mirrors DOMPurify's
+/// content-dropping elements that are not in Charm's renderer allowlist;
+/// Ruma otherwise unwraps unknown elements and would retain hidden script
+/// text that the renderer discards.
+fn sanitized_html_text(formatted: &str) -> Option<String> {
+    fn append_text(node: &NodeRef, text: &mut String) {
+        if let Some(value) = node.as_text() {
+            text.push_str(&value.borrow());
+        }
+        for child in node.children() {
+            append_text(&child, text);
+        }
+    }
+
+    // The result DTO cannot preserve concealed ranges. Fail closed for the
+    // complete event instead of leaking any spoiler descendant in a snippet.
+    // HTML attribute names are ASCII-case-insensitive; whitespace cannot
+    // occur within an attribute name, so this also covers mixed-case input.
+    if formatted.to_ascii_lowercase().contains("data-mx-spoiler") {
         return None;
     }
-    (!body.trim().is_empty()).then_some(body)
+    let document = Html::parse(formatted);
+    document.sanitize_with(
+        &SanitizerConfig::compat()
+            .remove_reply_fallback()
+            .remove_elements([
+                "annotation-xml",
+                "audio",
+                "colgroup",
+                "desc",
+                "foreignobject",
+                "head",
+                "iframe",
+                "math",
+                "mi",
+                "mn",
+                "mo",
+                "ms",
+                "mtext",
+                "noembed",
+                "noframes",
+                "noscript",
+                "plaintext",
+                "script",
+                "selectedcontent",
+                "style",
+                "svg",
+                "template",
+                "title",
+                "video",
+                "xmp",
+            ]),
+    );
+    let mut text = String::new();
+    for child in document.children() {
+        append_text(&child, &mut text);
+    }
+    (!text.trim().is_empty()).then_some(text)
 }
 
 #[derive(Deserialize)]
@@ -2288,7 +2357,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_event_ingestion_accepts_plaintext_and_fails_closed_on_spoilers() {
+    fn cached_event_ingestion_uses_sanitized_rendered_text_and_fails_closed_on_spoilers() {
         let plain: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
             serde_json::json!({
                 "type": "m.room.message",
@@ -2316,11 +2385,33 @@ mod tests {
             .to_string(),
         )
         .expect("spoiler event");
+        let formatted: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$formatted:example.org",
+                "sender": "@alice:example.org",
+                "origin_server_ts": 3,
+                "content": {
+                    "msgtype": "m.text",
+                    "body": "fallback-only words visible words",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": "<script>fallback-only words</script><strong>visible words</strong>"
+                }
+            })
+            .to_string(),
+        )
+        .expect("formatted event");
         let mut mutations = Vec::new();
         append_raw_event_mutation("!room:example.org", &plain, &HashSet::new(), &mut mutations);
         append_raw_event_mutation(
             "!room:example.org",
             &spoiler,
+            &HashSet::new(),
+            &mut mutations,
+        );
+        append_raw_event_mutation(
+            "!room:example.org",
+            &formatted,
             &HashSet::new(),
             &mut mutations,
         );
@@ -2333,6 +2424,10 @@ mod tests {
             panic!("spoiler should retain non-searchable provenance");
         };
         assert_eq!(spoiler.body, None);
+        let SearchMutation::Apply(formatted) = &mutations[2] else {
+            panic!("formatted event should retain searchable provenance");
+        };
+        assert_eq!(formatted.body.as_deref(), Some("visible words"));
     }
 
     #[test]
