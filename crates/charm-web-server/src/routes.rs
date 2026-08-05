@@ -2821,8 +2821,6 @@ async fn load_timeline_around_event(
         }
     }
 
-    crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
-
     let room = session
         .client
         .get_room(&parsed_room_id)
@@ -2849,6 +2847,9 @@ async fn load_timeline_around_event(
     let installed = session
         .replace_timeline_if_latest(&parsed_room_id, &parsed_event_id, focused)
         .await;
+    if installed {
+        crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
+    }
     Ok(Json(JumpToEventResult {
         found: installed,
         installed_focused_view: installed,

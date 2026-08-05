@@ -1545,8 +1545,6 @@ pub async fn load_timeline_around_event(
         }
     }
 
-    super::search::schedule_cached_room(app.clone(), client.clone(), parsed_room_id.clone());
-
     // Exhausted the bounded live-timeline walk without hitting the start of
     // history — the event may simply be deeper than we're willing to page
     // through client-side. Fall back to a direct server-side lookup instead
@@ -1554,6 +1552,9 @@ pub async fn load_timeline_around_event(
     let found =
         load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
             .await?;
+    if found {
+        super::search::schedule_cached_room(app.clone(), client.clone(), parsed_room_id.clone());
+    }
     Ok(JumpToEventResult {
         found,
         // Only `true` when the fallback both found the event *and* actually

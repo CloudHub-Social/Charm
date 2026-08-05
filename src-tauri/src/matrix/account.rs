@@ -259,6 +259,9 @@ async fn clear_local_session(
         .search_backfill_started
         .store(false, std::sync::atomic::Ordering::Release);
     state
+        .search_backfill_pending
+        .store(false, std::sync::atomic::Ordering::Release);
+    state
         .search_incomplete
         .store(false, std::sync::atomic::Ordering::Release);
 

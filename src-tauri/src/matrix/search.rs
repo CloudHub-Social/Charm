@@ -201,6 +201,7 @@ pub struct SearchWork {
 pub(crate) struct QueuedSearchWork {
     generation: u64,
     work: SearchWork,
+    completes_backfill: bool,
 }
 
 impl SearchIndex {
@@ -1005,6 +1006,9 @@ pub(crate) async fn submit_sync_response(
             .search_backfill_started
             .store(false, std::sync::atomic::Ordering::Release);
         state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        state
             .search_incomplete
             .store(false, std::sync::atomic::Ordering::Release);
         let app = app.clone();
@@ -1064,7 +1068,11 @@ pub(crate) async fn submit_sync_response(
 
     let sender = search_work_sender(app).await;
     if sender
-        .try_send(QueuedSearchWork { generation, work })
+        .try_send(QueuedSearchWork {
+            generation,
+            work,
+            completes_backfill: false,
+        })
         .is_err()
     {
         state
@@ -1082,12 +1090,29 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
             let worker_app = app.clone();
             tauri::async_runtime::spawn(async move {
                 while let Some(work) = receiver.recv().await {
+                    let generation = work.generation;
+                    let completes_backfill = work.completes_backfill;
                     let app = worker_app.clone();
-                    if !matches!(
+                    let applied = matches!(
                         tauri::async_runtime::spawn_blocking(move || apply_work(&app, work)).await,
                         Ok(Ok(()))
-                    ) {
+                    );
+                    let state = worker_app.state::<super::MatrixState>();
+                    if !applied {
+                        state
+                            .search_incomplete
+                            .store(true, std::sync::atomic::Ordering::Release);
                         tracing::warn!(command = "message_search_index", status = "worker_failed");
+                    }
+                    if completes_backfill
+                        && generation
+                            == state
+                                .search_generation
+                                .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        state
+                            .search_backfill_pending
+                            .store(false, std::sync::atomic::Ordering::Release);
                     }
                 }
             });
@@ -1101,9 +1126,22 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
 /// event cache. Queue overflow marks the index incomplete instead of delaying
 /// initial sync/timeline delivery behind local indexing work.
 pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, generation: u64) {
+    let state = app.state::<super::MatrixState>();
+    state
+        .search_backfill_pending
+        .store(true, std::sync::atomic::Ordering::Release);
     if !feature_enabled(app) {
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
         return;
     }
+    let Some((account_store_key, device_id)) = active_identity(client) else {
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
     let ignored_senders: HashSet<String> = super::account::ignored_user_ids(client)
         .await
         .unwrap_or_default()
@@ -1115,14 +1153,14 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         let events = match room.event_cache().await {
             Ok((cache, _drop_handles)) => cache.events().await,
             Err(_) => {
-                app.state::<super::MatrixState>()
+                state
                     .search_incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
                 continue;
             }
         };
         let Ok(events) = events else {
-            app.state::<super::MatrixState>()
+            state
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
             continue;
@@ -1133,21 +1171,52 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             &events,
             ignored_senders.clone(),
         ) else {
-            return;
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            break;
         };
         if work.is_empty() {
             continue;
         }
         if sender
-            .try_send(QueuedSearchWork { generation, work })
+            .try_send(QueuedSearchWork {
+                generation,
+                work,
+                completes_backfill: false,
+            })
             .is_err()
         {
-            app.state::<super::MatrixState>()
+            state
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
+            state
+                .search_backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
             tracing::warn!(command = "message_search_backfill", status = "queue_full");
             return;
         }
+    }
+    let completion = SearchWork {
+        account_store_key,
+        device_id,
+        mutations: Vec::new(),
+        ignored_senders: HashSet::new(),
+    };
+    if sender
+        .try_send(QueuedSearchWork {
+            generation,
+            work: completion,
+            completes_backfill: true,
+        })
+        .is_err()
+    {
+        state
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1217,7 +1286,11 @@ pub(crate) fn schedule_cached_room(
             }
             let sender = search_work_sender(&app).await;
             if sender
-                .try_send(QueuedSearchWork { generation, work })
+                .try_send(QueuedSearchWork {
+                    generation,
+                    work,
+                    completes_backfill: false,
+                })
                 .is_err()
             {
                 state
@@ -1253,6 +1326,21 @@ pub async fn search_messages(
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
+    let generation = state
+        .search_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    if state
+        .search_backfill_started
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        submit_cached_history(&app, &client, generation).await;
+    }
     let ignored_senders: HashSet<String> = super::account::ignored_user_ids(&client)
         .await
         .map_err(|_| SearchCommandError::unavailable())?
@@ -1291,7 +1379,10 @@ pub async fn search_messages(
         )?;
         page.incomplete = state
             .search_incomplete
-            .load(std::sync::atomic::Ordering::Acquire);
+            .load(std::sync::atomic::Ordering::Acquire)
+            || state
+                .search_backfill_pending
+                .load(std::sync::atomic::Ordering::Acquire);
         Ok(page)
     })
     .await
