@@ -2636,7 +2636,10 @@ async fn search_messages(
         .retain(|result| current_allowed_rooms.contains(&result.room_id));
     page.incomplete = session
         .message_search_incomplete
-        .load(std::sync::atomic::Ordering::Acquire);
+        .load(std::sync::atomic::Ordering::Acquire)
+        || session
+            .message_search_backfill_pending
+            .load(std::sync::atomic::Ordering::Acquire);
     Ok(Json(page))
 }
 

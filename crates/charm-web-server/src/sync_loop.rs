@@ -39,8 +39,28 @@ use crate::events::{SasUpdatePayload, ServerEvent};
 use crate::persistence::PersistenceStore;
 
 pub struct MessageSearchContext {
-    sender: tokio::sync::mpsc::Sender<charm_lib::matrix::search::SearchWork>,
+    sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     incomplete: Arc<std::sync::atomic::AtomicBool>,
+    backfill_pending: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct QueuedSearchWork {
+    work: charm_lib::matrix::search::SearchWork,
+    completes_backfill: bool,
+}
+
+fn record_search_work_outcome(
+    incomplete: &std::sync::atomic::AtomicBool,
+    backfill_pending: &std::sync::atomic::AtomicBool,
+    applied: bool,
+    completes_backfill: bool,
+) {
+    if !applied {
+        incomplete.store(true, std::sync::atomic::Ordering::Release);
+    }
+    if completes_backfill {
+        backfill_pending.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 pub struct SpawnOptions {
@@ -59,26 +79,28 @@ pub fn message_search_context(
     let device_id = session.client.device_id()?.to_string();
     let index = Arc::clone(&session.message_search_index);
     let incomplete = Arc::clone(&session.message_search_incomplete);
+    let backfill_pending = Arc::clone(&session.message_search_backfill_pending);
+    backfill_pending.store(true, std::sync::atomic::Ordering::Release);
     let closed = Arc::clone(&session.message_search_closed);
     let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
-    let (sender, mut receiver) =
-        tokio::sync::mpsc::channel::<charm_lib::matrix::search::SearchWork>(32);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
     *session
         .message_search_sender
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = Some(sender.clone());
     tokio::spawn(async move {
-        while let Some(work) = receiver.recv().await {
+        while let Some(queued) = receiver.recv().await {
             if closed.load(std::sync::atomic::Ordering::Acquire) {
                 continue;
             }
+            let completes_backfill = queued.completes_backfill;
             let index = Arc::clone(&index);
             let closed = Arc::clone(&closed);
             let app_data_dir = app_data_dir.clone();
             let store_key = crypto.store_key.clone();
             let passphrase = crypto.passphrase.clone();
             let device_id = device_id.clone();
-            if !matches!(
+            let applied = matches!(
                 tokio::task::spawn_blocking(move || {
                     let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
                     // Logout sets `closed` before waiting for this lock and
@@ -97,16 +119,24 @@ pub fn message_search_context(
                             )?,
                         );
                     }
-                    work.apply_to(slot.as_mut().expect("web search index initialized"))
+                    queued
+                        .work
+                        .apply_to(slot.as_mut().expect("web search index initialized"))
                 })
                 .await,
                 Ok(Ok(()))
-            ) {
+            );
+            record_search_work_outcome(&incomplete, &backfill_pending, applied, completes_backfill);
+            if !applied {
                 tracing::warn!(command = "web_message_search_index", status = "failed");
             }
         }
     });
-    Some(MessageSearchContext { sender, incomplete })
+    Some(MessageSearchContext {
+        sender,
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        backfill_pending: Arc::clone(&session.message_search_backfill_pending),
+    })
 }
 
 async fn submit_message_search(
@@ -127,7 +157,14 @@ async fn submit_message_search(
     if work.is_empty() {
         return;
     }
-    if context.sender.try_send(work).is_err() {
+    if context
+        .sender
+        .try_send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+        })
+        .is_err()
+    {
         context
             .incomplete
             .store(true, std::sync::atomic::Ordering::Release);
@@ -137,6 +174,9 @@ async fn submit_message_search(
 
 async fn backfill_message_search(context: &Option<MessageSearchContext>, client: &Client) {
     let Some(context) = context else { return };
+    context
+        .backfill_pending
+        .store(true, std::sync::atomic::Ordering::Release);
     let ignored: std::collections::HashSet<String> =
         charm_lib::matrix::account::ignored_user_ids(client)
             .await
@@ -166,21 +206,61 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             &events,
             ignored.clone(),
         ) else {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            context
+                .backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
             return;
         };
         if work.is_empty() {
             continue;
         }
-        if context.sender.try_send(work).is_err() {
+        if context
+            .sender
+            .try_send(QueuedSearchWork {
+                work,
+                completes_backfill: false,
+            })
+            .is_err()
+        {
             context
                 .incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
+            context
+                .backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
             tracing::warn!(
                 command = "web_message_search_backfill",
                 status = "queue_full"
             );
             return;
         }
+    }
+    let Some(completion) = charm_lib::matrix::search::SearchWork::empty_for_client(client) else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    if context
+        .sender
+        .try_send(QueuedSearchWork {
+            work: completion,
+            completes_backfill: true,
+        })
+        .is_err()
+    {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -257,7 +337,13 @@ pub fn schedule_cached_room_search(
             else {
                 return;
             };
-            if sender.try_send(work).is_err() {
+            if sender
+                .try_send(QueuedSearchWork {
+                    work,
+                    completes_backfill: false,
+                })
+                .is_err()
+            {
                 session
                     .message_search_incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
@@ -1100,6 +1186,30 @@ pub async fn request_device_verification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_backfill_stays_pending_until_its_fifo_marker_is_applied() {
+        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let pending = std::sync::atomic::AtomicBool::new(true);
+
+        record_search_work_outcome(&incomplete, &pending, true, false);
+        assert!(pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn failed_search_work_is_sticky_but_a_completion_marker_clears_pending() {
+        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let pending = std::sync::atomic::AtomicBool::new(true);
+
+        record_search_work_outcome(&incomplete, &pending, false, true);
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
 
     /// Regression test for the Codex review finding on #280 ("Clear
     /// awaiting flag after retry save succeeds"): a `SaveMode::RetryInitialSave`

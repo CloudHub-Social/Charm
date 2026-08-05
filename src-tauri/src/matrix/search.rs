@@ -701,6 +701,20 @@ impl SearchIndex {
 }
 
 impl SearchWork {
+    /// Creates an identity-bound empty marker for FIFO lifecycle signaling.
+    /// Applying it is a no-op, but placing it after cached-room batches lets a
+    /// transport know the initial backfill has drained without exposing index
+    /// identity fields outside this module.
+    pub fn empty_for_client(client: &Client) -> Option<Self> {
+        let (account_store_key, device_id) = active_identity(client)?;
+        Some(Self {
+            account_store_key,
+            device_id,
+            mutations: Vec::new(),
+            ignored_senders: HashSet::new(),
+        })
+    }
+
     /// Applies one ordered sync batch to an already-open index.
     pub fn apply_to(self, index: &mut SearchIndex) -> Result<(), String> {
         index.purge_ignored_senders(&self.ignored_senders)?;

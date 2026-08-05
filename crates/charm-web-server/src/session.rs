@@ -179,10 +179,14 @@ pub struct Session {
     /// Sticky disclosure that at least one live-sync batch could not be queued.
     /// It stays set until this ephemeral session and its index are rebuilt.
     pub message_search_incomplete: Arc<AtomicBool>,
+    /// True while the initial cached-history backfill still has queued work.
+    /// Search responses combine this transient state with the sticky
+    /// `message_search_incomplete` disclosure above.
+    pub message_search_backfill_pending: Arc<AtomicBool>,
     /// Bounded plaintext-work queue shared by sync and timeline pagination.
     /// `None` while the feature is disabled or before the sync loop starts.
-    pub message_search_sender: Arc<
-        std::sync::Mutex<Option<tokio::sync::mpsc::Sender<charm_lib::matrix::search::SearchWork>>>,
+    pub(crate) message_search_sender: Arc<
+        std::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::sync_loop::QueuedSearchWork>>>,
     >,
     /// Coalesces pagination re-seeds so detached plaintext snapshots stay
     /// bounded to one per web session.
@@ -554,6 +558,7 @@ impl Session {
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
             message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
             message_search_closed: Arc::new(AtomicBool::new(false)),
