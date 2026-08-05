@@ -2776,11 +2776,18 @@ const WEB_LOAD_AROUND_EVENTS_PER_BATCH: u16 = 50;
 async fn load_timeline_around_event(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
     Query(query): Query<TimelineAroundQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
 
+    // Although this is a GET, it can fall back to Matrix `/context` and is
+    // therefore not a passive cached-resource read. Require Charm's
+    // non-simple transport header before resolving the session so an
+    // untrusted same-site page cannot attach Strict cookies with a no-CORS
+    // request and make the client disclose an event id to the homeserver.
+    require_web_transport_header(&headers)?;
     let session = require_session(&state, &jar).await?;
     let parsed_room_id =
         RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
