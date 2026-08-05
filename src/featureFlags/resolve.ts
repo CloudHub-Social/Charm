@@ -8,11 +8,10 @@ export type FeatureFlagRemote = Partial<Record<FeatureFlagKey, boolean>>;
 /**
  * Pure flag resolution — the seam every consumer goes through. Precedence,
  * highest first:
- *   1. **sensitive remote-off veto** — the search privacy kill switch;
- *   2. **local override** — dev/Labs escape hatch, wins for other values;
- *   3. **remote** — GO Feature Flag via OFREP (kill-switch, staged/percentage
+ *   1. **local override** — dev/Labs escape hatch, always wins;
+ *   2. **remote** — GO Feature Flag via OFREP (kill-switch, staged/percentage
  *      rollout), from the last-known-good cached response;
- *   4. **static catalog default** — the offline / not-yet-rolled-out backstop.
+ *   3. **static catalog default** — the offline / not-yet-rolled-out backstop.
  *
  * Fail-open lives at the edges: when the remote layer has no value for a key
  * (endpoint unset, unreachable, or the flag absent from the response), that key
@@ -23,7 +22,6 @@ export function resolveFlag(
   overrides: FeatureFlagOverrides,
   remote: FeatureFlagRemote = {},
 ): boolean {
-  if (key === "encrypted_local_message_search" && remote[key] === false) return false;
   const override = overrides[key];
   if (typeof override === "boolean") return override;
   const remoteValue = remote[key];

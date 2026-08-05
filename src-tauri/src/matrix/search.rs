@@ -112,30 +112,17 @@ impl SearchIndex {
         device_id: &str,
         store_passphrase: &str,
     ) -> Result<Self, String> {
+        create_private_directory(&app_data_dir.join(SEARCH_ROOT))?;
         let directory = index_directory(app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
-        let mut connection = Connection::open(&database_path).map_err(safe_storage_error)?;
+        let connection = Connection::open(&database_path).map_err(safe_storage_error)?;
         apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
         configure(&connection)?;
-        match migrate(&connection) {
-            Ok(()) => {}
-            Err(MigrationError::Storage(message)) => return Err(message),
-            Err(MigrationError::IncompatibleSchema) => {
-                // An encrypted search index is derived data. If its schema is
-                // corrupt or newer than this client understands, close and
-                // remove the bounded device index before rebuilding it. This
-                // avoids retaining an unreadable plaintext-content index while
-                // ensuring transient storage errors never trigger deletion.
-                drop(connection);
-                std::fs::remove_dir_all(&directory).map_err(safe_io_error)?;
-                create_private_directory(&directory)?;
-                connection = Connection::open(&database_path).map_err(safe_storage_error)?;
-                apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
-                configure(&connection)?;
-                migrate(&connection).map_err(MigrationError::into_message)?;
-            }
-        }
+        // This storage-only slice fails closed on an incompatible schema.
+        // Destructive rebuild belongs to the lifecycle layer, where cleanup can
+        // validate the account root and durably reconcile a failed deletion.
+        migrate(&connection).map_err(MigrationError::into_message)?;
         Ok(Self {
             connection,
             database_path,
@@ -288,66 +275,6 @@ impl SearchIndex {
             )
             .optional()
             .expect("test query should succeed")
-    }
-}
-
-/// Deletes every device index retained for an account store key.
-///
-/// # Errors
-///
-/// Returns an error when the search root cannot be inspected or a matching
-/// private directory cannot be removed.
-pub fn purge_account_indexes(app_data_dir: &Path, account_store_key: &str) -> Result<(), String> {
-    let root = app_data_dir.join(SEARCH_ROOT);
-    let entries = match std::fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(safe_io_error(error)),
-    };
-    let prefix = account_directory_prefix(account_store_key);
-    for entry in entries {
-        let entry = entry.map_err(safe_io_error)?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if name.starts_with(&prefix) && entry.file_type().map_err(safe_io_error)?.is_dir() {
-            std::fs::remove_dir_all(entry.path()).map_err(safe_io_error)?;
-        }
-    }
-    Ok(())
-}
-
-/// Deletes the entire Charm-owned encrypted search root.
-///
-/// Used by the default-off/kill-switch startup path; the explicit constant
-/// keeps deletion bounded to Charm's own search directory.
-///
-/// # Errors
-///
-/// Returns an error when the search root exists but cannot be removed.
-pub fn purge_all_indexes(app_data_dir: &Path) -> Result<(), String> {
-    match std::fs::remove_dir_all(app_data_dir.join(SEARCH_ROOT)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(safe_io_error(error)),
-    }
-}
-
-/// Deletes the encrypted index for one account/device pair.
-///
-/// # Errors
-///
-/// Returns an error when the device directory cannot be removed.
-pub fn purge_device_index(
-    app_data_dir: &Path,
-    account_store_key: &str,
-    device_id: &str,
-) -> Result<(), String> {
-    let directory = index_directory(app_data_dir, account_store_key, device_id);
-    match std::fs::remove_dir_all(directory) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(safe_io_error(error)),
     }
 }
 
@@ -626,7 +553,15 @@ fn sqlcipher_raw_key_literal(bytes: &[u8]) -> String {
 }
 
 fn create_private_directory(path: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(path).map_err(safe_io_error)?;
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(safe_io_error(error)),
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(safe_io_error)?;
+    if !metadata.file_type().is_dir() {
+        return Err("message search filesystem path is not a directory".to_string());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -697,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn open_rebuilds_an_unknown_schema_version() {
+    fn open_rejects_an_unknown_schema_version_without_deleting_content() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
         index
@@ -707,21 +642,30 @@ mod tests {
             .connection
             .execute("UPDATE search_metadata SET schema_version = 999", [])
             .expect("change schema version");
+        let database_path = index.database_path().to_path_buf();
         drop(index);
 
-        let rebuilt = open_index(directory.path(), "account", "DEVICE");
-        assert_eq!(rebuilt.visible_body("!room:example.org", "$original"), None);
-        let schema_version = rebuilt
-            .connection
-            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
-                row.get::<_, u32>(0)
-            })
-            .expect("schema version");
-        assert_eq!(schema_version, SCHEMA_VERSION);
+        let error =
+            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("unknown schema must fail closed");
+        assert_eq!(error, "message search schema version mismatch");
+
+        let connection = Connection::open(database_path).expect("reopen database");
+        apply_encryption_key(&connection, "account", "DEVICE", TEST_STORE_SECRET)
+            .expect("apply encryption key");
+        let retained_body = connection
+            .query_row(
+                "SELECT body FROM searchable_messages WHERE event_id = '$original'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("retained content");
+        assert_eq!(retained_body, "discarded content");
     }
 
     #[test]
-    fn open_rebuilds_a_malformed_schema_but_not_transient_storage_errors() {
+    fn open_rejects_a_malformed_schema_and_classifies_transient_storage_errors() {
         let directory = tempfile::tempdir().expect("tempdir");
         let index = open_index(directory.path(), "account", "DEVICE");
         index
@@ -734,14 +678,11 @@ mod tests {
             .expect("corrupt metadata schema");
         drop(index);
 
-        let rebuilt = open_index(directory.path(), "account", "DEVICE");
-        let schema_version = rebuilt
-            .connection
-            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
-                row.get::<_, u32>(0)
-            })
-            .expect("rebuilt schema version");
-        assert_eq!(schema_version, SCHEMA_VERSION);
+        let error =
+            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("malformed schema must fail closed");
+        assert_eq!(error, "message search schema version mismatch");
 
         assert!(matches!(
             MigrationError::from_sqlite(rusqlite::Error::SqliteFailure(
@@ -756,6 +697,7 @@ mod tests {
     fn open_migrates_v1_and_preserves_version_order() {
         let directory = tempfile::tempdir().expect("tempdir");
         let index_directory = index_directory(directory.path(), "account", "DEVICE");
+        create_private_directory(&directory.path().join(SEARCH_ROOT)).expect("private root");
         create_private_directory(&index_directory).expect("private directory");
         let connection =
             Connection::open(index_directory.join(SEARCH_DATABASE)).expect("open v1 database");
@@ -845,6 +787,29 @@ mod tests {
                 0o700
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_a_symlinked_search_root() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().expect("app data");
+        let outside = tempfile::tempdir().expect("outside directory");
+        symlink(outside.path(), app_data.path().join(SEARCH_ROOT)).expect("create root symlink");
+
+        let error =
+            SearchIndex::open_with_secret(app_data.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("symlinked search root must fail closed");
+
+        assert_eq!(error, "message search filesystem path is not a directory");
+        assert_eq!(
+            std::fs::read_dir(outside.path())
+                .expect("read outside directory")
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -1068,36 +1033,5 @@ mod tests {
                 .as_deref(),
             Some("first edit")
         );
-    }
-
-    #[test]
-    fn account_purge_removes_each_device_index_but_not_another_account() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let first = open_index(directory.path(), "account-a", "A");
-        let second = open_index(directory.path(), "account-a", "B");
-        let other = open_index(directory.path(), "account-b", "A");
-        let first_path = first.database_path().to_owned();
-        let second_path = second.database_path().to_owned();
-        let other_path = other.database_path().to_owned();
-        drop((first, second, other));
-
-        purge_account_indexes(directory.path(), "account-a").expect("purge");
-
-        assert!(!first_path.exists());
-        assert!(!second_path.exists());
-        assert!(other_path.exists());
-    }
-
-    #[test]
-    fn disabled_flag_purge_removes_the_entire_search_root() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let index = open_index(directory.path(), "account", "DEVICE");
-        let database_path = index.database_path().to_owned();
-        drop(index);
-
-        purge_all_indexes(directory.path()).expect("purge");
-
-        assert!(!database_path.exists());
-        assert!(!directory.path().join(SEARCH_ROOT).exists());
     }
 }

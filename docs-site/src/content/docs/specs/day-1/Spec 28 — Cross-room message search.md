@@ -8,24 +8,23 @@ status: in-progress
 
 ## Implementation status
 
-The storage and API architecture is decision-ready. Charm uses a dedicated,
+The storage architecture is decision-ready. Charm uses a dedicated,
 per-account and per-device SQLCipher database owned by Charm, not tables or
-connections owned by matrix-sdk. The first storage/lifecycle foundation now adds
+connections owned by matrix-sdk. The first storage-only foundation now adds
 the approved direct desktop `rusqlite`/SQLCipher dependency, a domain-separated
 per-device key derived from the keychain-backed matrix-sdk store passphrase,
-opaque device-scoped private directories, visible-message and edit-provenance tables, persistent redaction
-tombstones, physical redaction/room cleanup, account/device purge helpers, and a
-default-off `encrypted_local_message_search` flag. Logout deletes the current
-device index and account deactivation deletes every retained index for that
-account. For this sensitive flag only, a trusted remote `false` vetoes a
-persisted local Labs override; disabled startup removes the entire Charm-owned
-search root before any search surface can be used.
+opaque device-scoped private directories, visible-message and edit-provenance
+tables, persistent redaction tombstones, physical redaction/room cleanup, and a
+default-off `encrypted_local_message_search` flag. The module is compiled and
+tested but has no Tauri command, renderer entry point, event-ingestion path, or
+session-lifecycle wiring yet, so production sessions cannot create or query an
+index in this slice.
 
-This foundation does not yet ingest timeline/sync events or expose the search
-command. The next backend slice owns the bounded off-runtime worker, FTS5 tokenizer,
-startup reconciliation, joined-room/ignored-user enforcement, and desktop/web
-session wiring. The global and current-room search UI follows only after that
-indexing contract is stable.
+The next backend slices own filesystem-safe device/account cleanup, incompatible-index
+rebuild and backup exclusion, logout/deactivation and kill-switch reconciliation,
+the bounded off-runtime worker, FTS5 tokenizer, startup reconciliation,
+joined-room/ignored-user enforcement, and desktop/web session wiring. The global
+and current-room search UI follows only after that indexing contract is stable.
 
 **Workstream:** ordered backend foundation and ingestion/query PRs, followed by the
 frontend search UI and result navigation — see Trade-offs.

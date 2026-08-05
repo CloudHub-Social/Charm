@@ -321,11 +321,10 @@ Surfaces changed:
 - **`client.devices()` last-seen fields** can be sparse/absent on some homeservers; UI
   must tolerate `None`.
 - **Logout store retention**: plain logout may retain `matrix_store` encrypted at rest,
-  but Spec 28 closes and deletes the current account's separately SQLCipher-encrypted
-  message-search index.
+  but Spec 28 closes and deletes the current account's plaintext message-search index.
   Spec 28 PR 1 owns a Day-1 "Forget local data" account-management action that removes
   every retained account store plus its key material. Its confirmation must distinguish
-  the encrypted SDK store from the already-deleted search index; plain-logout
+  the encrypted SDK store from the already-deleted plaintext search index; plain-logout
   copy must remain accurate about what is retained.
 - **Notification-settings API surface** (`NotificationSettings` helper method names) can
   vary across matrix-rust-sdk versions — verify against the pinned `Cargo.toml` version.
