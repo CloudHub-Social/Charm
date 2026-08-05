@@ -1030,6 +1030,19 @@ pub(crate) async fn purge_room_after_leave(
         return Ok(());
     };
     let state = app.state::<super::MatrixState>();
+    while state
+        .search_pagination_seed_running
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let notified = state.search_pagination_seed_done.notified();
+        if !state
+            .search_pagination_seed_running
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            break;
+        }
+        notified.await;
+    }
     let generation = state
         .search_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -1328,6 +1341,12 @@ pub(crate) fn schedule_cached_room(
             return;
         }
         let state = app.state::<super::MatrixState>();
+        let Some(room) = client.get_room(&room_id) else {
+            return;
+        };
+        if room.state() != matrix_sdk::RoomState::Joined {
+            return;
+        }
         if state
             .search_pagination_seed_running
             .compare_exchange(
@@ -1353,9 +1372,6 @@ pub(crate) fn schedule_cached_room(
                 .into_iter()
                 .map(|sender| sender.to_string())
                 .collect();
-            let Some(room) = client.get_room(&room_id) else {
-                return;
-            };
             let events = match room.event_cache().await {
                 Ok((cache, _drop_handles)) => cache.events().await,
                 Err(_) => {
@@ -1379,6 +1395,12 @@ pub(crate) fn schedule_cached_room(
             if work.is_empty() {
                 return;
             }
+            // A successful leave changes the SDK room state before it waits
+            // for this re-seed to drain and queues the final purge. Never put
+            // departed-room plaintext behind that purge in the FIFO.
+            if room.state() != matrix_sdk::RoomState::Joined {
+                return;
+            }
             let sender = search_work_sender(&app).await;
             if sender
                 .try_send(QueuedSearchWork {
@@ -1399,6 +1421,7 @@ pub(crate) fn schedule_cached_room(
         state
             .search_pagination_seed_running
             .store(false, std::sync::atomic::Ordering::Release);
+        state.search_pagination_seed_done.notify_waiters();
     });
 }
 

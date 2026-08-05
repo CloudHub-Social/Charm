@@ -191,6 +191,9 @@ pub struct Session {
     /// Coalesces pagination re-seeds so detached plaintext snapshots stay
     /// bounded to one per web session.
     pub message_search_pagination_seed_running: Arc<AtomicBool>,
+    /// Wakes leave cleanup after an in-flight pagination re-seed finishes
+    /// enqueueing, keeping the subsequent room purge last in the FIFO.
+    pub message_search_pagination_seed_done: tokio::sync::Notify,
     /// Revokes all detached work before logout or idle eviction removes this
     /// session. Search workers and timeline listeners recheck it immediately
     /// before writing storage or broadcasting decrypted state.
@@ -562,6 +565,7 @@ impl Session {
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
+            message_search_pagination_seed_done: tokio::sync::Notify::new(),
             session_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(

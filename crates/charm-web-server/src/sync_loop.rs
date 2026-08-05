@@ -161,6 +161,19 @@ pub async fn purge_room_after_leave(
     else {
         return Ok(());
     };
+    while session
+        .message_search_pagination_seed_running
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let notified = session.message_search_pagination_seed_done.notified();
+        if !session
+            .message_search_pagination_seed_running
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            break;
+        }
+        notified.await;
+    }
     let Some(sender) = session
         .message_search_sender
         .lock()
@@ -326,6 +339,12 @@ pub fn schedule_cached_room_search(
         {
             return;
         }
+        let Some(room) = session.client.get_room(&room_id) else {
+            return;
+        };
+        if room.state() != matrix_sdk::RoomState::Joined {
+            return;
+        }
         if session
             .message_search_pagination_seed_running
             .compare_exchange(
@@ -348,9 +367,6 @@ pub fn schedule_cached_room_search(
                 .into_iter()
                 .map(|user_id| user_id.to_string())
                 .collect();
-            let Some(room) = session.client.get_room(&room_id) else {
-                return;
-            };
             let events = match room.event_cache().await {
                 Ok((cache, _drop_handles)) => cache.events().await,
                 Err(_) => {
@@ -375,6 +391,9 @@ pub fn schedule_cached_room_search(
                 return;
             };
             if work.is_empty() {
+                return;
+            }
+            if room.state() != matrix_sdk::RoomState::Joined {
                 return;
             }
             let Some(sender) = session
@@ -406,6 +425,7 @@ pub fn schedule_cached_room_search(
         session
             .message_search_pagination_seed_running
             .store(false, std::sync::atomic::Ordering::Release);
+        session.message_search_pagination_seed_done.notify_waiters();
     });
 }
 
