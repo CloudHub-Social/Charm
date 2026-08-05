@@ -798,7 +798,10 @@ async fn client_identity_is_current(
 /// generation before taking the index lock makes an old worker fail its first
 /// or lock-protected second generation check; if it already passed both, this
 /// waits for that final apply to release the slot and then closes the handle.
-pub(crate) fn invalidate_for_session_replacement(state: &super::MatrixState) {
+/// The index lock is intentionally synchronous because all database work runs
+/// on blocking threads; acquire it from `spawn_blocking` here so supersession
+/// does not stall a Tokio worker while an index operation drains.
+pub(crate) async fn invalidate_for_session_replacement(state: &super::MatrixState) {
     state
         .search_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -811,11 +814,21 @@ pub(crate) fn invalidate_for_session_replacement(state: &super::MatrixState) {
     state
         .search_incomplete
         .store(false, std::sync::atomic::Ordering::Release);
-    state
-        .search_index
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .take();
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    if tokio::task::spawn_blocking(move || {
+        search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!(
+            command = "message_search_supersession",
+            status = "close_failed"
+        );
+    }
 }
 
 /// Removes the encrypted search database for a client that has been
@@ -2236,8 +2249,8 @@ mod tests {
         assert_ne!(*baseline, *other_secret);
     }
 
-    #[test]
-    fn session_replacement_invalidates_search_work_and_resets_lifecycle() {
+    #[tokio::test]
+    async fn session_replacement_invalidates_search_work_and_resets_lifecycle() {
         let state = super::super::MatrixState::default();
         state
             .search_backfill_started
@@ -2249,7 +2262,7 @@ mod tests {
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
 
-        invalidate_for_session_replacement(&state);
+        invalidate_for_session_replacement(&state).await;
 
         assert_eq!(
             state

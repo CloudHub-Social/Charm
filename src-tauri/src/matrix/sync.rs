@@ -583,7 +583,7 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // adopting a replacement client. Invalidate search work here, at the
     // shared supersession boundary, so no queued/deferred task from the old
     // client can borrow the replacement session's generation or index slot.
-    super::search::invalidate_for_session_replacement(&state);
+    super::search::invalidate_for_session_replacement(&state).await;
 }
 
 /// Decides what the sync loop's next `sync_once` call should report as this

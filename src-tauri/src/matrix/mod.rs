@@ -77,7 +77,7 @@ pub struct MatrixState {
     /// SQLCipher-backed decrypted-message index for the active account/device.
     /// SQLite work is always performed from `spawn_blocking`; the mutex keeps
     /// the non-`Sync` connection isolated from async workers and IPC calls.
-    pub(crate) search_index: std::sync::Mutex<Option<search::ActiveSearchIndex>>,
+    pub(crate) search_index: std::sync::Arc<std::sync::Mutex<Option<search::ActiveSearchIndex>>>,
     /// Bounded FIFO feeding the blocking search-index worker from `/sync`.
     pub(crate) search_work_tx:
         tokio::sync::OnceCell<tokio::sync::mpsc::Sender<search::QueuedSearchWork>>,
@@ -403,7 +403,7 @@ impl Default for MatrixState {
     fn default() -> Self {
         Self {
             client: Mutex::default(),
-            search_index: std::sync::Mutex::default(),
+            search_index: std::sync::Arc::default(),
             search_work_tx: tokio::sync::OnceCell::default(),
             search_generation: std::sync::atomic::AtomicU64::default(),
             search_incomplete: std::sync::atomic::AtomicBool::default(),
