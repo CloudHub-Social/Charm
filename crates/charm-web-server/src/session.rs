@@ -805,6 +805,13 @@ impl Session {
         {
             return false;
         }
+        if self
+            .client
+            .get_room(room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return false;
+        }
         let latest_jump_targets = self.latest_jump_targets.lock().await;
         if latest_jump_targets
             .get(room_id)
@@ -815,6 +822,13 @@ impl Session {
         if self
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        if self
+            .client
+            .get_room(room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
         {
             return false;
         }
@@ -893,6 +907,12 @@ fn spawn_timeline_listener(
         if session_closed.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
+        if client
+            .get_room(&room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return;
+        }
         let Some(strong) = timeline.upgrade() else {
             return;
         };
@@ -917,6 +937,12 @@ fn spawn_timeline_listener(
         )
         .await;
         if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        if client
+            .get_room(&room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
             return;
         }
         let initial_messages = initial_items
@@ -950,6 +976,12 @@ fn spawn_timeline_listener(
             if session_closed.load(std::sync::atomic::Ordering::Acquire) {
                 break;
             }
+            if client
+                .get_room(&room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
+                break;
+            }
             let diffs = tokio::select! {
                 diffs = stream.next() => diffs,
                 _ = liveness_check.tick() => {
@@ -978,6 +1010,12 @@ fn spawn_timeline_listener(
             )
             .await;
             if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if client
+                .get_room(&room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
                 break;
             }
             let messages = timeline_items

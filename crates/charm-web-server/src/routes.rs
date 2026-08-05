@@ -2790,6 +2790,11 @@ async fn load_timeline_around_event(
         RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(&query.event_id)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    require_room_still_joined(&room)?;
     session
         .begin_timeline_jump(parsed_room_id.clone(), parsed_event_id.clone())
         .await;
@@ -2800,17 +2805,20 @@ async fn load_timeline_around_event(
 
     if timeline_contains_event(&timeline, &query.event_id).await {
         require_session_still_open(&session)?;
+        require_room_still_joined(&room)?;
         return Ok(Json(found_jump_result(false)));
     }
 
     for _ in 0..MAX_WEB_LOAD_AROUND_ITERATIONS {
         require_session_still_open(&session)?;
+        require_room_still_joined(&room)?;
         let hit_start = timeline
             .paginate_backwards(WEB_LOAD_AROUND_EVENTS_PER_BATCH)
             .await
             .map_err(|error| ApiError::bad_request(error.to_string()))?;
         if timeline_contains_event(&timeline, &query.event_id).await {
             require_session_still_open(&session)?;
+            require_room_still_joined(&room)?;
             crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
             return Ok(Json(found_jump_result(false)));
         }
@@ -2819,14 +2827,11 @@ async fn load_timeline_around_event(
         }
     }
 
-    let room = session
-        .client
-        .get_room(&parsed_room_id)
-        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
     // The focused builder can disclose the target event id via `/context`.
     // Logout/idle eviction closes the retained session before cleanup, so
     // recheck immediately before starting that Matrix request.
     require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
     let focused = room
         .timeline_builder()
         .with_focus(TimelineFocus::Event {
@@ -2843,6 +2848,7 @@ async fn load_timeline_around_event(
     // building. Never install or broadcast decrypted results from a session
     // that no longer exists in the live store.
     require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
     let focused = Arc::new(focused);
     if !timeline_contains_event(&focused, &query.event_id).await {
         return Ok(Json(JumpToEventResult {
@@ -2850,10 +2856,12 @@ async fn load_timeline_around_event(
             installed_focused_view: false,
         }));
     }
+    require_room_still_joined(&room)?;
     let installed = session
         .replace_timeline_if_latest(&parsed_room_id, &parsed_event_id, focused)
         .await;
     require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
     if installed {
         crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
     }
@@ -2886,6 +2894,14 @@ fn require_session_still_open(session: &Session) -> Result<(), ApiError> {
         Err(ApiError::unauthorized("session closed"))
     } else {
         Ok(())
+    }
+}
+
+fn require_room_still_joined(room: &matrix_sdk::Room) -> Result<(), ApiError> {
+    if room.state() == matrix_sdk::RoomState::Joined {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("room is no longer joined"))
     }
 }
 
