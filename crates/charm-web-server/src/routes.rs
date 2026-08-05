@@ -138,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/me", get(me))
         // -- rooms --
         .route("/api/rooms", get(list_rooms))
+        .route("/api/search/messages", post(search_messages))
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/knock", post(knock_room))
@@ -1575,7 +1576,13 @@ async fn finish_login(
         persist,
         initial_response,
         stored.sync_snapshots(),
-        state.space_hierarchy_reorganization,
+        crate::sync_loop::SpawnOptions {
+            include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            message_search: crate::sync_loop::message_search_context(
+                &stored,
+                state.encrypted_local_message_search_enabled,
+            ),
+        },
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -2092,6 +2099,19 @@ async fn logout(
             {
                 handle.abort();
             }
+            let search_index = session
+                .message_search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(search_index) = search_index {
+                if !matches!(
+                    tokio::task::spawn_blocking(move || search_index.delete()).await,
+                    Ok(Ok(()))
+                ) {
+                    tracing::warn!("failed to remove encrypted message-search index on logout");
+                }
+            }
             // Revoke the access token on the homeserver too — otherwise it
             // stays valid indefinitely after "logout" only clears local
             // server-side state, unlike the desktop app (which calls the
@@ -2455,7 +2475,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         persist,
         initial_response,
         session.sync_snapshots(),
-        state.space_hierarchy_reorganization,
+        crate::sync_loop::SpawnOptions {
+            include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            message_search: crate::sync_loop::message_search_context(
+                &session,
+                state.encrypted_local_message_search_enabled,
+            ),
+        },
     );
     *session
         .sync_handle
@@ -2501,6 +2527,80 @@ async fn list_rooms(
         )
         .await,
     ))
+}
+
+#[derive(Deserialize)]
+struct MessageSearchRequest {
+    query: String,
+    room_id: Option<String>,
+    limit: usize,
+    cursor: Option<String>,
+}
+
+async fn search_messages(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<MessageSearchRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !state.encrypted_local_message_search_enabled {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    let session = require_session(&state, &jar).await?;
+    let crypto = session
+        .persisted_crypto
+        .clone()
+        .ok_or_else(|| ApiError::bad_request("message search is unavailable"))?;
+    let device_id = session
+        .client
+        .device_id()
+        .map(ToString::to_string)
+        .ok_or_else(|| ApiError::bad_request("message search is unavailable"))?;
+    let allowed_rooms: std::collections::HashSet<String> = session
+        .client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    if request
+        .room_id
+        .as_ref()
+        .is_some_and(|room_id| !allowed_rooms.contains(room_id))
+    {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    let index = Arc::clone(&session.message_search_index);
+    let app_data_dir = crate::crypto_store::data_root_path();
+    let mut page = tokio::task::spawn_blocking(move || {
+        let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.is_none() {
+            *slot = Some(
+                charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+                    &app_data_dir,
+                    &crypto.store_key,
+                    &device_id,
+                    &crypto.passphrase,
+                )
+                .map_err(|_| "message search is unavailable".to_string())?,
+            );
+        }
+        slot.as_mut()
+            .expect("web search index initialized")
+            .search(
+                &request.query,
+                request.room_id.as_deref(),
+                &allowed_rooms,
+                request.limit,
+                request.cursor.as_deref(),
+            )
+            .map_err(|_| "message search is unavailable".to_string())
+    })
+    .await
+    .map_err(|_| ApiError::bad_request("message search is unavailable"))?
+    .map_err(ApiError::bad_request)?;
+    page.incomplete = session
+        .message_search_incomplete
+        .load(std::sync::atomic::Ordering::Acquire);
+    Ok(Json(page))
 }
 
 async fn accept_invite(

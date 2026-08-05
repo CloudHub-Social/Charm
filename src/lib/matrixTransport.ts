@@ -387,6 +387,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           paginate: args.paginate as boolean | undefined,
         })}`,
       );
+    case "search_messages":
+      return requestJson<T>("POST", "/api/search/messages", {
+        query: args.query,
+        room_id: args.roomId ?? null,
+        limit: args.limit,
+        cursor: args.cursor ?? null,
+      });
     case "list_space_hierarchy":
       return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.spaceId))}/hierarchy`);
     case "list_space_children":

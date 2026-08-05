@@ -16,6 +16,7 @@
 //! notification).
 
 use std::time::Duration;
+use std::{path::PathBuf, sync::Arc};
 
 use charm_lib::matrix::ephemeral::{self, ReceiptUpdate, TypingUpdate};
 use charm_lib::matrix::presence::{self, presence_event_to_update};
@@ -36,6 +37,133 @@ use tokio::sync::broadcast;
 
 use crate::events::{SasUpdatePayload, ServerEvent};
 use crate::persistence::PersistenceStore;
+
+pub struct MessageSearchContext {
+    sender: tokio::sync::mpsc::Sender<charm_lib::matrix::search::SearchWork>,
+    incomplete: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub struct SpawnOptions {
+    pub include_canonical_space_hierarchy: bool,
+    pub message_search: Option<MessageSearchContext>,
+}
+
+pub fn message_search_context(
+    session: &crate::session::Session,
+    enabled: bool,
+) -> Option<MessageSearchContext> {
+    if !enabled {
+        return None;
+    }
+    let crypto = session.persisted_crypto.clone()?;
+    let device_id = session.client.device_id()?.to_string();
+    let index = Arc::clone(&session.message_search_index);
+    let incomplete = Arc::clone(&session.message_search_incomplete);
+    let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
+    let (sender, mut receiver) =
+        tokio::sync::mpsc::channel::<charm_lib::matrix::search::SearchWork>(32);
+    tokio::spawn(async move {
+        while let Some(work) = receiver.recv().await {
+            let index = Arc::clone(&index);
+            let app_data_dir = app_data_dir.clone();
+            let store_key = crypto.store_key.clone();
+            let passphrase = crypto.passphrase.clone();
+            let device_id = device_id.clone();
+            if !matches!(
+                tokio::task::spawn_blocking(move || {
+                    let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+                    if slot.is_none() {
+                        *slot = Some(
+                            charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+                                &app_data_dir,
+                                &store_key,
+                                &device_id,
+                                &passphrase,
+                            )?,
+                        );
+                    }
+                    work.apply_to(slot.as_mut().expect("web search index initialized"))
+                })
+                .await,
+                Ok(Ok(()))
+            ) {
+                tracing::warn!(command = "web_message_search_index", status = "failed");
+            }
+        }
+    });
+    Some(MessageSearchContext { sender, incomplete })
+}
+
+async fn submit_message_search(
+    context: &Option<MessageSearchContext>,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    let Some(context) = context else { return };
+    let ignored = charm_lib::matrix::account::ignored_user_ids(client)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
+    let Some(work) = charm_lib::matrix::search::work_from_sync(client, response, ignored) else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    if context.sender.try_send(work).is_err() {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(command = "web_message_search_index", status = "queue_full");
+    }
+}
+
+async fn backfill_message_search(context: &Option<MessageSearchContext>, client: &Client) {
+    let Some(context) = context else { return };
+    let ignored: std::collections::HashSet<String> =
+        charm_lib::matrix::account::ignored_user_ids(client)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+    for room in client.joined_rooms() {
+        let events = match room.event_cache().await {
+            Ok((cache, _drop_handles)) => cache.events().await,
+            Err(_) => {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                continue;
+            }
+        };
+        let Ok(events) = events else {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            continue;
+        };
+        let Some(work) = charm_lib::matrix::search::work_from_cached_room(
+            client,
+            room.room_id().as_str(),
+            &events,
+            ignored.clone(),
+        ) else {
+            return;
+        };
+        if work.is_empty() {
+            continue;
+        }
+        if context.sender.send(work).await.is_err() {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            return;
+        }
+    }
+}
 
 /// Same bound and backoff shape as desktop's loop — see
 /// `src-tauri/src/matrix/sync.rs::spawn_sync_loop` for the full rationale.
@@ -326,8 +454,15 @@ pub fn spawn(
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
     snapshots: crate::session::SyncSnapshots,
-    include_canonical_space_hierarchy: bool,
+    options: SpawnOptions,
 ) -> tokio::task::JoinHandle<()> {
+    let SpawnOptions {
+        include_canonical_space_hierarchy,
+        message_search,
+    } = options;
+    // Keep matrix-sdk's local event cache current for restart/flag-enable
+    // search seeding. Subscription is idempotent and performs no pagination.
+    let _ = client.event_cache().subscribe();
     {
         let client = client.clone();
         let sync_presence = sync_presence.clone();
@@ -372,6 +507,8 @@ pub fn spawn(
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
+        submit_message_search(&message_search, &client, &initial_response).await;
+        backfill_message_search(&message_search, &client).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
         // actually saved on disk right now — not `None` and not the
@@ -409,6 +546,7 @@ pub fn spawn(
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
+                    submit_message_search(&message_search, &client, &response).await;
                     emit_room_list_and_badge(
                         &client,
                         &events,
