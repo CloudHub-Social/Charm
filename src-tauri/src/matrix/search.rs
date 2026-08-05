@@ -1098,8 +1098,8 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
 }
 
 /// Seeds the index with history already present in matrix-sdk's decrypted
-/// event cache. Awaiting queue capacity bounds plaintext memory without
-/// performing SQLite work on the async runtime or requesting server history.
+/// event cache. Queue overflow marks the index incomplete instead of delaying
+/// initial sync/timeline delivery behind local indexing work.
 pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, generation: u64) {
     if !feature_enabled(app) {
         return;
@@ -1139,16 +1139,76 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             continue;
         }
         if sender
-            .send(QueuedSearchWork { generation, work })
-            .await
+            .try_send(QueuedSearchWork { generation, work })
             .is_err()
         {
             app.state::<super::MatrixState>()
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
+            tracing::warn!(command = "message_search_backfill", status = "queue_full");
             return;
         }
     }
+}
+
+/// Re-seeds one room after timeline pagination decrypts more local history.
+/// The detached task and bounded `try_send` keep the user-visible timeline
+/// response independent from event-cache and SQLCipher work.
+pub(crate) fn schedule_cached_room(
+    app: AppHandle,
+    client: Client,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    tauri::async_runtime::spawn(async move {
+        if !feature_enabled(&app) {
+            return;
+        }
+        let state = app.state::<super::MatrixState>();
+        let generation = state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let ignored_senders = super::account::ignored_user_ids(&client)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|sender| sender.to_string())
+            .collect();
+        let Some(room) = client.get_room(&room_id) else {
+            return;
+        };
+        let events = match room.event_cache().await {
+            Ok((cache, _drop_handles)) => cache.events().await,
+            Err(_) => {
+                state
+                    .search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
+        };
+        let Ok(events) = events else {
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            return;
+        };
+        let Some(work) = work_from_cached_room(&client, room_id.as_str(), &events, ignored_senders)
+        else {
+            return;
+        };
+        if work.is_empty() {
+            return;
+        }
+        let sender = search_work_sender(&app).await;
+        if sender
+            .try_send(QueuedSearchWork { generation, work })
+            .is_err()
+        {
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::warn!(command = "message_search_pagination", status = "queue_full");
+        }
+    });
 }
 
 #[tauri::command]

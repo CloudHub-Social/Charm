@@ -2756,6 +2756,9 @@ async fn get_timeline_page(
     )
     .await
     .map_err(ApiError::bad_request)?;
+    if query.paginate.unwrap_or(true) {
+        crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id);
+    }
     Ok(Json(page))
 }
 
@@ -2804,6 +2807,7 @@ async fn load_timeline_around_event(
             .await
             .map_err(|error| ApiError::bad_request(error.to_string()))?;
         if timeline_contains_event(&timeline, &query.event_id).await {
+            crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
             let found = session
                 .timeline_jump_is_latest(&parsed_room_id, &parsed_event_id)
                 .await;
@@ -2816,6 +2820,8 @@ async fn load_timeline_around_event(
             break;
         }
     }
+
+    crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
 
     let room = session
         .client

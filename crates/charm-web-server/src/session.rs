@@ -179,6 +179,11 @@ pub struct Session {
     /// Sticky disclosure that at least one live-sync batch could not be queued.
     /// It stays set until this ephemeral session and its index are rebuilt.
     pub message_search_incomplete: Arc<AtomicBool>,
+    /// Bounded plaintext-work queue shared by sync and timeline pagination.
+    /// `None` while the feature is disabled or before the sync loop starts.
+    pub message_search_sender: Arc<
+        std::sync::Mutex<Option<tokio::sync::mpsc::Sender<charm_lib::matrix::search::SearchWork>>>,
+    >,
     /// Revokes queued plaintext work before explicit logout deletes the
     /// session index. The worker rechecks this while holding the index lock.
     pub message_search_closed: Arc<AtomicBool>,
@@ -546,6 +551,7 @@ impl Session {
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
             message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(

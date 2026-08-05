@@ -1345,7 +1345,7 @@ pub async fn get_timeline_page(
                 crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
             )
         });
-        get_timeline_page_impl(
+        let page = get_timeline_page_impl(
             &client,
             &timeline,
             media_cache,
@@ -1353,7 +1353,15 @@ pub async fn get_timeline_page(
             include_timeline_items,
             paginate,
         )
-        .await
+        .await?;
+        if paginate {
+            super::search::schedule_cached_room(
+                app.clone(),
+                client.clone(),
+                parsed_room_id.clone(),
+            );
+        }
+        Ok(page)
     })
     .await
 }
@@ -1508,6 +1516,11 @@ pub async fn load_timeline_around_event(
             .await
             .map_err(|e| e.to_string())?;
         if timeline_contains_event(&timeline, &event_id).await {
+            super::search::schedule_cached_room(
+                app.clone(),
+                client.clone(),
+                parsed_room_id.clone(),
+            );
             return Ok(JumpToEventResult {
                 found: true,
                 installed_focused_view: false,
@@ -1531,6 +1544,8 @@ pub async fn load_timeline_around_event(
             break;
         }
     }
+
+    super::search::schedule_cached_room(app.clone(), client.clone(), parsed_room_id.clone());
 
     // Exhausted the bounded live-timeline walk without hitting the start of
     // history — the event may simply be deeper than we're willing to page
