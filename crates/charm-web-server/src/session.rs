@@ -718,11 +718,17 @@ impl Session {
     ) -> Result<Arc<Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if !force_live {
-            if let Some(existing) = self.timelines.lock().await.get(room_id) {
-                return Ok(Arc::clone(existing));
+        // A forced load should replace the timeline that existed when this
+        // request began, but it must not replace a newer timeline installed
+        // by another forced load while `room.timeline()` is awaiting.
+        let timeline_at_start = {
+            let mut timelines = self.timelines.lock().await;
+            match timelines.get(room_id) {
+                Some(existing) if !force_live => return Ok(Arc::clone(existing)),
+                Some(existing) => Some(Arc::clone(existing)),
+                None => None,
             }
-        }
+        };
 
         let room = self
             .client
@@ -732,6 +738,11 @@ impl Session {
 
         let mut timelines = self.timelines.lock().await;
         if force_live {
+            if let Some(existing) = timelines.get(room_id) {
+                if timeline_changed_while_building(timeline_at_start.as_ref(), Some(existing)) {
+                    return Ok(Arc::clone(existing));
+                }
+            }
             spawn_timeline_listener(
                 self.client.clone(),
                 Arc::downgrade(&timeline),
@@ -812,6 +823,20 @@ impl Session {
             .await
             .put(room_id.to_owned(), timeline);
         true
+    }
+}
+
+/// Reports whether another request replaced the cached value while this
+/// request was building its own replacement. Pointer identity matters here:
+/// an equal value may still own a distinct live listener.
+fn timeline_changed_while_building<T>(
+    value_at_start: Option<&Arc<T>>,
+    cached_after_build: Option<&Arc<T>>,
+) -> bool {
+    match (value_at_start, cached_after_build) {
+        (None, Some(_)) => true,
+        (Some(previous), Some(current)) => !Arc::ptr_eq(previous, current),
+        _ => false,
     }
 }
 
@@ -1308,6 +1333,28 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forced_timeline_build_detects_a_concurrent_first_insert() {
+        let concurrent = Arc::new(());
+
+        assert!(timeline_changed_while_building(None, Some(&concurrent)));
+    }
+
+    #[test]
+    fn forced_timeline_build_only_replaces_the_value_it_observed() {
+        let original = Arc::new(());
+        let concurrent_replacement = Arc::new(());
+
+        assert!(!timeline_changed_while_building(
+            Some(&original),
+            Some(&original)
+        ));
+        assert!(timeline_changed_while_building(
+            Some(&original),
+            Some(&concurrent_replacement)
+        ));
+    }
 
     #[test]
     fn session_revocation_grace_exceeds_the_bare_cookie_max_age_by_the_touch_throttle() {
