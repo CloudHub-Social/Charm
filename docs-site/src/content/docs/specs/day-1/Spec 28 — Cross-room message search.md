@@ -177,12 +177,13 @@ connection: the SDK owns that schema and migration lifecycle.
   a new device that cannot safely reopen the old device-keyed index. Creating a
   superseding device likewise closes and deletes the prior device index. Account
   deactivation must close and delete every retained index.
-  PR 1 owns an explicit account-management "Forget local data" control that closes
-  the account, removes both the retained SDK store and every search index, and
-  tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
-  separately encrypted search index and key lifecycle. Web logout, session
-  expiry, and administrative session removal close and delete that session's
-  index. A failed/corrupt migration records only non-sensitive diagnostics
+  An explicit account-management "Forget local data" control that closes the
+  account, removes both the retained SDK store and every search index, and tests
+  the confirmation and physical cleanup remains lifecycle follow-up
+  [#416](https://github.com/CloudHub-Social/Charm/issues/416). Its Spec 08 copy must
+  disclose the separately encrypted search index and key lifecycle. Web logout,
+  session expiry, and administrative session removal close and delete that
+  session's index. A failed/corrupt migration records only non-sensitive diagnostics
   (schema version, error category, and a random incident ID), securely removes the
   search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
   no decrypted-content quarantine is retained and an SDK store is never modified.
