@@ -39,6 +39,8 @@ test("searches the current room and navigates to the selected message", async ({
   await expect(page.getByText("local index", { exact: true })).toBeVisible();
   await captureSnapshot(page, "message-search-results");
   await page.getByRole("button", { name: /Search Room/ }).click();
+  await expect(page.getByText("Opening this result may contact your homeserver")).toBeVisible();
+  await page.getByRole("button", { name: "Open message" }).click();
 
   await expect(page.getByRole("heading", { name: "Search messages" })).toHaveCount(0);
   await expect(page.getByText("The encrypted local index found this message")).toBeVisible();
