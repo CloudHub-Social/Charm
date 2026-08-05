@@ -2091,6 +2091,9 @@ async fn logout(
         // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
             live_crypto = session.persisted_crypto.clone();
+            session
+                .message_search_closed
+                .store(true, std::sync::atomic::Ordering::Release);
             if let Some(handle) = session
                 .sync_handle
                 .lock()

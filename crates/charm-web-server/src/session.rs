@@ -179,6 +179,9 @@ pub struct Session {
     /// Sticky disclosure that at least one live-sync batch could not be queued.
     /// It stays set until this ephemeral session and its index are rebuilt.
     pub message_search_incomplete: Arc<AtomicBool>,
+    /// Revokes queued plaintext work before explicit logout deletes the
+    /// session index. The worker rechecks this while holding the index lock.
+    pub message_search_closed: Arc<AtomicBool>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -538,6 +541,7 @@ impl Session {
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
             message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),

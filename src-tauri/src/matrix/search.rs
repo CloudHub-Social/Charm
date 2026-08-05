@@ -198,6 +198,11 @@ pub struct SearchWork {
     ignored_senders: HashSet<String>,
 }
 
+pub(crate) struct QueuedSearchWork {
+    generation: u64,
+    work: SearchWork,
+}
+
 impl SearchIndex {
     /// Opens or creates the index for one account/device pair.
     ///
@@ -882,7 +887,15 @@ fn append_raw_event_mutation(
     }
 }
 
-pub(crate) fn apply_work(app: &AppHandle, work: SearchWork) -> Result<(), String> {
+fn apply_work(app: &AppHandle, queued: QueuedSearchWork) -> Result<(), String> {
+    let state = app.state::<super::MatrixState>();
+    if queued.generation
+        != state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
     if !feature_enabled(app) {
         if let Some(active) = app
             .state::<super::MatrixState>()
@@ -895,13 +908,28 @@ pub(crate) fn apply_work(app: &AppHandle, work: SearchWork) -> Result<(), String
         }
         return Ok(());
     }
-    let state = app.state::<super::MatrixState>();
     let mut slot = state
         .search_index
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
-    work.apply_to(index)
+    // Recheck while holding the same lock logout uses to take/delete the
+    // index. This closes the check-then-lock race where cleanup could finish
+    // between the first check and `ensure_index`, after which stale work
+    // would otherwise recreate the signed-out account's database.
+    if queued.generation
+        != state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
+    let index = ensure_index(
+        app,
+        &mut slot,
+        &queued.work.account_store_key,
+        &queued.work.device_id,
+    )?;
+    queued.work.apply_to(index)
 }
 
 pub(crate) async fn submit_sync_response(
@@ -911,6 +939,9 @@ pub(crate) async fn submit_sync_response(
 ) {
     let state = app.state::<super::MatrixState>();
     if !feature_enabled(app) {
+        state
+            .search_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         state
             .search_backfill_started
             .store(false, std::sync::atomic::Ordering::Release);
@@ -931,6 +962,22 @@ pub(crate) async fn submit_sync_response(
         });
         return;
     }
+    let Some(client_identity) = active_identity(client) else {
+        return;
+    };
+    let is_current_client = {
+        let current = state.client.lock().await;
+        current
+            .as_ref()
+            .and_then(active_identity)
+            .is_some_and(|identity| identity == client_identity)
+    };
+    if !is_current_client {
+        return;
+    }
+    let generation = state
+        .search_generation
+        .load(std::sync::atomic::Ordering::Acquire);
     if state
         .search_backfill_started
         .compare_exchange(
@@ -941,7 +988,7 @@ pub(crate) async fn submit_sync_response(
         )
         .is_ok()
     {
-        submit_cached_history(app, client).await;
+        submit_cached_history(app, client, generation).await;
     }
     let ignored_senders = super::account::ignored_user_ids(client)
         .await
@@ -957,7 +1004,10 @@ pub(crate) async fn submit_sync_response(
     }
 
     let sender = search_work_sender(app).await;
-    if sender.try_send(work).is_err() {
+    if sender
+        .try_send(QueuedSearchWork { generation, work })
+        .is_err()
+    {
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
@@ -965,11 +1015,11 @@ pub(crate) async fn submit_sync_response(
     }
 }
 
-async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<SearchWork> {
+async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<QueuedSearchWork> {
     app.state::<super::MatrixState>()
         .search_work_tx
         .get_or_init(|| async {
-            let (sender, mut receiver) = tokio::sync::mpsc::channel::<SearchWork>(32);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
             let worker_app = app.clone();
             tauri::async_runtime::spawn(async move {
                 while let Some(work) = receiver.recv().await {
@@ -991,7 +1041,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Search
 /// Seeds the index with history already present in matrix-sdk's decrypted
 /// event cache. Awaiting queue capacity bounds plaintext memory without
 /// performing SQLite work on the async runtime or requesting server history.
-pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client) {
+pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, generation: u64) {
     if !feature_enabled(app) {
         return;
     }
@@ -1029,7 +1079,11 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client) {
         if work.is_empty() {
             continue;
         }
-        if sender.send(work).await.is_err() {
+        if sender
+            .send(QueuedSearchWork { generation, work })
+            .await
+            .is_err()
+        {
             app.state::<super::MatrixState>()
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);

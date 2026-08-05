@@ -79,7 +79,12 @@ pub struct MatrixState {
     /// the non-`Sync` connection isolated from async workers and IPC calls.
     pub(crate) search_index: std::sync::Mutex<Option<search::ActiveSearchIndex>>,
     /// Bounded FIFO feeding the blocking search-index worker from `/sync`.
-    pub(crate) search_work_tx: tokio::sync::OnceCell<tokio::sync::mpsc::Sender<search::SearchWork>>,
+    pub(crate) search_work_tx:
+        tokio::sync::OnceCell<tokio::sync::mpsc::Sender<search::QueuedSearchWork>>,
+    /// Invalidates plaintext work buffered by a prior signed-in lifecycle.
+    /// Logout increments this before deleting the index, so the long-lived
+    /// worker cannot reopen that index from stale queue entries afterwards.
+    pub(crate) search_generation: std::sync::atomic::AtomicU64,
     /// Set when the bounded queue overflows; surfaced on result pages so the
     /// UI never presents a partial local index as complete.
     pub(crate) search_incomplete: std::sync::atomic::AtomicBool,
@@ -391,6 +396,7 @@ impl Default for MatrixState {
             client: Mutex::default(),
             search_index: std::sync::Mutex::default(),
             search_work_tx: tokio::sync::OnceCell::default(),
+            search_generation: std::sync::atomic::AtomicU64::default(),
             search_incomplete: std::sync::atomic::AtomicBool::default(),
             search_backfill_started: std::sync::atomic::AtomicBool::default(),
             login_completion_lock: Mutex::default(),

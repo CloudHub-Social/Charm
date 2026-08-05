@@ -59,12 +59,17 @@ pub fn message_search_context(
     let device_id = session.client.device_id()?.to_string();
     let index = Arc::clone(&session.message_search_index);
     let incomplete = Arc::clone(&session.message_search_incomplete);
+    let closed = Arc::clone(&session.message_search_closed);
     let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
     let (sender, mut receiver) =
         tokio::sync::mpsc::channel::<charm_lib::matrix::search::SearchWork>(32);
     tokio::spawn(async move {
         while let Some(work) = receiver.recv().await {
+            if closed.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
             let index = Arc::clone(&index);
+            let closed = Arc::clone(&closed);
             let app_data_dir = app_data_dir.clone();
             let store_key = crypto.store_key.clone();
             let passphrase = crypto.passphrase.clone();
@@ -72,6 +77,12 @@ pub fn message_search_context(
             if !matches!(
                 tokio::task::spawn_blocking(move || {
                     let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+                    // Logout sets `closed` before waiting for this lock and
+                    // deleting the index. Rechecking under the lock prevents
+                    // buffered work from recreating it after deletion.
+                    if closed.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(());
+                    }
                     if slot.is_none() {
                         *slot = Some(
                             charm_lib::matrix::search::SearchIndex::open_with_source_secret(
