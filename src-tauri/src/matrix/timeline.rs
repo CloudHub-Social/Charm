@@ -1485,6 +1485,10 @@ pub async fn load_timeline_around_event(
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {parsed_room_id} not found"))?;
+    require_room_still_joined(&room)?;
     // Review fix: registers this call as the room's *current* jump target
     // before doing any work — see `MatrixState::latest_jump_target`'s own
     // doc comment. Starting a second jump for this room immediately
@@ -1502,8 +1506,10 @@ pub async fn load_timeline_around_event(
     let timeline = state
         .get_or_create_timeline(&app, &client, &parsed_room_id, false)
         .await?;
+    require_room_still_joined(&room)?;
 
     if timeline_contains_event(&timeline, &event_id).await {
+        require_room_still_joined(&room)?;
         return Ok(JumpToEventResult {
             found: true,
             installed_focused_view: false,
@@ -1511,11 +1517,14 @@ pub async fn load_timeline_around_event(
     }
 
     for _ in 0..MAX_LOAD_AROUND_ITERATIONS {
+        require_room_still_joined(&room)?;
         let hit_start = timeline
             .paginate_backwards(EVENTS_PER_BATCH)
             .await
             .map_err(|e| e.to_string())?;
+        require_room_still_joined(&room)?;
         if timeline_contains_event(&timeline, &event_id).await {
+            require_room_still_joined(&room)?;
             super::search::schedule_cached_room(
                 app.clone(),
                 client.clone(),
@@ -1549,9 +1558,11 @@ pub async fn load_timeline_around_event(
     // history — the event may simply be deeper than we're willing to page
     // through client-side. Fall back to a direct server-side lookup instead
     // of reporting failure.
+    require_room_still_joined(&room)?;
     let found =
         load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
             .await?;
+    require_room_still_joined(&room)?;
     if found {
         super::search::schedule_cached_room(app.clone(), client.clone(), parsed_room_id.clone());
     }
@@ -1592,6 +1603,7 @@ async fn load_focused_event_timeline(
     let room = client
         .get_room(room_id)
         .ok_or_else(|| format!("room {room_id} not found"))?;
+    require_room_still_joined(&room)?;
 
     let focused = room
         .timeline_builder()
@@ -1605,11 +1617,13 @@ async fn load_focused_event_timeline(
         .build()
         .await
         .map_err(|e| e.to_string())?;
+    require_room_still_joined(&room)?;
     let focused = Arc::new(focused);
 
     if !timeline_contains_event(&focused, event_id.as_str()).await {
         return Ok(false);
     }
+    require_room_still_joined(&room)?;
 
     // Review fix: `client` was captured (and potentially awaited on, both in
     // `room.timeline_builder()...build()` above and in the caller's own
@@ -1665,6 +1679,7 @@ async fn load_focused_event_timeline(
     if !still_latest {
         return Ok(false);
     }
+    require_room_still_joined(&room)?;
 
     // `replace_timeline` returns `None` if its own re-check finds the
     // active client no longer matches, or this jump has since been
@@ -1675,6 +1690,14 @@ async fn load_focused_event_timeline(
         .replace_timeline(app, client, room_id, focused, Some(event_id))
         .await
         .is_some())
+}
+
+fn require_room_still_joined(room: &matrix_sdk::Room) -> Result<(), String> {
+    if room.state() == matrix_sdk::RoomState::Joined {
+        Ok(())
+    } else {
+        Err(format!("room {} is no longer joined", room.room_id()))
+    }
 }
 
 async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {

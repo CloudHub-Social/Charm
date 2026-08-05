@@ -868,6 +868,17 @@ impl MatrixState {
         // never touches whatever's currently cached in the first place.
         let previous = {
             let mut timelines = self.timelines.lock().await;
+            if expected_event_id.is_some()
+                && client
+                    .get_room(room_id)
+                    .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
+                drop(timelines);
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
+                return None;
+            }
             if let Some(event_id) = expected_event_id {
                 let still_latest = self
                     .latest_jump_target
@@ -937,6 +948,17 @@ impl MatrixState {
             current.user_id() == client.user_id() && current.device_id() == client.device_id()
         });
         if !still_active {
+            drop(timelines);
+            if inserted_transition_marker {
+                self.transitioning_timelines.lock().await.remove(room_id);
+            }
+            return None;
+        }
+        if expected_event_id.is_some()
+            && client
+                .get_room(room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
             drop(timelines);
             if inserted_transition_marker {
                 self.transitioning_timelines.lock().await.remove(room_id);

@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const MAX_QUERY_BYTES: usize = 512;
 const MAX_RESULTS_PER_PAGE: usize = 100;
@@ -94,7 +94,9 @@ pub struct SearchDocument {
     /// `None` means the visible replacement is a non-searchable msgtype.
     pub body: Option<String>,
     pub origin_server_ts: u64,
-    /// Renderer-authoritative ordering of the selected original/edit event.
+    /// Ordering of the selected original/edit event. Equal replacement orders
+    /// are intentionally ambiguous until an authoritative timeline projection
+    /// resolves them.
     pub selection_order: u64,
 }
 
@@ -868,11 +870,10 @@ pub fn work_from_sync(
         });
     }
     for (room_id, update) in &response.rooms.joined {
-        for (position, raw_event) in update.timeline.events.iter().enumerate() {
+        for raw_event in &update.timeline.events {
             append_raw_event_mutation(
                 room_id.as_str(),
                 raw_event.raw(),
-                position,
                 &ignored_senders,
                 &mut mutations,
             );
@@ -896,17 +897,11 @@ pub fn work_from_cached_room(
 ) -> Option<SearchWork> {
     let (account_store_key, device_id) = active_identity(client)?;
     let mut mutations = Vec::new();
-    for (position, event) in events.iter().enumerate() {
+    for event in events {
         if matches!(&event.kind, TimelineEventKind::UnableToDecrypt { .. }) {
             continue;
         }
-        append_raw_event_mutation(
-            room_id,
-            event.raw(),
-            position,
-            &ignored_senders,
-            &mut mutations,
-        );
+        append_raw_event_mutation(room_id, event.raw(), &ignored_senders, &mut mutations);
     }
     Some(SearchWork {
         account_store_key,
@@ -919,7 +914,6 @@ pub fn work_from_cached_room(
 fn append_raw_event_mutation(
     room_id: &str,
     raw_event: &Raw<AnySyncTimelineEvent>,
-    position: usize,
     ignored_senders: &HashSet<String>,
     mutations: &mut Vec<SearchMutation>,
 ) {
@@ -934,9 +928,6 @@ fn append_raw_event_mutation(
                 return;
             }
             let timestamp: u64 = original.origin_server_ts.get().into();
-            let selection_order = timestamp
-                .saturating_mul(65_536)
-                .saturating_add(u64::try_from(position).unwrap_or(u64::MAX).min(65_535));
             let (event_id, content) = match original.content.relates_to.clone() {
                 Some(Relation::Replacement(replacement)) => {
                     let reply_relation = replacement_reply_relation(raw_event);
@@ -954,7 +945,11 @@ fn append_raw_event_mutation(
                 sender: original.sender.to_string(),
                 body: searchable_body(content),
                 origin_server_ts: timestamp,
-                selection_order,
+                // Raw sync/cache history has no renderer-authoritative order
+                // for equal-timestamp edits. Preserve the tie so
+                // `restore_visible_row` can defer the original instead of
+                // inventing an arrival-order tie-break.
+                selection_order: timestamp,
             }));
         }
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomRedaction(redaction)) => {
@@ -1542,10 +1537,11 @@ fn restore_visible_row(
     delete_visible_row(transaction, room_id, original_event_id)?;
     let previous = transaction
         .query_row(
-            "SELECT version_event_id, sender, body, origin_server_ts
+            "SELECT version_event_id, sender, body, origin_server_ts, selection_order
              FROM message_versions
              WHERE room_id = ?1 AND original_event_id = ?2
-             ORDER BY selection_order DESC
+             ORDER BY selection_order DESC,
+                      (version_event_id != original_event_id) DESC
              LIMIT 1",
             params![room_id, original_event_id],
             |row| {
@@ -1554,12 +1550,35 @@ fn restore_visible_row(
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()
         .map_err(safe_storage_error)?;
-    if let Some((version_event_id, sender, Some(body), origin_server_ts)) = previous {
+    let Some((version_event_id, sender, body, origin_server_ts, selection_order)) = previous else {
+        return Ok(());
+    };
+    if version_event_id != original_event_id {
+        let tied_edits = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions
+                 WHERE room_id = ?1 AND original_event_id = ?2
+                   AND version_event_id != original_event_id
+                   AND selection_order = ?3",
+                params![room_id, original_event_id, selection_order],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(safe_storage_error)?;
+        if tied_edits > 1 {
+            // Raw history cannot tell which equal-timestamp replacement the
+            // renderer selected. Keep provenance, but expose no searchable
+            // row until a later redaction/reconciliation makes the choice
+            // authoritative.
+            return Ok(());
+        }
+    }
+    if let Some(body) = body {
         transaction
             .execute(
                 "INSERT INTO searchable_messages (
@@ -1718,11 +1737,11 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                 .execute_batch(
                     "ALTER TABLE message_versions
                         ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0;
-                     UPDATE message_versions SET selection_order = rowid;",
+                     UPDATE message_versions SET selection_order = origin_server_ts;",
                 )
                 .map_err(MigrationError::from_sqlite)?;
             create_current_schema(&transaction)?;
-            rebuild_search_fts(&transaction)?;
+            rebuild_visible_rows(&transaction)?;
             transaction
                 .execute(
                     "UPDATE search_metadata SET schema_version = ?1",
@@ -1730,9 +1749,15 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                 )
                 .map_err(MigrationError::from_sqlite)?;
         }
-        (1, Some(2)) => {
+        (1, Some(2 | 3)) => {
             create_current_schema(&transaction)?;
-            rebuild_search_fts(&transaction)?;
+            transaction
+                .execute(
+                    "UPDATE message_versions SET selection_order = origin_server_ts",
+                    [],
+                )
+                .map_err(MigrationError::from_sqlite)?;
+            rebuild_visible_rows(&transaction)?;
             transaction
                 .execute(
                     "UPDATE search_metadata SET schema_version = ?1",
@@ -1811,10 +1836,38 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
     Ok(())
 }
 
-fn rebuild_search_fts(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
+fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
     transaction
         .execute_batch(
-            "DELETE FROM searchable_messages_fts;
+            "DELETE FROM searchable_messages;
+             INSERT INTO searchable_messages (
+                body, room_id, event_id, version_event_id, sender, origin_server_ts
+             )
+             SELECT selected.body, selected.room_id, selected.original_event_id,
+                    selected.version_event_id, selected.sender, selected.origin_server_ts
+             FROM message_versions AS selected
+             WHERE selected.body IS NOT NULL
+               AND selected.version_event_id = (
+                    SELECT candidate.version_event_id
+                    FROM message_versions AS candidate
+                    WHERE candidate.room_id = selected.room_id
+                      AND candidate.original_event_id = selected.original_event_id
+                    ORDER BY candidate.selection_order DESC,
+                             (candidate.version_event_id != candidate.original_event_id) DESC
+                    LIMIT 1
+               )
+               AND (
+                    selected.version_event_id = selected.original_event_id
+                    OR 1 = (
+                        SELECT COUNT(*)
+                        FROM message_versions AS tied
+                        WHERE tied.room_id = selected.room_id
+                          AND tied.original_event_id = selected.original_event_id
+                          AND tied.version_event_id != tied.original_event_id
+                          AND tied.selection_order = selected.selection_order
+                    )
+               );
+             DELETE FROM searchable_messages_fts;
              INSERT INTO searchable_messages_fts (
                 body, room_id, event_id, version_event_id, sender, origin_server_ts
              )
@@ -2098,17 +2151,10 @@ mod tests {
         )
         .expect("spoiler event");
         let mut mutations = Vec::new();
-        append_raw_event_mutation(
-            "!room:example.org",
-            &plain,
-            0,
-            &HashSet::new(),
-            &mut mutations,
-        );
+        append_raw_event_mutation("!room:example.org", &plain, &HashSet::new(), &mut mutations);
         append_raw_event_mutation(
             "!room:example.org",
             &spoiler,
-            1,
             &HashSet::new(),
             &mut mutations,
         );
@@ -2153,14 +2199,12 @@ mod tests {
         append_raw_event_mutation(
             "!room:example.org",
             &ignored,
-            0,
             &ignored_senders,
             &mut mutations,
         );
         append_raw_event_mutation(
             "!room:example.org",
             &redaction,
-            1,
             &ignored_senders,
             &mut mutations,
         );
@@ -2316,6 +2360,44 @@ mod tests {
                 .as_deref(),
             Some("first edit")
         );
+    }
+
+    #[test]
+    fn open_migrates_v3_arrival_order_into_an_ambiguous_timestamp_tie() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        let mut first = document(Some("first tied edit"), "$tie-1");
+        first.selection_order = 10;
+        let mut second = document(Some("second tied edit"), "$tie-2");
+        second.selection_order = 11;
+        index.apply_document(&first).expect("insert first edit");
+        index.apply_document(&second).expect("insert second edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("second tied edit")
+        );
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 3", [])
+            .expect("downgrade schema marker");
+        drop(index);
+
+        let index = open_index(directory.path(), "account", "DEVICE");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+        let distinct_orders = index
+            .connection
+            .query_row(
+                "SELECT COUNT(DISTINCT selection_order) FROM message_versions",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count normalized orders");
+        assert_eq!(distinct_orders, 1);
     }
 
     #[test]
@@ -2667,6 +2749,43 @@ mod tests {
     }
 
     #[test]
+    fn equal_order_edits_defer_visibility_until_the_tie_is_resolved() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        let mut first = document(Some("first tied edit"), "$tie-1");
+        first.selection_order = 10;
+        let mut second = document(Some("second tied edit"), "$tie-2");
+        second.selection_order = 10;
+
+        index
+            .apply_document(&first)
+            .expect("insert first tied edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first tied edit")
+        );
+        index
+            .apply_document(&second)
+            .expect("insert second tied edit");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .redact("!room:example.org", "$tie-2")
+            .expect("redact one tied edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first tied edit")
+        );
+    }
+
+    #[test]
     fn search_is_literal_scoped_and_reports_utf16_match_ranges() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
@@ -2765,13 +2884,7 @@ mod tests {
         .expect("reply edit event");
         let mut mutations = Vec::new();
 
-        append_raw_event_mutation(
-            "!room:example.org",
-            &raw,
-            0,
-            &HashSet::new(),
-            &mut mutations,
-        );
+        append_raw_event_mutation("!room:example.org", &raw, &HashSet::new(), &mut mutations);
 
         let SearchMutation::Apply(document) = &mutations[0] else {
             panic!("reply edit should be indexed");
