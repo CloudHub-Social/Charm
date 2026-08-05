@@ -246,17 +246,36 @@ impl SearchIndex {
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
-        let connection = Connection::open_with_flags(
+        let mut connection = open_encrypted_connection(
             &database_path,
-            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(safe_storage_error)?;
-        apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
-        configure(&connection)?;
-        // This storage-only slice fails closed on an incompatible schema.
-        // Destructive rebuild belongs to the lifecycle layer, where cleanup can
-        // validate the account root and durably reconcile a failed deletion.
-        migrate(&connection).map_err(MigrationError::into_message)?;
+            account_store_key,
+            device_id,
+            store_passphrase,
+        )?;
+        if let Err(error) = migrate(&connection) {
+            match error {
+                MigrationError::Storage(message) => return Err(message),
+                MigrationError::IncompatibleSchema => {
+                    let incident_id = random_id();
+                    tracing::warn!(
+                        command = "message_search_migration",
+                        category = "incompatible_schema",
+                        %incident_id,
+                        status = "rebuilding"
+                    );
+                    drop(connection);
+                    delete_database_path(&database_path)?;
+                    create_private_directory(&directory)?;
+                    connection = open_encrypted_connection(
+                        &database_path,
+                        account_store_key,
+                        device_id,
+                        store_passphrase,
+                    )?;
+                    migrate(&connection).map_err(MigrationError::into_message)?;
+                }
+            }
+        }
         Ok(Self {
             connection,
             database_path,
@@ -1879,6 +1898,22 @@ fn configure(connection: &Connection) -> Result<(), String> {
         .map_err(safe_storage_error)
 }
 
+fn open_encrypted_connection(
+    database_path: &Path,
+    account_store_key: &str,
+    device_id: &str,
+    store_passphrase: &str,
+) -> Result<Connection, String> {
+    let connection = Connection::open_with_flags(
+        database_path,
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(safe_storage_error)?;
+    apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
+    configure(&connection)?;
+    Ok(connection)
+}
+
 fn apply_encryption_key(
     connection: &Connection,
     account_store_key: &str,
@@ -2210,7 +2245,7 @@ fn snippet_and_ranges(body: &str, query: &str) -> (String, Vec<SearchMatchRange>
 }
 
 fn delete_database_path(database_path: &Path) -> Result<(), String> {
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut path = database_path.as_os_str().to_os_string();
         path.push(suffix);
         match std::fs::remove_file(path) {
@@ -2494,7 +2529,7 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_an_unknown_schema_version_without_deleting_content() {
+    fn open_rebuilds_an_unknown_schema_version_without_retaining_content() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
         index
@@ -2507,27 +2542,21 @@ mod tests {
         let database_path = index.database_path().to_path_buf();
         drop(index);
 
-        let error =
+        let rebuilt =
             SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
-                .err()
-                .expect("unknown schema must fail closed");
-        assert_eq!(error, "message search schema version mismatch");
-
-        let connection = Connection::open(database_path).expect("reopen database");
-        apply_encryption_key(&connection, "account", "DEVICE", TEST_STORE_SECRET)
-            .expect("apply encryption key");
-        let retained_body = connection
-            .query_row(
-                "SELECT body FROM searchable_messages WHERE event_id = '$original'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .expect("retained content");
-        assert_eq!(retained_body, "discarded content");
+                .expect("unknown schema should rebuild from an empty derived index");
+        assert_eq!(rebuilt.database_path(), database_path);
+        let indexed_rows = rebuilt
+            .connection
+            .query_row("SELECT COUNT(*) FROM searchable_messages", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .expect("count rebuilt rows");
+        assert_eq!(indexed_rows, 0);
     }
 
     #[test]
-    fn open_rejects_a_malformed_schema_and_classifies_transient_storage_errors() {
+    fn open_rebuilds_a_malformed_schema_and_classifies_transient_storage_errors() {
         let directory = tempfile::tempdir().expect("tempdir");
         let index = open_index(directory.path(), "account", "DEVICE");
         index
@@ -2540,11 +2569,8 @@ mod tests {
             .expect("corrupt metadata schema");
         drop(index);
 
-        let error =
-            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
-                .err()
-                .expect("malformed schema must fail closed");
-        assert_eq!(error, "message search schema version mismatch");
+        SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+            .expect("malformed schema should rebuild from an empty derived index");
 
         assert!(matches!(
             MigrationError::from_sqlite(rusqlite::Error::SqliteFailure(
