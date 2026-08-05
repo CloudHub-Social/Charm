@@ -639,6 +639,27 @@ fn get_feature_flag_catalog() -> Vec<feature_flags::FeatureFlagCatalogEntry> {
     feature_flags::catalog()
 }
 
+/// Applies Spec 28's destructive privacy kill switch after the frontend has
+/// durably persisted a runtime flag refresh. Re-read the Rust resolver and
+/// refuse deletion while search still resolves on; the purge itself is
+/// bounded to the Charm-owned derived-index root.
+#[tauri::command]
+fn reconcile_message_search_flag<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search filesystem unavailable".to_string())?;
+    if feature_flags::flag(
+        &app_data_dir,
+        feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+    ) {
+        return Ok(());
+    }
+    matrix::search::purge_all_indexes(&app_data_dir)
+}
+
 /// The trusted GO Feature Flag OFREP proxy origin. `fetch_remote_flags` builds
 /// its request URL from this constant and **does not** accept a URL from the
 /// webview — otherwise a compromised or XSS'd frontend could use the
@@ -1275,6 +1296,25 @@ pub fn run() {
                     eprintln!("legacy single-account store migration failed: {e}");
                 }
             }
+            // Spec 28's flag protects a sensitive decrypted-content index. Its
+            // default-off state is therefore destructive on startup: a
+            // leftover index from an earlier enabled run is removed before
+            // any session restore or search work can serve it. The search
+            // root is Charm-owned and separate from matrix-sdk's store.
+            if let Ok(app_data_dir) = handle.path().app_data_dir() {
+                if !feature_flags::flag(
+                    &app_data_dir,
+                    feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+                ) {
+                    if let Err(error) = matrix::search::purge_all_indexes(&app_data_dir) {
+                        eprintln!("message-search disabled-state cleanup failed: {error}");
+                    }
+                } else if let Err(error) =
+                    matrix::search::retry_pending_device_purges(&app_data_dir)
+                {
+                    eprintln!("message-search deferred cleanup failed: {error}");
+                }
+            }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
             // Spawned rather than `block_on`'d: this used to block the whole
@@ -1297,7 +1337,15 @@ pub fn run() {
                 // `try_restore_session`'s wait only ever blocks on the part
                 // it actually needs.
                 let recovery_result = async {
+                    let matrix_state = sweep_handle.state::<matrix::MatrixState>();
+                    // Match try_restore_session/login's lock order. The
+                    // recovery pass processes durable logout tombstones and
+                    // can therefore delete account credentials; serializing
+                    // it with login completion ensures it either finishes
+                    // before a replacement SSO/QR session commits, or sees
+                    // that completion's cleared tombstone afterward.
                     let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    let _completion_guard = matrix_state.login_completion_lock.lock().await;
                     matrix::persistence::recover_stale_backups(&sweep_handle)
                 }
                 .await;
@@ -1438,6 +1486,7 @@ pub fn run() {
             update_observability_sentry_consent,
             get_feature_flags,
             get_feature_flag_catalog,
+            reconcile_message_search_flag,
             fetch_remote_flags,
             had_unclean_previous_session,
             forward_sentry_envelope,

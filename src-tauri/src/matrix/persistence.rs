@@ -58,6 +58,8 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
 const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
+const LOGOUT_TOMBSTONE_PREFIX: &str = ".logout-pending-";
+const FALLBACK_LOGOUT_TOMBSTONE_PREFIX: &str = ".matrix-logout-pending-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -125,10 +127,9 @@ pub fn store_path_at(root: &Path, store_key: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Lists every real per-account store key under `matrix_store/` (i.e. every
-/// subdirectory *except* in-flight [`temp_store_key`] ones), for
-/// `try_restore_session` to iterate when it doesn't yet know which account's
-/// session (if any) is worth restoring.
+/// Lists every restorable per-account store key under `matrix_store/`,
+/// excluding in-flight temp stores, stale backups, and accounts with a
+/// durable logout tombstone, for `try_restore_session` to iterate.
 pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
     known_account_keys_at(&matrix_store_root(app)?)
 }
@@ -136,18 +137,41 @@ pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Pure, `AppHandle`-free variant of [`known_account_keys`].
 pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
+    let mut logout_tombstones = HashSet::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            continue;
-        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX) && !name.ends_with(STALE_BACKUP_SUFFIX) {
+        // Treat any filesystem entry with the tombstone name as authoritative.
+        // A malformed marker (for example, a directory left by corruption or
+        // interference) must keep restore fail-closed rather than silently
+        // making the account eligible again.
+        if let Some(account_key) = name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+            continue;
+        }
+        if file_type.is_dir()
+            && !name.starts_with(TEMP_STORE_PREFIX)
+            && !name.ends_with(STALE_BACKUP_SUFFIX)
+        {
             keys.push(name);
         }
     }
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    for entry in std::fs::read_dir(app_data_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(account_key) = name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+        }
+    }
+    keys.retain(|key| !logout_tombstones.contains(key));
     // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
     // isn't creation order) — sort so callers that iterate multiple known
     // accounts (e.g. `try_restore_session`) get a stable, reproducible
@@ -175,6 +199,164 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
     let marker =
         matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
     std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+/// Durably records local logout intent before touching either keychain
+/// session entry. `known_account_keys_at` excludes the account while this
+/// empty marker exists, so a transient credential deletion failure cannot
+/// resurrect the session on the next launch.
+pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    // Derive the primary path directly instead of returning early through
+    // `matrix_store_root`: failure to create or access that directory is
+    // precisely when the app-data sibling fallback is required.
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
+    mark_logout_tombstone_with_fallback_at(&root, &app_data_dir, account_key)
+}
+
+fn mark_logout_tombstone_with_fallback_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    match mark_logout_tombstone_at(root, account_key) {
+        Ok(()) => Ok(()),
+        Err(primary_error) => {
+            let marker =
+                app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+            std::fs::write(marker, []).map_err(|fallback_error| {
+                format!(
+                    "failed to persist logout intent in primary ({primary_error}) and fallback ({fallback_error}) locations"
+                )
+            })
+        }
+    }
+}
+
+pub(crate) fn mark_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
+    let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    clear_logout_tombstones_at(&root, &app_data_dir, account_key)
+}
+
+fn clear_logout_tombstone_at(root: &Path, account_key: &str) -> Result<(), String> {
+    let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn clear_logout_tombstones_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    clear_logout_tombstone_at(root, account_key)?;
+    let marker = app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn sweep_logout_tombstones(app: &AppHandle) -> Result<(), String> {
+    let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_logout_tombstones_at(&root, &app_data_dir)
+}
+
+fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(root).map_err(|error| error.to_string())?;
+    let mut first_error = None;
+    let mut account_keys = HashSet::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let Some(account_key) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX))
+        else {
+            continue;
+        };
+        account_keys.insert(account_key.to_string());
+    }
+    match std::fs::read_dir(app_data_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        first_error.get_or_insert_with(|| error.to_string());
+                        continue;
+                    }
+                };
+                let name = entry.file_name();
+                if let Some(account_key) = name
+                    .to_str()
+                    .and_then(|name| name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX))
+                {
+                    account_keys.insert(account_key.to_string());
+                }
+            }
+        }
+        Err(error) => {
+            first_error.get_or_insert_with(|| error.to_string());
+        }
+    }
+    for account_key in account_keys {
+        // Attempt both independently. The marker remains unless both
+        // credential kinds are confirmed absent and it too is removable.
+        let matrix_cleared = match clear_session(&account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                false
+            }
+        };
+        let oauth_cleared = match clear_oauth_session(&account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                false
+            }
+        };
+        if matrix_cleared && oauth_cleared {
+            // The process may have exited immediately after writing the
+            // tombstone, before ordinary logout reached derived-index
+            // cleanup. Do not clear the only durable logout intent until
+            // every account-scoped search index is gone or durably queued.
+            let cleanup_result = super::search::purge_account_indexes(app_data_dir, &account_key)
+                .and_then(|()| clear_logout_tombstones_at(root, app_data_dir, &account_key));
+            if let Err(error) = cleanup_result {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
@@ -266,8 +448,18 @@ pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
 pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
     std::time::Duration::from_secs(5 * 60);
 
-/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
+/// `AppHandle`-free variant of [`sweep_orphan_temp_stores`] used by Android
+/// cold-start push handling. It also finishes durable logout tombstones
+/// before the caller enumerates restorable accounts.
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    // Android cold-start push launches never construct an AppHandle, but
+    // they must still finish durable logout cleanup before enumerating
+    // restorable accounts. The production root is
+    // `<app_data_dir>/matrix_store`, so its parent is the search-store root.
+    sweep_logout_tombstones_at(root, app_data_dir)?;
     sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
 }
 
@@ -407,6 +599,7 @@ pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscard
     // Process durable cancelled-account markers before startup is allowed to
     // restore a session, rather than relying on the legacy combined sweep
     // wrapper (which production startup intentionally does not call).
+    sweep_logout_tombstones(app)?;
     sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
     let entries = recover_stale_backups_at(&root)?;
@@ -726,6 +919,17 @@ pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
     }
 }
 
+/// Reads an existing SQLCipher store passphrase without creating one.
+///
+/// Consumers of an already-created Matrix store must use this accessor: a
+/// missing keychain entry means the retained database cannot be decrypted,
+/// and minting a replacement would permanently pair it with the wrong key.
+pub fn load_passphrase(store_key: &str) -> Result<String, String> {
+    SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(store_key))
+        .and_then(|entry| entry.get_password())
+        .map_err(|error| error.to_string())
+}
+
 /// What [`relocate_store`] actually did. Both variants leave the temp-backed
 /// `Client` that was already using it valid — a fresh interactive login
 /// (password/SSO/QR) always mints a brand-new `device_id` from the
@@ -838,7 +1042,10 @@ pub fn relocate_store(
 /// whole relocation is rolled back (see [`relocate_store_at_locked_with`])
 /// rather than leaving a fully-installed new store paired with whatever
 /// session was previously saved (which — if this was a supersede — is a
-/// *different* device's session than the one now installed).
+/// *different* device's session than the one now installed). A logout
+/// tombstone is removed only after that pair commits and the conflicting
+/// OAuth credential is confirmed absent; failure there keeps restore
+/// fail-closed without attempting an unsafe store-only rollback.
 pub fn relocate_store_and_save_session(
     app: &AppHandle,
     temp_key: &str,
@@ -847,12 +1054,21 @@ pub fn relocate_store_and_save_session(
     session: &MatrixSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_session(account_key, homeserver_url, session),
-    )
+    )?;
+    // The session credential and SDK store are now one committed pair. Clear
+    // the conflicting session kind before removing logout intent; otherwise
+    // startup (which probes OAuth first) could restore an older credential
+    // against this newly-relocated Matrix store. Either failure keeps the new
+    // pair fail-closed behind the tombstone and must not enter relocation
+    // rollback: rollback cannot restore the overwritten session credential.
+    clear_oauth_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
@@ -866,12 +1082,15 @@ pub fn relocate_store_and_save_oauth_session(
     session: &OAuthSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_oauth_session(account_key, homeserver_url, session),
-    )
+    )?;
+    clear_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// Error from a failed [`relocate_store_and_save_session`]/
@@ -898,6 +1117,15 @@ impl RelocationFailure {
         Self {
             message: message.to_string(),
             safe_to_resume_previous: true,
+        }
+    }
+
+    fn committed(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            // The new store/session pair is internally consistent, but the
+            // previous client no longer matches it and must not be resumed.
+            safe_to_resume_previous: false,
         }
     }
 }
@@ -1301,9 +1529,10 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
 /// True if `account_key`'s currently-saved [`MatrixSession`] is the one this
 /// caller just relocated/saved (matched by `device_id`) — used right after
 /// [`relocate_store_and_save_session`] returns, before a login flow adopts
-/// its `Client` and clears the other session kind, to check whether a
-/// concurrent completion for the *same* account (e.g. a double-submitted
-/// login) has already superseded it since. Now that every caller holds
+/// its `Client`, to check whether a concurrent completion for the *same*
+/// account (e.g. a double-submitted login) has already superseded it since.
+/// The relocation helper has already confirmed the conflicting session kind
+/// is absent before it can remove logout intent. Now that every caller holds
 /// `MatrixState::login_completion_lock` across its whole completion
 /// sequence, no concurrent completion can actually be running at this
 /// point — this is defense-in-depth, not load-bearing synchronization
@@ -1596,6 +1825,9 @@ mod tests {
     const TEST_MXID_OAUTH: &str = "@charm-persistence-test-oauth:localhost";
     const TEST_MXID_PASSPHRASE_A: &str = "@charm-persistence-test-passphrase-a:localhost";
     const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
+    const TEST_MXID_PASSPHRASE_READ_ONLY: &str =
+        "@charm-persistence-test-passphrase-read-only:localhost";
+    const TEST_MXID_HEADLESS_LOGOUT: &str = "@charm-persistence-test-headless-logout:localhost";
     const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
     const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
     const TEST_MXID_BOOKMARKS_SECRET: &str = "@charm-persistence-test-bookmarks-secret:localhost";
@@ -1742,6 +1974,28 @@ mod tests {
 
         let other_account = get_or_create_passphrase(&key_b).unwrap();
         assert_ne!(first, other_account);
+    }
+
+    #[test]
+    fn load_passphrase_never_creates_a_missing_credential() {
+        let key = account_key(TEST_MXID_PASSPHRASE_READ_ONLY);
+        let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&key)).unwrap();
+        let _ = entry.delete_credential();
+
+        assert!(load_passphrase(&key).is_err());
+        assert!(matches!(
+            entry.get_password(),
+            Err(SecretStoreError::NotFound)
+        ));
+
+        let existing_passphrase: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+        entry.set_password(&existing_passphrase).unwrap();
+        assert_eq!(load_passphrase(&key).unwrap(), existing_passphrase);
+        entry.delete_credential().unwrap();
     }
 
     /// Review fix regression test: `bookmarks_encryption_key` used to derive
@@ -1947,6 +2201,79 @@ mod tests {
         assert!(keys.contains(&account_key));
         assert!(!keys.contains(&temp_key));
         assert!(!keys.contains(&backup_key));
+    }
+
+    #[test]
+    fn known_account_keys_excludes_a_logout_tombstone() {
+        let root = ScratchRoot::new("known-logout-tombstone");
+        let account_key = account_key("@charm-persistence-test-logout:localhost");
+        store_path_at(&root.0, &account_key).unwrap();
+        std::fs::write(
+            root.0
+                .join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+            [],
+        )
+        .unwrap();
+
+        assert!(!known_account_keys_at(&root.0)
+            .unwrap()
+            .contains(&account_key));
+    }
+
+    #[test]
+    fn fallback_logout_tombstone_suppresses_restore_when_primary_write_fails() {
+        let app_data = ScratchRoot::new("fallback-logout-tombstone");
+        let store_root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&store_root).unwrap();
+        let account_key = account_key("@charm-fallback-logout:localhost");
+        store_path_at(&store_root, &account_key).unwrap();
+
+        // A directory at the primary marker path makes the file write fail
+        // deterministically on every supported platform.
+        std::fs::create_dir(store_root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")))
+            .unwrap();
+        mark_logout_tombstone_with_fallback_at(&store_root, &app_data.0, &account_key)
+            .expect("fallback marker");
+
+        assert!(app_data
+            .0
+            .join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}"))
+            .is_file());
+        assert!(!known_account_keys_at(&store_root)
+            .unwrap()
+            .contains(&account_key));
+    }
+
+    #[test]
+    fn headless_sweep_finishes_logout_credentials_and_search_cleanup() {
+        let app_data = ScratchRoot::new("headless-logout");
+        let store_root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&store_root).unwrap();
+        let account_key = account_key(TEST_MXID_HEADLESS_LOGOUT);
+        store_path_at(&store_root, &account_key).unwrap();
+
+        let session = dummy_session(TEST_MXID_HEADLESS_LOGOUT);
+        save_session(&account_key, "https://example.invalid", &session).unwrap();
+        get_or_create_passphrase(&account_key).unwrap();
+        let index = super::super::search::SearchIndex::open(
+            &app_data.0,
+            &account_key,
+            session.meta.device_id.as_str(),
+        )
+        .unwrap();
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let tombstone = store_root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}"));
+        std::fs::write(&tombstone, []).unwrap();
+
+        sweep_orphan_temp_stores_at(&store_root).unwrap();
+
+        assert!(load_session(&account_key).unwrap().is_none());
+        assert!(!database_path.exists());
+        assert!(!tombstone.exists());
+        if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key)) {
+            let _ = entry.delete_credential();
+        }
     }
 
     #[test]

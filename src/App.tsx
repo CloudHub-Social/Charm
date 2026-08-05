@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
@@ -6,7 +6,7 @@ import { RoomsScreen } from "@/features/rooms/RoomsScreen";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
-import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
+import { onSessionInvalidated, tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
@@ -33,13 +33,53 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
   const [crashRecoveryPromptOpen, setCrashRecoveryPromptOpen] = useState(showCrashRecoveryPrompt);
   const onboarding = useOnboardingGate(session?.user_id ?? null);
+  const onLoggedOutRef = useRef(onLoggedOut);
+  onLoggedOutRef.current = onLoggedOut;
+
+  const handleLoggedOut = useCallback(() => {
+    // Clears every account-scoped cache entry (profile, devices,
+    // notification settings, room list, ...) so a subsequent sign-in as a
+    // *different* account in the same app session never shows stale data.
+    queryClient.clear();
+    resetPrivacySettingsWriteQueue();
+    clearSettingsHash();
+    onLoggedOutRef.current?.();
+    setSession(null);
+  }, []);
 
   useEffect(() => {
-    tryRestoreSession()
-      .then(setSession)
+    let active = true;
+    let invalidated = false;
+    let stopListening: (() => void) | undefined;
+
+    // Listener readiness must precede restore: Rust starts initial sync
+    // before returning the restored session, so an immediately revoked token
+    // can otherwise emit into the gap before Tauri's async `listen` resolves.
+    onSessionInvalidated(() => {
+      invalidated = true;
+      if (active) handleLoggedOut();
+    })
+      .then((unlisten) => {
+        if (!active) {
+          unlisten();
+          return null;
+        }
+        stopListening = unlisten;
+        return tryRestoreSession();
+      })
+      .then((restoredSession) => {
+        if (active && !invalidated) setSession(restoredSession);
+      })
       .catch(logAndIgnore)
-      .finally(() => setRestoring(false));
-  }, []);
+      .finally(() => {
+        if (active) setRestoring(false);
+      });
+
+    return () => {
+      active = false;
+      stopListening?.();
+    };
+  }, [handleLoggedOut]);
 
   useEffect(() => {
     // Held here (above the login gate) so a deep link received before sign-in
@@ -82,28 +122,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
       crashRecoveryPromptOpen={crashRecoveryPromptOpen}
       onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
-      onLoggedOut={() => {
-        // Clears every account-scoped cache entry (profile, devices,
-        // notification settings, room list, ...) so a subsequent sign-in as
-        // a *different* account in the same app session never shows stale
-        // data from this one before its own queries have refetched.
-        queryClient.clear();
-        // Review fix: a privacy-settings write can still be queued (not
-        // yet executed — behind an earlier one) at the moment of logout.
-        // Without this, it would still run once its turn came, saving this
-        // account's full settings snapshot (and its `appear_offline`
-        // choice) onto whatever account signs in next in the same
-        // session. Bumps the write generation so any such queued write
-        // becomes a no-op instead of actually calling into Rust.
-        resetPrivacySettingsWriteQueue();
-        // Logout/deactivate unmount SettingsScreen directly rather than via
-        // closeSettings, so a lingering `#/settings/<section>` hash would
-        // otherwise make the next sign-in's `useSettingsHashSync` reopen
-        // settings straight away.
-        clearSettingsHash();
-        onLoggedOut?.();
-        setSession(null);
-      }}
+      onLoggedOut={handleLoggedOut}
     />
   );
 }

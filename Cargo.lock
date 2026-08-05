@@ -1232,6 +1232,7 @@ dependencies = [
  "eyeball",
  "fs4",
  "futures-util",
+ "hkdf",
  "image",
  "imbl",
  "jni 0.22.4",
@@ -1250,9 +1251,11 @@ dependencies = [
  "rand 0.10.2",
  "regex",
  "reqwest 0.13.4",
+ "rusqlite",
  "sentry",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sha2 0.11.0",
  "tauri",
  "tauri-build",
@@ -1277,6 +1280,7 @@ dependencies = [
  "url",
  "webkit2gtk",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -4095,6 +4099,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
 dependencies = [
  "cc",
+ "openssl-sys",
  "pkg-config",
  "vcpkg",
 ]

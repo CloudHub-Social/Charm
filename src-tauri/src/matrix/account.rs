@@ -16,12 +16,13 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::media;
 use super::persistence;
 use super::presence;
+use super::search;
 use super::shell;
 use super::sync;
 use super::MatrixState;
@@ -218,13 +219,32 @@ where
 /// in-memory client. Deliberately does *not* delete the account's SQLCipher
 /// store — see Spec 08's "Logout store retention": this is a sign-out, not a
 /// device wipe, so a later re-login onto the same account reuses the
-/// existing store instead of starting cold.
+/// existing store instead of starting cold. Spec 28's separate decrypted-content
+/// search index, which is independently encrypted at rest, is different: logout
+/// removes the current device index and deactivation removes every index for the
+/// account.
 async fn clear_local_session(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
     user_id: &str,
+    device_id: &str,
+    purge_all_search_indexes: bool,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    // Serialize the tombstone + credential deletion sequence against every
+    // login/registration completion that can replace this account's saved
+    // session. Otherwise a completion could clear the tombstone for its new
+    // session just before this logout deletes that same entry (or vice versa).
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // Write this empty filesystem tombstone before touching either keychain
+    // entry. If a credential delete fails or the process exits mid-teardown,
+    // startup excludes this account, retries both deletes, and purges every
+    // account search index instead of restoring or stranding data for a
+    // session the user already signed out of.
+    let mut cleanup_errors = Vec::new();
+    persistence::mark_logout_tombstone(app, &account_key)?;
+    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -236,16 +256,27 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    persistence::clear_session(&account_key)?;
-    persistence::clear_oauth_session(&account_key)?;
+    // Preserve credential-store failures but never let one short-circuit the
+    // rest of local teardown. Do not remove the credentials unless startup
+    // has durable restore-suppression and cleanup authority through the
+    // primary or fallback logout tombstone.
+    let mut credentials_cleared = true;
+    if let Err(error) = persistence::clear_session(&account_key) {
+        credentials_cleared = false;
+        cleanup_errors.push(error);
+    }
+    if let Err(error) = persistence::clear_oauth_session(&account_key) {
+        credentials_cleared = false;
+        cleanup_errors.push(error);
+    }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
-    // that happens to run concurrently, and by this point the persisted
-    // session those two `clear_*` calls just deleted is already gone — a
-    // command that grabbed the old client during the (now-multi-await)
-    // teardown window would let the signed-out account keep sending/fetching
-    // until the next launch.
+    // that happens to run concurrently. By this point the persisted session
+    // is either gone or excluded from restoration by a durable tombstone; a
+    // command that grabbed the old live client during the (now-multi-await)
+    // teardown window must not let the signed-out account keep sending or
+    // fetching.
     *state.client.lock().await = None;
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
@@ -266,6 +297,17 @@ async fn clear_local_session(
     // slot already empty (this function had taken it) and have nothing left
     // to await, but the task itself could still be running.
     sync::abort_current_sync_loop(app).await;
+
+    // Preserve a search-cleanup failure until all account-scoped in-memory
+    // state has been reset below. Returning early here could otherwise leave
+    // the next login with the signed-out account's presence or push state.
+    let search_purge_result = app_data_dir.and_then(|app_data_dir| {
+        if purge_all_search_indexes {
+            search::purge_account_indexes(&app_data_dir, &account_key)
+        } else {
+            search::purge_device_index(&app_data_dir, &account_key, device_id)
+        }
+    });
 
     // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
     // iteration and isn't tied to any particular client — without resetting
@@ -291,6 +333,29 @@ async fn clear_local_session(
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
 
+    // Credentials and the active client are already gone at this point. If
+    // the derived-index purge failed, the command must still tell the
+    // renderer to leave its authenticated surface; otherwise its explicit
+    // logout callback never runs and retrying can only return "not logged
+    // in". Successful explicit logout keeps using the command caller's
+    // callback, avoiding a duplicate invalidation event on the normal path.
+    match search_purge_result {
+        Ok(()) if credentials_cleared => {
+            if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+                cleanup_errors.push(error);
+            }
+        }
+        Ok(()) => {}
+        Err(error) => cleanup_errors.push(error),
+    }
+    if !cleanup_errors.is_empty() {
+        let _ = app.emit("session:invalidated", ());
+        for error in cleanup_errors.iter().skip(1) {
+            eprintln!("additional local session cleanup failure: {error}");
+        }
+        return Err(cleanup_errors.remove(0));
+    }
+
     Ok(())
 }
 
@@ -309,6 +374,10 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
 
     let revoke_client = client.clone();
     tokio::spawn(async move {
@@ -319,7 +388,7 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         }
     });
 
-    clear_local_session(&app, &state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str(), device_id.as_str(), false).await
 }
 
 #[tauri::command]
@@ -630,6 +699,10 @@ pub async fn deactivate_account(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
     let account = client.account();
 
     retry_uia_with_session(&user_id, password, |auth| {
@@ -637,7 +710,7 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&app, &state, user_id.as_str())
+    clear_local_session(&app, &state, user_id.as_str(), device_id.as_str(), true)
         .await
         .map_err(UiaCommandError::from)
 }

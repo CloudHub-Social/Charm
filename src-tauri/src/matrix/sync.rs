@@ -3,6 +3,7 @@
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -10,9 +11,10 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, shell, verification,
-    MatrixState,
+    ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    verification, MatrixState,
 };
+use crate::push;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -630,6 +632,152 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     spawn_sync_task(app, client);
 }
 
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    is_terminal_auth_error_kind(error.client_api_error_kind())
+}
+
+fn is_terminal_auth_error_kind(kind: Option<&ErrorKind>) -> bool {
+    matches!(kind, Some(ErrorKind::UnknownToken(_)))
+}
+
+async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
+    let (Some(user_id), Some(device_id)) = (client.user_id(), client.device_id()) else {
+        return;
+    };
+    let account_key = persistence::account_key(user_id.as_str());
+    let device_id = device_id.to_string();
+    let state = app.state::<MatrixState>();
+    // Serialize against every password, registration, SSO, and QR completion
+    // that could install a replacement session for this account. Without
+    // this, a stale task could verify its old keychain entry and then clear a
+    // new login that landed between that read and the delete.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // If this is still the renderer's active session, persist invalidation
+    // before touching either credential. A keychain read/delete failure must
+    // not make the revoked account restorable on the next launch. Stale sync
+    // tasks for a superseded session deliberately do not create an
+    // account-wide tombstone, because that would invalidate the replacement
+    // login which now owns the same account key.
+    let terminal_session_is_active = state.client.lock().await.as_ref().is_some_and(|active| {
+        active.user_id() == client.user_id() && active.device_id() == client.device_id()
+    });
+    let tombstone_marked = if terminal_session_is_active {
+        match persistence::mark_logout_tombstone(app, &account_key) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("failed to persist cleanup after terminal authentication error: {error}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let app_data_dir = app.path().app_data_dir().ok();
+    // Queue the device purge before any matching credential deletion for
+    // both the active task and stale superseded tasks. The account tombstone
+    // already protects an active session when present; stale tasks cannot use
+    // an account-wide tombstone without invalidating the replacement login.
+    let device_purge_marked = match app_data_dir.as_ref() {
+        Some(app_data_dir) => {
+            match search::mark_device_index_purge_pending(app_data_dir, &account_key, &device_id) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!(
+                    "failed to persist terminal-auth search cleanup before credential removal: {error}"
+                );
+                    false
+                }
+            }
+        }
+        None => false,
+    };
+    let credential_cleanup_authorized = if terminal_session_is_active {
+        tombstone_marked || device_purge_marked
+    } else {
+        device_purge_marked
+    };
+
+    // A stale sync task must never clear a newer login for the same account.
+    // Only remove a persisted entry when it still belongs to this exact
+    // revoked device; the derived device index is always safe to remove.
+    let matrix_credential_cleared = match persistence::load_session(&account_key) {
+        Ok(Some(saved))
+            if credential_cleanup_authorized
+                && saved.session.meta.device_id.as_str() == device_id.as_str() =>
+        {
+            persistence::clear_session(&account_key).is_ok()
+        }
+        Err(_) if terminal_session_is_active && credential_cleanup_authorized => {
+            persistence::clear_session(&account_key).is_ok()
+        }
+        Ok(None) => true,
+        _ => !terminal_session_is_active,
+    };
+    let oauth_credential_cleared = match persistence::load_oauth_session(&account_key) {
+        Ok(Some(saved))
+            if credential_cleanup_authorized
+                && saved.user.meta.device_id.as_str() == device_id.as_str() =>
+        {
+            persistence::clear_oauth_session(&account_key).is_ok()
+        }
+        Err(_) if terminal_session_is_active && credential_cleanup_authorized => {
+            persistence::clear_oauth_session(&account_key).is_ok()
+        }
+        Ok(None) => true,
+        _ => !terminal_session_is_active,
+    };
+    let search_index_cleared = match app_data_dir {
+        Some(app_data_dir) => {
+            if let Err(error) = search::purge_device_index(&app_data_dir, &account_key, &device_id)
+            {
+                eprintln!(
+                    "failed to purge message search after terminal authentication error: {error}"
+                );
+                false
+            } else {
+                true
+            }
+        }
+        None => {
+            eprintln!("failed to resolve app data for terminal-auth search cleanup");
+            false
+        }
+    };
+    if tombstone_marked
+        && matrix_credential_cleared
+        && oauth_credential_cleared
+        && search_index_cleared
+    {
+        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+            eprintln!(
+                "failed to clear cleanup marker after terminal authentication error: {error}"
+            );
+        }
+    }
+
+    let cleared_active_client = {
+        let mut active_client = state.client.lock().await;
+        // Matrix device IDs are scoped to an account, not globally unique.
+        // A stale task for account A must not clear account B merely because
+        // both homeservers issued the same device-ID string.
+        let is_same_session = active_client.as_ref().is_some_and(|active| {
+            active.user_id() == client.user_id() && active.device_id() == client.device_id()
+        });
+        if is_same_session {
+            *active_client = None;
+        }
+        is_same_session
+    };
+    if cleared_active_client {
+        push::clear_local_state_after_terminal_auth(app, &state, &account_key).await;
+        state.clear_timelines().await;
+        state.clear_pinned_event_cache().await;
+        let _ = shell::apply_native_badge(app, 0);
+        let _ = app.emit("session:invalidated", ());
+    }
+}
+
 /// The sync-task-spawning half of [`spawn_sync_loop`], without the
 /// `register_*_handler` calls — use this (not `spawn_sync_loop`) to *resume*
 /// a `Client` that already had those registered by an earlier
@@ -715,6 +863,9 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         {
             Ok(response) => response,
             Err(e) => {
+                if is_terminal_auth_error(&e) {
+                    teardown_terminal_auth_session(&app, &client).await;
+                }
                 let _ = app.emit(
                     "sync:state",
                     SyncStateEvent::Error {
@@ -836,6 +987,22 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        tracing::error!(
+                            command = "sync_loop",
+                            status = "terminal_authentication_error",
+                            error = %e,
+                            "Sync session was revoked"
+                        );
+                        teardown_terminal_auth_session(&app, &client).await;
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         tracing::error!(
@@ -976,5 +1143,22 @@ mod reconciled_sync_presence_tests {
             reconciled_sync_presence(true, false, PresenceStateDto::Online),
             PresenceStateDto::Online
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_auth_error_tests {
+    use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
+
+    use super::is_terminal_auth_error_kind;
+
+    #[test]
+    fn unknown_token_is_the_only_terminal_sync_auth_error_kind() {
+        let unknown_token = ErrorKind::UnknownToken(UnknownTokenErrorData::new());
+        let forbidden = ErrorKind::Forbidden;
+
+        assert!(is_terminal_auth_error_kind(Some(&unknown_token)));
+        assert!(!is_terminal_auth_error_kind(Some(&forbidden)));
+        assert!(!is_terminal_auth_error_kind(None));
     }
 }

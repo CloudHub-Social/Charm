@@ -310,15 +310,6 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     );
                     return;
                 }
-                // Enforces the single-account invariant `try_restore_session`'s
-                // doc comment assumes: for *this* account_key, only one
-                // session kind should ever be present in the keychain at a
-                // time (other accounts' entries are untouched — each is
-                // keyed separately). Best-effort — a failure here doesn't
-                // roll back the OAuth session that already succeeded and
-                // was just saved above.
-                let _ = persistence::clear_session(&account_key);
-
                 *state.client.lock().await = Some(client.clone());
                 spawn_sync_loop(app.clone(), client);
 

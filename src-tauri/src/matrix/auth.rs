@@ -25,7 +25,7 @@ use std::hash::{BuildHasher, Hasher};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
-use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
+use super::{persistence, search, sync, MatrixState, ReservedTempStoreGuard};
 
 /// The `charm://` deep-link the homeserver's SSO flow redirects back to with
 /// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
@@ -349,11 +349,6 @@ pub async fn login(
                     .to_string(),
             );
         }
-        // Enforces the single-account invariant: only one session kind
-        // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-        // present at a time.
-        let _ = persistence::clear_oauth_session(&account_key);
-
         let response = LoginResponse {
             user_id: session.meta.user_id.to_string(),
             device_id: session.meta.device_id.to_string(),
@@ -480,7 +475,12 @@ pub async fn try_restore_session(
             .await
             .is_err()
         {
-            let _ = persistence::clear_session(&account_key);
+            cleanup_rejected_restore(
+                &app,
+                &account_key,
+                saved.session.meta.device_id.as_str(),
+                persistence::clear_session,
+            );
             continue;
         }
 
@@ -505,6 +505,7 @@ async fn restore_oauth_session(
     saved: persistence::SavedOAuthSession,
 ) -> Result<Option<LoginResponse>, String> {
     let homeserver_url = saved.homeserver_url.clone();
+    let device_id = saved.user.meta.device_id.to_string();
     let client = build_client(app, &homeserver_url, account_key).await?;
     let session = saved.into_oauth_session();
 
@@ -514,12 +515,22 @@ async fn restore_oauth_session(
         .await
         .is_err()
     {
-        let _ = persistence::clear_oauth_session(account_key);
+        cleanup_rejected_restore(
+            app,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        );
         return Ok(None);
     }
 
     let Some(session_meta) = client.session_meta().cloned() else {
-        let _ = persistence::clear_oauth_session(account_key);
+        cleanup_rejected_restore(
+            app,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        );
         return Ok(None);
     };
 
@@ -538,6 +549,46 @@ async fn restore_oauth_session(
     sync::spawn_sync_loop(app.clone(), client);
 
     Ok(Some(response))
+}
+
+fn cleanup_rejected_restore(
+    app: &AppHandle,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) {
+    let app_data_dir = match app.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(_) => {
+            // Keep the rejected credential as the retry authority when no
+            // durable derived-index cleanup intent can be written.
+            eprintln!("failed to prepare message search cleanup after session restore rejection");
+            return;
+        }
+    };
+    cleanup_rejected_restore_at(&app_data_dir, account_key, device_id, clear_credential);
+}
+
+fn cleanup_rejected_restore_at(
+    app_data_dir: &std::path::Path,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) {
+    if let Err(error) =
+        search::mark_device_index_purge_pending(app_data_dir, account_key, device_id)
+    {
+        eprintln!(
+            "failed to prepare message search cleanup after session restore rejection: {error}"
+        );
+        return;
+    }
+    if let Err(error) = clear_credential(account_key) {
+        eprintln!("failed to clear rejected session credential: {error}");
+    }
+    if let Err(error) = search::purge_device_index(app_data_dir, account_key, device_id) {
+        eprintln!("failed to purge message search after session restore rejection: {error}");
+    }
 }
 
 /// Headlessly builds and restores a client for `account_key` — no
@@ -580,6 +631,7 @@ pub(crate) async fn restore_session_for_push_at(
     account_key: &str,
 ) -> Result<Option<Client>, String> {
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
+        let device_id = saved.user.meta.device_id.to_string();
         let client =
             build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
         let session = saved.into_oauth_session();
@@ -591,6 +643,12 @@ pub(crate) async fn restore_session_for_push_at(
         {
             return Ok(Some(client));
         }
+        cleanup_rejected_push_restore(
+            store_root,
+            account_key,
+            &device_id,
+            persistence::clear_oauth_session,
+        )?;
         // Deliberately not returning here: see `try_restore_session`'s
         // identical fall-through for why a stale OAuth entry that fails to
         // restore isn't proof this account has no restorable session —
@@ -600,6 +658,7 @@ pub(crate) async fn restore_session_for_push_at(
     let Some(saved) = persistence::load_session(account_key)? else {
         return Ok(None);
     };
+    let device_id = saved.session.meta.device_id.to_string();
     let client = build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
     if client
         .matrix_auth()
@@ -607,9 +666,28 @@ pub(crate) async fn restore_session_for_push_at(
         .await
         .is_err()
     {
+        cleanup_rejected_push_restore(
+            store_root,
+            account_key,
+            &device_id,
+            persistence::clear_session,
+        )?;
         return Ok(None);
     }
     Ok(Some(client))
+}
+
+fn cleanup_rejected_push_restore(
+    store_root: &std::path::Path,
+    account_key: &str,
+    device_id: &str,
+    clear_credential: fn(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let app_data_dir = store_root
+        .parent()
+        .ok_or_else(|| "message search app-data directory unavailable".to_string())?;
+    cleanup_rejected_restore_at(app_data_dir, account_key, device_id, clear_credential);
+    Ok(())
 }
 
 /// Accepts either a bare server name (`matrix.org`) or a full homeserver URL —
@@ -843,11 +921,6 @@ async fn finish_registration(
                 .to_string(),
         );
     }
-    // Enforces the single-account invariant: only one session kind
-    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-    // present at a time.
-    let _ = persistence::clear_oauth_session(&account_key);
-
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),
@@ -3672,11 +3745,6 @@ pub async fn complete_sso_login(
                 .to_string(),
         );
     }
-    // Enforces the single-account invariant: only one session kind
-    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-    // present at a time.
-    let _ = persistence::clear_oauth_session(&account_key);
-
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),
