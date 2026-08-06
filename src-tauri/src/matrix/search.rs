@@ -1340,6 +1340,12 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
     {
         return Ok(());
     }
+    if !feature_enabled(app) {
+        if let Some(active) = slot.take() {
+            active.index.delete()?;
+        }
+        return Ok(());
+    }
     let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
     work.apply_to(index)
 }
@@ -2065,7 +2071,9 @@ pub async fn search_messages(
         return Err(SearchCommandError::unavailable());
     }
 
+    let blocking_app = app.clone();
     let mut page = tauri::async_runtime::spawn_blocking(move || {
+        let app = blocking_app;
         let state = app.state::<super::MatrixState>();
         let mut slot = state
             .search_index
@@ -2082,6 +2090,18 @@ pub async fn search_messages(
         {
             return Err(SearchCommandError::unavailable());
         }
+        // The initial guard precedes cache seeding and account-data reads.
+        // Re-evaluate the trusted kill switch under the index lock so a flag
+        // change during those awaits cannot reopen or query the local index.
+        if !feature_enabled(&app) {
+            if let Some(active) = slot.take() {
+                active
+                    .index
+                    .delete()
+                    .map_err(|_| SearchCommandError::unavailable())?;
+            }
+            return Err(SearchCommandError::unavailable());
+        }
         let index = ensure_index(&app, &mut slot, &account_store_key, &device_id)
             .map_err(|_| SearchCommandError::unavailable())?;
         index
@@ -2094,6 +2114,15 @@ pub async fn search_messages(
             limit,
             cursor.as_deref(),
         )?;
+        if !feature_enabled(&app) {
+            if let Some(active) = slot.take() {
+                active
+                    .index
+                    .delete()
+                    .map_err(|_| SearchCommandError::unavailable())?;
+            }
+            return Err(SearchCommandError::unavailable());
+        }
         page.incomplete = state
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire)
@@ -2108,6 +2137,9 @@ pub async fn search_messages(
         .require_client()
         .await
         .map_err(|_| SearchCommandError::unavailable())?;
+    if !feature_enabled(&app) {
+        return Err(SearchCommandError::unavailable());
+    }
     if active_identity(&current_client).as_ref() != Some(&expected_identity) {
         return Err(SearchCommandError::unavailable());
     }
