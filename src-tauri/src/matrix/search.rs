@@ -904,6 +904,18 @@ async fn client_identity_is_current(
         == Some(expected_identity)
 }
 
+async fn search_lifecycle_is_current(
+    state: &super::MatrixState,
+    expected_identity: &(String, String),
+    generation: u64,
+) -> bool {
+    generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+        && client_identity_is_current(state, expected_identity).await
+}
+
 /// Invalidates every detached/queued search task owned by the session being
 /// replaced, resets lifecycle disclosure for the next session, and closes the
 /// process-local index handle without deleting the account/device database.
@@ -928,6 +940,11 @@ pub(crate) async fn invalidate_for_session_replacement(state: &super::MatrixStat
     state
         .search_incomplete
         .store(false, std::sync::atomic::Ordering::Release);
+    state
+        .search_pending_seed_rooms
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
     let search_index = std::sync::Arc::clone(&state.search_index);
     if tokio::task::spawn_blocking(move || {
         search_index
@@ -1505,7 +1522,11 @@ pub(crate) async fn submit_sync_response(
     {
         submit_cached_history(app, client, generation).await;
     }
-    let Ok(ignored_senders) = super::account::ignored_user_ids(client).await else {
+    let ignored_senders = super::account::ignored_user_ids(client).await;
+    if !search_lifecycle_is_current(&state, &client_identity, generation).await {
+        return;
+    }
+    let Ok(ignored_senders) = ignored_senders else {
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
@@ -1717,7 +1738,12 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             .store(false, std::sync::atomic::Ordering::Release);
         return;
     };
-    let Ok(ignored_senders) = super::account::ignored_user_ids(client).await else {
+    let expected_identity = (account_store_key.clone(), device_id.clone());
+    let ignored_senders = super::account::ignored_user_ids(client).await;
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
+    let Ok(ignored_senders) = ignored_senders else {
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
@@ -1731,10 +1757,16 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         .map(|sender| sender.to_string())
         .collect();
     let sender = search_work_sender(app).await;
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
     for room in client.joined_rooms() {
         let events = match room.event_cache().await {
             Ok((cache, _drop_handles)) => cache.events().await,
             Err(_) => {
+                if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+                    return;
+                }
                 state
                     .search_incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
@@ -1742,11 +1774,17 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             }
         };
         let Ok(events) = events else {
+            if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+                return;
+            }
             state
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
             continue;
         };
+        if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+            return;
+        }
         let Some(work) = work_from_cached_room(
             client,
             room.room_id().as_str(),
@@ -1763,6 +1801,13 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         }
         if room.state() != matrix_sdk::RoomState::Joined {
             continue;
+        }
+        // Event-cache reads and mutation construction retain decrypted bodies
+        // in this stack frame. Recheck at the final enqueue boundary so a
+        // logout/account switch drops them immediately rather than buffering
+        // stale-generation plaintext for the worker to discard later.
+        if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+            return;
         }
         if sender
             .try_send(QueuedSearchWork {
@@ -1789,6 +1834,9 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         mutations: Vec::new(),
         ignored_senders: HashSet::new(),
     };
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
     if sender
         .try_send(QueuedSearchWork {
             generation,
@@ -1807,6 +1855,42 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
     }
 }
 
+/// Adds metadata-only cached-room work to a single-worker queue. Insertion and
+/// worker ownership change under the same mutex, closing the empty-queue
+/// handoff race without retaining decrypted message bodies.
+pub fn enqueue_cached_room_seed<K: Eq + std::hash::Hash>(
+    pending: &std::sync::Mutex<HashSet<K>>,
+    running: &std::sync::atomic::AtomicBool,
+    request: K,
+) -> bool {
+    let mut pending = pending.lock().unwrap_or_else(|error| error.into_inner());
+    pending.insert(request);
+    running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+/// Takes one queued request, or atomically releases worker ownership while the
+/// queue mutex is still held when no follow-up remains.
+pub fn take_cached_room_seed<K: Clone + Eq + std::hash::Hash>(
+    pending: &std::sync::Mutex<HashSet<K>>,
+    running: &std::sync::atomic::AtomicBool,
+) -> Option<K> {
+    let mut pending = pending.lock().unwrap_or_else(|error| error.into_inner());
+    let next = pending.iter().next().cloned();
+    if let Some(next) = &next {
+        pending.remove(next);
+    } else {
+        running.store(false, std::sync::atomic::Ordering::Release);
+    }
+    next
+}
+
 /// Re-seeds one room after timeline pagination decrypts more local history.
 /// The detached task and bounded `try_send` keep the user-visible timeline
 /// response independent from event-cache and SQLCipher work.
@@ -1816,122 +1900,119 @@ pub(crate) fn schedule_cached_room(
     room_id: matrix_sdk::ruma::OwnedRoomId,
     generation: u64,
 ) {
+    if !feature_enabled(&app) || active_identity(&client).is_none() {
+        return;
+    }
+    let state = app.state::<super::MatrixState>();
+    let should_spawn = enqueue_cached_room_seed(
+        &state.search_pending_seed_rooms,
+        &state.search_pagination_seed_running,
+        (generation, room_id),
+    );
+    if !should_spawn {
+        return;
+    }
+
     tauri::async_runtime::spawn(async move {
-        if !feature_enabled(&app) {
-            return;
+        loop {
+            let state = app.state::<super::MatrixState>();
+            let request = take_cached_room_seed(
+                &state.search_pending_seed_rooms,
+                &state.search_pagination_seed_running,
+            );
+            let Some((generation, room_id)) = request else {
+                break;
+            };
+            process_cached_room_seed(&app, generation, room_id).await;
         }
-        let state = app.state::<super::MatrixState>();
-        let Some(expected_identity) = active_identity(&client) else {
-            return;
-        };
-        // The caller captured this generation under the same client lock that
-        // yielded `client`, before its pagination/load-around awaits. The
-        // detached task must never adopt a newer post-logout generation while
-        // still holding the old Client clone.
-        if !client_identity_is_current(&state, &expected_identity).await
-            || generation
-                != state
-                    .search_generation
-                    .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return;
-        }
-        let Some(room) = client.get_room(&room_id) else {
-            return;
-        };
-        if room.state() != matrix_sdk::RoomState::Joined {
-            return;
-        }
-        if state
-            .search_pagination_seed_running
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_err()
-        {
+        app.state::<super::MatrixState>()
+            .search_pagination_seed_done
+            .notify_waiters();
+    });
+}
+
+async fn process_cached_room_seed(
+    app: &AppHandle,
+    generation: u64,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    let state = app.state::<super::MatrixState>();
+    let Ok((client, current_generation)) = state.require_client_with_search_generation().await
+    else {
+        return;
+    };
+    if current_generation != generation {
+        return;
+    }
+    let Some(expected_identity) = active_identity(&client) else {
+        return;
+    };
+    let Some(room) = client.get_room(&room_id) else {
+        return;
+    };
+    if room.state() != matrix_sdk::RoomState::Joined {
+        return;
+    }
+    let Ok(ignored_senders) = super::account::ignored_user_ids(&client).await else {
+        if search_lifecycle_is_current(&state, &expected_identity, generation).await {
             state
                 .search_incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return;
+    };
+    let ignored_senders = ignored_senders
+        .into_iter()
+        .map(|sender| sender.to_string())
+        .collect();
+    let events = match room.event_cache().await {
+        Ok((cache, _drop_handles)) => cache.events().await,
+        Err(_) => {
+            if search_lifecycle_is_current(&state, &expected_identity, generation).await {
+                state
+                    .search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             return;
         }
-        async {
-            let Ok(ignored_senders) = super::account::ignored_user_ids(&client).await else {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return;
-            };
-            let ignored_senders = ignored_senders
-                .into_iter()
-                .map(|sender| sender.to_string())
-                .collect();
-            let events = match room.event_cache().await {
-                Ok((cache, _drop_handles)) => cache.events().await,
-                Err(_) => {
-                    state
-                        .search_incomplete
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    return;
-                }
-            };
-            let Ok(events) = events else {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return;
-            };
-            let Some(work) =
-                work_from_cached_room(&client, room_id.as_str(), &events, ignored_senders)
-            else {
-                return;
-            };
-            if work.is_empty() {
-                return;
-            }
-            // A successful leave changes the SDK room state before it waits
-            // for this re-seed to drain and queues the final purge. Never put
-            // departed-room plaintext behind that purge in the FIFO.
-            if room.state() != matrix_sdk::RoomState::Joined {
-                return;
-            }
-            let sender = search_work_sender(&app).await;
-            // `ignored_user_ids`, event-cache reads, and worker setup all
-            // suspend. Revalidate both the active account/device and the
-            // pre-await generation after the final await, immediately before
-            // enqueueing decrypted work.
-            if !client_identity_is_current(&state, &expected_identity).await
-                || generation
-                    != state
-                        .search_generation
-                        .load(std::sync::atomic::Ordering::Acquire)
-                || room.state() != matrix_sdk::RoomState::Joined
-            {
-                return;
-            }
-            if sender
-                .try_send(QueuedSearchWork {
-                    generation,
-                    work,
-                    completes_backfill: false,
-                    completion: None,
-                })
-                .is_err()
-            {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                tracing::warn!(command = "message_search_pagination", status = "queue_full");
-            }
+    };
+    let Ok(events) = events else {
+        if search_lifecycle_is_current(&state, &expected_identity, generation).await {
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
         }
-        .await;
+        return;
+    };
+    let Some(work) = work_from_cached_room(&client, room_id.as_str(), &events, ignored_senders)
+    else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    let sender = search_work_sender(app).await;
+    // Every await above may overlap logout, account replacement, or leave.
+    // Only the current lifecycle can retain this decrypted batch in the FIFO.
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await
+        || room.state() != matrix_sdk::RoomState::Joined
+    {
+        return;
+    }
+    if sender
+        .try_send(QueuedSearchWork {
+            generation,
+            work,
+            completes_backfill: false,
+            completion: None,
+        })
+        .is_err()
+    {
         state
-            .search_pagination_seed_running
-            .store(false, std::sync::atomic::Ordering::Release);
-        state.search_pagination_seed_done.notify_waiters();
-    });
+            .search_incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(command = "message_search_pagination", status = "queue_full");
+    }
 }
 
 #[tauri::command]
@@ -2637,6 +2718,22 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_room_seeds_keep_a_metadata_only_follow_up() {
+        let pending = std::sync::Mutex::new(HashSet::new());
+        let running = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(enqueue_cached_room_seed(&pending, &running, "!one"));
+        assert_eq!(take_cached_room_seed(&pending, &running), Some("!one"));
+
+        // The worker still owns `running` while processing the first request,
+        // so this overlap must remain queued rather than spawning or dropping.
+        assert!(!enqueue_cached_room_seed(&pending, &running, "!two"));
+        assert_eq!(take_cached_room_seed(&pending, &running), Some("!two"));
+        assert_eq!(take_cached_room_seed(&pending, &running), None);
+        assert!(!running.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
     fn privacy_removals_require_reliable_queue_delivery() {
         let apply = work_with(vec![SearchMutation::Apply(document(
             Some("hello"),
@@ -2741,6 +2838,10 @@ mod tests {
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
+        state.search_pending_seed_rooms.lock().unwrap().insert((
+            0,
+            matrix_sdk::ruma::RoomId::parse("!room:example.org").unwrap(),
+        ));
 
         invalidate_for_session_replacement(&state).await;
 
@@ -2759,6 +2860,7 @@ mod tests {
         assert!(!state
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
+        assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
     }
 
     #[test]

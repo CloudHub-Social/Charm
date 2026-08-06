@@ -52,6 +52,7 @@ pub(crate) struct TimelineSearchContext {
     sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<QueuedSearchWork>>>>,
     incomplete: Arc<std::sync::atomic::AtomicBool>,
     running: Arc<std::sync::atomic::AtomicBool>,
+    pending_rooms: Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
     done: Arc<tokio::sync::Notify>,
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -61,6 +62,7 @@ pub(crate) fn timeline_search_context(session: &crate::session::Session) -> Time
         sender: Arc::clone(&session.message_search_sender),
         incomplete: Arc::clone(&session.message_search_incomplete),
         running: Arc::clone(&session.message_search_pagination_seed_running),
+        pending_rooms: Arc::clone(&session.message_search_pending_seed_rooms),
         done: Arc::clone(&session.message_search_pagination_seed_done),
         closed: Arc::clone(&session.session_closed),
     }
@@ -505,105 +507,123 @@ pub(crate) fn schedule_cached_room_search_with_context(
     client: Client,
     room_id: matrix_sdk::ruma::OwnedRoomId,
 ) {
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let should_spawn = charm_lib::matrix::search::enqueue_cached_room_seed(
+        &context.pending_rooms,
+        &context.running,
+        room_id,
+    );
+    if !should_spawn {
+        return;
+    }
+
     tokio::spawn(async move {
-        if context.closed.load(std::sync::atomic::Ordering::Acquire) {
-            return;
+        loop {
+            if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+                context
+                    .pending_rooms
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clear();
+            }
+            let room_id = charm_lib::matrix::search::take_cached_room_seed(
+                &context.pending_rooms,
+                &context.running,
+            );
+            let Some(room_id) = room_id else { break };
+            process_web_cached_room_seed(&context, &client, room_id).await;
         }
-        let Some(room) = client.get_room(&room_id) else {
-            return;
-        };
-        if room.state() != matrix_sdk::RoomState::Joined {
-            return;
-        }
-        if context
-            .running
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_err()
-        {
+        context.done.notify_waiters();
+    });
+}
+
+async fn process_web_cached_room_seed(
+    context: &TimelineSearchContext,
+    client: &Client,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(room) = client.get_room(&room_id) else {
+        return;
+    };
+    if room.state() != matrix_sdk::RoomState::Joined {
+        return;
+    }
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
             context
                 .incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return;
+    };
+    let ignored = ignored
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
+    let events = match room.event_cache().await {
+        Ok((cache, _drop_handles)) => cache.events().await,
+        Err(_) => {
+            if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             return;
         }
-        async {
-            let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(&client).await else {
-                context
-                    .incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return;
-            };
-            let ignored = ignored
-                .into_iter()
-                .map(|user_id| user_id.to_string())
-                .collect();
-            let events = match room.event_cache().await {
-                Ok((cache, _drop_handles)) => cache.events().await,
-                Err(_) => {
-                    context
-                        .incomplete
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    return;
-                }
-            };
-            let Ok(events) = events else {
-                context
-                    .incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return;
-            };
-            let Some(work) = charm_lib::matrix::search::work_from_cached_room(
-                &client,
-                room_id.as_str(),
-                &events,
-                ignored,
-            ) else {
-                return;
-            };
-            if work.is_empty() {
-                return;
-            }
-            if room.state() != matrix_sdk::RoomState::Joined {
-                return;
-            }
-            let Some(sender) = context
-                .sender
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clone()
-            else {
-                return;
-            };
-            if context.closed.load(std::sync::atomic::Ordering::Acquire) {
-                return;
-            }
-            if sender
-                .try_send(QueuedSearchWork {
-                    work,
-                    completes_backfill: false,
-                    completion: None,
-                })
-                .is_err()
-            {
-                context
-                    .incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                tracing::warn!(
-                    command = "web_message_search_pagination",
-                    status = "queue_full"
-                );
-            }
+    };
+    let Ok(events) = events else {
+        if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
         }
-        .await;
+        return;
+    };
+    let Some(work) = charm_lib::matrix::search::work_from_cached_room(
+        client,
+        room_id.as_str(),
+        &events,
+        ignored,
+    ) else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    let Some(sender) = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    if context.closed.load(std::sync::atomic::Ordering::Acquire)
+        || room.state() != matrix_sdk::RoomState::Joined
+    {
+        return;
+    }
+    if sender
+        .try_send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+            completion: None,
+        })
+        .is_err()
+    {
         context
-            .running
-            .store(false, std::sync::atomic::Ordering::Release);
-        context.done.notify_waiters();
-    });
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(
+            command = "web_message_search_pagination",
+            status = "queue_full"
+        );
+    }
 }
 
 /// Same bound and backoff shape as desktop's loop — see

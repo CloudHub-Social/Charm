@@ -191,6 +191,11 @@ pub struct Session {
     /// Coalesces pagination re-seeds so detached plaintext snapshots stay
     /// bounded to one per web session.
     pub message_search_pagination_seed_running: Arc<AtomicBool>,
+    /// Metadata-only room ids waiting for the single cached-room seed worker.
+    /// This preserves a follow-up pass when multiple decryption updates overlap
+    /// without retaining another plaintext snapshot or detached task.
+    pub message_search_pending_seed_rooms:
+        Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
     /// Wakes leave cleanup after an in-flight pagination re-seed finishes
     /// enqueueing, keeping the subsequent room purge last in the FIFO.
     pub message_search_pagination_seed_done: Arc<tokio::sync::Notify>,
@@ -565,6 +570,9 @@ impl Session {
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
+            message_search_pending_seed_rooms: Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
             message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,

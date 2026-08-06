@@ -271,6 +271,11 @@ async fn clear_local_session(
     state
         .search_incomplete
         .store(false, std::sync::atomic::Ordering::Release);
+    state
+        .search_pending_seed_rooms
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
     // snapshots (Spec 10) — stopping it below zeroes the client but doesn't

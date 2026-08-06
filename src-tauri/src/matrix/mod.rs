@@ -96,6 +96,11 @@ pub struct MatrixState {
     /// Coalesces timeline-pagination re-seeds so decrypted room snapshots
     /// cannot accumulate in an unbounded set of detached tasks.
     pub(crate) search_pagination_seed_running: std::sync::atomic::AtomicBool,
+    /// Metadata-only follow-up queue for room re-seeds that arrive while the
+    /// single detached seed worker is busy. Generation is part of the key so
+    /// an old lifecycle can never consume a newer session's request.
+    pub(crate) search_pending_seed_rooms:
+        std::sync::Mutex<std::collections::HashSet<(u64, matrix_sdk::ruma::OwnedRoomId)>>,
     /// Wakes leave/forget cleanup once an in-flight pagination re-seed has
     /// finished enqueueing, so its final purge is ordered last in the FIFO.
     pub(crate) search_pagination_seed_done: tokio::sync::Notify,
@@ -410,6 +415,7 @@ impl Default for MatrixState {
             search_backfill_started: std::sync::atomic::AtomicBool::default(),
             search_backfill_pending: std::sync::atomic::AtomicBool::default(),
             search_pagination_seed_running: std::sync::atomic::AtomicBool::default(),
+            search_pending_seed_rooms: std::sync::Mutex::default(),
             search_pagination_seed_done: tokio::sync::Notify::new(),
             login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
