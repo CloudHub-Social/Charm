@@ -319,6 +319,35 @@ pub struct RoomMessageSummary {
     pub is_undecrypted: bool,
 }
 
+/// Tracks encrypted timeline entries that later become decryptable in-place.
+///
+/// Timeline listeners retain the set for their own bounded lifetime. Returning
+/// `true` on either an undecrypted -> decrypted transition or when a tracked
+/// placeholder disappears because the SDK folded a decrypted relation into
+/// its target. This avoids re-seeding for ordinary timeline diffs while still
+/// catching edits and redactions that no longer have their own rendered item.
+pub fn observe_newly_decrypted(
+    seen_undecrypted: &mut std::collections::HashSet<String>,
+    summaries: &[RoomMessageSummary],
+) -> bool {
+    let current_event_ids: std::collections::HashSet<&str> = summaries
+        .iter()
+        .map(|summary| summary.event_id.as_str())
+        .collect();
+    let mut newly_decrypted = seen_undecrypted
+        .iter()
+        .any(|event_id| !current_event_ids.contains(event_id.as_str()));
+    seen_undecrypted.retain(|event_id| current_event_ids.contains(event_id.as_str()));
+    for summary in summaries {
+        if summary.is_undecrypted {
+            seen_undecrypted.insert(summary.event_id.clone());
+        } else if seen_undecrypted.remove(&summary.event_id) {
+            newly_decrypted = true;
+        }
+    }
+    newly_decrypted
+}
+
 /// Additive Spec 39 timeline contract. The existing message-only page/update
 /// payload remains unchanged while the frontend rendering and collapse slice
 /// migrates to this discriminated union.
@@ -1088,6 +1117,55 @@ mod notification_dedup_tests {
         dedup.record(&[summary("$a", 100)]);
         assert!(!dedup.is_new(&summary("$a", 999)));
     }
+
+    #[test]
+    fn newly_decrypted_event_is_reported_once() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        let mut encrypted = summary("$encrypted", 100);
+        encrypted.is_undecrypted = true;
+
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[encrypted]
+        ));
+        assert!(observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$encrypted", 100)]
+        ));
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$encrypted", 100)]
+        ));
+    }
+
+    #[test]
+    fn disappearing_undecrypted_relation_is_reported_once() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        let mut relation = summary("$encrypted-edit", 100);
+        relation.is_undecrypted = true;
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90), relation]
+        ));
+
+        assert!(observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90)]
+        ));
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90)]
+        ));
+    }
+
+    #[test]
+    fn ordinary_timeline_changes_do_not_report_decryption() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$plain", 100)]
+        ));
+    }
 }
 
 /// Spawned once per room the first time its `Timeline` is built (see
@@ -1137,6 +1215,8 @@ pub(crate) fn spawn_timeline_listener(
         let initial_items =
             items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
         let initial_summaries = message_summaries(&initial_items);
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        observe_newly_decrypted(&mut seen_undecrypted, &initial_summaries);
         let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
             crate::feature_flags::flag(
                 &dir,
@@ -1157,6 +1237,8 @@ pub(crate) fn spawn_timeline_listener(
                 items: include_timeline_items.then_some(initial_items),
             },
         );
+        super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
+            .await;
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         loop {
@@ -1178,6 +1260,7 @@ pub(crate) fn spawn_timeline_listener(
             let timeline_items =
                 items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
             let summaries = message_summaries(&timeline_items);
+            let newly_decrypted = observe_newly_decrypted(&mut seen_undecrypted, &summaries);
             // Labs and remote-rollout changes apply to an already-open room.
             // Capturing the initial value would make the next live diff erase
             // notices after the flag changes until this Timeline is evicted.
@@ -1196,6 +1279,28 @@ pub(crate) fn spawn_timeline_listener(
             }
             dedup.record(&summaries);
 
+            if newly_decrypted {
+                // A listener can outlive a labs/remote-rollout flag change.
+                // Read the generation at the actual decryption transition so
+                // enabling search does not make this reseed look stale. Keep
+                // the identity check: a listener winding down after logout
+                // must not schedule work for the replacement account.
+                if let Ok((current_client, current_generation)) =
+                    state.require_client_with_search_generation().await
+                {
+                    if current_client.user_id() == client.user_id()
+                        && current_client.device_id() == client.device_id()
+                    {
+                        super::search::schedule_cached_room(
+                            app.clone(),
+                            current_client,
+                            room_id.clone(),
+                            current_generation,
+                        );
+                    }
+                }
+            }
+
             let _ = app.emit(
                 "timeline:update",
                 RoomTimelineUpdate {
@@ -1204,6 +1309,8 @@ pub(crate) fn spawn_timeline_listener(
                     items: include_timeline_items.then_some(timeline_items),
                 },
             );
+            super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
+                .await;
         }
     })
 }
@@ -1304,7 +1411,7 @@ pub async fn get_timeline_page(
     paginate: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
-    let client = state.require_client().await?;
+    let (client, search_generation) = state.require_client_with_search_generation().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
 
     // Distinguishes a cold open (`timeline.get_page.cold_open` — this room
@@ -1345,7 +1452,7 @@ pub async fn get_timeline_page(
                 crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
             )
         });
-        get_timeline_page_impl(
+        let page = get_timeline_page_impl(
             &client,
             &timeline,
             media_cache,
@@ -1353,7 +1460,16 @@ pub async fn get_timeline_page(
             include_timeline_items,
             paginate,
         )
-        .await
+        .await?;
+        if paginate {
+            super::search::schedule_cached_room(
+                app.clone(),
+                client.clone(),
+                parsed_room_id.clone(),
+                search_generation,
+            );
+        }
+        Ok(page)
     })
     .await
 }
@@ -1474,9 +1590,13 @@ pub async fn load_timeline_around_event(
     room_id: String,
     event_id: String,
 ) -> Result<JumpToEventResult, String> {
-    let client = state.require_client().await?;
+    let (client, search_generation) = state.require_client_with_search_generation().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {parsed_room_id} not found"))?;
+    require_room_still_joined(&room)?;
     // Review fix: registers this call as the room's *current* jump target
     // before doing any work — see `MatrixState::latest_jump_target`'s own
     // doc comment. Starting a second jump for this room immediately
@@ -1494,8 +1614,10 @@ pub async fn load_timeline_around_event(
     let timeline = state
         .get_or_create_timeline(&app, &client, &parsed_room_id, false)
         .await?;
+    require_room_still_joined(&room)?;
 
     if timeline_contains_event(&timeline, &event_id).await {
+        require_room_still_joined(&room)?;
         return Ok(JumpToEventResult {
             found: true,
             installed_focused_view: false,
@@ -1503,11 +1625,20 @@ pub async fn load_timeline_around_event(
     }
 
     for _ in 0..MAX_LOAD_AROUND_ITERATIONS {
+        require_room_still_joined(&room)?;
         let hit_start = timeline
             .paginate_backwards(EVENTS_PER_BATCH)
             .await
             .map_err(|e| e.to_string())?;
+        require_room_still_joined(&room)?;
         if timeline_contains_event(&timeline, &event_id).await {
+            require_room_still_joined(&room)?;
+            super::search::schedule_cached_room(
+                app.clone(),
+                client.clone(),
+                parsed_room_id.clone(),
+                search_generation,
+            );
             return Ok(JumpToEventResult {
                 found: true,
                 installed_focused_view: false,
@@ -1536,9 +1667,36 @@ pub async fn load_timeline_around_event(
     // history — the event may simply be deeper than we're willing to page
     // through client-side. Fall back to a direct server-side lookup instead
     // of reporting failure.
+    require_room_still_joined(&room)?;
+    // The bounded walk above can outlive the session that started it. Re-check
+    // both the lifecycle generation and Matrix identity immediately before the
+    // focused builder performs its `/context` request; the checks inside
+    // `load_focused_event_timeline` protect cache installation, but would run
+    // only after a stale client had already disclosed the target event ID to
+    // its homeserver.
+    let (current_client, current_search_generation) =
+        state.require_client_with_search_generation().await?;
+    if current_search_generation != search_generation
+        || current_client.user_id() != client.user_id()
+        || current_client.device_id() != client.device_id()
+    {
+        return Ok(JumpToEventResult {
+            found: false,
+            installed_focused_view: false,
+        });
+    }
     let found =
         load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
             .await?;
+    require_room_still_joined(&room)?;
+    if found {
+        super::search::schedule_cached_room(
+            app.clone(),
+            client.clone(),
+            parsed_room_id.clone(),
+            search_generation,
+        );
+    }
     Ok(JumpToEventResult {
         found,
         // Only `true` when the fallback both found the event *and* actually
@@ -1576,6 +1734,7 @@ async fn load_focused_event_timeline(
     let room = client
         .get_room(room_id)
         .ok_or_else(|| format!("room {room_id} not found"))?;
+    require_room_still_joined(&room)?;
 
     let focused = room
         .timeline_builder()
@@ -1589,11 +1748,13 @@ async fn load_focused_event_timeline(
         .build()
         .await
         .map_err(|e| e.to_string())?;
+    require_room_still_joined(&room)?;
     let focused = Arc::new(focused);
 
     if !timeline_contains_event(&focused, event_id.as_str()).await {
         return Ok(false);
     }
+    require_room_still_joined(&room)?;
 
     // Review fix: `client` was captured (and potentially awaited on, both in
     // `room.timeline_builder()...build()` above and in the caller's own
@@ -1649,6 +1810,7 @@ async fn load_focused_event_timeline(
     if !still_latest {
         return Ok(false);
     }
+    require_room_still_joined(&room)?;
 
     // `replace_timeline` returns `None` if its own re-check finds the
     // active client no longer matches, or this jump has since been
@@ -1659,6 +1821,14 @@ async fn load_focused_event_timeline(
         .replace_timeline(app, client, room_id, focused, Some(event_id))
         .await
         .is_some())
+}
+
+fn require_room_still_joined(room: &matrix_sdk::Room) -> Result<(), String> {
+    if room.state() == matrix_sdk::RoomState::Joined {
+        Ok(())
+    } else {
+        Err(format!("room {} is no longer joined", room.room_id()))
+    }
 }
 
 async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {

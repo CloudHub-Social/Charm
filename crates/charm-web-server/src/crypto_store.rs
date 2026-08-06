@@ -73,9 +73,13 @@ pub(crate) fn store_dir_path(store_key: &str) -> Result<PathBuf, String> {
     if store_key.is_empty() || !store_key.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(format!("invalid crypto store key: {store_key:?}"));
     }
-    let base =
-        std::env::var(crate::persistence::DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
-    Ok(PathBuf::from(base).join("crypto").join(store_key))
+    Ok(data_root_path().join("crypto").join(store_key))
+}
+
+pub(crate) fn data_root_path() -> PathBuf {
+    PathBuf::from(
+        std::env::var(crate::persistence::DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string()),
+    )
 }
 
 /// The directory for a *new* session's crypto store, creating it if

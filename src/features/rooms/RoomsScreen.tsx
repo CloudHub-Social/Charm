@@ -4,6 +4,7 @@ import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
+import { MessageSearchDialog } from "./MessageSearchDialog";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -24,6 +25,7 @@ import {
   resolveRoomAlias,
   setFocusedRoom,
   type RoomSummary,
+  type SearchResult,
 } from "@/lib/matrix";
 import { MembersDrawer } from "@/features/room-info/MembersDrawer";
 import { PinnedMessagesPanel } from "@/features/room-info/PinnedMessagesPanel";
@@ -90,6 +92,7 @@ export function RoomsScreen({
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
+  const messageSearchEnabled = useFlag("encrypted_local_message_search");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
@@ -101,6 +104,7 @@ export function RoomsScreen({
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [createSpaceParentId, setCreateSpaceParentId] = useState<string | null>(null);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
@@ -145,6 +149,19 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
+
+  useEffect(() => {
+    if (!messageSearchEnabled) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setMessageSearchOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [messageSearchEnabled]);
+
   function selectRoom(roomId: string) {
     autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
@@ -212,6 +229,13 @@ export function RoomsScreen({
     if (!room) return;
     selectRoomInVisibleMode(room);
     setJumpTarget({ roomId, eventId });
+  }
+
+  function handleMessageSearchResult(result: SearchResult) {
+    const room = joinedRooms.find((candidate) => candidate.room_id === result.room_id);
+    if (!room) return;
+    selectRoomInVisibleMode(room);
+    setJumpTarget({ roomId: result.room_id, eventId: result.event_id });
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -553,6 +577,9 @@ export function RoomsScreen({
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
             onSelectSearchResult={selectRoomInVisibleMode}
+            onOpenMessageSearch={
+              messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
+            }
             mode={roomListMode}
             selectedSpace={selectedSpace}
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
@@ -618,6 +645,15 @@ export function RoomsScreen({
         }}
         onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
+      {messageSearchEnabled && (
+        <MessageSearchDialog
+          open={messageSearchOpen}
+          onOpenChange={setMessageSearchOpen}
+          rooms={joinedRooms}
+          activeRoomId={activeRoomId}
+          onSelectResult={handleMessageSearchResult}
+        />
+      )}
       <RoomSettingsModal
         currentUserId={currentUserId}
         rooms={joinedRooms}

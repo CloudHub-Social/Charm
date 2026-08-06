@@ -16,7 +16,7 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::media;
@@ -81,7 +81,7 @@ pub async fn get_3pids(state: State<'_, MatrixState>) -> Result<Vec<ThirdPartyId
 /// (rather than `Client::subscribe_to_ignore_user_list_changes`, which only
 /// yields a value on the next change, not the current one) — same pattern
 /// as `matrix_sdk::Account::ignore_user`'s own internal lookup.
-async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
+pub async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
     let content = client
         .account()
         .account_data::<IgnoredUserListEventContent>()
@@ -211,8 +211,14 @@ where
         })
 }
 
-/// Tears down the local session identically for `logout` and
-/// `deactivate_account`: clears both keychain-backed session kinds
+#[derive(Clone, Copy)]
+enum SearchCleanupScope {
+    CurrentDevice,
+    EntireAccount,
+}
+
+/// Tears down the local session for `logout` and `deactivate_account`: clears
+/// both keychain-backed session kinds
 /// (password/SSO's `MatrixSession` and QR login's `OAuthSession` — matching
 /// the dual-path handling in `mod::try_restore_session`) and drops the
 /// in-memory client. Deliberately does *not* delete the account's SQLCipher
@@ -223,8 +229,14 @@ async fn clear_local_session(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
     user_id: &str,
+    search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    let search_device_id = state
+        .require_client()
+        .await
+        .ok()
+        .and_then(|client| client.device_id().map(ToString::to_string));
 
     // Best-effort, and must run before the client is cleared below (it needs
     // one to delete the homeserver pusher): without this, logging out (or
@@ -247,6 +259,7 @@ async fn clear_local_session(
     // teardown window would let the signed-out account keep sending/fetching
     // until the next launch.
     *state.client.lock().await = None;
+    super::search::reset_index_lifecycle(state);
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
     // snapshots (Spec 10) — stopping it below zeroes the client but doesn't
@@ -291,6 +304,39 @@ async fn clear_local_session(
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
 
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let cleanup = match app.path().app_data_dir() {
+        Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
+            let active = search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(active) = active {
+                active.index.delete()?;
+            }
+            match search_cleanup_scope {
+                SearchCleanupScope::CurrentDevice => {
+                    if let Some(device_id) = search_device_id {
+                        super::search::SearchIndex::delete_for_source(
+                            &app_data_dir,
+                            &account_key,
+                            &device_id,
+                        )?;
+                    }
+                }
+                SearchCleanupScope::EntireAccount => {
+                    super::search::SearchIndex::delete_for_account(&app_data_dir, &account_key)?;
+                }
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .is_ok_and(|result| result.is_ok()),
+        Err(_) => false,
+    };
+    if !cleanup {
+        tracing::warn!(command = "message_search_logout", status = "cleanup_failed");
+    }
     Ok(())
 }
 
@@ -319,7 +365,13 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         }
     });
 
-    clear_local_session(&app, &state, user_id.as_str()).await
+    clear_local_session(
+        &app,
+        &state,
+        user_id.as_str(),
+        SearchCleanupScope::CurrentDevice,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -637,9 +689,14 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&app, &state, user_id.as_str())
-        .await
-        .map_err(UiaCommandError::from)
+    clear_local_session(
+        &app,
+        &state,
+        user_id.as_str(),
+        SearchCleanupScope::EntireAccount,
+    )
+    .await
+    .map_err(UiaCommandError::from)
 }
 
 #[cfg(test)]

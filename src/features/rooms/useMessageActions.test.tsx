@@ -114,7 +114,9 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
     });
 
     expect(mockAddBookmark).toHaveBeenCalledWith("!room:localhost", "$new");
-    expect(result.current.bookmarkedEventIds.has("$new")).toBe(true);
+    // react-query's post-invalidate refetch notification can land after the
+    // async handler resolves when the full suite is running in parallel.
+    await waitFor(() => expect(result.current.bookmarkedEventIds.has("$new")).toBe(true));
   });
 
   it("rolls back the optimistic bookmark if add_bookmark fails", async () => {

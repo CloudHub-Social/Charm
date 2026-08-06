@@ -1168,6 +1168,12 @@ impl PersistenceStore {
             Err(e) => return Err(e.to_string()),
         }
 
+        let search_source = entry.as_ref().and_then(|entry| {
+            entry
+                .crypto_store_key
+                .as_ref()
+                .map(|store_key| (store_key.clone(), entry.session.meta.device_id.to_string()))
+        });
         let store_key = entry
             .and_then(|entry| entry.crypto_store_key)
             .or_else(|| live_crypto.map(|(store_key, _)| store_key.to_string()));
@@ -1187,6 +1193,17 @@ impl PersistenceStore {
                 Err(e) => tracing::warn!(
                     "failed to resolve crypto store directory for removal on logout: {e}"
                 ),
+            }
+        }
+        if let Some((store_key, device_id)) = search_source {
+            if let Err(error) = charm_lib::matrix::search::SearchIndex::delete_for_source(
+                &crate::crypto_store::data_root_path(),
+                &store_key,
+                &device_id,
+            ) {
+                tracing::warn!(
+                    "failed to remove encrypted message-search index on session removal: {error}"
+                );
             }
         }
         Ok(())
@@ -2487,6 +2504,42 @@ mod tests {
         assert!(
             !crypto_dir.exists(),
             "logout must remove the crypto store directory, not just the session blob"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_also_deletes_a_persisted_only_message_search_index() {
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let dir = scratch_dir("remove-search");
+        let data_dir = scratch_dir("remove-search-data");
+        let _data_dir_env = EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap());
+        let store = PersistenceStore::new_for_test(&dir, [72u8; 32]);
+        store
+            .save(
+                "tok-search-logout",
+                "https://example.invalid",
+                &dummy_session("@search:example.invalid"),
+                Some(("storeKeySearchLogout", "passphrase-search-logout")),
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        let index = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &data_dir,
+            "storeKeySearchLogout",
+            "TESTDEVICE",
+            "passphrase-search-logout",
+        )
+        .unwrap();
+        let database_path = index.database_path().to_owned();
+        drop(index);
+
+        store.remove("tok-search-logout", None).await.unwrap();
+
+        assert!(
+            !database_path.exists(),
+            "persisted-only logout must remove the derived message-search database"
         );
     }
 
