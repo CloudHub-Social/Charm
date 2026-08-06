@@ -777,12 +777,27 @@ impl SearchWork {
     /// says is no longer visible. Callers must apply backpressure instead of
     /// using a best-effort queue send for these mutations.
     pub fn requires_reliable_delivery(&self) -> bool {
-        self.mutations.iter().any(|mutation| {
+        !self.ignored_senders.is_empty()
+            || self.mutations.iter().any(|mutation| {
+                matches!(
+                    mutation,
+                    SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+                )
+            })
+    }
+
+    /// Drops decrypted message additions while retaining only removal metadata
+    /// that is safe to hold outside the bounded plaintext queue.
+    pub fn into_privacy_removals(mut self) -> (Self, bool) {
+        let original_len = self.mutations.len();
+        self.mutations.retain(|mutation| {
             matches!(
                 mutation,
                 SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
             )
-        })
+        });
+        let dropped_additions = self.mutations.len() != original_len;
+        (self, dropped_additions)
     }
 }
 
@@ -1457,13 +1472,28 @@ async fn enqueue_sync_work(app: &AppHandle, generation: u64, work: SearchWork) {
         completes_backfill: false,
         completion: None,
     };
-    let delivered = if requires_reliable_delivery {
-        // Polling an owned reservation once establishes FIFO position without
-        // waiting for capacity on the Matrix sync task. If the bounded queue
-        // is full, a detached task completes that already-ordered reservation.
-        enqueue_reliable_search_work(app, sender, queued).await
-    } else {
-        sender.try_send(queued).is_ok()
+    let delivered = match sender.try_send(queued) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(mut queued))
+            if requires_reliable_delivery =>
+        {
+            let (privacy_work, dropped_additions) = queued.work.into_privacy_removals();
+            queued.work = privacy_work;
+            if dropped_additions {
+                state
+                    .search_incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::warn!(
+                    command = "message_search_index",
+                    status = "queue_full_dropped_additions"
+                );
+            }
+            // Polling an owned reservation once establishes FIFO position
+            // without waiting for capacity on the Matrix sync task. Only
+            // removal metadata can leave the bounded plaintext queue here.
+            enqueue_reliable_search_work(app, sender, queued).await
+        }
+        Err(_) => false,
     };
     if !delivered {
         state
@@ -2523,6 +2553,26 @@ mod tests {
         assert!(!apply.requires_reliable_delivery());
         assert!(redact.requires_reliable_delivery());
         assert!(purge.requires_reliable_delivery());
+    }
+
+    #[test]
+    fn parked_privacy_work_drops_decrypted_additions() {
+        let mixed = work_with(vec![
+            SearchMutation::Apply(document(Some("sensitive body"), "$original")),
+            SearchMutation::Redact {
+                room_id: "!room:example.org".to_string(),
+                event_id: "$original".to_string(),
+            },
+        ]);
+
+        let (privacy, dropped_additions) = mixed.into_privacy_removals();
+
+        assert!(dropped_additions);
+        assert_eq!(privacy.mutations.len(), 1);
+        assert!(matches!(
+            privacy.mutations[0],
+            SearchMutation::Redact { .. }
+        ));
     }
 
     #[test]

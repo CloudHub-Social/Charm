@@ -241,12 +241,27 @@ async fn enqueue_message_search_work(
         completes_backfill: false,
         completion: None,
     };
-    let delivered = if requires_reliable_delivery {
-        // Reserve FIFO position without waiting for queue capacity on the web
-        // sync loop. A detached task completes a pending reservation.
-        enqueue_reliable_search_work(context, queued).await
-    } else {
-        context.sender.try_send(queued).is_ok()
+    let delivered = match context.sender.try_send(queued) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(mut queued))
+            if requires_reliable_delivery =>
+        {
+            let (privacy_work, dropped_additions) = queued.work.into_privacy_removals();
+            queued.work = privacy_work;
+            if dropped_additions {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::warn!(
+                    command = "web_message_search_index",
+                    status = "queue_full_dropped_additions"
+                );
+            }
+            // Reserve FIFO position without waiting for queue capacity on the
+            // web sync loop. Only removal metadata leaves the bounded queue.
+            enqueue_reliable_search_work(context, queued).await
+        }
+        Err(_) => false,
     };
     if !delivered {
         context
