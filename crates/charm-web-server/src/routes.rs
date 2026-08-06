@@ -2581,7 +2581,7 @@ async fn search_messages(
         }
         if slot.is_none() {
             *slot = Some(
-                charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+                crate::session::open_fresh_message_search_index(
                     &app_data_dir,
                     &crypto.store_key,
                     &device_id,

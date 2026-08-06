@@ -1245,21 +1245,7 @@ impl SessionStore {
             // decrypted message content orphaned on local disk. Idle eviction
             // deliberately uses `sweep_idle` instead and preserves the index
             // for a later persisted-session restore.
-            let search_index = session
-                .message_search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            if let Some(search_index) = search_index {
-                if !matches!(
-                    tokio::task::spawn_blocking(move || search_index.delete()).await,
-                    Ok(Ok(()))
-                ) {
-                    tracing::warn!(
-                        "failed to remove encrypted message-search index on session removal"
-                    );
-                }
-            }
+            delete_message_search_index(session, crate::crypto_store::data_root_path()).await;
         }
 
         session
@@ -1427,6 +1413,60 @@ impl SessionStore {
     }
 }
 
+/// Opens a web session's index from a clean lifecycle. Web sessions can be
+/// restored after process restart or idle eviction while retaining the same
+/// Matrix account/device source identity, so merely opening the stable path
+/// would reuse rows produced by the previous ephemeral `Session`. Delete that
+/// path under the caller-held index-slot lock before the first open; later
+/// calls in the same lifecycle reuse the populated slot and do not come here.
+pub(crate) fn open_fresh_message_search_index(
+    app_data_dir: &std::path::Path,
+    store_key: &str,
+    device_id: &str,
+    passphrase: &str,
+) -> Result<charm_lib::matrix::search::SearchIndex, String> {
+    charm_lib::matrix::search::SearchIndex::delete_for_source(app_data_dir, store_key, device_id)?;
+    charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+        app_data_dir,
+        store_key,
+        device_id,
+        passphrase,
+    )
+}
+
+async fn delete_message_search_index(session: &Session, app_data_dir: std::path::PathBuf) {
+    let live_index = session
+        .message_search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    let unopened_source = if live_index.is_none() {
+        session
+            .persisted_crypto
+            .clone()
+            .zip(session.client.device_id().map(ToString::to_string))
+    } else {
+        None
+    };
+    let deleted = tokio::task::spawn_blocking(move || {
+        if let Some(search_index) = live_index {
+            search_index.delete()
+        } else if let Some((crypto, device_id)) = unopened_source {
+            charm_lib::matrix::search::SearchIndex::delete_for_source(
+                &app_data_dir,
+                &crypto.store_key,
+                &device_id,
+            )
+        } else {
+            Ok(())
+        }
+    })
+    .await;
+    if !matches!(deleted, Ok(Ok(()))) {
+        tracing::warn!("failed to remove encrypted message-search index on session removal");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1529,6 +1569,121 @@ mod tests {
             !database_path.exists(),
             "permanent session removal must delete the encrypted search database"
         );
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[tokio::test]
+    async fn removal_cleanup_deletes_an_unopened_persisted_session_index() {
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-unopened-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let store_key = "unopened-account";
+        let device_id = "UNOPENEDDEVICE";
+        let passphrase = "unopened-secret";
+        let search_index = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            store_key,
+            device_id,
+            passphrase,
+        )
+        .expect("temporary encrypted search index");
+        let database_path = search_index.database_path().to_owned();
+        drop(search_index);
+
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("test client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk::SessionMeta {
+                        user_id: matrix_sdk::ruma::UserId::parse("@unopened-search:example.org")
+                            .expect("test user id"),
+                        device_id: matrix_sdk::ruma::device_id!("UNOPENEDDEVICE").to_owned(),
+                    },
+                    tokens: matrix_sdk::authentication::SessionTokens {
+                        access_token: "test-access-token".to_string(),
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("restore test session");
+        let session = Session::new(
+            client,
+            "@unopened-search:example.org".to_string(),
+            Some(CryptoStoreHandle {
+                store_key: store_key.to_string(),
+                passphrase: passphrase.to_string(),
+            }),
+            true,
+        );
+
+        delete_message_search_index(&session, app_data_dir.clone()).await;
+
+        assert!(
+            !database_path.exists(),
+            "removal must delete an index left unopened by the current process"
+        );
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn a_new_web_session_rebuilds_instead_of_reusing_a_previous_index() {
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-rebuild-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let mut first = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            "rebuild-account",
+            "REBUILDDEVICE",
+            "rebuild-secret",
+        )
+        .expect("first encrypted search index");
+        let database_path = first.database_path().to_owned();
+        first
+            .apply_document(&charm_lib::matrix::search::SearchDocument {
+                room_id: "!rebuild:example.org".to_string(),
+                event_id: "$stale".to_string(),
+                version_event_id: "$stale".to_string(),
+                sender: "@alice:example.org".to_string(),
+                body: Some("stale lifecycle message".to_string()),
+                origin_server_ts: 42,
+                selection_order: 1,
+            })
+            .expect("seed previous lifecycle");
+        drop(first);
+
+        let mut rebuilt = open_fresh_message_search_index(
+            &app_data_dir,
+            "rebuild-account",
+            "REBUILDDEVICE",
+            "rebuild-secret",
+        )
+        .expect("fresh encrypted search index");
+
+        assert_eq!(rebuilt.database_path(), database_path);
+        let allowed_rooms = std::collections::HashSet::from(["!rebuild:example.org".to_string()]);
+        let page = rebuilt
+            .search("stale", None, &allowed_rooms, 20, None)
+            .expect("query rebuilt index");
+        assert!(
+            page.results.is_empty(),
+            "a new web lifecycle must not reuse rows from the previous session"
+        );
+        drop(rebuilt);
         let _ = std::fs::remove_dir_all(app_data_dir);
     }
 

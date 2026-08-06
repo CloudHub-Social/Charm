@@ -119,14 +119,12 @@ pub fn message_search_context(
                     return Ok(());
                 }
                 if slot.is_none() {
-                    *slot = Some(
-                        charm_lib::matrix::search::SearchIndex::open_with_source_secret(
-                            &app_data_dir,
-                            &store_key,
-                            &device_id,
-                            &passphrase,
-                        )?,
-                    );
+                    *slot = Some(crate::session::open_fresh_message_search_index(
+                        &app_data_dir,
+                        &store_key,
+                        &device_id,
+                        &passphrase,
+                    )?);
                 }
                 work.apply_to(slot.as_mut().expect("web search index initialized"))
             })
