@@ -7,7 +7,9 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
+    future::Future as _,
     path::{Path, PathBuf},
+    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -1399,10 +1401,10 @@ pub(crate) async fn submit_sync_response(
         completion: None,
     };
     let delivered = if requires_reliable_delivery {
-        // Redactions and departed-room purges are privacy removals. Waiting
-        // for bounded capacity preserves FIFO ordering with earlier writes and
-        // prevents queue pressure from retaining content indefinitely.
-        sender.send(queued).await.is_ok()
+        // Polling an owned reservation once establishes FIFO position without
+        // waiting for capacity on the Matrix sync task. If the bounded queue
+        // is full, a detached task completes that already-ordered reservation.
+        enqueue_reliable_search_work(app, sender, queued).await
     } else {
         sender.try_send(queued).is_ok()
     };
@@ -1410,14 +1412,49 @@ pub(crate) async fn submit_sync_response(
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
-        tracing::warn!(
-            command = "message_search_index",
-            status = if requires_reliable_delivery {
-                "worker_unavailable"
-            } else {
-                "queue_full"
-            }
-        );
+        tracing::warn!(command = "message_search_index", status = "queue_full");
+    }
+}
+
+async fn enqueue_reliable_search_work(
+    app: &AppHandle,
+    sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
+    queued: QueuedSearchWork,
+) -> bool {
+    let mut reservation = Box::pin(sender.reserve_owned());
+    let immediate = std::future::poll_fn(|context| {
+        Poll::Ready(match reservation.as_mut().poll(context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        })
+    })
+    .await;
+    match immediate {
+        Some(Ok(permit)) => {
+            permit.send(queued);
+            true
+        }
+        Some(Err(_)) => false,
+        None => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                match reservation.await {
+                    Ok(permit) => {
+                        permit.send(queued);
+                    }
+                    Err(_) => {
+                        app.state::<super::MatrixState>()
+                            .search_incomplete
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        tracing::warn!(
+                            command = "message_search_index",
+                            status = "worker_unavailable"
+                        );
+                    }
+                }
+            });
+            true
+        }
     }
 }
 

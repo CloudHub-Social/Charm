@@ -16,7 +16,7 @@
 //! notification).
 
 use std::time::Duration;
-use std::{path::PathBuf, sync::Arc};
+use std::{future::Future as _, path::PathBuf, sync::Arc, task::Poll};
 
 use charm_lib::matrix::ephemeral::{self, ReceiptUpdate, TypingUpdate};
 use charm_lib::matrix::presence::{self, presence_event_to_update};
@@ -232,10 +232,9 @@ async fn submit_message_search(
         completion: None,
     };
     let delivered = if requires_reliable_delivery {
-        // Privacy-removal mutations must not be lost behind a saturated
-        // backfill queue. Awaiting capacity keeps them ordered after earlier
-        // writes while ordinary indexing remains best-effort and non-blocking.
-        context.sender.send(queued).await.is_ok()
+        // Reserve FIFO position without waiting for queue capacity on the web
+        // sync loop. A detached task completes a pending reservation.
+        enqueue_reliable_search_work(context, queued).await
     } else {
         context.sender.try_send(queued).is_ok()
     };
@@ -243,14 +242,46 @@ async fn submit_message_search(
         context
             .incomplete
             .store(true, std::sync::atomic::Ordering::Release);
-        tracing::warn!(
-            command = "web_message_search_index",
-            status = if requires_reliable_delivery {
-                "worker_unavailable"
-            } else {
-                "queue_full"
-            }
-        );
+        tracing::warn!(command = "web_message_search_index", status = "queue_full");
+    }
+}
+
+async fn enqueue_reliable_search_work(
+    context: &MessageSearchContext,
+    queued: QueuedSearchWork,
+) -> bool {
+    let mut reservation = Box::pin(context.sender.clone().reserve_owned());
+    let immediate = std::future::poll_fn(|poll_context| {
+        Poll::Ready(match reservation.as_mut().poll(poll_context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        })
+    })
+    .await;
+    match immediate {
+        Some(Ok(permit)) => {
+            permit.send(queued);
+            true
+        }
+        Some(Err(_)) => false,
+        None => {
+            let incomplete = Arc::clone(&context.incomplete);
+            tokio::spawn(async move {
+                match reservation.await {
+                    Ok(permit) => {
+                        permit.send(queued);
+                    }
+                    Err(_) => {
+                        incomplete.store(true, std::sync::atomic::Ordering::Release);
+                        tracing::warn!(
+                            command = "web_message_search_index",
+                            status = "worker_unavailable"
+                        );
+                    }
+                }
+            });
+            true
+        }
     }
 }
 
