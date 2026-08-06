@@ -85,6 +85,7 @@ pub fn message_search_context(
     let backfill_pending = Arc::clone(&session.message_search_backfill_pending);
     backfill_pending.store(true, std::sync::atomic::Ordering::Release);
     let closed = Arc::clone(&session.session_closed);
+    let client = session.client.clone();
     let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
     *session
@@ -100,10 +101,16 @@ pub fn message_search_context(
                 continue;
             }
             let QueuedSearchWork {
-                work,
+                mut work,
                 completes_backfill,
                 completion,
             } = queued;
+            let joined_room_ids = client
+                .joined_rooms()
+                .into_iter()
+                .map(|room| room.room_id().to_string())
+                .collect();
+            work.retain_joined_room_additions(&joined_room_ids);
             let index = Arc::clone(&index);
             let closed = Arc::clone(&closed);
             let app_data_dir = app_data_dir.clone();
@@ -357,6 +364,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             return;
         };
         if work.is_empty() {
+            continue;
+        }
+        if room.state() != matrix_sdk::RoomState::Joined {
             continue;
         }
         if context

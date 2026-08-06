@@ -773,6 +773,19 @@ impl SearchWork {
         self.mutations.is_empty() && self.ignored_senders.is_empty()
     }
 
+    /// Drops message additions for rooms that are no longer joined while
+    /// preserving redactions, room purges, and ignore-list cleanup. Workers
+    /// call this after dequeueing so FIFO ordering closes the leave/backfill
+    /// race: additions dequeued before a leave purge are removed by that
+    /// later purge, while additions queued after it see the departed room and
+    /// are discarded before touching the index.
+    pub fn retain_joined_room_additions(&mut self, joined_room_ids: &HashSet<String>) {
+        self.mutations.retain(|mutation| match mutation {
+            SearchMutation::Apply(document) => joined_room_ids.contains(&document.room_id),
+            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+        });
+    }
+
     /// Returns true when dropping this batch could retain content that Matrix
     /// says is no longer visible. Callers must apply backpressure instead of
     /// using a best-effort queue send for these mutations.
@@ -1555,10 +1568,23 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                 while let Some(queued) = receiver.recv().await {
                     let QueuedSearchWork {
                         generation,
-                        work,
+                        mut work,
                         completes_backfill,
                         completion,
                     } = queued;
+                    let state = worker_app.state::<super::MatrixState>();
+                    let joined_room_ids = match state.require_client_with_search_generation().await
+                    {
+                        Ok((client, current_generation)) if current_generation == generation => {
+                            client
+                                .joined_rooms()
+                                .into_iter()
+                                .map(|room| room.room_id().to_string())
+                                .collect()
+                        }
+                        _ => HashSet::new(),
+                    };
+                    work.retain_joined_room_additions(&joined_room_ids);
                     let app = worker_app.clone();
                     let result = match tauri::async_runtime::spawn_blocking(move || {
                         apply_work(&app, generation, work)
@@ -1659,6 +1685,9 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             break;
         };
         if work.is_empty() {
+            continue;
+        }
+        if room.state() != matrix_sdk::RoomState::Joined {
             continue;
         }
         if sender
@@ -2550,6 +2579,29 @@ mod tests {
         assert!(!apply.requires_reliable_delivery());
         assert!(redact.requires_reliable_delivery());
         assert!(purge.requires_reliable_delivery());
+    }
+
+    #[test]
+    fn departed_room_filter_drops_additions_but_preserves_privacy_removals() {
+        let mut work = work_with(vec![
+            SearchMutation::Apply(document(Some("departed plaintext"), "$original")),
+            SearchMutation::Redact {
+                room_id: "!room:example.org".to_string(),
+                event_id: "$original".to_string(),
+            },
+            SearchMutation::PurgeRoom {
+                room_id: "!room:example.org".to_string(),
+            },
+        ]);
+
+        work.retain_joined_room_additions(&HashSet::new());
+
+        assert_eq!(work.mutations.len(), 2);
+        assert!(work.mutations.iter().all(|mutation| matches!(
+            mutation,
+            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+        )));
+        assert!(work.requires_reliable_delivery());
     }
 
     #[test]
