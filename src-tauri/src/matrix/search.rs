@@ -337,6 +337,39 @@ impl SearchIndex {
         delete_database_path(&directory.join(SEARCH_DATABASE))
     }
 
+    /// Removes every retained device index derived from one account store
+    /// key. Account deactivation uses this broader boundary because no device
+    /// for the deleted account can legitimately retain decrypted search rows.
+    pub fn delete_for_account(app_data_dir: &Path, account_store_key: &str) -> Result<(), String> {
+        let app_data_dir = match std::fs::canonicalize(app_data_dir) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(safe_io_error(error)),
+        };
+        let search_root = app_data_dir.join(SEARCH_ROOT);
+        match std::fs::symlink_metadata(&search_root) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => return Err("message search filesystem path is not a directory".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(safe_io_error(error)),
+        }
+        let prefix = account_directory_prefix(account_store_key);
+        for entry in std::fs::read_dir(&search_root).map_err(safe_io_error)? {
+            let entry = entry.map_err(safe_io_error)?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
+            if !metadata.file_type().is_dir() {
+                return Err("message search filesystem path is not a directory".to_string());
+            }
+            delete_database_path(&entry.path().join(SEARCH_DATABASE))?;
+        }
+        Ok(())
+    }
+
     /// Inserts a renderer-selected message version and atomically updates the
     /// visible search row.
     ///
@@ -2922,6 +2955,25 @@ mod tests {
         assert!(!database_path.exists());
         assert!(!database_path.with_extension("sqlite3-wal").exists());
         assert!(!database_path.with_extension("sqlite3-shm").exists());
+    }
+
+    #[test]
+    fn delete_for_account_removes_every_device_but_not_another_account() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = open_index(directory.path(), "account", "DEVICE-A");
+        let first_path = first.database_path().to_owned();
+        let second = open_index(directory.path(), "account", "DEVICE-B");
+        let second_path = second.database_path().to_owned();
+        let other = open_index(directory.path(), "other-account", "DEVICE-A");
+        let other_path = other.database_path().to_owned();
+        drop((first, second, other));
+
+        SearchIndex::delete_for_account(directory.path(), "account")
+            .expect("delete account indexes");
+
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        assert!(other_path.exists());
     }
 
     #[test]

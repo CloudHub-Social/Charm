@@ -517,6 +517,12 @@ pub fn schedule_cached_room_search(
             else {
                 return;
             };
+            if session
+                .session_closed
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
             if sender
                 .try_send(QueuedSearchWork {
                     work,
