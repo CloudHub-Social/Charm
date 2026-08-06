@@ -1160,7 +1160,6 @@ pub(crate) fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     client: Client,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-    search_generation: u64,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     /// How often to check whether this room's `Timeline` has been evicted
@@ -1250,12 +1249,25 @@ pub(crate) fn spawn_timeline_listener(
             dedup.record(&summaries);
 
             if newly_decrypted {
-                super::search::schedule_cached_room(
-                    app.clone(),
-                    client.clone(),
-                    room_id.clone(),
-                    search_generation,
-                );
+                // A listener can outlive a labs/remote-rollout flag change.
+                // Read the generation at the actual decryption transition so
+                // enabling search does not make this reseed look stale. Keep
+                // the identity check: a listener winding down after logout
+                // must not schedule work for the replacement account.
+                if let Ok((current_client, current_generation)) =
+                    state.require_client_with_search_generation().await
+                {
+                    if current_client.user_id() == client.user_id()
+                        && current_client.device_id() == client.device_id()
+                    {
+                        super::search::schedule_cached_room(
+                            app.clone(),
+                            current_client,
+                            room_id.clone(),
+                            current_generation,
+                        );
+                    }
+                }
             }
 
             let _ = app.emit(
