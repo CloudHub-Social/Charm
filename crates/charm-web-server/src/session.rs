@@ -1224,13 +1224,45 @@ impl SessionStore {
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
-        let mut inner = self.inner.write().await;
-        if let Some(session) = inner.get(token) {
+        let session = {
+            let mut inner = self.inner.write().await;
+            let session = inner.remove(token);
+            if let Some(session) = &session {
+                // Revoke detached work while removal is still atomic with
+                // respect to lookups. Cleanup below may await, so it cannot
+                // remain under the store lock.
+                session
+                    .session_closed
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             session
-                .session_closed
-                .store(true, std::sync::atomic::Ordering::Release);
+        };
+
+        if let Some(session) = &session {
+            // `remove` is the permanent-session boundary used by explicit
+            // logout, cross-instance revocation, and expiry. Keep encrypted
+            // search-index deletion here so none of those callers can leave
+            // decrypted message content orphaned on local disk. Idle eviction
+            // deliberately uses `sweep_idle` instead and preserves the index
+            // for a later persisted-session restore.
+            let search_index = session
+                .message_search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(search_index) = search_index {
+                if !matches!(
+                    tokio::task::spawn_blocking(move || search_index.delete()).await,
+                    Ok(Ok(()))
+                ) {
+                    tracing::warn!(
+                        "failed to remove encrypted message-search index on session removal"
+                    );
+                }
+            }
         }
-        inner.remove(token)
+
+        session
     }
 
     /// Stable snapshot of the currently-live sessions for graceful process
@@ -1468,12 +1500,36 @@ mod tests {
             .create(dummy_session("@removed:example.org").await)
             .await;
         let session = store.get(&token).await.expect("live session");
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-remove-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let search_index = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            "removed-account",
+            "REMOVEDDEVICE",
+            "removed-secret",
+        )
+        .expect("temporary encrypted search index");
+        let database_path = search_index.database_path().to_owned();
+        *session
+            .message_search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(search_index);
 
         store.remove(&token).await.expect("removed session");
 
         assert!(session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !database_path.exists(),
+            "permanent session removal must delete the encrypted search database"
+        );
+        let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
     #[tokio::test]

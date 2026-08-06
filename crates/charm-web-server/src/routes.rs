@@ -2103,19 +2103,6 @@ async fn logout(
             {
                 handle.abort();
             }
-            let search_index = session
-                .message_search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            if let Some(search_index) = search_index {
-                if !matches!(
-                    tokio::task::spawn_blocking(move || search_index.delete()).await,
-                    Ok(Ok(()))
-                ) {
-                    tracing::warn!("failed to remove encrypted message-search index on logout");
-                }
-            }
             // Revoke the access token on the homeserver too — otherwise it
             // stays valid indefinitely after "logout" only clears local
             // server-side state, unlike the desktop app (which calls the
