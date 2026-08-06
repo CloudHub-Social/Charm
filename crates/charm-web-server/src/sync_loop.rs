@@ -110,7 +110,22 @@ pub fn message_search_context(
                 .into_iter()
                 .map(|room| room.room_id().to_string())
                 .collect();
-            work.retain_joined_room_additions(&joined_room_ids);
+            let current_ignored = charm_lib::matrix::account::ignored_user_ids(&client)
+                .await
+                .ok()
+                .map(|ignored_senders| {
+                    ignored_senders
+                        .into_iter()
+                        .map(|sender| sender.to_string())
+                        .collect()
+                });
+            let visibility_complete = if let Some(ignored_senders) = current_ignored {
+                work.retain_currently_visible_additions(&joined_room_ids, ignored_senders);
+                true
+            } else {
+                work.retain_joined_room_additions(&std::collections::HashSet::new());
+                false
+            };
             let index = Arc::clone(&index);
             let closed = Arc::clone(&closed);
             let app_data_dir = app_data_dir.clone();
@@ -140,7 +155,7 @@ pub fn message_search_context(
                 Ok(result) => result,
                 Err(_) => Err("web message search worker failed".to_string()),
             };
-            let applied = result.is_ok();
+            let applied = visibility_complete && result.is_ok();
             record_search_work_outcome(&incomplete, &backfill_pending, applied, completes_backfill);
             if !applied {
                 tracing::warn!(command = "web_message_search_index", status = "failed");

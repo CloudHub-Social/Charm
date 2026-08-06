@@ -786,6 +786,25 @@ impl SearchWork {
         });
     }
 
+    /// Refreshes every visibility predicate that can change while this batch
+    /// waits in the queue. The current ignore set is also installed on the
+    /// batch so `apply_to` purges senders ignored after enqueue before any
+    /// surviving additions are written.
+    pub fn retain_currently_visible_additions(
+        &mut self,
+        joined_room_ids: &HashSet<String>,
+        ignored_senders: HashSet<String>,
+    ) {
+        self.mutations.retain(|mutation| match mutation {
+            SearchMutation::Apply(document) => {
+                joined_room_ids.contains(&document.room_id)
+                    && !ignored_senders.contains(&document.sender)
+            }
+            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+        });
+        self.ignored_senders = ignored_senders;
+    }
+
     /// Returns true when dropping this batch could retain content that Matrix
     /// says is no longer visible. Callers must apply backpressure instead of
     /// using a best-effort queue send for these mutations.
@@ -1573,18 +1592,40 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                         completion,
                     } = queued;
                     let state = worker_app.state::<super::MatrixState>();
-                    let joined_room_ids = match state.require_client_with_search_generation().await
+                    let current_visibility = match state
+                        .require_client_with_search_generation()
+                        .await
                     {
                         Ok((client, current_generation)) if current_generation == generation => {
-                            client
+                            let joined_room_ids = client
                                 .joined_rooms()
                                 .into_iter()
                                 .map(|room| room.room_id().to_string())
-                                .collect()
+                                .collect();
+                            super::account::ignored_user_ids(&client).await.ok().map(
+                                |ignored_senders| {
+                                    let ignored_senders = ignored_senders
+                                        .into_iter()
+                                        .map(|sender| sender.to_string())
+                                        .collect();
+                                    (joined_room_ids, ignored_senders)
+                                },
+                            )
                         }
-                        _ => HashSet::new(),
+                        _ => None,
                     };
-                    work.retain_joined_room_additions(&joined_room_ids);
+                    let visibility_complete = if let Some((joined_room_ids, ignored_senders)) =
+                        current_visibility
+                    {
+                        work.retain_currently_visible_additions(&joined_room_ids, ignored_senders);
+                        true
+                    } else {
+                        // Fail closed for plaintext additions while preserving
+                        // redactions, room purges, and already-known ignore
+                        // cleanup from the queued batch.
+                        work.retain_joined_room_additions(&HashSet::new());
+                        false
+                    };
                     let app = worker_app.clone();
                     let result = match tauri::async_runtime::spawn_blocking(move || {
                         apply_work(&app, generation, work)
@@ -1594,7 +1635,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                         Ok(result) => result,
                         Err(_) => Err("message search worker failed".to_string()),
                     };
-                    let applied = result.is_ok();
+                    let applied = visibility_complete && result.is_ok();
                     let state = worker_app.state::<super::MatrixState>();
                     if !applied {
                         state
@@ -2601,6 +2642,22 @@ mod tests {
             mutation,
             SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
         )));
+        assert!(work.requires_reliable_delivery());
+    }
+
+    #[test]
+    fn worker_visibility_refresh_drops_newly_ignored_additions_and_updates_cleanup() {
+        let mut work = work_with(vec![SearchMutation::Apply(document(
+            Some("newly ignored plaintext"),
+            "$original",
+        ))]);
+        let joined_rooms = HashSet::from(["!room:example.org".to_string()]);
+        let ignored_senders = HashSet::from(["@alice:example.org".to_string()]);
+
+        work.retain_currently_visible_additions(&joined_rooms, ignored_senders.clone());
+
+        assert!(work.mutations.is_empty());
+        assert_eq!(work.ignored_senders, ignored_senders);
         assert!(work.requires_reliable_delivery());
     }
 
