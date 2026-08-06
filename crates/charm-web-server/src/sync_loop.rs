@@ -44,6 +44,26 @@ pub struct MessageSearchContext {
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     incomplete: Arc<std::sync::atomic::AtomicBool>,
     backfill_pending: Arc<std::sync::atomic::AtomicBool>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TimelineSearchContext {
+    sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<QueuedSearchWork>>>>,
+    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+    done: Arc<tokio::sync::Notify>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) fn timeline_search_context(session: &crate::session::Session) -> TimelineSearchContext {
+    TimelineSearchContext {
+        sender: Arc::clone(&session.message_search_sender),
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        running: Arc::clone(&session.message_search_pagination_seed_running),
+        done: Arc::clone(&session.message_search_pagination_seed_done),
+        closed: Arc::clone(&session.session_closed),
+    }
 }
 
 pub(crate) struct QueuedSearchWork {
@@ -169,6 +189,7 @@ pub fn message_search_context(
         sender,
         incomplete: Arc::clone(&session.message_search_incomplete),
         backfill_pending: Arc::clone(&session.message_search_backfill_pending),
+        closed: Arc::clone(&session.session_closed),
     })
 }
 
@@ -335,6 +356,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     context
         .backfill_pending
         .store(true, std::sync::atomic::Ordering::Release);
+    if backfill_revoked(context) {
+        return;
+    }
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
@@ -344,6 +368,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             .store(false, std::sync::atomic::Ordering::Release);
         return;
     };
+    if backfill_revoked(context) {
+        return;
+    }
     let ignored: std::collections::HashSet<String> = ignored
         .into_iter()
         .map(|user_id| user_id.to_string())
@@ -364,6 +391,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
                 .store(true, std::sync::atomic::Ordering::Release);
             continue;
         };
+        if backfill_revoked(context) {
+            return;
+        }
         let Some(work) = charm_lib::matrix::search::work_from_cached_room(
             client,
             room.room_id().as_str(),
@@ -383,6 +413,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         }
         if room.state() != matrix_sdk::RoomState::Joined {
             continue;
+        }
+        if backfill_revoked(context) {
+            return;
         }
         if context
             .sender
@@ -415,6 +448,9 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             .store(false, std::sync::atomic::Ordering::Release);
         return;
     };
+    if backfill_revoked(context) {
+        return;
+    }
     if context
         .sender
         .try_send(QueuedSearchWork {
@@ -433,6 +469,19 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     }
 }
 
+/// Returns true after revoking the initial backfill's pending marker. Call it
+/// after every await and immediately before enqueueing so decrypted bodies are
+/// never retained past logout/session removal even if closure races startup.
+fn backfill_revoked(context: &MessageSearchContext) -> bool {
+    if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    context
+        .backfill_pending
+        .store(false, std::sync::atomic::Ordering::Release);
+    true
+}
+
 /// Re-seeds one room after a web timeline pagination request decrypts more
 /// history. Event-cache reads run detached and the bounded queue never delays
 /// the timeline response.
@@ -440,21 +489,34 @@ pub fn schedule_cached_room_search(
     session: Arc<crate::session::Session>,
     room_id: matrix_sdk::ruma::OwnedRoomId,
 ) {
+    schedule_cached_room_search_with_context(
+        timeline_search_context(&session),
+        session.client.clone(),
+        room_id,
+    );
+}
+
+/// Shared bounded re-seed used by both explicit pagination and a live
+/// timeline's undecrypted -> decrypted transition. The context contains only
+/// revocable queue/lifecycle handles, so listeners do not retain the Session
+/// (and therefore its strong timeline cache) for their whole lifetime.
+pub(crate) fn schedule_cached_room_search_with_context(
+    context: TimelineSearchContext,
+    client: Client,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
     tokio::spawn(async move {
-        if session
-            .session_closed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if context.closed.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let Some(room) = session.client.get_room(&room_id) else {
+        let Some(room) = client.get_room(&room_id) else {
             return;
         };
         if room.state() != matrix_sdk::RoomState::Joined {
             return;
         }
-        if session
-            .message_search_pagination_seed_running
+        if context
+            .running
             .compare_exchange(
                 false,
                 true,
@@ -463,16 +525,15 @@ pub fn schedule_cached_room_search(
             )
             .is_err()
         {
-            session
-                .message_search_incomplete
+            context
+                .incomplete
                 .store(true, std::sync::atomic::Ordering::Release);
             return;
         }
         async {
-            let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(&session.client).await
-            else {
-                session
-                    .message_search_incomplete
+            let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(&client).await else {
+                context
+                    .incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
                 return;
             };
@@ -483,20 +544,20 @@ pub fn schedule_cached_room_search(
             let events = match room.event_cache().await {
                 Ok((cache, _drop_handles)) => cache.events().await,
                 Err(_) => {
-                    session
-                        .message_search_incomplete
+                    context
+                        .incomplete
                         .store(true, std::sync::atomic::Ordering::Release);
                     return;
                 }
             };
             let Ok(events) = events else {
-                session
-                    .message_search_incomplete
+                context
+                    .incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
                 return;
             };
             let Some(work) = charm_lib::matrix::search::work_from_cached_room(
-                &session.client,
+                &client,
                 room_id.as_str(),
                 &events,
                 ignored,
@@ -509,18 +570,15 @@ pub fn schedule_cached_room_search(
             if room.state() != matrix_sdk::RoomState::Joined {
                 return;
             }
-            let Some(sender) = session
-                .message_search_sender
+            let Some(sender) = context
+                .sender
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone()
             else {
                 return;
             };
-            if session
-                .session_closed
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
+            if context.closed.load(std::sync::atomic::Ordering::Acquire) {
                 return;
             }
             if sender
@@ -531,8 +589,8 @@ pub fn schedule_cached_room_search(
                 })
                 .is_err()
             {
-                session
-                    .message_search_incomplete
+                context
+                    .incomplete
                     .store(true, std::sync::atomic::Ordering::Release);
                 tracing::warn!(
                     command = "web_message_search_pagination",
@@ -541,10 +599,10 @@ pub fn schedule_cached_room_search(
             }
         }
         .await;
-        session
-            .message_search_pagination_seed_running
+        context
+            .running
             .store(false, std::sync::atomic::Ordering::Release);
-        session.message_search_pagination_seed_done.notify_waiters();
+        context.done.notify_waiters();
     });
 }
 
@@ -1397,6 +1455,21 @@ mod tests {
         record_search_work_outcome(&incomplete, &pending, false, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
         assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn closed_session_revokes_initial_backfill_before_enqueue() {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let context = MessageSearchContext {
+            sender,
+            incomplete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            backfill_pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+
+        assert!(backfill_revoked(&context));
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
     }
 
     /// Regression test for the Codex review finding on #280 ("Clear

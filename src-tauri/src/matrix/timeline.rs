@@ -319,6 +319,26 @@ pub struct RoomMessageSummary {
     pub is_undecrypted: bool,
 }
 
+/// Tracks encrypted timeline entries that later become decryptable in-place.
+///
+/// Timeline listeners retain the set for their own bounded lifetime. Returning
+/// `true` only on the undecrypted -> decrypted transition avoids re-seeding the
+/// local search index for ordinary message, reaction, and send-state diffs.
+pub fn observe_newly_decrypted(
+    seen_undecrypted: &mut std::collections::HashSet<String>,
+    summaries: &[RoomMessageSummary],
+) -> bool {
+    let mut newly_decrypted = false;
+    for summary in summaries {
+        if summary.is_undecrypted {
+            seen_undecrypted.insert(summary.event_id.clone());
+        } else if seen_undecrypted.remove(&summary.event_id) {
+            newly_decrypted = true;
+        }
+    }
+    newly_decrypted
+}
+
 /// Additive Spec 39 timeline contract. The existing message-only page/update
 /// payload remains unchanged while the frontend rendering and collapse slice
 /// migrates to this discriminated union.
@@ -1088,6 +1108,35 @@ mod notification_dedup_tests {
         dedup.record(&[summary("$a", 100)]);
         assert!(!dedup.is_new(&summary("$a", 999)));
     }
+
+    #[test]
+    fn newly_decrypted_event_is_reported_once() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        let mut encrypted = summary("$encrypted", 100);
+        encrypted.is_undecrypted = true;
+
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[encrypted]
+        ));
+        assert!(observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$encrypted", 100)]
+        ));
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$encrypted", 100)]
+        ));
+    }
+
+    #[test]
+    fn ordinary_timeline_changes_do_not_report_decryption() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$plain", 100)]
+        ));
+    }
 }
 
 /// Spawned once per room the first time its `Timeline` is built (see
@@ -1111,6 +1160,7 @@ pub(crate) fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     client: Client,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+    search_generation: u64,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     /// How often to check whether this room's `Timeline` has been evicted
@@ -1137,6 +1187,8 @@ pub(crate) fn spawn_timeline_listener(
         let initial_items =
             items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
         let initial_summaries = message_summaries(&initial_items);
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        observe_newly_decrypted(&mut seen_undecrypted, &initial_summaries);
         let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
             crate::feature_flags::flag(
                 &dir,
@@ -1178,6 +1230,7 @@ pub(crate) fn spawn_timeline_listener(
             let timeline_items =
                 items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
             let summaries = message_summaries(&timeline_items);
+            let newly_decrypted = observe_newly_decrypted(&mut seen_undecrypted, &summaries);
             // Labs and remote-rollout changes apply to an already-open room.
             // Capturing the initial value would make the next live diff erase
             // notices after the flag changes until this Timeline is evicted.
@@ -1195,6 +1248,15 @@ pub(crate) fn spawn_timeline_listener(
                     .await;
             }
             dedup.record(&summaries);
+
+            if newly_decrypted {
+                super::search::schedule_cached_room(
+                    app.clone(),
+                    client.clone(),
+                    room_id.clone(),
+                    search_generation,
+                );
+            }
 
             let _ = app.emit(
                 "timeline:update",

@@ -604,6 +604,9 @@ impl MatrixState {
         force_live: bool,
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
+        let search_generation = self
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
 
         // Review fix: a focused entry being force-reset to live used to have
         // its listener merely `.abort()`-ed in place (via `get_mut`, keeping
@@ -770,6 +773,7 @@ impl MatrixState {
             std::sync::Arc::downgrade(&timeline),
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
+            search_generation,
         );
         // `push` returns the LRU-evicted entry (if any capacity eviction
         // happened) rather than just dropping it — a dropped `JoinHandle`
@@ -840,6 +844,9 @@ impl MatrixState {
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
         expected_event_id: Option<&matrix_sdk::ruma::EventId>,
     ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
+        let search_generation = self
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
         // Review fix: this used to only `.abort()` the previous listener *in
         // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
         // stayed correct) and defer the actual `.await` of its shutdown until
@@ -1018,6 +1025,7 @@ impl MatrixState {
             std::sync::Arc::downgrade(&timeline),
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
+            search_generation,
         );
 
         // Review fix: `push`'s return value was previously discarded. If

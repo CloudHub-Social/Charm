@@ -193,7 +193,7 @@ pub struct Session {
     pub message_search_pagination_seed_running: Arc<AtomicBool>,
     /// Wakes leave cleanup after an in-flight pagination re-seed finishes
     /// enqueueing, keeping the subsequent room purge last in the FIFO.
-    pub message_search_pagination_seed_done: tokio::sync::Notify,
+    pub message_search_pagination_seed_done: Arc<tokio::sync::Notify>,
     /// Revokes all detached work before logout or idle eviction removes this
     /// session. Search workers and timeline listeners recheck it immediately
     /// before writing storage or broadcasting decrypted state.
@@ -565,7 +565,7 @@ impl Session {
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
-            message_search_pagination_seed_done: tokio::sync::Notify::new(),
+            message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
@@ -755,6 +755,7 @@ impl Session {
                 self.events.clone(),
                 self.room_snapshots.clone(),
                 Arc::clone(&self.session_closed),
+                crate::sync_loop::timeline_search_context(self),
             );
             timelines.put(room_id.to_owned(), Arc::clone(&timeline));
             return Ok(timeline);
@@ -774,6 +775,7 @@ impl Session {
             self.events.clone(),
             self.room_snapshots.clone(),
             Arc::clone(&self.session_closed),
+            crate::sync_loop::timeline_search_context(self),
         );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
@@ -839,6 +841,7 @@ impl Session {
             self.events.clone(),
             self.room_snapshots.clone(),
             Arc::clone(&self.session_closed),
+            crate::sync_loop::timeline_search_context(self),
         );
         self.timelines
             .lock()
@@ -890,6 +893,7 @@ fn spawn_timeline_listener(
         std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>,
     >,
     session_closed: Arc<AtomicBool>,
+    search_context: crate::sync_loop::TimelineSearchContext,
 ) {
     use futures_util::StreamExt;
 
@@ -945,7 +949,7 @@ fn spawn_timeline_listener(
         {
             return;
         }
-        let initial_messages = initial_items
+        let initial_messages: Vec<charm_lib::matrix::timeline::RoomMessageSummary> = initial_items
             .iter()
             .filter_map(|item| match item {
                 charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
@@ -954,6 +958,11 @@ fn spawn_timeline_listener(
                 _ => None,
             })
             .collect();
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        charm_lib::matrix::timeline::observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &initial_messages,
+        );
         let initial_event = ServerEvent::Timeline(RoomTimelineUpdate {
             room_id: room_id.to_string(),
             messages: initial_messages,
@@ -1018,7 +1027,7 @@ fn spawn_timeline_listener(
             {
                 break;
             }
-            let messages = timeline_items
+            let messages: Vec<charm_lib::matrix::timeline::RoomMessageSummary> = timeline_items
                 .iter()
                 .filter_map(|item| match item {
                     charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
@@ -1027,6 +1036,17 @@ fn spawn_timeline_listener(
                     _ => None,
                 })
                 .collect();
+            let newly_decrypted = charm_lib::matrix::timeline::observe_newly_decrypted(
+                &mut seen_undecrypted,
+                &messages,
+            );
+            if newly_decrypted {
+                crate::sync_loop::schedule_cached_room_search_with_context(
+                    search_context.clone(),
+                    client.clone(),
+                    room_id.clone(),
+                );
+            }
             let event = ServerEvent::Timeline(RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages,
