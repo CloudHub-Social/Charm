@@ -26,6 +26,7 @@ use matrix_sdk::{
     },
     Client,
 };
+use matrix_sdk_ui::timeline::TimelineItem;
 use rand::{distr::Alphanumeric, RngExt};
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -37,7 +38,7 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
 const MAX_QUERY_BYTES: usize = 512;
@@ -47,6 +48,7 @@ const MAX_LIVE_SNAPSHOTS: usize = 8;
 const SNAPSHOT_TTL: Duration = Duration::from_secs(5 * 60);
 const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug)]
 enum MigrationError {
     IncompatibleSchema,
     Storage(String),
@@ -74,6 +76,11 @@ impl MigrationError {
                     | ErrorCode::DiskFull
                     | ErrorCode::CannotOpen
                     | ErrorCode::FileLockingProtocolFailed
+                    // A wrong SQLCipher key is intentionally surfaced as
+                    // SQLITE_NOTADB. Never rebuild in that case: doing so
+                    // would destroy an intact index under a transiently wrong
+                    // source secret.
+                    | ErrorCode::NotADatabase
             )
         );
         if transient_storage_failure {
@@ -193,8 +200,18 @@ pub(crate) struct ActiveSearchIndex {
 #[derive(Debug)]
 pub(crate) enum SearchMutation {
     Apply(SearchDocument),
-    Redact { room_id: String, event_id: String },
-    PurgeRoom { room_id: String },
+    SelectVersion {
+        room_id: String,
+        event_id: String,
+        version_event_id: String,
+    },
+    Redact {
+        room_id: String,
+        event_id: String,
+    },
+    PurgeRoom {
+        room_id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -251,33 +268,36 @@ impl SearchIndex {
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
-        let mut connection = open_encrypted_connection(
+        let mut connection = match open_encrypted_connection(
             &database_path,
             account_store_key,
             device_id,
             store_passphrase,
-        )?;
+        ) {
+            Ok(connection) => connection,
+            Err(MigrationError::Storage(message)) => return Err(message),
+            Err(MigrationError::IncompatibleSchema) => rebuild_encrypted_connection(
+                &directory,
+                &database_path,
+                account_store_key,
+                device_id,
+                store_passphrase,
+                "corrupt_index",
+            )?,
+        };
         if let Err(error) = migrate(&connection) {
             match error {
                 MigrationError::Storage(message) => return Err(message),
                 MigrationError::IncompatibleSchema => {
-                    let incident_id = random_id();
-                    tracing::warn!(
-                        command = "message_search_migration",
-                        category = "incompatible_schema",
-                        %incident_id,
-                        status = "rebuilding"
-                    );
                     drop(connection);
-                    delete_database_path(&database_path)?;
-                    create_private_directory(&directory)?;
-                    connection = open_encrypted_connection(
+                    connection = rebuild_encrypted_connection(
+                        &directory,
                         &database_path,
                         account_store_key,
                         device_id,
                         store_passphrase,
+                        "incompatible_schema",
                     )?;
-                    migrate(&connection).map_err(MigrationError::into_message)?;
                 }
             }
         }
@@ -468,6 +488,12 @@ impl SearchIndex {
             delete_visible_row(&transaction, room_id, event_id)?;
             transaction
                 .execute(
+                    "DELETE FROM selected_versions WHERE room_id = ?1 AND original_event_id = ?2",
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+            transaction
+                .execute(
                     "DELETE FROM message_versions
                      WHERE room_id = ?1 AND original_event_id = ?2",
                     params![room_id, event_id],
@@ -485,6 +511,13 @@ impl SearchIndex {
         {
             transaction
                 .execute(
+                    "DELETE FROM selected_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2 AND version_event_id = ?3",
+                    params![room_id, &original_event_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+            transaction
+                .execute(
                     "DELETE FROM message_versions
                      WHERE room_id = ?1 AND version_event_id = ?2",
                     params![room_id, event_id],
@@ -494,6 +527,27 @@ impl SearchIndex {
         }
         transaction.commit().map_err(safe_storage_error)?;
         compact(&self.connection)
+    }
+
+    /// Records the edit version selected by matrix-sdk-ui's renderer.
+    pub fn select_version(
+        &mut self,
+        room_id: &str,
+        event_id: &str,
+        version_event_id: &str,
+    ) -> Result<(), String> {
+        let transaction = self.connection.transaction().map_err(safe_storage_error)?;
+        transaction
+            .execute(
+                "INSERT INTO selected_versions (room_id, original_event_id, version_event_id)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(room_id, original_event_id)
+                 DO UPDATE SET version_event_id = excluded.version_event_id",
+                params![room_id, event_id, version_event_id],
+            )
+            .map_err(safe_storage_error)?;
+        restore_visible_row(&transaction, room_id, event_id)?;
+        transaction.commit().map_err(safe_storage_error)
     }
 
     /// Physically removes searchable rows and provenance for one room.
@@ -520,6 +574,12 @@ impl SearchIndex {
             .map_err(safe_storage_error)?;
         transaction
             .execute("DELETE FROM redacted_events WHERE room_id = ?1", [room_id])
+            .map_err(safe_storage_error)?;
+        transaction
+            .execute(
+                "DELETE FROM selected_versions WHERE room_id = ?1",
+                [room_id],
+            )
             .map_err(safe_storage_error)?;
         transaction.commit().map_err(safe_storage_error)?;
         compact(&self.connection)
@@ -559,6 +619,13 @@ impl SearchIndex {
         }
         for (room_id, event_id) in originals {
             delete_visible_row(&transaction, &room_id, &event_id)?;
+            transaction
+                .execute(
+                    "DELETE FROM selected_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2",
+                    params![&room_id, &event_id],
+                )
+                .map_err(safe_storage_error)?;
             transaction
                 .execute(
                     "DELETE FROM message_versions
@@ -797,6 +864,11 @@ impl SearchWork {
         for mutation in self.mutations {
             match mutation {
                 SearchMutation::Apply(document) => index.apply_document(&document)?,
+                SearchMutation::SelectVersion {
+                    room_id,
+                    event_id,
+                    version_event_id,
+                } => index.select_version(&room_id, &event_id, &version_event_id)?,
                 SearchMutation::Redact { room_id, event_id } => {
                     index.redact(&room_id, &event_id)?
                 }
@@ -819,6 +891,7 @@ impl SearchWork {
     pub fn retain_joined_room_additions(&mut self, joined_room_ids: &HashSet<String>) {
         self.mutations.retain(|mutation| match mutation {
             SearchMutation::Apply(document) => joined_room_ids.contains(&document.room_id),
+            SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
             SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
         });
     }
@@ -837,6 +910,7 @@ impl SearchWork {
                 joined_room_ids.contains(&document.room_id)
                     && !ignored_senders.contains(&document.sender)
             }
+            SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
             SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
         });
         self.ignored_senders = ignored_senders;
@@ -867,6 +941,44 @@ impl SearchWork {
         });
         let dropped_additions = self.mutations.len() != original_len;
         (self, dropped_additions)
+    }
+
+    /// Builds plaintext-free reconciliation work from matrix-sdk-ui's current
+    /// rendered message versions. The raw sync indexer remains responsible
+    /// for bodies; this only resolves equal-order edit ambiguity.
+    pub fn from_timeline_items<'a>(
+        client: &Client,
+        room_id: &str,
+        items: impl IntoIterator<Item = &'a std::sync::Arc<TimelineItem>>,
+    ) -> Option<Self> {
+        let (account_store_key, device_id) = active_identity(client)?;
+        let mutations = items
+            .into_iter()
+            .filter_map(|item| item.as_event())
+            .filter(|item| item.content().as_message().is_some())
+            .filter_map(|item| {
+                let event_id = item.event_id()?.to_string();
+                let version_event_id = item
+                    .latest_edit_json()
+                    .and_then(|raw| {
+                        raw.get_field::<matrix_sdk::ruma::OwnedEventId>("event_id")
+                            .ok()
+                            .flatten()
+                    })?
+                    .to_string();
+                Some(SearchMutation::SelectVersion {
+                    room_id: room_id.to_string(),
+                    event_id,
+                    version_event_id,
+                })
+            })
+            .collect();
+        Some(Self {
+            account_store_key,
+            device_id,
+            mutations,
+            ignored_senders: HashSet::new(),
+        })
     }
 }
 
@@ -1646,6 +1758,32 @@ async fn enqueue_sync_work(
     }
 }
 
+/// Queues the renderer's selected versions for one live timeline. This work
+/// contains event IDs only; decrypted bodies continue to enter through sync
+/// and cached-history ingestion.
+pub(crate) async fn submit_timeline_reconciliation(
+    app: &AppHandle,
+    client: &Client,
+    room_id: &str,
+    items: &imbl::Vector<std::sync::Arc<TimelineItem>>,
+) {
+    if !feature_enabled(app) {
+        return;
+    }
+    let Some(expected_identity) = active_identity(client) else {
+        return;
+    };
+    let generation = app
+        .state::<super::MatrixState>()
+        .search_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let Some(work) = SearchWork::from_timeline_items(client, room_id, items.iter()) else {
+        return;
+    };
+    enqueue_sync_work(app, &expected_identity, generation, work).await;
+}
+
+#[allow(clippy::result_large_err)]
 fn try_enqueue_current_generation(
     state: &super::MatrixState,
     generation: u64,
@@ -2270,15 +2408,25 @@ fn restore_visible_row(
     original_event_id: &str,
 ) -> Result<(), String> {
     delete_visible_row(transaction, room_id, original_event_id)?;
+    let selected_version = transaction
+        .query_row(
+            "SELECT version_event_id FROM selected_versions
+             WHERE room_id = ?1 AND original_event_id = ?2",
+            params![room_id, original_event_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(safe_storage_error)?;
     let previous = transaction
         .query_row(
             "SELECT version_event_id, sender, body, origin_server_ts, selection_order
              FROM message_versions
              WHERE room_id = ?1 AND original_event_id = ?2
+               AND (?3 IS NULL OR version_event_id = ?3)
              ORDER BY selection_order DESC,
                       (version_event_id != original_event_id) DESC
              LIMIT 1",
-            params![room_id, original_event_id],
+            params![room_id, original_event_id, selected_version],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2294,7 +2442,7 @@ fn restore_visible_row(
     let Some((version_event_id, sender, body, origin_server_ts, selection_order)) = previous else {
         return Ok(());
     };
-    if version_event_id != original_event_id {
+    if selected_version.is_none() && version_event_id != original_event_id {
         let tied_edits = transaction
             .query_row(
                 "SELECT COUNT(*) FROM message_versions
@@ -2384,7 +2532,7 @@ fn delete_visible_row(
     Ok(())
 }
 
-fn configure(connection: &Connection) -> Result<(), String> {
+fn configure(connection: &Connection) -> Result<(), MigrationError> {
     connection
         .execute_batch(
             "PRAGMA cipher_memory_security = ON;
@@ -2393,7 +2541,7 @@ fn configure(connection: &Connection) -> Result<(), String> {
              PRAGMA secure_delete = ON;
              PRAGMA journal_mode = WAL;",
         )
-        .map_err(safe_storage_error)
+        .map_err(MigrationError::from_sqlite)
 }
 
 fn open_encrypted_connection(
@@ -2401,12 +2549,12 @@ fn open_encrypted_connection(
     account_store_key: &str,
     device_id: &str,
     store_passphrase: &str,
-) -> Result<Connection, String> {
+) -> Result<Connection, MigrationError> {
     let connection = Connection::open_with_flags(
         database_path,
         OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
-    .map_err(safe_storage_error)?;
+    .map_err(MigrationError::from_sqlite)?;
     apply_encryption_key(&connection, account_store_key, device_id, store_passphrase)?;
     configure(&connection)?;
     Ok(connection)
@@ -2417,25 +2565,62 @@ fn apply_encryption_key(
     account_store_key: &str,
     device_id: &str,
     store_passphrase: &str,
-) -> Result<(), String> {
-    let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)?;
+) -> Result<(), MigrationError> {
+    let derived_key = derive_search_key(account_store_key, device_id, store_passphrase)
+        .map_err(MigrationError::Storage)?;
     let key_literal = Zeroizing::new(sqlcipher_raw_key_literal(derived_key.as_ref()));
     connection
         .pragma_update(None, "key", key_literal.as_str())
-        .map_err(safe_storage_error)?;
+        .map_err(MigrationError::from_sqlite)?;
 
     let cipher_version = connection
         .query_row("PRAGMA cipher_version", [], |row| row.get::<_, String>(0))
-        .map_err(safe_storage_error)?;
+        .map_err(MigrationError::from_sqlite)?;
     if cipher_version.is_empty() {
-        return Err("message search encryption unavailable".to_string());
+        return Err(MigrationError::Storage(
+            "message search encryption unavailable".to_string(),
+        ));
     }
     connection
         .query_row("SELECT count(*) FROM sqlite_master", [], |row| {
             row.get::<_, i64>(0)
         })
-        .map(|_| ())
-        .map_err(safe_storage_error)
+        .map_err(MigrationError::from_sqlite)?;
+    let integrity = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .map_err(MigrationError::from_sqlite)?;
+    if integrity != "ok" {
+        return Err(MigrationError::IncompatibleSchema);
+    }
+    Ok(())
+}
+
+fn rebuild_encrypted_connection(
+    directory: &Path,
+    database_path: &Path,
+    account_store_key: &str,
+    device_id: &str,
+    store_passphrase: &str,
+    category: &str,
+) -> Result<Connection, String> {
+    let incident_id = random_id();
+    tracing::warn!(
+        command = "message_search_migration",
+        category,
+        %incident_id,
+        status = "rebuilding"
+    );
+    delete_database_path(database_path)?;
+    create_private_directory(directory)?;
+    let connection = open_encrypted_connection(
+        database_path,
+        account_store_key,
+        device_id,
+        store_passphrase,
+    )
+    .map_err(MigrationError::into_message)?;
+    migrate(&connection).map_err(MigrationError::into_message)?;
+    Ok(connection)
 }
 
 fn derive_search_key(
@@ -2500,7 +2685,7 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                 )
                 .map_err(MigrationError::from_sqlite)?;
         }
-        (1, Some(2 | 3)) => {
+        (1, Some(2..=4)) => {
             create_current_schema(&transaction)?;
             transaction
                 .execute(
@@ -2542,6 +2727,12 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
                 event_id TEXT NOT NULL,
                 PRIMARY KEY(room_id, event_id)
              );
+             CREATE TABLE IF NOT EXISTS selected_versions (
+                room_id TEXT NOT NULL,
+                original_event_id TEXT NOT NULL,
+                version_event_id TEXT NOT NULL,
+                PRIMARY KEY(room_id, original_event_id)
+             );
              CREATE TABLE IF NOT EXISTS searchable_messages (
                 body TEXT NOT NULL,
                 room_id TEXT NOT NULL,
@@ -2571,6 +2762,12 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
         .map_err(MigrationError::from_sqlite)?;
     transaction
         .prepare("SELECT room_id, event_id FROM redacted_events LIMIT 0")
+        .map_err(MigrationError::from_sqlite)?;
+    transaction
+        .prepare(
+            "SELECT room_id, original_event_id, version_event_id
+             FROM selected_versions LIMIT 0",
+        )
         .map_err(MigrationError::from_sqlite)?;
     transaction
         .prepare(
@@ -3266,6 +3463,48 @@ mod tests {
     }
 
     #[test]
+    fn open_rebuilds_an_index_corrupted_before_schema_migration() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        for ordinal in 0..40 {
+            let mut row = document(
+                Some("enough content to allocate database pages"),
+                "$original",
+            );
+            row.event_id = format!("$event-{ordinal}");
+            row.version_event_id = row.event_id.clone();
+            index.apply_document(&row).expect("grow encrypted index");
+        }
+        let database_path = index.database_path().to_path_buf();
+        drop(index);
+        let mut database = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)
+            .expect("open encrypted index bytes");
+        let length = database.metadata().expect("index metadata").len();
+        database
+            .seek(SeekFrom::Start(length.saturating_sub(128)))
+            .expect("seek into encrypted page");
+        database.write_all(&[0xA5; 32]).expect("corrupt one page");
+
+        let rebuilt =
+            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .expect("corrupt derived index should rebuild");
+        assert_eq!(
+            rebuilt
+                .connection
+                .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                    row.get::<_, u32>(0)
+                })
+                .expect("read rebuilt schema"),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
     fn delete_for_source_removes_an_index_that_is_not_currently_open() {
         let directory = tempfile::tempdir().expect("tempdir");
         let index = open_index(directory.path(), "account", "DEVICE");
@@ -3818,6 +4057,41 @@ mod tests {
                 .visible_body("!room:example.org", "$original")
                 .as_deref(),
             Some("first tied edit")
+        );
+    }
+
+    #[test]
+    fn renderer_selection_resolves_equal_order_edits() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        let mut first = document(Some("first tied edit"), "$tie-1");
+        first.selection_order = 10;
+        let mut second = document(Some("second tied edit"), "$tie-2");
+        second.selection_order = 10;
+        index.apply_document(&first).expect("insert first edit");
+        index.apply_document(&second).expect("insert second edit");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .select_version("!room:example.org", "$original", "$tie-1")
+            .expect("select renderer version");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("first tied edit")
+        );
+        index
+            .select_version("!room:example.org", "$original", "$tie-2")
+            .expect("update renderer version");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("second tied edit")
         );
     }
 

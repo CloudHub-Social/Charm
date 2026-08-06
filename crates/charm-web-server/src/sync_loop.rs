@@ -69,6 +69,48 @@ pub(crate) fn timeline_search_context(session: &crate::session::Session) -> Time
     }
 }
 
+/// Queues matrix-sdk-ui's selected edit versions without copying message
+/// bodies into the listener queue.
+pub(crate) fn submit_timeline_search_selection<'a>(
+    context: &TimelineSearchContext,
+    client: &Client,
+    room_id: &str,
+    items: impl IntoIterator<Item = &'a std::sync::Arc<matrix_sdk_ui::timeline::TimelineItem>>,
+) {
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(work) =
+        charm_lib::matrix::search::SearchWork::from_timeline_items(client, room_id, items)
+    else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    let sender = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(sender) = sender else { return };
+    if sender
+        .try_send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+            completion: None,
+        })
+        .is_err()
+    {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 pub(crate) struct QueuedSearchWork {
     work: charm_lib::matrix::search::SearchWork,
     completes_backfill: bool,

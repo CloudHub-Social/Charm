@@ -931,6 +931,13 @@ fn spawn_timeline_listener(
         let (mut items, mut stream) = strong.subscribe().await;
         drop(strong);
 
+        crate::sync_loop::submit_timeline_search_selection(
+            &search_context,
+            &client,
+            room_id.as_str(),
+            items.iter(),
+        );
+
         // Emit the current snapshot immediately on subscribe, not just on
         // the next diff — mirrors desktop's `spawn_timeline_listener`
         // (`timeline.rs`'s own initial `app.emit`). Without this, a room
@@ -1015,6 +1022,12 @@ fn spawn_timeline_listener(
             for diff in diffs {
                 diff.apply(&mut items);
             }
+            crate::sync_loop::submit_timeline_search_selection(
+                &search_context,
+                &client,
+                room_id.as_str(),
+                items.iter(),
+            );
             // No media cache in this crate yet (matches every other
             // `items_to_summaries`/`snapshot_rooms` call site here) — media
             // metadata is still carried, just without a locally resolved

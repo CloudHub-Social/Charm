@@ -5,10 +5,15 @@ import type * as MatrixModule from "@/lib/matrix";
 import { MessageSearchDialog } from "./MessageSearchDialog";
 
 const searchMessages = vi.fn();
+const isWebBuild = vi.fn(() => false);
 
 vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixModule>()),
   searchMessages: (...args: unknown[]) => searchMessages(...args),
+}));
+
+vi.mock("@/lib/platform", () => ({
+  isWebBuild: () => isWebBuild(),
 }));
 
 const room = {
@@ -20,6 +25,23 @@ const room = {
 describe("MessageSearchDialog", () => {
   beforeEach(() => {
     searchMessages.mockReset();
+    isWebBuild.mockReturnValue(false);
+  });
+
+  it("discloses hosted companion memory custody on web", () => {
+    isWebBuild.mockReturnValue(true);
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/hosted Charm companion’s memory/i)).toBeInTheDocument();
+    expect(screen.getByText(/encrypted per-account index/i)).toBeInTheDocument();
   });
 
   it("searches the active room and navigates to the selected event", async () => {

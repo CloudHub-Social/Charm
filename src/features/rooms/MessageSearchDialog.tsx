@@ -15,6 +15,7 @@ import {
   type SearchResult,
   type SearchResultPage,
 } from "@/lib/matrix";
+import { isWebBuild } from "@/lib/platform";
 import { displayName } from "./roomDisplay";
 
 interface MessageSearchDialogProps {
@@ -122,7 +123,9 @@ export function MessageSearchDialog({
         <DialogHeader>
           <DialogTitle>Search messages</DialogTitle>
           <DialogDescription>
-            Searches decrypted messages stored in this account’s encrypted local index.
+            {isWebBuild()
+              ? "On web, decrypted message text is processed in your hosted Charm companion’s memory and stored in its encrypted per-account index."
+              : "Searches decrypted messages stored in this account’s encrypted local index."}
           </DialogDescription>
         </DialogHeader>
         <form className="flex gap-2" onSubmit={submit}>
