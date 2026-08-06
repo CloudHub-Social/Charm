@@ -47,6 +47,11 @@ export function MessageSearchDialog({
   );
 
   useEffect(() => {
+    // Every close/open or active-room reset starts a new dialog request
+    // generation. A response from the previous visible session must not be
+    // able to repopulate the freshly reset dialog after it reopens.
+    requestId.current += 1;
+    setLoading(false);
     if (!open) return;
     setScope(activeRoomId ? "room" : "all");
     setPage(null);

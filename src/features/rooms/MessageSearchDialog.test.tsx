@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import type * as MatrixModule from "@/lib/matrix";
 import { MessageSearchDialog } from "./MessageSearchDialog";
 
@@ -254,5 +254,50 @@ describe("MessageSearchDialog", () => {
       }),
     );
     expect(screen.queryByText("stale result")).not.toBeInTheDocument();
+  });
+
+  it("ignores an in-flight result after the dialog closes and reopens", async () => {
+    let resolveSearch: (value: unknown) => void = () => {};
+    searchMessages.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve;
+        }),
+    );
+    const props = {
+      onOpenChange: vi.fn(),
+      rooms: [room],
+      activeRoomId: room.room_id,
+      onSelectResult: vi.fn(),
+    };
+    const { rerender, client } = renderWithProviders(<MessageSearchDialog open {...props} />);
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "previous session" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(searchMessages).toHaveBeenCalledOnce());
+
+    rerender(wrapWithProviders(<MessageSearchDialog open={false} {...props} />, client));
+    rerender(wrapWithProviders(<MessageSearchDialog open {...props} />, client));
+    await act(async () =>
+      resolveSearch({
+        results: [
+          {
+            room_id: room.room_id,
+            event_id: "$stale-reopen",
+            sender: "@alice:example.org",
+            origin_server_ts: 1,
+            snippet: "stale reopened result",
+            match_ranges: [],
+          },
+        ],
+        next_cursor: null,
+        incomplete: false,
+      }),
+    );
+
+    expect(screen.queryByText("stale reopened result")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Search" })).not.toBeDisabled());
   });
 });
