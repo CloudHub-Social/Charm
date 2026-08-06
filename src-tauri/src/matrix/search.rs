@@ -2030,6 +2030,7 @@ async fn process_cached_room_seed(
     // Every await above may overlap logout, account replacement, or leave.
     // Only the current lifecycle can retain this decrypted batch in the FIFO.
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await
+        || !feature_enabled(app)
         || room.state() != matrix_sdk::RoomState::Joined
     {
         return;

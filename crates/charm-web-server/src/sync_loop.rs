@@ -508,7 +508,12 @@ pub(crate) fn schedule_cached_room_search_with_context(
     client: Client,
     room_id: matrix_sdk::ruma::OwnedRoomId,
 ) {
-    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+    let search_enabled = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some();
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) || !search_enabled {
         return;
     }
     let should_spawn = charm_lib::matrix::search::enqueue_cached_room_seed(
@@ -585,6 +590,22 @@ async fn process_web_cached_room_seed(
         }
         return;
     };
+    // Recheck the server feature/worker after the awaits above and keep the
+    // sender slot locked through the non-awaiting build/enqueue boundary. A
+    // disabled session therefore neither constructs a SearchWork containing
+    // decrypted bodies nor races worker revocation while queueing it.
+    let sender_guard = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(sender) = sender_guard.as_ref() else {
+        return;
+    };
+    if context.closed.load(std::sync::atomic::Ordering::Acquire)
+        || room.state() != matrix_sdk::RoomState::Joined
+    {
+        return;
+    }
     let Some(work) = charm_lib::matrix::search::work_from_cached_room(
         client,
         room_id.as_str(),
@@ -594,19 +615,6 @@ async fn process_web_cached_room_seed(
         return;
     };
     if work.is_empty() {
-        return;
-    }
-    let Some(sender) = context
-        .sender
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone()
-    else {
-        return;
-    };
-    if context.closed.load(std::sync::atomic::Ordering::Acquire)
-        || room.state() != matrix_sdk::RoomState::Joined
-    {
         return;
     }
     if sender
