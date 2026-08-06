@@ -527,15 +527,14 @@ impl MatrixState {
     pub(crate) async fn require_client_with_search_generation(
         &self,
     ) -> Result<(Client, u64), String> {
-        let client = self
-            .client
-            .lock()
-            .await
+        let client_guard = self.client.lock().await;
+        let client = client_guard
             .clone()
             .ok_or_else(|| "not logged in".to_string())?;
         let generation = self
             .search_generation
             .load(std::sync::atomic::Ordering::Acquire);
+        drop(client_guard);
         Ok((client, generation))
     }
 

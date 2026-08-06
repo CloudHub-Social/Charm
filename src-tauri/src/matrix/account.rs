@@ -308,14 +308,14 @@ async fn clear_local_session(
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
         crate::push::PushStatus::default();
 
-    let search_index = state
-        .search_index
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .take();
+    let search_index = std::sync::Arc::clone(&state.search_index);
     let cleanup = match app.path().app_data_dir() {
         Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
-            if let Some(active) = search_index {
+            let active = search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(active) = active {
                 active.index.delete()?;
             }
             if let Some(device_id) = search_device_id {

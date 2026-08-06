@@ -1073,6 +1073,56 @@ pub fn work_from_sync(
     })
 }
 
+/// Builds only privacy-removal mutations from a sync response. This path is
+/// used when account-data reads fail, so one-shot redactions and departed-room
+/// purges are still retained while message additions fail closed.
+pub fn removal_work_from_sync(
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) -> Option<SearchWork> {
+    let (account_store_key, device_id) = active_identity(client)?;
+    let mut mutations = response
+        .rooms
+        .left
+        .keys()
+        .map(|room_id| SearchMutation::PurgeRoom {
+            room_id: room_id.to_string(),
+        })
+        .collect::<Vec<_>>();
+    for (room_id, update) in &response.rooms.joined {
+        for raw_event in &update.timeline.events {
+            let Ok(event) = raw_event.raw().deserialize() else {
+                continue;
+            };
+            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomRedaction(
+                redaction,
+            )) = event
+            else {
+                continue;
+            };
+            let Some(original) = redaction.as_original() else {
+                continue;
+            };
+            if let Some(redacted_event_id) = original
+                .redacts
+                .as_ref()
+                .or(original.content.redacts.as_ref())
+            {
+                mutations.push(SearchMutation::Redact {
+                    room_id: room_id.to_string(),
+                    event_id: redacted_event_id.to_string(),
+                });
+            }
+        }
+    }
+    Some(SearchWork {
+        account_store_key,
+        device_id,
+        mutations,
+        ignored_senders: HashSet::new(),
+    })
+}
+
 /// Builds one room-sized backfill batch from matrix-sdk's already-decrypted
 /// local event cache. It never paginates or performs Matrix protocol traffic.
 pub fn work_from_cached_room(
@@ -1350,19 +1400,19 @@ pub(crate) async fn submit_sync_response(
     let Some(client_identity) = active_identity(client) else {
         return;
     };
-    let is_current_client = {
+    let generation = {
         let current = state.client.lock().await;
-        current
+        let is_current_client = current
             .as_ref()
             .and_then(active_identity)
-            .is_some_and(|identity| identity == client_identity)
+            .is_some_and(|identity| identity == client_identity);
+        if !is_current_client {
+            return;
+        }
+        state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
     };
-    if !is_current_client {
-        return;
-    }
-    let generation = state
-        .search_generation
-        .load(std::sync::atomic::Ordering::Acquire);
     if state
         .search_backfill_started
         .compare_exchange(
@@ -1379,6 +1429,9 @@ pub(crate) async fn submit_sync_response(
         state
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(work) = removal_work_from_sync(client, response) {
+            enqueue_sync_work(app, generation, work).await;
+        }
         return;
     };
     let ignored_senders = ignored_senders
@@ -1388,10 +1441,14 @@ pub(crate) async fn submit_sync_response(
     let Some(work) = work_from_sync(client, response, ignored_senders) else {
         return;
     };
+    enqueue_sync_work(app, generation, work).await;
+}
+
+async fn enqueue_sync_work(app: &AppHandle, generation: u64, work: SearchWork) {
     if work.is_empty() {
         return;
     }
-
+    let state = app.state::<super::MatrixState>();
     let sender = search_work_sender(app).await;
     let requires_reliable_delivery = work.requires_reliable_delivery();
     let queued = QueuedSearchWork {

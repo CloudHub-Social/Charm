@@ -213,6 +213,9 @@ async fn submit_message_search(
         context
             .incomplete
             .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(work) = charm_lib::matrix::search::removal_work_from_sync(client, response) {
+            enqueue_message_search_work(context, work).await;
+        }
         return;
     };
     let ignored = ignored
@@ -222,6 +225,13 @@ async fn submit_message_search(
     let Some(work) = charm_lib::matrix::search::work_from_sync(client, response, ignored) else {
         return;
     };
+    enqueue_message_search_work(context, work).await;
+}
+
+async fn enqueue_message_search_work(
+    context: &MessageSearchContext,
+    work: charm_lib::matrix::search::SearchWork,
+) {
     if work.is_empty() {
         return;
     }
