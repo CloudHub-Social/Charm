@@ -1828,6 +1828,16 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
             return;
         }
+        // The trusted remote kill switch can change while the event-cache or
+        // ignore-list awaits above are in flight. Do not let newly extracted
+        // decrypted bodies cross into the bounded worker queue after it has
+        // flipped off; the worker independently drops any older queued work.
+        if !feature_enabled(app) {
+            state
+                .search_backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            return;
+        }
         if sender
             .try_send(QueuedSearchWork {
                 generation,
@@ -1854,6 +1864,12 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         ignored_senders: HashSet::new(),
     };
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
+    if !feature_enabled(app) {
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
         return;
     }
     if sender
