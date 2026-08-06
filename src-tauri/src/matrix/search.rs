@@ -141,6 +141,20 @@ pub struct SearchResultPage {
     pub incomplete: bool,
 }
 
+impl SearchResultPage {
+    /// Applies freshly-read room-membership and ignored-sender visibility at
+    /// the final response boundary.
+    pub fn retain_current_visibility(
+        &mut self,
+        allowed_rooms: &HashSet<String>,
+        ignored_senders: &HashSet<String>,
+    ) {
+        self.results.retain(|result| {
+            allowed_rooms.contains(&result.room_id) && !ignored_senders.contains(&result.sender)
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "code", rename_all = "snake_case")]
 #[ts(export, export_to = "../src/bindings/")]
@@ -505,7 +519,11 @@ impl SearchIndex {
         } else if let Some(original_event_id) = transaction
             .query_row(
                 "SELECT original_event_id FROM message_versions
-                 WHERE room_id = ?1 AND version_event_id = ?2",
+                 WHERE room_id = ?1 AND version_event_id = ?2
+                 UNION ALL
+                 SELECT original_event_id FROM selected_versions
+                 WHERE room_id = ?1 AND version_event_id = ?2
+                 LIMIT 1",
                 params![room_id, event_id],
                 |row| row.get::<_, String>(0),
             )
@@ -2390,8 +2408,14 @@ pub async fn search_messages(
         .into_iter()
         .map(|room| room.room_id().to_string())
         .collect();
-    page.results
-        .retain(|result| current_allowed_rooms.contains(&result.room_id));
+    let current_ignored_senders: HashSet<String> =
+        super::account::ignored_user_ids(&current_client)
+            .await
+            .map_err(|_| SearchCommandError::unavailable())?
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+    page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     Ok(page)
 }
 
@@ -2443,6 +2467,47 @@ fn restore_visible_row(
         )
         .optional()
         .map_err(safe_storage_error)?;
+    let selected_version = if let Some(selected_version) = selected_version {
+        let selected_order = transaction
+            .query_row(
+                "SELECT selection_order FROM message_versions
+                 WHERE room_id = ?1 AND original_event_id = ?2 AND version_event_id = ?3",
+                params![room_id, original_event_id, &selected_version],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(safe_storage_error)?;
+        let latest_order = transaction
+            .query_row(
+                "SELECT MAX(selection_order) FROM message_versions
+                 WHERE room_id = ?1 AND original_event_id = ?2",
+                params![room_id, original_event_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(safe_storage_error)?;
+        if selected_order.is_none() {
+            // Timeline reconciliation can beat detached cached-history
+            // ingestion. Preserve the pending selection, but do not let its
+            // missing provenance hide the currently visible version.
+            None
+        } else if selected_order == latest_order {
+            Some(selected_version)
+        } else {
+            // Renderer selections resolve only same-order ambiguity. A later
+            // edit remains authoritative even while this room has no open
+            // timeline listener.
+            transaction
+                .execute(
+                    "DELETE FROM selected_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2",
+                    params![room_id, original_event_id],
+                )
+                .map_err(safe_storage_error)?;
+            None
+        }
+    } else {
+        None
+    };
     let previous = transaction
         .query_row(
             "SELECT version_event_id, sender, body, origin_server_ts, selection_order
@@ -4119,6 +4184,119 @@ mod tests {
                 .as_deref(),
             Some("second tied edit")
         );
+    }
+
+    #[test]
+    fn newer_edit_supersedes_a_stale_renderer_selection() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        let mut first = document(Some("first edit"), "$edit-1");
+        first.selection_order = 10;
+        index.apply_document(&first).expect("insert first edit");
+        index
+            .select_version("!room:example.org", "$original", "$edit-1")
+            .expect("select first edit");
+
+        let mut later = document(Some("later edit"), "$edit-2");
+        later.selection_order = 11;
+        index.apply_document(&later).expect("insert later edit");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("later edit")
+        );
+        let selected_rows = index
+            .connection
+            .query_row("SELECT COUNT(*) FROM selected_versions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count selections");
+        assert_eq!(selected_rows, 0);
+    }
+
+    #[test]
+    fn redacting_a_selected_edit_before_provenance_restores_the_original() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .expect("insert original");
+        index
+            .select_version("!room:example.org", "$original", "$pending-edit")
+            .expect("select pending edit");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("original")
+        );
+
+        index
+            .redact("!room:example.org", "$pending-edit")
+            .expect("redact pending edit");
+        index
+            .apply_document(&document(Some("redacted edit"), "$pending-edit"))
+            .expect("ignore late redacted edit");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("original")
+        );
+        let selected_rows = index
+            .connection
+            .query_row("SELECT COUNT(*) FROM selected_versions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count selections");
+        assert_eq!(selected_rows, 0);
+    }
+
+    #[test]
+    fn final_visibility_filter_removes_departed_rooms_and_newly_ignored_senders() {
+        let mut page = SearchResultPage {
+            results: vec![
+                SearchResult {
+                    room_id: "!joined:example.org".to_string(),
+                    event_id: "$visible".to_string(),
+                    sender: "@visible:example.org".to_string(),
+                    origin_server_ts: 1,
+                    snippet: "visible".to_string(),
+                    match_ranges: Vec::new(),
+                },
+                SearchResult {
+                    room_id: "!joined:example.org".to_string(),
+                    event_id: "$ignored".to_string(),
+                    sender: "@ignored:example.org".to_string(),
+                    origin_server_ts: 2,
+                    snippet: "ignored".to_string(),
+                    match_ranges: Vec::new(),
+                },
+                SearchResult {
+                    room_id: "!departed:example.org".to_string(),
+                    event_id: "$departed".to_string(),
+                    sender: "@visible:example.org".to_string(),
+                    origin_server_ts: 3,
+                    snippet: "departed".to_string(),
+                    match_ranges: Vec::new(),
+                },
+            ],
+            next_cursor: None,
+            incomplete: false,
+        };
+        let allowed = HashSet::from(["!joined:example.org".to_string()]);
+        let ignored = HashSet::from(["@ignored:example.org".to_string()]);
+
+        page.retain_current_visibility(&allowed, &ignored);
+
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].event_id, "$visible");
     }
 
     #[test]

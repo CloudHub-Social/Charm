@@ -2616,8 +2616,14 @@ async fn search_messages(
         .into_iter()
         .map(|room| room.room_id().to_string())
         .collect();
-    page.results
-        .retain(|result| current_allowed_rooms.contains(&result.room_id));
+    let current_ignored_senders: std::collections::HashSet<String> =
+        charm_lib::matrix::account::ignored_user_ids(&session.client)
+            .await
+            .map_err(|_| ApiError::bad_request("message search is unavailable"))?
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+    page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     page.incomplete = session
         .message_search_incomplete
         .load(std::sync::atomic::Ordering::Acquire)
