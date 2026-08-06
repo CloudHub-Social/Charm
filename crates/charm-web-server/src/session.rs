@@ -931,13 +931,6 @@ fn spawn_timeline_listener(
         let (mut items, mut stream) = strong.subscribe().await;
         drop(strong);
 
-        crate::sync_loop::submit_timeline_search_selection(
-            &search_context,
-            &client,
-            room_id.as_str(),
-            items.iter(),
-        );
-
         // Emit the current snapshot immediately on subscribe, not just on
         // the next diff — mirrors desktop's `spawn_timeline_listener`
         // (`timeline.rs`'s own initial `app.emit`). Without this, a room
@@ -988,6 +981,12 @@ fn spawn_timeline_listener(
             .unwrap_or_else(|e| e.into_inner())
             .insert(room_id.clone(), (generation, initial_event.clone()));
         let _ = events.send(initial_event);
+        crate::sync_loop::submit_timeline_search_selection(
+            &search_context,
+            &client,
+            room_id.as_str(),
+            items.iter(),
+        );
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         // The first `tick()` fires immediately, not after the first
@@ -1022,12 +1021,6 @@ fn spawn_timeline_listener(
             for diff in diffs {
                 diff.apply(&mut items);
             }
-            crate::sync_loop::submit_timeline_search_selection(
-                &search_context,
-                &client,
-                room_id.as_str(),
-                items.iter(),
-            );
             // No media cache in this crate yet (matches every other
             // `items_to_summaries`/`snapshot_rooms` call site here) — media
             // metadata is still carried, just without a locally resolved
@@ -1078,6 +1071,12 @@ fn spawn_timeline_listener(
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(room_id.clone(), (generation, event.clone()));
             let _ = events.send(event);
+            crate::sync_loop::submit_timeline_search_selection(
+                &search_context,
+                &client,
+                room_id.as_str(),
+                items.iter(),
+            );
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
         // drop this room's cached snapshot too, so a stale, possibly very
@@ -1476,20 +1475,16 @@ pub(crate) fn open_fresh_message_search_index(
 }
 
 async fn delete_message_search_index(session: &Session, app_data_dir: std::path::PathBuf) {
-    let live_index = session
-        .message_search_index
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .take();
-    let unopened_source = if live_index.is_none() {
-        session
-            .persisted_crypto
-            .clone()
-            .zip(session.client.device_id().map(ToString::to_string))
-    } else {
-        None
-    };
+    let index = Arc::clone(&session.message_search_index);
+    let unopened_source = session
+        .persisted_crypto
+        .clone()
+        .zip(session.client.device_id().map(ToString::to_string));
     let deleted = tokio::task::spawn_blocking(move || {
+        let live_index = index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         if let Some(search_index) = live_index {
             search_index.delete()
         } else if let Some((crypto, device_id)) = unopened_source {

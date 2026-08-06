@@ -1212,8 +1212,6 @@ pub(crate) fn spawn_timeline_listener(
         // task otherwise only holds the `'static` `AppHandle`/`Client`.
         let state = app.state::<MatrixState>();
         let media_cache = state.require_media_cache(&app).await.ok();
-        super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
-            .await;
         let initial_items =
             items_to_timeline_items(&items, own_user_id.as_deref(), &client, media_cache).await;
         let initial_summaries = message_summaries(&initial_items);
@@ -1239,6 +1237,8 @@ pub(crate) fn spawn_timeline_listener(
                 items: include_timeline_items.then_some(initial_items),
             },
         );
+        super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
+            .await;
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         loop {
@@ -1255,8 +1255,6 @@ pub(crate) fn spawn_timeline_listener(
             for diff in diffs {
                 diff.apply(&mut items);
             }
-            super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
-                .await;
             let state = app.state::<MatrixState>();
             let media_cache = state.require_media_cache(&app).await.ok();
             let timeline_items =
@@ -1311,6 +1309,8 @@ pub(crate) fn spawn_timeline_listener(
                     items: include_timeline_items.then_some(timeline_items),
                 },
             );
+            super::search::submit_timeline_reconciliation(&app, &client, room_id.as_str(), &items)
+                .await;
         }
     })
 }

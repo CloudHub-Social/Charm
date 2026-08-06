@@ -28,7 +28,10 @@ use matrix_sdk::{
 };
 use matrix_sdk_ui::timeline::TimelineItem;
 use rand::{distr::Alphanumeric, RngExt};
-use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{
+    params, params_from_iter, types::Value, Connection, ErrorCode, OpenFlags, OptionalExtension,
+    Transaction,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sha2_compat::Sha256 as HkdfSha256;
@@ -746,71 +749,83 @@ impl SearchIndex {
         room_id: Option<&str>,
         allowed_rooms: &HashSet<String>,
     ) -> Result<Vec<SearchSnapshotEntry>, SearchCommandError> {
+        let mut selected_rooms: Vec<String> = match room_id {
+            Some(room_id) if allowed_rooms.contains(room_id) => vec![room_id.to_string()],
+            Some(_) => return Ok(Vec::new()),
+            None => allowed_rooms.iter().cloned().collect(),
+        };
+        if selected_rooms.is_empty() {
+            return Ok(Vec::new());
+        }
+        selected_rooms.sort_unstable();
+        let room_placeholders = (2..selected_rooms.len() + 2)
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let limit_parameter = selected_rooms.len() + 2;
         let mut entries = Vec::new();
         if query.chars().count() >= 3 {
             let literal = format!("\"{}\"", query.replace('"', "\"\""));
+            let sql = format!(
+                "SELECT room_id, event_id, version_event_id
+                 FROM searchable_messages_fts
+                 WHERE searchable_messages_fts MATCH ?1
+                   AND room_id IN ({room_placeholders})
+                 ORDER BY bm25(searchable_messages_fts) ASC,
+                          CAST(origin_server_ts AS INTEGER) DESC,
+                          room_id ASC, event_id ASC
+                 LIMIT ?{limit_parameter}"
+            );
             let mut statement = self
                 .connection
-                .prepare(
-                    "SELECT room_id, event_id, version_event_id
-                     FROM searchable_messages_fts
-                     WHERE searchable_messages_fts MATCH ?1
-                       AND (?2 IS NULL OR room_id = ?2)
-                     ORDER BY bm25(searchable_messages_fts) ASC,
-                              CAST(origin_server_ts AS INTEGER) DESC,
-                              room_id ASC, event_id ASC
-                     LIMIT ?3",
-                )
+                .prepare(&sql)
                 .map_err(|_| SearchCommandError::unavailable())?;
+            let mut values = Vec::with_capacity(selected_rooms.len() + 2);
+            values.push(Value::Text(literal));
+            values.extend(selected_rooms.iter().cloned().map(Value::Text));
+            values.push(Value::Integer(MAX_SNAPSHOT_RESULTS as i64));
             let rows = statement
-                .query_map(
-                    params![literal, room_id, MAX_SNAPSHOT_RESULTS as i64],
-                    |row| {
-                        Ok(SearchSnapshotEntry {
-                            room_id: row.get(0)?,
-                            event_id: row.get(1)?,
-                            version_event_id: row.get(2)?,
-                        })
-                    },
-                )
+                .query_map(params_from_iter(values), |row| {
+                    Ok(SearchSnapshotEntry {
+                        room_id: row.get(0)?,
+                        event_id: row.get(1)?,
+                        version_event_id: row.get(2)?,
+                    })
+                })
                 .map_err(|_| SearchCommandError::unavailable())?;
             for row in rows {
-                let entry = row.map_err(|_| SearchCommandError::unavailable())?;
-                if allowed_rooms.contains(&entry.room_id) {
-                    entries.push(entry);
-                }
+                entries.push(row.map_err(|_| SearchCommandError::unavailable())?);
             }
         } else {
             let escaped = escape_like(query);
             let pattern = format!("%{escaped}%");
+            let sql = format!(
+                "SELECT room_id, event_id, version_event_id
+                 FROM searchable_messages
+                 WHERE body LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                   AND room_id IN ({room_placeholders})
+                 ORDER BY origin_server_ts DESC, room_id ASC, event_id ASC
+                 LIMIT ?{limit_parameter}"
+            );
             let mut statement = self
                 .connection
-                .prepare(
-                    "SELECT room_id, event_id, version_event_id
-                     FROM searchable_messages
-                     WHERE body LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                       AND (?2 IS NULL OR room_id = ?2)
-                     ORDER BY origin_server_ts DESC, room_id ASC, event_id ASC
-                     LIMIT ?3",
-                )
+                .prepare(&sql)
                 .map_err(|_| SearchCommandError::unavailable())?;
+            let mut values = Vec::with_capacity(selected_rooms.len() + 2);
+            values.push(Value::Text(pattern));
+            values.extend(selected_rooms.iter().cloned().map(Value::Text));
+            values.push(Value::Integer(MAX_SNAPSHOT_RESULTS as i64));
             let rows = statement
-                .query_map(
-                    params![pattern, room_id, MAX_SNAPSHOT_RESULTS as i64],
-                    |row| {
-                        Ok(SearchSnapshotEntry {
-                            room_id: row.get(0)?,
-                            event_id: row.get(1)?,
-                            version_event_id: row.get(2)?,
-                        })
-                    },
-                )
+                .query_map(params_from_iter(values), |row| {
+                    Ok(SearchSnapshotEntry {
+                        room_id: row.get(0)?,
+                        event_id: row.get(1)?,
+                        version_event_id: row.get(2)?,
+                    })
+                })
                 .map_err(|_| SearchCommandError::unavailable())?;
             for row in rows {
-                let entry = row.map_err(|_| SearchCommandError::unavailable())?;
-                if allowed_rooms.contains(&entry.room_id) {
-                    entries.push(entry);
-                }
+                entries.push(row.map_err(|_| SearchCommandError::unavailable())?);
             }
         }
         Ok(entries)
@@ -1044,6 +1059,25 @@ async fn search_lifecycle_is_current(
 /// on blocking threads; acquire it from `spawn_blocking` here so supersession
 /// does not stall a Tokio worker while an index operation drains.
 pub(crate) async fn invalidate_for_session_replacement(state: &super::MatrixState) {
+    reset_index_lifecycle(state);
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    if tokio::task::spawn_blocking(move || {
+        search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!(
+            command = "message_search_supersession",
+            status = "close_failed"
+        );
+    }
+}
+
+fn reset_index_lifecycle(state: &super::MatrixState) {
     state
         .search_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1061,21 +1095,6 @@ pub(crate) async fn invalidate_for_session_replacement(state: &super::MatrixStat
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clear();
-    let search_index = std::sync::Arc::clone(&state.search_index);
-    if tokio::task::spawn_blocking(move || {
-        search_index
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-    })
-    .await
-    .is_err()
-    {
-        tracing::warn!(
-            command = "message_search_supersession",
-            status = "close_failed"
-        );
-    }
 }
 
 /// Removes the encrypted search database for a client that has been
@@ -1451,6 +1470,7 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
+        reset_index_lifecycle(&state);
         if let Some(active) = app
             .state::<super::MatrixState>()
             .search_index
@@ -1478,6 +1498,7 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
+        reset_index_lifecycle(&state);
         if let Some(active) = slot.take() {
             active.index.delete()?;
         }
@@ -1588,18 +1609,7 @@ pub(crate) async fn submit_sync_response(
 ) {
     let state = app.state::<super::MatrixState>();
     if !feature_enabled(app) {
-        state
-            .search_generation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        state
-            .search_backfill_started
-            .store(false, std::sync::atomic::Ordering::Release);
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
-        state
-            .search_incomplete
-            .store(false, std::sync::atomic::Ordering::Release);
+        reset_index_lifecycle(&state);
         let source = active_identity(client);
         let app_data_dir = app.path().app_data_dir().ok();
         let app = app.clone();
@@ -2324,6 +2334,7 @@ pub async fn search_messages(
         // Re-evaluate the trusted kill switch under the index lock so a flag
         // change during those awaits cannot reopen or query the local index.
         if !feature_enabled(&app) {
+            reset_index_lifecycle(&state);
             if let Some(active) = slot.take() {
                 active
                     .index
@@ -2345,6 +2356,7 @@ pub async fn search_messages(
             cursor.as_deref(),
         )?;
         if !feature_enabled(&app) {
+            reset_index_lifecycle(&state);
             if let Some(active) = slot.take() {
                 active
                     .index
@@ -2384,6 +2396,10 @@ pub async fn search_messages(
 }
 
 async fn delete_disabled_active_index(app: &AppHandle, state: &super::MatrixState) {
+    // Invalidate queued plaintext and force a fresh cache seed before taking
+    // the derived index. Cleanup can fail after the live handle is removed;
+    // that must not leave a later re-enable believing backfill is complete.
+    reset_index_lifecycle(state);
     let source = state.client.lock().await.as_ref().and_then(active_identity);
     let app_data_dir = app.path().app_data_dir().ok();
     let search_index = std::sync::Arc::clone(&state.search_index);
@@ -4137,6 +4153,48 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn departed_rooms_cannot_consume_the_global_snapshot_cap() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let joined_room = "!joined:example.org";
+
+        for offset in 0..MAX_SNAPSHOT_RESULTS {
+            let event_id = format!("$departed-{offset}:example.org");
+            index
+                .apply_document(&SearchDocument {
+                    room_id: "!departed:example.org".to_string(),
+                    event_id: event_id.clone(),
+                    version_event_id: event_id,
+                    sender: "@alice:example.org".to_string(),
+                    body: Some("crowding marker".to_string()),
+                    origin_server_ts: 10_000 + offset as u64,
+                    selection_order: 10_000 + offset as u64,
+                })
+                .expect("insert departed-room result");
+        }
+        index
+            .apply_document(&SearchDocument {
+                room_id: joined_room.to_string(),
+                event_id: "$joined:example.org".to_string(),
+                version_event_id: "$joined:example.org".to_string(),
+                sender: "@bob:example.org".to_string(),
+                body: Some("crowding marker".to_string()),
+                origin_server_ts: 1,
+                selection_order: 1,
+            })
+            .expect("insert joined-room result");
+
+        let allowed = HashSet::from([joined_room.to_string()]);
+        let page = index
+            .search("crowding", None, &allowed, 20, None)
+            .expect("global search");
+
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].room_id, joined_room);
+        assert_eq!(page.results[0].event_id, "$joined:example.org");
     }
 
     #[test]
