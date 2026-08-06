@@ -38,6 +38,8 @@ use tokio::sync::broadcast;
 use crate::events::{SasUpdatePayload, ServerEvent};
 use crate::persistence::PersistenceStore;
 
+const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct MessageSearchContext {
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     incomplete: Arc<std::sync::atomic::AtomicBool>,
@@ -151,7 +153,7 @@ pub fn message_search_context(
 }
 
 /// Orders a successful leave purge behind already-queued sync mutations and
-/// waits until SQLCipher has physically removed the room before returning.
+/// gives SQLCipher a bounded opportunity to physically remove the room.
 pub async fn purge_room_after_leave(
     session: &crate::session::Session,
     room_id: &str,
@@ -161,40 +163,44 @@ pub async fn purge_room_after_leave(
     else {
         return Ok(());
     };
-    while session
-        .message_search_pagination_seed_running
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let notified = session.message_search_pagination_seed_done.notified();
-        if !session
+    tokio::time::timeout(ROOM_LEAVE_PURGE_TIMEOUT, async {
+        while session
             .message_search_pagination_seed_running
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            break;
+            let notified = session.message_search_pagination_seed_done.notified();
+            if !session
+                .message_search_pagination_seed_running
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                break;
+            }
+            notified.await;
         }
-        notified.await;
-    }
-    let Some(sender) = session
-        .message_search_sender
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone()
-    else {
-        // Without the feature's worker this session never opened an index.
-        return Ok(());
-    };
-    let (completion, completed) = tokio::sync::oneshot::channel();
-    sender
-        .send(QueuedSearchWork {
-            work,
-            completes_backfill: false,
-            completion: Some(completion),
-        })
-        .await
-        .map_err(|_| "web message search purge worker unavailable".to_string())?;
-    completed
-        .await
-        .map_err(|_| "web message search purge worker unavailable".to_string())?
+        let Some(sender) = session
+            .message_search_sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+        else {
+            // Without the feature's worker this session never opened an index.
+            return Ok(());
+        };
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        sender
+            .send(QueuedSearchWork {
+                work,
+                completes_backfill: false,
+                completion: Some(completion),
+            })
+            .await
+            .map_err(|_| "web message search purge worker unavailable".to_string())?;
+        completed
+            .await
+            .map_err(|_| "web message search purge worker unavailable".to_string())?
+    })
+    .await
+    .map_err(|_| "web message search purge timed out".to_string())?
 }
 
 async fn submit_message_search(

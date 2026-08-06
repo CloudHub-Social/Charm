@@ -42,6 +42,7 @@ const MAX_RESULTS_PER_PAGE: usize = 100;
 const MAX_SNAPSHOT_RESULTS: usize = 2_000;
 const MAX_LIVE_SNAPSHOTS: usize = 8;
 const SNAPSHOT_TTL: Duration = Duration::from_secs(5 * 60);
+const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum MigrationError {
     IncompatibleSchema,
@@ -1195,7 +1196,7 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
 }
 
 /// Orders a successful leave purge behind already-queued sync mutations and
-/// waits until SQLCipher has physically removed the room before returning.
+/// gives SQLCipher a bounded opportunity to physically remove the room.
 pub(crate) async fn purge_room_after_leave(
     app: &AppHandle,
     client: &Client,
@@ -1220,49 +1221,53 @@ pub(crate) async fn purge_room_after_leave(
     {
         return Ok(());
     }
-    while state
-        .search_pagination_seed_running
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let notified = state.search_pagination_seed_done.notified();
-        if !state
+    tokio::time::timeout(ROOM_LEAVE_PURGE_TIMEOUT, async {
+        while state
             .search_pagination_seed_running
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            break;
+            let notified = state.search_pagination_seed_done.notified();
+            if !state
+                .search_pagination_seed_running
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                break;
+            }
+            notified.await;
         }
-        notified.await;
-    }
-    if !client_identity_is_current(&state, &expected_identity).await
-        || generation
-            != state
-                .search_generation
-                .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Ok(());
-    }
-    let (completion, completed) = tokio::sync::oneshot::channel();
-    let sender = search_work_sender(app).await;
-    if !client_identity_is_current(&state, &expected_identity).await
-        || generation
-            != state
-                .search_generation
-                .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Ok(());
-    }
-    sender
-        .send(QueuedSearchWork {
-            generation,
-            work,
-            completes_backfill: false,
-            completion: Some(completion),
-        })
-        .await
-        .map_err(|_| "message search purge worker unavailable".to_string())?;
-    completed
-        .await
-        .map_err(|_| "message search purge worker unavailable".to_string())?
+        if !client_identity_is_current(&state, &expected_identity).await
+            || generation
+                != state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        let sender = search_work_sender(app).await;
+        if !client_identity_is_current(&state, &expected_identity).await
+            || generation
+                != state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        sender
+            .send(QueuedSearchWork {
+                generation,
+                work,
+                completes_backfill: false,
+                completion: Some(completion),
+            })
+            .await
+            .map_err(|_| "message search purge worker unavailable".to_string())?;
+        completed
+            .await
+            .map_err(|_| "message search purge worker unavailable".to_string())?
+    })
+    .await
+    .map_err(|_| "message search purge timed out".to_string())?
 }
 
 /// Records a secondary search-purge failure after the homeserver has already
