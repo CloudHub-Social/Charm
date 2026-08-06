@@ -1561,6 +1561,23 @@ pub async fn load_timeline_around_event(
     // through client-side. Fall back to a direct server-side lookup instead
     // of reporting failure.
     require_room_still_joined(&room)?;
+    // The bounded walk above can outlive the session that started it. Re-check
+    // both the lifecycle generation and Matrix identity immediately before the
+    // focused builder performs its `/context` request; the checks inside
+    // `load_focused_event_timeline` protect cache installation, but would run
+    // only after a stale client had already disclosed the target event ID to
+    // its homeserver.
+    let (current_client, current_search_generation) =
+        state.require_client_with_search_generation().await?;
+    if current_search_generation != search_generation
+        || current_client.user_id() != client.user_id()
+        || current_client.device_id() != client.device_id()
+    {
+        return Ok(JumpToEventResult {
+            found: false,
+            installed_focused_view: false,
+        });
+    }
     let found =
         load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
             .await?;
