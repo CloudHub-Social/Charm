@@ -322,13 +322,22 @@ pub struct RoomMessageSummary {
 /// Tracks encrypted timeline entries that later become decryptable in-place.
 ///
 /// Timeline listeners retain the set for their own bounded lifetime. Returning
-/// `true` only on the undecrypted -> decrypted transition avoids re-seeding the
-/// local search index for ordinary message, reaction, and send-state diffs.
+/// `true` on either an undecrypted -> decrypted transition or when a tracked
+/// placeholder disappears because the SDK folded a decrypted relation into
+/// its target. This avoids re-seeding for ordinary timeline diffs while still
+/// catching edits and redactions that no longer have their own rendered item.
 pub fn observe_newly_decrypted(
     seen_undecrypted: &mut std::collections::HashSet<String>,
     summaries: &[RoomMessageSummary],
 ) -> bool {
-    let mut newly_decrypted = false;
+    let current_event_ids: std::collections::HashSet<&str> = summaries
+        .iter()
+        .map(|summary| summary.event_id.as_str())
+        .collect();
+    let mut newly_decrypted = seen_undecrypted
+        .iter()
+        .any(|event_id| !current_event_ids.contains(event_id.as_str()));
+    seen_undecrypted.retain(|event_id| current_event_ids.contains(event_id.as_str()));
     for summary in summaries {
         if summary.is_undecrypted {
             seen_undecrypted.insert(summary.event_id.clone());
@@ -1126,6 +1135,26 @@ mod notification_dedup_tests {
         assert!(!observe_newly_decrypted(
             &mut seen_undecrypted,
             &[summary("$encrypted", 100)]
+        ));
+    }
+
+    #[test]
+    fn disappearing_undecrypted_relation_is_reported_once() {
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        let mut relation = summary("$encrypted-edit", 100);
+        relation.is_undecrypted = true;
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90), relation]
+        ));
+
+        assert!(observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90)]
+        ));
+        assert!(!observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &[summary("$target", 90)]
         ));
     }
 

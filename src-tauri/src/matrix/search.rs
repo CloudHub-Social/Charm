@@ -2271,7 +2271,17 @@ pub async fn search_messages(
         )
         .is_ok()
     {
-        submit_cached_history(&app, &client, generation).await;
+        // Publish the disclosure before detaching so the first request can
+        // return promptly while still reporting that cached-history coverage
+        // is incomplete until the worker's FIFO completion marker drains.
+        state
+            .search_backfill_pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        let seed_app = app.clone();
+        let seed_client = client.clone();
+        tauri::async_runtime::spawn(async move {
+            submit_cached_history(&seed_app, &seed_client, generation).await;
+        });
     }
     let ignored_senders: HashSet<String> = super::account::ignored_user_ids(&client)
         .await
