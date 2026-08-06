@@ -1557,7 +1557,7 @@ pub(crate) async fn submit_sync_response(
             .search_incomplete
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(work) = removal_work_from_sync(client, response) {
-            enqueue_sync_work(app, generation, work).await;
+            enqueue_sync_work(app, &client_identity, generation, work).await;
         }
         return;
     };
@@ -1568,15 +1568,27 @@ pub(crate) async fn submit_sync_response(
     let Some(work) = work_from_sync(client, response, ignored_senders) else {
         return;
     };
-    enqueue_sync_work(app, generation, work).await;
+    enqueue_sync_work(app, &client_identity, generation, work).await;
 }
 
-async fn enqueue_sync_work(app: &AppHandle, generation: u64, work: SearchWork) {
+async fn enqueue_sync_work(
+    app: &AppHandle,
+    expected_identity: &(String, String),
+    generation: u64,
+    work: SearchWork,
+) {
     if work.is_empty() {
         return;
     }
     let state = app.state::<super::MatrixState>();
     let sender = search_work_sender(app).await;
+    // Keep account replacement from clearing the client between the final
+    // lifecycle check and the non-blocking queue insertion. Invalidation only
+    // starts after the client has been cleared under this same mutex.
+    let current_client = state.client.lock().await;
+    if current_client.as_ref().and_then(active_identity).as_ref() != Some(expected_identity) {
+        return;
+    }
     let requires_reliable_delivery = work.requires_reliable_delivery();
     let queued = QueuedSearchWork {
         generation,
@@ -1584,7 +1596,12 @@ async fn enqueue_sync_work(app: &AppHandle, generation: u64, work: SearchWork) {
         completes_backfill: false,
         completion: None,
     };
-    let delivered = match sender.try_send(queued) {
+    let Some(send_result) = try_enqueue_current_generation(&state, generation, &sender, queued)
+    else {
+        return;
+    };
+    drop(current_client);
+    let delivered = match send_result {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(mut queued))
             if requires_reliable_delivery =>
@@ -1613,6 +1630,19 @@ async fn enqueue_sync_work(app: &AppHandle, generation: u64, work: SearchWork) {
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(command = "message_search_index", status = "queue_full");
     }
+}
+
+fn try_enqueue_current_generation(
+    state: &super::MatrixState,
+    generation: u64,
+    sender: &tokio::sync::mpsc::Sender<QueuedSearchWork>,
+    queued: QueuedSearchWork,
+) -> Option<Result<(), tokio::sync::mpsc::error::TrySendError<QueuedSearchWork>>> {
+    (generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire))
+    .then(|| sender.try_send(queued))
 }
 
 async fn enqueue_reliable_search_work(
@@ -2885,6 +2915,30 @@ mod tests {
         assert!(matches!(
             privacy.mutations[0],
             SearchMutation::Redact { .. }
+        ));
+    }
+
+    #[test]
+    fn stale_generation_drops_sync_plaintext_before_queueing() {
+        let state = super::super::MatrixState::default();
+        state
+            .search_generation
+            .store(1, std::sync::atomic::Ordering::Release);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let queued = QueuedSearchWork {
+            generation: 0,
+            work: work_with(vec![SearchMutation::Apply(document(
+                Some("signed-out plaintext"),
+                "$original",
+            ))]),
+            completes_backfill: false,
+            completion: None,
+        };
+
+        assert!(try_enqueue_current_generation(&state, 0, &sender, queued).is_none());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
     }
 

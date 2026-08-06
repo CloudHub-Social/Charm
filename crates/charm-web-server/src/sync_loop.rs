@@ -285,7 +285,11 @@ async fn enqueue_message_search_work(
         completes_backfill: false,
         completion: None,
     };
-    let delivered = match context.sender.try_send(queued) {
+    let Some(send_result) = try_enqueue_open_session(&context.closed, &context.sender, queued)
+    else {
+        return;
+    };
+    let delivered = match send_result {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(mut queued))
             if requires_reliable_delivery =>
@@ -313,6 +317,14 @@ async fn enqueue_message_search_work(
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(command = "web_message_search_index", status = "queue_full");
     }
+}
+
+fn try_enqueue_open_session<T>(
+    closed: &std::sync::atomic::AtomicBool,
+    sender: &tokio::sync::mpsc::Sender<T>,
+    queued: T,
+) -> Option<Result<(), tokio::sync::mpsc::error::TrySendError<T>>> {
+    (!closed.load(std::sync::atomic::Ordering::Acquire)).then(|| sender.try_send(queued))
 }
 
 async fn enqueue_reliable_search_work(
@@ -1511,6 +1523,18 @@ mod tests {
 
         assert!(backfill_revoked(&context));
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn closed_session_refuses_sync_queue_insertion() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let closed = std::sync::atomic::AtomicBool::new(true);
+
+        assert!(try_enqueue_open_session(&closed, &sender, "signed-out plaintext").is_none());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     /// Regression test for the Codex review finding on #280 ("Clear
