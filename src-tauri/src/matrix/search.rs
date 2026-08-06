@@ -1526,7 +1526,16 @@ pub(crate) async fn submit_sync_response(
         )
         .is_ok()
     {
-        submit_cached_history(app, client, generation).await;
+        // Publish the disclosure before detaching so a search racing this
+        // spawn cannot briefly present the not-yet-seeded index as complete.
+        state
+            .search_backfill_pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        let seed_app = app.clone();
+        let seed_client = client.clone();
+        tauri::async_runtime::spawn(async move {
+            submit_cached_history(&seed_app, &seed_client, generation).await;
+        });
     }
     let ignored_senders = super::account::ignored_user_ids(client).await;
     if !search_lifecycle_is_current(&state, &client_identity, generation).await {
