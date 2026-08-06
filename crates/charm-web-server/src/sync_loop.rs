@@ -40,6 +40,7 @@ use crate::persistence::PersistenceStore;
 
 const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Clone)]
 pub struct MessageSearchContext {
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     incomplete: Arc<std::sync::atomic::AtomicBool>,
@@ -968,10 +969,22 @@ pub fn spawn(
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
-        backfill_message_search(&message_search, &client).await;
-        // Cache provenance must enter the FIFO before the initial live batch.
-        // Otherwise an edit in that batch can arrive before its cached
-        // original and be rejected as an unresolved replacement.
+        if let Some(context) = &message_search {
+            // Publish the disclosure before detaching so a request racing the
+            // spawn cannot briefly present the unseeded index as complete.
+            context
+                .backfill_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let backfill_context = message_search.clone();
+        let backfill_client = client.clone();
+        tokio::spawn(async move {
+            backfill_message_search(&backfill_context, &backfill_client).await;
+        });
+        // The relation-aware index accepts the live batch before older cache
+        // provenance (out-of-order edit/redaction tests cover that ordering),
+        // while `backfill_pending` keeps results explicitly incomplete until
+        // the detached cache marker drains.
         submit_message_search(&message_search, &client, &initial_response).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's

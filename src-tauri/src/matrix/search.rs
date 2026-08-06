@@ -1166,7 +1166,11 @@ pub fn work_from_sync(
         account_store_key,
         device_id,
         mutations,
-        ignored_senders,
+        // Used above to filter additions, but intentionally not repeated on
+        // every room-sized batch. Both transport workers refresh the current
+        // ignore set at dequeue, so carrying it here only turns mutation-empty
+        // rooms into duplicate queue entries that can crowd out real history.
+        ignored_senders: HashSet::new(),
     })
 }
 
