@@ -21,7 +21,7 @@ use matrix_sdk::{
             room::message::{MessageFormat, MessageType, Relation, RoomMessageEventContent},
             AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
         },
-        html::{Html, HtmlSanitizerMode, NodeRef, RemoveReplyFallback, SanitizerConfig},
+        html::{Html, HtmlSanitizerMode, NodeData, NodeRef, RemoveReplyFallback, SanitizerConfig},
         serde::Raw,
     },
     Client,
@@ -1062,13 +1062,20 @@ fn sanitized_html_text(formatted: &str) -> Option<String> {
         }
     }
 
-    // The result DTO cannot preserve concealed ranges. Fail closed for the
-    // complete event instead of leaking any spoiler descendant in a snippet.
-    // HTML attribute names are ASCII-case-insensitive; whitespace cannot
-    // occur within an attribute name, so this also covers mixed-case input.
-    if formatted.to_ascii_lowercase().contains("data-mx-spoiler") {
-        return None;
+    fn contains_spoiler(node: &NodeRef) -> bool {
+        if let NodeData::Element(element) = node.data() {
+            if element
+                .attrs
+                .borrow()
+                .iter()
+                .any(|attribute| attribute.name.local.as_bytes() == b"data-mx-spoiler")
+            {
+                return true;
+            }
+        }
+        node.children().any(|child| contains_spoiler(&child))
     }
+
     let document = Html::parse(formatted);
     document.sanitize_with(
         &SanitizerConfig::compat()
@@ -1101,6 +1108,13 @@ fn sanitized_html_text(formatted: &str) -> Option<String> {
                 "xmp",
             ]),
     );
+    // The result DTO cannot preserve concealed ranges. Inspect the parsed,
+    // sanitized element attributes so visible text or unrelated attribute
+    // values that merely mention `data-mx-spoiler` remain searchable, while
+    // an actual Matrix spoiler still fails closed for the complete event.
+    if document.children().any(|child| contains_spoiler(&child)) {
+        return None;
+    }
     let mut text = String::new();
     for child in document.children() {
         append_text(&child, &mut text);
@@ -2098,6 +2112,7 @@ pub async fn search_messages(
     cursor: Option<String>,
 ) -> Result<SearchResultPage, SearchCommandError> {
     if !feature_enabled(&app) {
+        delete_disabled_active_index(&app, &state).await;
         return Err(SearchCommandError::unavailable());
     }
     validate_query(&query)?;
@@ -2218,6 +2233,35 @@ pub async fn search_messages(
     page.results
         .retain(|result| current_allowed_rooms.contains(&result.room_id));
     Ok(page)
+}
+
+async fn delete_disabled_active_index(app: &AppHandle, state: &super::MatrixState) {
+    let source = state.client.lock().await.as_ref().and_then(active_identity);
+    let app_data_dir = app.path().app_data_dir().ok();
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let deleted = tokio::task::spawn_blocking(move || {
+        let active = search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(active) = active {
+            active.index.delete()?;
+        }
+        match (app_data_dir, source) {
+            (Some(app_data_dir), Some((account_store_key, device_id))) => {
+                SearchIndex::delete_for_source(&app_data_dir, &account_store_key, &device_id)
+            }
+            (None, Some(_)) => Err("message search application data directory unavailable".into()),
+            _ => Ok(()),
+        }
+    })
+    .await;
+    if !matches!(deleted, Ok(Ok(()))) {
+        tracing::warn!(
+            command = "message_search_kill_switch",
+            status = "cleanup_failed"
+        );
+    }
 }
 
 fn restore_visible_row(
@@ -2707,6 +2751,25 @@ fn snippet_and_ranges(body: &str, query: &str) -> (String, Vec<SearchMatchRange>
 }
 
 fn delete_database_path(database_path: &Path) -> Result<(), String> {
+    retry_delete(|| delete_database_path_once(database_path))
+}
+
+fn retry_delete(mut delete: impl FnMut() -> Result<(), String>) -> Result<(), String> {
+    const MAX_ATTEMPTS: usize = 3;
+    let mut last_error = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match delete() {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
+        }
+    }
+    Err(last_error.expect("delete retries record an error"))
+}
+
+fn delete_database_path_once(database_path: &Path) -> Result<(), String> {
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut path = database_path.as_os_str().to_os_string();
         path.push(suffix);
@@ -3072,6 +3135,33 @@ mod tests {
             panic!("formatted event should retain searchable provenance");
         };
         assert_eq!(formatted.body.as_deref(), Some("visible words"));
+    }
+
+    #[test]
+    fn sanitized_html_detects_only_real_spoiler_attributes() {
+        assert_eq!(
+            sanitized_html_text("<p>Use data-mx-spoiler for spoilers</p>").as_deref(),
+            Some("Use data-mx-spoiler for spoilers")
+        );
+        assert_eq!(
+            sanitized_html_text("<p title=\"data-mx-spoiler\">Visible text</p>").as_deref(),
+            Some("Visible text")
+        );
+        assert!(sanitized_html_text("<span data-mx-spoiler>Hidden text</span>").is_none());
+        assert!(sanitized_html_text("<span DATA-MX-SPOILER>Hidden text</span>").is_none());
+    }
+
+    #[test]
+    fn deletion_retries_transient_failures() {
+        let mut attempts = 0;
+        retry_delete(|| {
+            attempts += 1;
+            (attempts == 3)
+                .then_some(())
+                .ok_or_else(|| "transient delete failure".to_string())
+        })
+        .expect("third delete attempt succeeds");
+        assert_eq!(attempts, 3);
     }
 
     #[test]
