@@ -2623,6 +2623,12 @@ async fn search_messages(
             .into_iter()
             .map(|user_id| user_id.to_string())
             .collect();
+    // Account-data reads yield to logout in another tab. Do not return the
+    // already-decrypted page if that session closed while the final
+    // visibility state was being refreshed.
+    if closed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
     page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     page.incomplete = session
         .message_search_incomplete

@@ -1095,7 +1095,11 @@ pub(crate) async fn invalidate_for_session_replacement(state: &super::MatrixStat
     }
 }
 
-fn reset_index_lifecycle(state: &super::MatrixState) {
+pub(crate) fn reset_index_lifecycle(state: &super::MatrixState) {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     state
         .search_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1113,6 +1117,28 @@ fn reset_index_lifecycle(state: &super::MatrixState) {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clear();
+}
+
+/// Marks the active lifecycle incomplete without allowing an old worker to
+/// poison the account that replaced it. Session invalidation advances the
+/// generation while holding the same lifecycle lock, so the check and store
+/// are atomic with respect to the replacement lifecycle's reset.
+fn mark_incomplete_if_current(state: &super::MatrixState, generation: u64) -> bool {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if generation
+        != state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return false;
+    }
+    state
+        .search_incomplete
+        .store(true, std::sync::atomic::Ordering::Release);
+    true
 }
 
 /// Removes the encrypted search database for a client that has been
@@ -1927,10 +1953,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                     };
                     let applied = visibility_complete && result.is_ok();
                     let state = worker_app.state::<super::MatrixState>();
-                    if !applied {
-                        state
-                            .search_incomplete
-                            .store(true, std::sync::atomic::Ordering::Release);
+                    if !applied && mark_incomplete_if_current(&state, generation) {
                         tracing::warn!(command = "message_search_index", status = "worker_failed");
                     }
                     if completes_backfill
@@ -2415,6 +2438,11 @@ pub async fn search_messages(
             .into_iter()
             .map(|user_id| user_id.to_string())
             .collect();
+    if !feature_enabled(&app)
+        || !search_lifecycle_is_current(&state, &expected_identity, generation).await
+    {
+        return Err(SearchCommandError::unavailable());
+    }
     page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     Ok(page)
 }
@@ -3343,6 +3371,23 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_worker_failure_does_not_poison_replacement_lifecycle() {
+        let state = super::super::MatrixState::default();
+        state
+            .search_generation
+            .store(1, std::sync::atomic::Ordering::Release);
+
+        assert!(!mark_incomplete_if_current(&state, 0));
+        assert!(!state
+            .search_incomplete
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(mark_incomplete_if_current(&state, 1));
+        assert!(state
+            .search_incomplete
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

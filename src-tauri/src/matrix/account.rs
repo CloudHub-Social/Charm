@@ -259,23 +259,7 @@ async fn clear_local_session(
     // teardown window would let the signed-out account keep sending/fetching
     // until the next launch.
     *state.client.lock().await = None;
-    state
-        .search_generation
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    state
-        .search_backfill_started
-        .store(false, std::sync::atomic::Ordering::Release);
-    state
-        .search_backfill_pending
-        .store(false, std::sync::atomic::Ordering::Release);
-    state
-        .search_incomplete
-        .store(false, std::sync::atomic::Ordering::Release);
-    state
-        .search_pending_seed_rooms
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clear();
+    super::search::reset_index_lifecycle(state);
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
     // snapshots (Spec 10) — stopping it below zeroes the client but doesn't
