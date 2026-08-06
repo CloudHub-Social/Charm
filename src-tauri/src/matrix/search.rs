@@ -1844,16 +1844,13 @@ pub async fn search_messages(
         return Err(SearchCommandError::unavailable());
     }
     validate_query(&query)?;
-    let client = state
-        .require_client()
+    let (client, generation) = state
+        .require_client_with_search_generation()
         .await
         .map_err(|_| SearchCommandError::unavailable())?;
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
-    let generation = state
-        .search_generation
-        .load(std::sync::atomic::Ordering::Acquire);
     if state
         .search_backfill_started
         .compare_exchange(
