@@ -39,6 +39,7 @@ const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const SCHEMA_VERSION: u32 = 4;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
+const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
 const MAX_QUERY_BYTES: usize = 512;
 const MAX_RESULTS_PER_PAGE: usize = 100;
 const MAX_SNAPSHOT_RESULTS: usize = 2_000;
@@ -168,7 +169,7 @@ struct SearchSnapshotEntry {
 
 #[derive(Debug)]
 struct SearchSnapshot {
-    query: String,
+    query_digest: [u8; 32],
     room_id: Option<String>,
     created_at: Instant,
     entries: Vec<SearchSnapshotEntry>,
@@ -179,6 +180,7 @@ pub struct SearchIndex {
     connection: Connection,
     database_path: PathBuf,
     incarnation: String,
+    snapshot_query_key: Zeroizing<[u8; 32]>,
     snapshots: HashMap<String, SearchSnapshot>,
 }
 
@@ -283,6 +285,7 @@ impl SearchIndex {
             connection,
             database_path,
             incarnation: random_id(),
+            snapshot_query_key: Zeroizing::new(rand::rng().random()),
             snapshots: HashMap::new(),
         })
     }
@@ -580,6 +583,7 @@ impl SearchIndex {
         cursor: Option<&str>,
     ) -> Result<SearchResultPage, SearchCommandError> {
         let query = validate_query(query)?;
+        let query_digest = snapshot_query_digest(&self.snapshot_query_key, &query);
         let limit = limit.clamp(1, MAX_RESULTS_PER_PAGE);
         self.snapshots
             .retain(|_, snapshot| snapshot.created_at.elapsed() <= SNAPSHOT_TTL);
@@ -603,7 +607,7 @@ impl SearchIndex {
             self.snapshots.insert(
                 snapshot_id.clone(),
                 SearchSnapshot {
-                    query: query.clone(),
+                    query_digest,
                     room_id: room_id.map(str::to_owned),
                     created_at: Instant::now(),
                     entries,
@@ -616,7 +620,7 @@ impl SearchIndex {
             .snapshots
             .get(&snapshot_id)
             .ok_or_else(SearchCommandError::stale_cursor)?;
-        if snapshot.query != query || snapshot.room_id.as_deref() != room_id {
+        if snapshot.query_digest != query_digest || snapshot.room_id.as_deref() != room_id {
             return Err(SearchCommandError::stale_cursor());
         }
 
@@ -1244,7 +1248,10 @@ pub fn work_from_cached_room(
         account_store_key,
         device_id,
         mutations,
-        ignored_senders,
+        // Used above to filter additions. Workers refresh the authoritative
+        // ignore set at dequeue, so repeating it per cached room would turn
+        // mutation-empty rooms into duplicate purge-only queue entries.
+        ignored_senders: HashSet::new(),
     })
 }
 
@@ -2587,6 +2594,14 @@ fn random_id() -> String {
         .collect()
 }
 
+fn snapshot_query_digest(key: &[u8; 32], query: &str) -> [u8; 32] {
+    let hkdf = Hkdf::<HkdfSha256>::new(Some(key), query.as_bytes());
+    let mut digest = [0_u8; 32];
+    hkdf.expand(SNAPSHOT_QUERY_DIGEST_INFO, &mut digest)
+        .expect("fixed-size SHA-256 snapshot digest");
+    digest
+}
+
 fn parse_cursor(cursor: &str, incarnation: &str) -> Result<(String, usize), SearchCommandError> {
     let mut parts = cursor.split(':');
     let snapshot_id = parts.next().filter(|part| !part.is_empty());
@@ -3711,6 +3726,18 @@ mod tests {
         let first = index
             .search("searchable", None, &allowed, 1, None)
             .expect("first page");
+        {
+            let snapshot = index.snapshots.values().next().expect("search snapshot");
+            assert_eq!(
+                snapshot.query_digest,
+                snapshot_query_digest(&index.snapshot_query_key, "searchable")
+            );
+            assert_ne!(
+                snapshot.query_digest,
+                snapshot_query_digest(&index.snapshot_query_key, "different")
+            );
+            assert!(!format!("{snapshot:?}").contains("searchable"));
+        }
         let cursor = first.next_cursor.expect("next cursor");
         let second = index
             .search("searchable", None, &allowed, 1, Some(&cursor))
