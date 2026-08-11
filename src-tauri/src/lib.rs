@@ -1463,6 +1463,7 @@ pub fn run() {
             matrix::rooms::resolve_room_alias,
             matrix::timeline::get_timeline_page,
             matrix::timeline::load_timeline_around_event,
+            matrix::search::search_messages,
             matrix::send::send_message,
             matrix::send::send_attachment,
             matrix::send::forward_message,

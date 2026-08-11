@@ -359,6 +359,7 @@ pub async fn login(
             device_id: session.meta.device_id.to_string(),
         };
 
+        super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
         *state.client.lock().await = Some(client.clone());
         sync::spawn_sync_loop(app, client);
 
@@ -853,7 +854,7 @@ async fn finish_registration(
         device_id: session.meta.device_id.to_string(),
     };
 
-    let mut client_slot = state.client.lock().await;
+    let client_slot = state.client.lock().await;
     if let Some(cancellation) = cancellation {
         let completion_won = {
             let mut cancellation_slot = state
@@ -886,8 +887,9 @@ async fn finish_registration(
         // authenticated client is committed while its slot remains locked,
         // so completion wins.
     }
-    *client_slot = Some(client.clone());
     drop(client_slot);
+    super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
+    *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
@@ -3682,6 +3684,7 @@ pub async fn complete_sso_login(
         device_id: session.meta.device_id.to_string(),
     };
 
+    super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
 

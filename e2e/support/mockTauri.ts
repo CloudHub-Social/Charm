@@ -108,12 +108,19 @@ export function installMockTauri(seed: {
   loginChoices?: boolean;
   /** Enable the deterministic email-link password-reset journey. */
   passwordRecovery?: boolean;
+  /** Enable Spec 28 and search the seeded room's initial messages. */
+  messageSearch?: boolean;
 }) {
-  if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
+  if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery || seed.messageSearch) {
+    const overrides: Record<string, boolean> = {};
+    if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
+      overrides.registration_and_recovery = true;
+    }
+    if (seed.messageSearch) overrides.encrypted_local_message_search = true;
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
-        state: { overrides: { registration_and_recovery: true } },
+        state: { overrides },
         updatedAt: Date.now(),
       }),
     );
@@ -515,6 +522,29 @@ export function installMockTauri(seed: {
       messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
+    search_messages: (args) => {
+      const query = typeof args.query === "string" ? args.query.toLocaleLowerCase() : "";
+      const scopedRoomId = typeof args.roomId === "string" ? args.roomId : null;
+      const results = [...messagesByRoom.entries()].flatMap(([roomId, messages]) => {
+        if (scopedRoomId && scopedRoomId !== roomId) return [];
+        return messages.flatMap((message) => {
+          const body = typeof message.body === "string" ? message.body : "";
+          const start = body.toLocaleLowerCase().indexOf(query);
+          if (start < 0) return [];
+          return [
+            {
+              room_id: roomId,
+              event_id: String(message.event_id),
+              sender: String(message.sender),
+              origin_server_ts: Number(message.timestamp_ms),
+              snippet: body,
+              match_ranges: [{ start, end: start + query.length }],
+            },
+          ];
+        });
+      });
+      return { results, next_cursor: null, incomplete: false };
+    },
     // Mirrors the real `mark_room_read` Rust command, which only sends a read
     // receipt + fully-read marker — it does NOT touch the separate MSC2867
     // `m.marked_unread` flag (that's `set_room_marked_unread`'s job). So this

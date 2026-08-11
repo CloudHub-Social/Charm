@@ -319,6 +319,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // was just saved above.
                 let _ = persistence::clear_session(&account_key);
 
+                super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
                 *state.client.lock().await = Some(client.clone());
                 spawn_sync_loop(app.clone(), client);
 

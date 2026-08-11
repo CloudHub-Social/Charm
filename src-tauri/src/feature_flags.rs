@@ -463,12 +463,19 @@ pub fn evaluate(app_data_dir: &Path, key: FeatureFlagKey) -> bool {
 }
 
 /// Pure resolution, separated from disk I/O so precedence is unit-testable:
-/// local override wins, then the remote (OFREP) value, then the static default.
+/// local override normally wins, then the remote (OFREP) value, then the static
+/// default. Sensitive derived-data features may give a trusted remote `false`
+/// hard-veto precedence over a local override.
 pub fn resolve(
     key: FeatureFlagKey,
     overrides: &BTreeMap<String, bool>,
     remote: &BTreeMap<String, bool>,
 ) -> bool {
+    if key == FeatureFlagKey::EncryptedLocalMessageSearch
+        && remote.get(key.as_wire_key()) == Some(&false)
+    {
+        return false;
+    }
     if let Some(&value) = overrides.get(key.as_wire_key()) {
         return value;
     }
@@ -584,6 +591,24 @@ mod tests {
         let override_off = overrides(&[("canary", false)]);
         let remote_on = overrides(&[("canary", true)]);
         assert!(!resolve(FeatureFlagKey::Canary, &override_off, &remote_on));
+    }
+
+    #[test]
+    fn remote_false_vetoes_encrypted_search_override() {
+        let override_on = overrides(&[("encrypted_local_message_search", true)]);
+        let remote_off = overrides(&[("encrypted_local_message_search", false)]);
+        assert!(!resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &override_on,
+            &remote_off
+        ));
+
+        let remote_on = overrides(&[("encrypted_local_message_search", true)]);
+        assert!(resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &override_on,
+            &remote_on
+        ));
     }
 
     #[test]

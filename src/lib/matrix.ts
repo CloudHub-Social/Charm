@@ -53,6 +53,8 @@ import type { RoomMembershipKind } from "@bindings/RoomMembershipKind";
 import type { RoomNotificationModeKind } from "@bindings/RoomNotificationModeKind";
 import type { RoomPermissions } from "@bindings/RoomPermissions";
 import type { RoomSummary } from "@bindings/RoomSummary";
+import type { SearchResultPage } from "@bindings/SearchResultPage";
+import type { SearchResult } from "@bindings/SearchResult";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SelfProfileUpdate } from "@bindings/SelfProfileUpdate";
@@ -193,6 +195,8 @@ export type {
   RoomPermissions,
   RoomSummary,
   RoomTimelineUpdate,
+  SearchResultPage,
+  SearchResult,
   SasUpdateEvent,
   SelfProfileUpdate,
   SendState,
@@ -453,6 +457,16 @@ export function loadTimelineAroundEvent(
   eventId: string,
 ): Promise<JumpToEventResult> {
   return invoke("load_timeline_around_event", { roomId, eventId });
+}
+
+/** Searches only Charm's encrypted, device-local decrypted-message index. */
+export function searchMessages(
+  query: string,
+  roomId: string | null,
+  limit = 30,
+  cursor: string | null = null,
+): Promise<SearchResultPage> {
+  return invoke("search_messages", { query, roomId, limit, cursor });
 }
 
 /** Bookmarks (Spec 12: personal, private "saved messages" — never a Matrix

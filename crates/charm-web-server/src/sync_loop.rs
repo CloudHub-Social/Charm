@@ -16,6 +16,7 @@
 //! notification).
 
 use std::time::Duration;
+use std::{future::Future as _, path::PathBuf, sync::Arc, task::Poll};
 
 use charm_lib::matrix::ephemeral::{self, ReceiptUpdate, TypingUpdate};
 use charm_lib::matrix::presence::{self, presence_event_to_update};
@@ -36,6 +37,657 @@ use tokio::sync::broadcast;
 
 use crate::events::{SasUpdatePayload, ServerEvent};
 use crate::persistence::PersistenceStore;
+
+const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone)]
+pub struct MessageSearchContext {
+    sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
+    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    backfill_pending: Arc<std::sync::atomic::AtomicBool>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TimelineSearchContext {
+    sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<QueuedSearchWork>>>>,
+    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+    pending_rooms: Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
+    done: Arc<tokio::sync::Notify>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) fn timeline_search_context(session: &crate::session::Session) -> TimelineSearchContext {
+    TimelineSearchContext {
+        sender: Arc::clone(&session.message_search_sender),
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        running: Arc::clone(&session.message_search_pagination_seed_running),
+        pending_rooms: Arc::clone(&session.message_search_pending_seed_rooms),
+        done: Arc::clone(&session.message_search_pagination_seed_done),
+        closed: Arc::clone(&session.session_closed),
+    }
+}
+
+/// Queues matrix-sdk-ui's selected edit versions without copying message
+/// bodies into the listener queue.
+pub(crate) fn submit_timeline_search_selection<'a>(
+    context: &TimelineSearchContext,
+    client: &Client,
+    room_id: &str,
+    items: impl IntoIterator<Item = &'a std::sync::Arc<matrix_sdk_ui::timeline::TimelineItem>>,
+) {
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(work) =
+        charm_lib::matrix::search::SearchWork::from_timeline_items(client, room_id, items)
+    else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    let sender = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(sender) = sender else { return };
+    if sender
+        .try_send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+            completion: None,
+        })
+        .is_err()
+    {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+pub(crate) struct QueuedSearchWork {
+    work: charm_lib::matrix::search::SearchWork,
+    completes_backfill: bool,
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+}
+
+fn record_search_work_outcome(
+    incomplete: &std::sync::atomic::AtomicBool,
+    backfill_pending: &std::sync::atomic::AtomicBool,
+    applied: bool,
+    completes_backfill: bool,
+) {
+    if !applied {
+        incomplete.store(true, std::sync::atomic::Ordering::Release);
+    }
+    if completes_backfill {
+        backfill_pending.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+pub struct SpawnOptions {
+    pub include_canonical_space_hierarchy: bool,
+    pub message_search: Option<MessageSearchContext>,
+}
+
+pub fn message_search_context(
+    session: &crate::session::Session,
+    enabled: bool,
+) -> Option<MessageSearchContext> {
+    if !enabled {
+        return None;
+    }
+    let crypto = session.persisted_crypto.clone()?;
+    let device_id = session.client.device_id()?.to_string();
+    let index = Arc::clone(&session.message_search_index);
+    let incomplete = Arc::clone(&session.message_search_incomplete);
+    let backfill_pending = Arc::clone(&session.message_search_backfill_pending);
+    backfill_pending.store(true, std::sync::atomic::Ordering::Release);
+    let closed = Arc::clone(&session.session_closed);
+    let client = session.client.clone();
+    let app_data_dir: PathBuf = crate::crypto_store::data_root_path();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedSearchWork>(32);
+    *session
+        .message_search_sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(sender.clone());
+    tokio::spawn(async move {
+        while let Some(queued) = receiver.recv().await {
+            if closed.load(std::sync::atomic::Ordering::Acquire) {
+                if let Some(completion) = queued.completion {
+                    let _ = completion.send(Ok(()));
+                }
+                continue;
+            }
+            let QueuedSearchWork {
+                mut work,
+                completes_backfill,
+                completion,
+            } = queued;
+            let joined_room_ids = client
+                .joined_rooms()
+                .into_iter()
+                .map(|room| room.room_id().to_string())
+                .collect();
+            let current_ignored = charm_lib::matrix::account::ignored_user_ids(&client)
+                .await
+                .ok()
+                .map(|ignored_senders| {
+                    ignored_senders
+                        .into_iter()
+                        .map(|sender| sender.to_string())
+                        .collect()
+                });
+            let visibility_complete = if let Some(ignored_senders) = current_ignored {
+                work.retain_currently_visible_additions(&joined_room_ids, ignored_senders);
+                true
+            } else {
+                work.retain_joined_room_additions(&std::collections::HashSet::new());
+                false
+            };
+            let index = Arc::clone(&index);
+            let closed = Arc::clone(&closed);
+            let app_data_dir = app_data_dir.clone();
+            let store_key = crypto.store_key.clone();
+            let passphrase = crypto.passphrase.clone();
+            let device_id = device_id.clone();
+            let result = match tokio::task::spawn_blocking(move || {
+                let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+                // Logout sets `closed` before waiting for this lock and
+                // deleting the index. Rechecking under the lock prevents
+                // buffered work from recreating it after deletion.
+                if closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(());
+                }
+                if slot.is_none() {
+                    *slot = Some(crate::session::open_fresh_message_search_index(
+                        &app_data_dir,
+                        &store_key,
+                        &device_id,
+                        &passphrase,
+                    )?);
+                }
+                work.apply_to(slot.as_mut().expect("web search index initialized"))
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("web message search worker failed".to_string()),
+            };
+            let applied = visibility_complete && result.is_ok();
+            record_search_work_outcome(&incomplete, &backfill_pending, applied, completes_backfill);
+            if !applied {
+                tracing::warn!(command = "web_message_search_index", status = "failed");
+            }
+            if let Some(completion) = completion {
+                let _ = completion.send(result);
+            }
+        }
+    });
+    Some(MessageSearchContext {
+        sender,
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        backfill_pending: Arc::clone(&session.message_search_backfill_pending),
+        closed: Arc::clone(&session.session_closed),
+    })
+}
+
+/// Orders a successful leave purge behind already-queued sync mutations and
+/// gives SQLCipher a bounded opportunity to physically remove the room.
+pub async fn purge_room_after_leave(
+    session: &crate::session::Session,
+    room_id: &str,
+) -> Result<(), String> {
+    let Some(work) =
+        charm_lib::matrix::search::SearchWork::purge_room_for_client(&session.client, room_id)
+    else {
+        return Ok(());
+    };
+    tokio::time::timeout(ROOM_LEAVE_PURGE_TIMEOUT, async {
+        while session
+            .message_search_pagination_seed_running
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let notified = session.message_search_pagination_seed_done.notified();
+            if !session
+                .message_search_pagination_seed_running
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                break;
+            }
+            notified.await;
+        }
+        let Some(sender) = session
+            .message_search_sender
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+        else {
+            // Without the feature's worker this session never opened an index.
+            return Ok(());
+        };
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        sender
+            .send(QueuedSearchWork {
+                work,
+                completes_backfill: false,
+                completion: Some(completion),
+            })
+            .await
+            .map_err(|_| "web message search purge worker unavailable".to_string())?;
+        completed
+            .await
+            .map_err(|_| "web message search purge worker unavailable".to_string())?
+    })
+    .await
+    .map_err(|_| "web message search purge timed out".to_string())?
+}
+
+async fn submit_message_search(
+    context: &Option<MessageSearchContext>,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    let Some(context) = context else { return };
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(work) = charm_lib::matrix::search::removal_work_from_sync(client, response) {
+            enqueue_message_search_work(context, work).await;
+        }
+        return;
+    };
+    let ignored = ignored
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
+    let Some(work) = charm_lib::matrix::search::work_from_sync(client, response, ignored) else {
+        return;
+    };
+    enqueue_message_search_work(context, work).await;
+}
+
+async fn enqueue_message_search_work(
+    context: &MessageSearchContext,
+    work: charm_lib::matrix::search::SearchWork,
+) {
+    if work.is_empty() {
+        return;
+    }
+    let requires_reliable_delivery = work.requires_reliable_delivery();
+    let queued = QueuedSearchWork {
+        work,
+        completes_backfill: false,
+        completion: None,
+    };
+    let Some(send_result) = try_enqueue_open_session(&context.closed, &context.sender, queued)
+    else {
+        return;
+    };
+    let delivered = match send_result {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(mut queued))
+            if requires_reliable_delivery =>
+        {
+            let (privacy_work, dropped_additions) = queued.work.into_privacy_removals();
+            queued.work = privacy_work;
+            if dropped_additions {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::warn!(
+                    command = "web_message_search_index",
+                    status = "queue_full_dropped_additions"
+                );
+            }
+            // Reserve FIFO position without waiting for queue capacity on the
+            // web sync loop. Only removal metadata leaves the bounded queue.
+            enqueue_reliable_search_work(context, queued).await
+        }
+        Err(_) => false,
+    };
+    if !delivered {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(command = "web_message_search_index", status = "queue_full");
+    }
+}
+
+fn try_enqueue_open_session<T>(
+    closed: &std::sync::atomic::AtomicBool,
+    sender: &tokio::sync::mpsc::Sender<T>,
+    queued: T,
+) -> Option<Result<(), tokio::sync::mpsc::error::TrySendError<T>>> {
+    (!closed.load(std::sync::atomic::Ordering::Acquire)).then(|| sender.try_send(queued))
+}
+
+async fn enqueue_reliable_search_work(
+    context: &MessageSearchContext,
+    queued: QueuedSearchWork,
+) -> bool {
+    let mut reservation = Box::pin(context.sender.clone().reserve_owned());
+    let immediate = std::future::poll_fn(|poll_context| {
+        Poll::Ready(match reservation.as_mut().poll(poll_context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        })
+    })
+    .await;
+    match immediate {
+        Some(Ok(permit)) => {
+            permit.send(queued);
+            true
+        }
+        Some(Err(_)) => false,
+        None => {
+            let incomplete = Arc::clone(&context.incomplete);
+            tokio::spawn(async move {
+                match reservation.await {
+                    Ok(permit) => {
+                        permit.send(queued);
+                    }
+                    Err(_) => {
+                        incomplete.store(true, std::sync::atomic::Ordering::Release);
+                        tracing::warn!(
+                            command = "web_message_search_index",
+                            status = "worker_unavailable"
+                        );
+                    }
+                }
+            });
+            true
+        }
+    }
+}
+
+async fn backfill_message_search(context: &Option<MessageSearchContext>, client: &Client) {
+    let Some(context) = context else { return };
+    context
+        .backfill_pending
+        .store(true, std::sync::atomic::Ordering::Release);
+    if backfill_revoked(context) {
+        return;
+    }
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    if backfill_revoked(context) {
+        return;
+    }
+    let ignored: std::collections::HashSet<String> = ignored
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
+    for room in client.joined_rooms() {
+        let events = match room.event_cache().await {
+            Ok((cache, _drop_handles)) => cache.events().await,
+            Err(_) => {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                continue;
+            }
+        };
+        let Ok(events) = events else {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            continue;
+        };
+        if backfill_revoked(context) {
+            return;
+        }
+        let Some(work) = charm_lib::matrix::search::work_from_cached_room(
+            client,
+            room.room_id().as_str(),
+            &events,
+            ignored.clone(),
+        ) else {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            context
+                .backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            return;
+        };
+        if work.is_empty() {
+            continue;
+        }
+        if room.state() != matrix_sdk::RoomState::Joined {
+            continue;
+        }
+        if backfill_revoked(context) {
+            return;
+        }
+        if context
+            .sender
+            .try_send(QueuedSearchWork {
+                work,
+                completes_backfill: false,
+                completion: None,
+            })
+            .is_err()
+        {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+            context
+                .backfill_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            tracing::warn!(
+                command = "web_message_search_backfill",
+                status = "queue_full"
+            );
+            return;
+        }
+    }
+    let Some(completion) = charm_lib::matrix::search::SearchWork::empty_for_client(client) else {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    if backfill_revoked(context) {
+        return;
+    }
+    if context
+        .sender
+        .try_send(QueuedSearchWork {
+            work: completion,
+            completes_backfill: true,
+            completion: None,
+        })
+        .is_err()
+    {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        context
+            .backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Returns true after revoking the initial backfill's pending marker. Call it
+/// after every await and immediately before enqueueing so decrypted bodies are
+/// never retained past logout/session removal even if closure races startup.
+fn backfill_revoked(context: &MessageSearchContext) -> bool {
+    if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    context
+        .backfill_pending
+        .store(false, std::sync::atomic::Ordering::Release);
+    true
+}
+
+/// Re-seeds one room after a web timeline pagination request decrypts more
+/// history. Event-cache reads run detached and the bounded queue never delays
+/// the timeline response.
+pub fn schedule_cached_room_search(
+    session: Arc<crate::session::Session>,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    schedule_cached_room_search_with_context(
+        timeline_search_context(&session),
+        session.client.clone(),
+        room_id,
+    );
+}
+
+/// Shared bounded re-seed used by both explicit pagination and a live
+/// timeline's undecrypted -> decrypted transition. The context contains only
+/// revocable queue/lifecycle handles, so listeners do not retain the Session
+/// (and therefore its strong timeline cache) for their whole lifetime.
+pub(crate) fn schedule_cached_room_search_with_context(
+    context: TimelineSearchContext,
+    client: Client,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    let search_enabled = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some();
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) || !search_enabled {
+        return;
+    }
+    let should_spawn = charm_lib::matrix::search::enqueue_cached_room_seed(
+        &context.pending_rooms,
+        &context.running,
+        room_id,
+    );
+    if !should_spawn {
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+                context
+                    .pending_rooms
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clear();
+            }
+            let room_id = charm_lib::matrix::search::take_cached_room_seed(
+                &context.pending_rooms,
+                &context.running,
+            );
+            let Some(room_id) = room_id else { break };
+            process_web_cached_room_seed(&context, &client, room_id).await;
+        }
+        context.done.notify_waiters();
+    });
+}
+
+async fn process_web_cached_room_seed(
+    context: &TimelineSearchContext,
+    client: &Client,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+) {
+    if context.closed.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Some(room) = client.get_room(&room_id) else {
+        return;
+    };
+    if room.state() != matrix_sdk::RoomState::Joined {
+        return;
+    }
+    let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
+        if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return;
+    };
+    let ignored = ignored
+        .into_iter()
+        .map(|user_id| user_id.to_string())
+        .collect();
+    let events = match room.event_cache().await {
+        Ok((cache, _drop_handles)) => cache.events().await,
+        Err(_) => {
+            if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+                context
+                    .incomplete
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            return;
+        }
+    };
+    let Ok(events) = events else {
+        if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
+            context
+                .incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return;
+    };
+    // Recheck the server feature/worker after the awaits above and keep the
+    // sender slot locked through the non-awaiting build/enqueue boundary. A
+    // disabled session therefore neither constructs a SearchWork containing
+    // decrypted bodies nor races worker revocation while queueing it.
+    let sender_guard = context
+        .sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(sender) = sender_guard.as_ref() else {
+        return;
+    };
+    if context.closed.load(std::sync::atomic::Ordering::Acquire)
+        || room.state() != matrix_sdk::RoomState::Joined
+    {
+        return;
+    }
+    let Some(work) = charm_lib::matrix::search::work_from_cached_room(
+        client,
+        room_id.as_str(),
+        &events,
+        ignored,
+    ) else {
+        return;
+    };
+    if work.is_empty() {
+        return;
+    }
+    if sender
+        .try_send(QueuedSearchWork {
+            work,
+            completes_backfill: false,
+            completion: None,
+        })
+        .is_err()
+    {
+        context
+            .incomplete
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::warn!(
+            command = "web_message_search_pagination",
+            status = "queue_full"
+        );
+    }
+}
 
 /// Same bound and backoff shape as desktop's loop — see
 /// `src-tauri/src/matrix/sync.rs::spawn_sync_loop` for the full rationale.
@@ -326,8 +978,15 @@ pub fn spawn(
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
     snapshots: crate::session::SyncSnapshots,
-    include_canonical_space_hierarchy: bool,
+    options: SpawnOptions,
 ) -> tokio::task::JoinHandle<()> {
+    let SpawnOptions {
+        include_canonical_space_hierarchy,
+        message_search,
+    } = options;
+    // Keep matrix-sdk's local event cache current for restart/flag-enable
+    // search seeding. Subscription is idempotent and performs no pagination.
+    let _ = client.event_cache().subscribe();
     {
         let client = client.clone();
         let sync_presence = sync_presence.clone();
@@ -372,6 +1031,23 @@ pub fn spawn(
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
+        if let Some(context) = &message_search {
+            // Publish the disclosure before detaching so a request racing the
+            // spawn cannot briefly present the unseeded index as complete.
+            context
+                .backfill_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let backfill_context = message_search.clone();
+        let backfill_client = client.clone();
+        tokio::spawn(async move {
+            backfill_message_search(&backfill_context, &backfill_client).await;
+        });
+        // The relation-aware index accepts the live batch before older cache
+        // provenance (out-of-order edit/redaction tests cover that ordering),
+        // while `backfill_pending` keeps results explicitly incomplete until
+        // the detached cache marker drains.
+        submit_message_search(&message_search, &client, &initial_response).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
         // actually saved on disk right now — not `None` and not the
@@ -409,6 +1085,7 @@ pub fn spawn(
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
+                    submit_message_search(&message_search, &client, &response).await;
                     emit_room_list_and_badge(
                         &client,
                         &events,
@@ -850,6 +1527,57 @@ pub async fn request_device_verification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_backfill_stays_pending_until_its_fifo_marker_is_applied() {
+        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let pending = std::sync::atomic::AtomicBool::new(true);
+
+        record_search_work_outcome(&incomplete, &pending, true, false);
+        assert!(pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn failed_search_work_is_sticky_but_a_completion_marker_clears_pending() {
+        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let pending = std::sync::atomic::AtomicBool::new(true);
+
+        record_search_work_outcome(&incomplete, &pending, false, true);
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+        assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn closed_session_revokes_initial_backfill_before_enqueue() {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let context = MessageSearchContext {
+            sender,
+            incomplete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            backfill_pending: Arc::clone(&pending),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+
+        assert!(backfill_revoked(&context));
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn closed_session_refuses_sync_queue_insertion() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let closed = std::sync::atomic::AtomicBool::new(true);
+
+        assert!(try_enqueue_open_session(&closed, &sender, "signed-out plaintext").is_none());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
 
     /// Regression test for the Codex review finding on #280 ("Clear
     /// awaiting flag after retry save succeeds"): a `SaveMode::RetryInitialSave`
