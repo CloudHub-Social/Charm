@@ -5,6 +5,7 @@ import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
 import { MessageSearchDialog } from "./MessageSearchDialog";
+import { QuickSwitcherDialog } from "./QuickSwitcherDialog";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -93,6 +94,7 @@ export function RoomsScreen({
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
   const messageSearchEnabled = useFlag("encrypted_local_message_search");
+  const quickSwitcherEnabled = useFlag("quick_switcher");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
@@ -106,6 +108,8 @@ export function RoomsScreen({
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
+  const quickSwitcherReturnFocusRef = useRef<HTMLElement | null>(null);
   const [createSpaceParentId, setCreateSpaceParentId] = useState<string | null>(null);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
@@ -156,16 +160,29 @@ export function RoomsScreen({
   const [selectionRequestId, setSelectionRequestId] = useState(0);
 
   useEffect(() => {
-    if (!messageSearchEnabled) return;
+    if (!quickSwitcherEnabled) return;
     function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
+        event.preventDefault();
+        quickSwitcherReturnFocusRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setQuickSwitcherOpen(true);
+      } else if (key === "f" && messageSearchEnabled) {
         event.preventDefault();
         setMessageSearchOpen(true);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [messageSearchEnabled]);
+  }, [messageSearchEnabled, quickSwitcherEnabled]);
+
+  function openQuickSwitcher() {
+    quickSwitcherReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setQuickSwitcherOpen(true);
+  }
 
   function selectRoom(roomId: string) {
     profileRoomNavigationRequestRef.current += 1;
@@ -662,6 +679,7 @@ export function RoomsScreen({
             onOpenMessageSearch={
               messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
             }
+            onOpenQuickSwitcher={quickSwitcherEnabled ? openQuickSwitcher : undefined}
             mode={roomListMode}
             selectedSpace={selectedSpace}
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
@@ -736,6 +754,16 @@ export function RoomsScreen({
           rooms={joinedRooms}
           activeRoomId={activeRoomId}
           onSelectResult={handleMessageSearchResult}
+        />
+      )}
+      {quickSwitcherEnabled && (
+        <QuickSwitcherDialog
+          open={quickSwitcherOpen}
+          onOpenChange={setQuickSwitcherOpen}
+          rooms={joinedRooms}
+          currentUserId={currentUserId}
+          onSelectRoom={selectRoomInVisibleMode}
+          returnFocusRef={quickSwitcherReturnFocusRef}
         />
       )}
       <RoomSettingsModal

@@ -1,0 +1,85 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { createRef } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRoomSummary } from "./testFixtures";
+import { QuickSwitcherDialog } from "./QuickSwitcherDialog";
+import { recordQuickSwitcherRecent } from "./quickSwitcherRecents";
+
+const rooms = [
+  makeRoomSummary({ room_id: "!general:example.org", name: "General" }),
+  makeRoomSummary({
+    room_id: "!design:example.org",
+    name: "Design Studio",
+    parent_space_ids: ["!work:example.org"],
+  }),
+  makeRoomSummary({
+    room_id: "!alice:example.org",
+    name: "Alice",
+    is_direct: true,
+    dm_peer_user_id: "@alice:example.org",
+  }),
+  makeRoomSummary({ room_id: "!work:example.org", name: "Work", is_space: true }),
+];
+
+describe("QuickSwitcherDialog", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("orders recents first, then spaces, DMs, and rooms", () => {
+    recordQuickSwitcherRecent("@me:example.org", "!design:example.org");
+    renderDialog();
+
+    const options = screen.getAllByRole("option");
+    ["Design Studio", "Work", "Alice", "General"].forEach((name, index) => {
+      expect(within(options[index]).getByText(name, { exact: true })).toBeInTheDocument();
+    });
+  });
+
+  it("uses Fuse.js across names, DM peers, and parent-space context", () => {
+    renderDialog();
+    const input = screen.getByRole("combobox", {
+      name: "Search rooms, direct messages, and spaces",
+    });
+
+    fireEvent.change(input, { target: { value: "dsgn stdio" } });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: /Design Studio/ })).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "@alice" } });
+    expect(screen.getByRole("option", { name: /Alice/ })).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "Work" } });
+    expect(screen.getByRole("option", { name: /Design Studio/ })).toBeInTheDocument();
+  });
+
+  it("navigates with the keyboard and records only the chosen joined room", () => {
+    const onSelectRoom = vi.fn();
+    const onOpenChange = vi.fn();
+    renderDialog({ onSelectRoom, onOpenChange });
+    const input = screen.getByRole("combobox", {
+      name: "Search rooms, direct messages, and spaces",
+    });
+
+    fireEvent.change(input, { target: { value: "alice" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSelectRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ room_id: "!alice:example.org" }),
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+function renderDialog(overrides: Partial<React.ComponentProps<typeof QuickSwitcherDialog>> = {}) {
+  const returnFocusRef = createRef<HTMLElement>();
+  return render(
+    <QuickSwitcherDialog
+      open
+      onOpenChange={() => {}}
+      rooms={rooms}
+      currentUserId="@me:example.org"
+      onSelectRoom={() => {}}
+      returnFocusRef={returnFocusRef}
+      {...overrides}
+    />,
+  );
+}

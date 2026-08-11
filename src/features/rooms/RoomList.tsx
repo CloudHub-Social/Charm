@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { CommandIcon, MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -82,6 +82,8 @@ interface RoomListProps {
   onSelectSearchResult?: (room: RoomSummary) => void;
   /** Opens Spec 28's decrypted-message search, distinct from this list's room filter. */
   onOpenMessageSearch?: () => void;
+  /** Opens Spec 55's account-wide room/DM/space quick switcher. */
+  onOpenQuickSwitcher?: () => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   /**
@@ -134,6 +136,7 @@ export function RoomList({
   onSelectSpace,
   onSelectSearchResult,
   onOpenMessageSearch,
+  onOpenQuickSwitcher,
   mode,
   selectedSpace,
   intendedSpaceId = null,
@@ -789,6 +792,17 @@ export function RoomList({
                 onClick={onOpenMessageSearch}
               >
                 <SearchIcon />
+              </Button>
+            )}
+            {onOpenQuickSwitcher && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Open quick switcher"
+                title="Quick switcher (⌘/Ctrl+K)"
+                onClick={onOpenQuickSwitcher}
+              >
+                <CommandIcon />
               </Button>
             )}
             <Button

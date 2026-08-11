@@ -28,6 +28,26 @@
       }
     },
     {
+      "slug": "quick-switcher",
+      "title": "Quick switcher",
+      "summary": "Jump to joined rooms, direct messages, and spaces with fuzzy keyboard search and account-scoped recents.",
+      "status": "preview",
+      "spec": "Spec 55",
+      "specLinks": [
+        {
+          "label": "Spec 55",
+          "href": "/specs/day-1/spec-55--command-palette-and-quick-switcher/"
+        }
+      ],
+      "flag": "quick_switcher",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "quick-switcher-results",
+        "alt": "Charm quick switcher showing a fuzzy room result",
+        "caption": "Playwright opens the launcher from its keyboard binding and fuzzy-matches a joined room before navigating."
+      }
+    },
+    {
       "slug": "onboarding",
       "title": "Guided onboarding",
       "summary": "A short first-run tour introduces rooms, the composer, and account settings without blocking sign-in.",
