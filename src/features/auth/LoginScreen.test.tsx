@@ -26,6 +26,7 @@ const getLoginFlows = vi.fn().mockResolvedValue({
   identity_providers: [],
 });
 const loginWithToken = vi.fn();
+const logout = vi.fn().mockResolvedValue(undefined);
 const requestPasswordReset = vi.fn();
 const confirmPasswordReset = vi.fn();
 const resendPasswordReset = vi.fn();
@@ -56,6 +57,7 @@ vi.mock("@/lib/matrix", () => ({
   cancelRegistration: (...args: unknown[]) => cancelRegistration(...args),
   getLoginFlows: (...args: unknown[]) => getLoginFlows(...args),
   loginWithToken: (...args: unknown[]) => loginWithToken(...args),
+  logout: (...args: unknown[]) => logout(...args),
   requestPasswordReset: (...args: unknown[]) => requestPasswordReset(...args),
   confirmPasswordReset: (...args: unknown[]) => confirmPasswordReset(...args),
   resendPasswordReset: (...args: unknown[]) => resendPasswordReset(...args),
@@ -119,6 +121,7 @@ describe("LoginScreen SSO callback handling", () => {
       identity_providers: [],
     });
     loginWithToken.mockReset();
+    logout.mockReset().mockResolvedValue(undefined);
     featureFlags.registrationEnabled = false;
     featureFlags.initialized = true;
     startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
@@ -578,6 +581,7 @@ describe("LoginScreen login choices", () => {
     openUrl.mockReset().mockResolvedValue(undefined);
     login.mockReset();
     loginWithToken.mockReset().mockResolvedValue(fakeSession());
+    logout.mockReset().mockResolvedValue(undefined);
     register.mockReset();
     beginRegistration.mockReset();
     requestRegistrationEmail.mockReset();
@@ -738,6 +742,34 @@ describe("LoginScreen login choices", () => {
     expect(closePopup).toHaveBeenCalledOnce();
     expect(cancelSsoLogin).toHaveBeenCalled();
     expect(pollSsoLogin).not.toHaveBeenCalled();
+  });
+
+  it("logs out a successful browser poll that resolves after cancellation", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    let resolvePoll: ((session: LoginResponse) => void) | undefined;
+    pollSsoLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePoll = resolve;
+      }),
+    );
+    vi.spyOn(window, "open").mockReturnValue({
+      opener: window,
+      location: { replace: vi.fn() },
+      close: vi.fn(),
+    } as unknown as Window);
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
+    await act(async () => Promise.resolve());
+    expect(pollSsoLogin).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => {
+      resolvePoll?.(fakeSession());
+      await Promise.resolve();
+    });
+
+    expect(logout).toHaveBeenCalledOnce();
   });
 
   it("does not create an SSO attempt when the browser blocks the popup", async () => {

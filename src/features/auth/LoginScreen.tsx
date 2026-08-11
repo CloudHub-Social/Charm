@@ -17,6 +17,7 @@ import {
   getLoginProviderIconUrl,
   login,
   loginWithToken,
+  logout,
   pollSsoLogin,
   requestRegistrationEmail,
   requestPasswordReset,
@@ -142,7 +143,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       polling = true;
       try {
         const session = await pollSsoLogin();
-        if (!current || !session) return;
+        if (!session) return;
+        if (!current || !ssoInProgressRef.current) {
+          await logout().catch(logAndIgnore);
+          return;
+        }
         ssoInProgressRef.current = false;
         setSsoPolling(false);
         setSsoPending(false);

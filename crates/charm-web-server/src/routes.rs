@@ -2185,7 +2185,10 @@ async fn poll_browser_sso(
         crate::pending_auth::PollSsoResult::Expired => Err(ApiError::unauthorized(
             "single sign-on attempt expired or was cancelled",
         )),
-        crate::pending_auth::PollSsoResult::Complete { completed } => {
+        crate::pending_auth::PollSsoResult::Complete {
+            completed,
+            _capacity,
+        } => {
             let (response, session, initial_response, homeserver_url) = *completed;
             let token = finish_login(&state, session, &homeserver_url, initial_response).await;
             if !state
@@ -2274,7 +2277,12 @@ async fn provider_icon(
         ));
     }
     const MAX_PROVIDER_ICON_BYTES: usize = 1024 * 1024;
-    let server_name = parsed.host_str().expect("validated MXC host");
+    let server_name = parsed
+        .as_str()
+        .strip_prefix("mxc://")
+        .and_then(|remainder| remainder.split_once('/'))
+        .map(|(authority, _)| authority)
+        .expect("validated MXC authority");
     let media_id = parsed.path().trim_matches('/');
     let mut media_url = client.homeserver().clone();
     let base_path = media_url.path().trim_end_matches('/').to_owned();

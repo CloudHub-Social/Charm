@@ -415,12 +415,14 @@ impl PendingAuthStore {
             if completion.owner != owner || completion.created_at.elapsed() > ATTEMPT_TTL {
                 return PollSsoResult::Expired;
             }
-            return match completed
+            let completion = completed
                 .remove(attempt_id)
-                .expect("completion checked above")
-                .result
-            {
-                SsoCompletionResult::Success(completed) => PollSsoResult::Complete { completed },
+                .expect("completion checked above");
+            return match completion.result {
+                SsoCompletionResult::Success(completed) => PollSsoResult::Complete {
+                    completed,
+                    _capacity: completion._capacity,
+                },
                 SsoCompletionResult::Failed(error) => PollSsoResult::Failed(error),
             };
         }
@@ -1258,16 +1260,18 @@ impl PendingAuthStore {
                 () = tokio::time::sleep(ATTEMPT_TTL) => {}
                 () = cancellation.cancelled() => return,
             }
-            let _transition = store.transitions.lock().await;
-            store.cancel_token(&attempt_id).await;
-            if let Some(pending) = store.registrations.lock().await.remove(&attempt_id) {
-                crate::auth::cleanup_failed_crypto_store(&pending.crypto);
-            }
-            store.password_resets.lock().await.remove(&attempt_id);
-            if let Some(pending) = store.sso_attempts.lock().await.remove(&attempt_id) {
-                crate::auth::cleanup_failed_crypto_store(&pending.crypto);
-            }
-            let completion = store.completed_sso.lock().await.remove(&attempt_id);
+            let completion = {
+                let _transition = store.transitions.lock().await;
+                store.cancel_token(&attempt_id).await;
+                if let Some(pending) = store.registrations.lock().await.remove(&attempt_id) {
+                    crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+                }
+                store.password_resets.lock().await.remove(&attempt_id);
+                if let Some(pending) = store.sso_attempts.lock().await.remove(&attempt_id) {
+                    crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+                }
+                store.completed_sso.lock().await.remove(&attempt_id)
+            };
             if let Some(completion) = completion {
                 discard_completed_sso(completion).await;
             }
@@ -1300,7 +1304,10 @@ pub enum ContinueRegistrationResult {
 
 pub enum PollSsoResult {
     Pending,
-    Complete { completed: Box<AuthenticatedClient> },
+    Complete {
+        completed: Box<AuthenticatedClient>,
+        _capacity: OwnedSemaphorePermit,
+    },
     Failed(String),
     Expired,
 }
