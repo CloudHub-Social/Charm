@@ -2096,7 +2096,6 @@ async fn start_browser_sso(
         .get(DISCOVERY_COOKIE)
         .map(|cookie| cookie.value().to_owned())
         .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
-    state.pending_auth.cancel_owner(&owner).await;
     let public_url = std::env::var(PUBLIC_URL_ENV)
         .ok()
         .and_then(|configured| reqwest::Url::parse(configured.trim()).ok())
@@ -2111,6 +2110,7 @@ async fn start_browser_sso(
     let callback_url = public_url
         .join("/api/auth/sso/callback")
         .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
+    state.pending_auth.cancel_owner(&owner).await;
     let (attempt_id, redirect_url) = state
         .pending_auth
         .start_sso(
@@ -2324,6 +2324,22 @@ async fn provider_icon(
             "identity-provider icon is not a supported raster image",
         ));
     };
+    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|_| ApiError::bad_request("identity-provider icon is not a valid image"))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| ApiError::bad_request("identity-provider icon is not a valid image"))?;
+    const MAX_PROVIDER_ICON_DIMENSION: u32 = 512;
+    const MAX_PROVIDER_ICON_PIXELS: u64 = 512 * 512;
+    if width > MAX_PROVIDER_ICON_DIMENSION
+        || height > MAX_PROVIDER_ICON_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PROVIDER_ICON_PIXELS
+    {
+        return Err(ApiError::bad_request(
+            "identity-provider icon dimensions are too large",
+        ));
+    }
     Ok((
         [
             ("content-type", content_type),

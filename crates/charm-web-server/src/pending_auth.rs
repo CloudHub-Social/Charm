@@ -164,20 +164,31 @@ impl PendingAuthStore {
         attempt_id: String,
         cancellation: CancellationToken,
     ) {
-        let _transition = self.transitions.lock().await;
-        self.clear_owner_attempts(&owner).await;
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id, (owner, cancellation));
+        let completed = {
+            let _transition = self.transitions.lock().await;
+            let completed = self.clear_owner_attempts(&owner).await;
+            self.cancellations
+                .lock()
+                .await
+                .insert(attempt_id, (owner, cancellation));
+            completed
+        };
+        for completion in completed {
+            discard_completed_sso(completion).await;
+        }
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
-        let _transition = self.transitions.lock().await;
-        self.clear_owner_attempts(owner).await;
+        let completed = {
+            let _transition = self.transitions.lock().await;
+            self.clear_owner_attempts(owner).await
+        };
+        for completion in completed {
+            discard_completed_sso(completion).await;
+        }
     }
 
-    async fn clear_owner_attempts(&self, owner: &str) {
+    async fn clear_owner_attempts(&self, owner: &str) -> Vec<CompletedSso> {
         let attempt_ids = {
             let guard = self.cancellations.lock().await;
             guard
@@ -196,7 +207,7 @@ impl PendingAuthStore {
                 crate::auth::cleanup_failed_crypto_store(&pending.crypto);
             }
         }
-        let completed = {
+        {
             let mut guard = self.completed_sso.lock().await;
             let attempt_ids = guard
                 .iter()
@@ -207,9 +218,6 @@ impl PendingAuthStore {
                 .into_iter()
                 .filter_map(|attempt_id| guard.remove(&attempt_id))
                 .collect::<Vec<_>>()
-        };
-        for completion in completed {
-            discard_completed_sso(completion).await;
         }
     }
 
