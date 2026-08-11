@@ -1787,7 +1787,7 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 mod tests {
     use super::{
         is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised, PendingAuthStore,
-        PendingSso, PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
+        PendingPasswordReset, PendingSso, PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -1807,6 +1807,73 @@ mod tests {
             .owned_cancellation("browser-b", "attempt")
             .await
             .is_err());
+    }
+
+    async fn reset_store_for_resend(synthetic: bool) -> PendingAuthStore {
+        let store = PendingAuthStore::default();
+        let attempt_id = "reset-attempt".to_owned();
+        let owner = "browser-a".to_owned();
+        store.cancellations.lock().await.insert(
+            attempt_id.clone(),
+            (owner.clone(), CancellationToken::new()),
+        );
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://127.0.0.1:9")
+            .build()
+            .await
+            .expect("client");
+        let sid =
+            serde_json::from_value(serde_json::json!("reset-session")).expect("valid session id");
+        store.password_resets.lock().await.insert(
+            attempt_id,
+            PendingPasswordReset {
+                _capacity: store.reserve_capacity().expect("capacity"),
+                owner,
+                client,
+                client_secret: matrix_sdk::ruma::ClientSecret::new(),
+                sid,
+                submit_url: None,
+                synthetic,
+                normalized_email: "alice@example.org".to_owned(),
+                send_attempt: 1,
+                retry_not_before: std::time::Instant::now(),
+                submitted: false,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        store
+    }
+
+    #[tokio::test]
+    async fn synthetic_password_reset_resend_remains_generic_success() {
+        let store = reset_store_for_resend(true).await;
+
+        let challenge = store
+            .resend_password_reset("source-a", "browser-a", "reset-attempt")
+            .await
+            .expect("synthetic resend stays generic");
+
+        assert!(!challenge.requires_token);
+        assert_eq!(
+            store.password_resets.lock().await["reset-attempt"].send_attempt,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_password_reset_resend_failure_remains_generic_success() {
+        let store = reset_store_for_resend(false).await;
+
+        let challenge = store
+            .resend_password_reset("source-a", "browser-a", "reset-attempt")
+            .await
+            .expect("upstream resend failure stays generic");
+
+        assert!(!challenge.requires_token);
+        assert_eq!(
+            store.password_resets.lock().await["reset-attempt"].send_attempt,
+            2
+        );
     }
 
     #[tokio::test]
