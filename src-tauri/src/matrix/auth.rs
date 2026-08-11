@@ -122,6 +122,7 @@ pub(crate) struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
+    synthetic: bool,
     token_submitted: bool,
     delivery_email: String,
     send_attempt: u32,
@@ -1667,7 +1668,7 @@ pub async fn request_password_reset(
             return Err("password reset attempt expired; start again".to_string());
         }
     };
-    let (sid, submit_url, requires_token) = match response {
+    let (sid, submit_url, requires_token, synthetic) = match response {
         Ok(response) => {
             let submit_url = sanitize_password_reset_submit_url(
                 &client.homeserver(),
@@ -1679,7 +1680,7 @@ pub async fn request_password_reset(
                     // this address produced a real homeserver session or the
                     // synthetic anti-enumeration path below. The UI already
                     // renders the token field as optional for both flows.
-                    (response.sid, submit_url, false)
+                    (response.sid, submit_url, false, false)
                 }
                 Err(_) => synthetic_password_reset_challenge()?,
             }
@@ -1704,6 +1705,7 @@ pub async fn request_password_reset(
         client_secret,
         sid,
         submit_url,
+        synthetic,
         token_submitted: false,
         delivery_email,
         send_attempt: 1,
@@ -1774,6 +1776,21 @@ pub async fn resend_password_reset(
             }
         };
     let send_attempt = pending.send_attempt + 1;
+    if pending.synthetic {
+        // Keep unknown-address and rejected-address attempts
+        // indistinguishable on resend just as they are on the initial
+        // request. The quota reservation deliberately remains consumed so
+        // synthetic challenges cannot bypass authentication-mail throttles.
+        pending.send_attempt = send_attempt;
+        pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+        if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
+        return Ok(PasswordResetChallenge {
+            attempt_id,
+            requires_token: false,
+        });
+    }
     let request = request_password_change_token_via_email::v3::Request::new(
         pending.client_secret.clone(),
         pending.delivery_email.clone(),
@@ -1907,11 +1924,18 @@ async fn refund_auth_mail_quota(state: &MatrixState, reservation: AuthMailQuotaR
     }
 }
 
-fn synthetic_password_reset_challenge(
-) -> Result<(matrix_sdk::ruma::OwnedSessionId, Option<url::Url>, bool), String> {
+fn synthetic_password_reset_challenge() -> Result<
+    (
+        matrix_sdk::ruma::OwnedSessionId,
+        Option<url::Url>,
+        bool,
+        bool,
+    ),
+    String,
+> {
     let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
         .map_err(|_| "could not start password reset".to_string())?;
-    Ok((sid, None, false))
+    Ok((sid, None, false, true))
 }
 
 async fn retain_password_reset_retry_after(
@@ -3596,6 +3620,7 @@ mod registration_uia_tests {
                 url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
                     .expect("submit URL"),
             ),
+            synthetic: false,
             token_submitted: false,
             delivery_email: "alice@example.org".to_owned(),
             send_attempt: 1,

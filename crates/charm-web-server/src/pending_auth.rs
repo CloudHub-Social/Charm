@@ -116,6 +116,17 @@ struct CompletedSso {
     created_at: Instant,
 }
 
+async fn discard_completed_sso(completion: CompletedSso) {
+    let SsoCompletionResult::Success(completed) = completion.result else {
+        return;
+    };
+    let (_, session, _, _) = *completed;
+    let crypto = session.persisted_crypto.clone();
+    let _ = session.client.matrix_auth().logout().await;
+    drop(session);
+    crate::auth::cleanup_failed_crypto_store(&crypto);
+}
+
 #[derive(Clone)]
 pub struct PendingAuthStore {
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
@@ -181,10 +192,21 @@ impl PendingAuthStore {
                 crate::auth::cleanup_failed_crypto_store(&pending.crypto);
             }
         }
-        self.completed_sso
-            .lock()
-            .await
-            .retain(|_, completion| completion.owner != owner);
+        let completed = {
+            let mut guard = self.completed_sso.lock().await;
+            let attempt_ids = guard
+                .iter()
+                .filter(|(_, completion)| completion.owner == owner)
+                .map(|(attempt_id, _)| attempt_id.clone())
+                .collect::<Vec<_>>();
+            attempt_ids
+                .into_iter()
+                .filter_map(|attempt_id| guard.remove(&attempt_id))
+                .collect::<Vec<_>>()
+        };
+        for completion in completed {
+            discard_completed_sso(completion).await;
+        }
     }
 
     pub async fn start_sso(
@@ -338,11 +360,14 @@ impl PendingAuthStore {
         let completed_attempt_id = attempt_id.to_owned();
         tokio::spawn(async move {
             tokio::time::sleep(ATTEMPT_TTL).await;
-            store
+            let completion = store
                 .completed_sso
                 .lock()
                 .await
                 .remove(&completed_attempt_id);
+            if let Some(completion) = completion {
+                discard_completed_sso(completion).await;
+            }
         });
         Ok(())
     }
@@ -1167,7 +1192,10 @@ impl PendingAuthStore {
             if let Some(pending) = store.sso_attempts.lock().await.remove(&attempt_id) {
                 crate::auth::cleanup_failed_crypto_store(&pending.crypto);
             }
-            store.completed_sso.lock().await.remove(&attempt_id);
+            let completion = store.completed_sso.lock().await.remove(&attempt_id);
+            if let Some(completion) = completion {
+                discard_completed_sso(completion).await;
+            }
         });
     }
 }
