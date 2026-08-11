@@ -166,6 +166,7 @@ export function RoomsScreen({
   }, [messageSearchEnabled]);
 
   function selectRoom(roomId: string) {
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
@@ -220,18 +221,21 @@ export function RoomsScreen({
   }
 
   function selectHome() {
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
     setSelectedSpaceId(null);
   }
 
   function selectDms() {
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
   }
 
   function selectSpace(spaceId: string) {
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
