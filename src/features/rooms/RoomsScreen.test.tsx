@@ -1045,6 +1045,36 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
   });
 
+  it("lets invite acceptance replace an older pending profile DM", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joinedInvite = room({ room_id: invite.room_id, membership: "join" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom, invite])
+      .mockResolvedValueOnce([firstRoom, invite])
+      .mockResolvedValueOnce([firstRoom, invite]);
+
+    renderRoomsScreen();
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: `accept:${invite.room_id}` }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(3));
+
+    const roomListListener = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => roomListListener([firstRoom, joinedInvite, newDm]));
+
+    expect(await screen.findByText(`chat-content:${joinedInvite.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
+  });
+
   it("uses the refreshed snapshot when an accepted room belongs to a space", async () => {
     const invite = room({
       room_id: "!invite:example.org",
