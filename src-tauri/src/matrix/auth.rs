@@ -1809,8 +1809,20 @@ pub async fn resend_password_reset(
                 refund_auth_mail_quota(&state, quota_reservation).await;
             }
             retain_password_reset_retry_after(&state, &homeserver_scope, &error).await;
-            restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await;
-            return Err("could not resend password reset email".to_string());
+            // A real address can fail a later send because of rate limiting
+            // or provider policy. Returning that failure while synthetic
+            // unknown-address attempts return success would recreate the
+            // account oracle the initial request deliberately avoids.
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+            let requires_token = pending.submit_url.is_some();
+            if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id,
+                requires_token,
+            });
         }
     };
     let submit_url = match sanitize_password_reset_submit_url(
@@ -1819,8 +1831,17 @@ pub async fn resend_password_reset(
     ) {
         Ok(submit_url) => submit_url,
         Err(error) => {
-            restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await;
-            return Err(error);
+            log::warn!("ignoring unsafe password-reset resend submit URL: {error}");
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+            let requires_token = pending.submit_url.is_some();
+            if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id,
+                requires_token,
+            });
         }
     };
     pending.sid = response.sid;

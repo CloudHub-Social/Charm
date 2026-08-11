@@ -957,10 +957,19 @@ impl PendingAuthStore {
         let response = match response {
             Ok(response) => response,
             Err(_) => {
-                let _ = self
+                pending.send_attempt = send_attempt;
+                pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+                let requires_token = pending.submit_url.is_some();
+                if !self
                     .restore_password_reset(attempt_id.to_owned(), pending)
-                    .await;
-                return Err("could not resend password reset email".to_string());
+                    .await
+                {
+                    return Err("password reset attempt expired or was cancelled".to_string());
+                }
+                return Ok(PasswordResetChallenge {
+                    attempt_id: attempt_id.to_owned(),
+                    requires_token,
+                });
             }
         };
         let submit_url = match sanitize_submit_url(
@@ -969,11 +978,20 @@ impl PendingAuthStore {
             "password-reset",
         ) {
             Ok(submit_url) => submit_url,
-            Err(error) => {
-                let _ = self
+            Err(_) => {
+                pending.send_attempt = send_attempt;
+                pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+                let requires_token = pending.submit_url.is_some();
+                if !self
                     .restore_password_reset(attempt_id.to_owned(), pending)
-                    .await;
-                return Err(error);
+                    .await
+                {
+                    return Err("password reset attempt expired or was cancelled".to_string());
+                }
+                return Ok(PasswordResetChallenge {
+                    attempt_id: attempt_id.to_owned(),
+                    requires_token,
+                });
             }
         };
         pending.submit_url = submit_url;
