@@ -99,6 +99,7 @@ export function RoomsScreen({
   const [roomsLoaded, setRoomsLoaded] = useState(false);
   const [syncedRoomListReceived, setSyncedRoomListReceived] = useState(false);
   const syncedRoomListReceivedRef = useRef(false);
+  const roomListUpdateRevisionRef = useRef(0);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
@@ -196,6 +197,11 @@ export function RoomsScreen({
   async function navigateToProfileRoom(roomId: string) {
     const requestId = profileRoomNavigationRequestRef.current + 1;
     profileRoomNavigationRequestRef.current = requestId;
+    // Arm the exact target before any refresh can publish a room snapshot.
+    // This both lets a concurrent room-list update complete the navigation
+    // and prevents initial auto-selection from stealing an explicit profile
+    // action while no chat is active.
+    setProfileRoomPendingSelection(roomId);
     let visibleRooms = roomsRef.current;
     let joinedRoom = visibleRooms.find(
       (candidate) => candidate.room_id === roomId && candidate.membership === "join",
@@ -219,10 +225,8 @@ export function RoomsScreen({
       selectRoomInVisibleMode(joinedRoom, visibleRooms);
       return;
     }
-    // If the immediate SDK snapshot is also behind, retain the current room
-    // until the normal room-list stream publishes this specific target. This
-    // avoids navigating to an id that `activeRoom` cannot resolve.
-    setProfileRoomPendingSelection(roomId);
+    // If the immediate SDK snapshot is also behind, retain the already-armed
+    // intent until the normal room-list stream publishes this specific target.
   }
 
   function selectHome() {
@@ -337,6 +341,7 @@ export function RoomsScreen({
     listRooms()
       .then((nextRooms) => {
         if (cancelled || syncedRoomListReceivedRef.current) return;
+        roomsRef.current = nextRooms;
         setRooms(nextRooms);
       })
       .catch(logAndIgnore)
@@ -346,7 +351,9 @@ export function RoomsScreen({
     const unlisten = onRoomListUpdate((nextRooms) => {
       if (cancelled) return;
       syncedRoomListReceivedRef.current = true;
+      roomListUpdateRevisionRef.current += 1;
       setSyncedRoomListReceived(true);
+      roomsRef.current = nextRooms;
       setRooms(nextRooms);
       setRoomsLoaded(true);
     });
@@ -357,7 +364,15 @@ export function RoomsScreen({
   }, []);
 
   async function refreshRooms() {
+    const roomListUpdateRevision = roomListUpdateRevisionRef.current;
     const nextRooms = await listRooms();
+    // A room-list push published after this refresh started is newer than
+    // its point-in-time SDK snapshot. Keep and return the push so a slow
+    // refresh cannot roll the UI back or hide a newly-created DM.
+    if (roomListUpdateRevisionRef.current !== roomListUpdateRevision) {
+      return roomsRef.current;
+    }
+    roomsRef.current = nextRooms;
     setRooms(nextRooms);
     return nextRooms;
   }
@@ -531,13 +546,20 @@ export function RoomsScreen({
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
     if (acceptedRoomPendingSelection) return; // let explicit post-accept navigation win
+    if (profileRoomPendingSelection) return; // let explicit profile-card navigation win
     const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
       if (autoSelectSuppressedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinedRooms, activeRoomId, deepLinkRoomId, acceptedRoomPendingSelection]);
+  }, [
+    joinedRooms,
+    activeRoomId,
+    deepLinkRoomId,
+    acceptedRoomPendingSelection,
+    profileRoomPendingSelection,
+  ]);
 
   const selectedSpace =
     roomListMode === "space"
