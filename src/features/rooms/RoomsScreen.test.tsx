@@ -56,7 +56,14 @@ vi.mock("@/features/settings/SettingsScreen", () => ({
 }));
 
 vi.mock("@/features/room-info/MembersDrawer", () => ({
-  MembersDrawer: () => <div>members-drawer</div>,
+  MembersDrawer: ({ onNavigateToRoom }: { onNavigateToRoom: (roomId: string) => void }) => (
+    <div>
+      members-drawer
+      <button type="button" onClick={() => onNavigateToRoom("!new-dm:example.org")}>
+        navigate-to-new-dm
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/features/room-info/RoomSettingsModal", () => ({
@@ -1121,6 +1128,34 @@ describe("RoomsScreen", () => {
     await act(async () => finishAliasResolution?.("!b:example.org"));
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("refreshes a newly-created DM before navigating from a profile card", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, newDm]);
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText("space-rail:dms:none")).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
   });
 
   it("closes the members drawer when the layout narrows to mobile", async () => {

@@ -187,12 +187,27 @@ export function RoomsScreen({
       .catch(logAndIgnore);
   }
 
-  function navigateToProfileRoom(roomId: string) {
-    const joinedRoom = roomsRef.current.find(
+  async function navigateToProfileRoom(roomId: string) {
+    let visibleRooms = roomsRef.current;
+    let joinedRoom = visibleRooms.find(
       (candidate) => candidate.room_id === roomId && candidate.membership === "join",
     );
+    if (!joinedRoom) {
+      try {
+        // `start_direct_message` can return a newly-created room before the
+        // background `room_list:update` reaches React. Publish an immediate
+        // SDK snapshot before selecting it so `activeRoom` and ChatShell move
+        // together instead of briefly rendering an empty conversation pane.
+        visibleRooms = await refreshRooms();
+        joinedRoom = visibleRooms.find(
+          (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+        );
+      } catch (error) {
+        logAndIgnore(error);
+      }
+    }
     if (joinedRoom) {
-      selectRoomInVisibleMode(joinedRoom);
+      selectRoomInVisibleMode(joinedRoom, visibleRooms);
       return;
     }
     setRoomListMode("dms");
