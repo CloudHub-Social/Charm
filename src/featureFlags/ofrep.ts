@@ -89,7 +89,7 @@ async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse |
   // consumer load the full Matrix transport (and its platform dependencies),
   // even when remote evaluation is disabled or running on the web path.
   const { invoke } = await import("@/lib/matrixTransport");
-  return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
+  return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey }, { captureOnError: false });
 }
 
 /** Web build: direct fetch (no restrictive CSP), with a timeout. */
