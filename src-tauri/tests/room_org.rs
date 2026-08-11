@@ -22,16 +22,17 @@ mod common;
 
 use std::time::Duration;
 
-use charm_lib::matrix::spaces::{
-    create_space_impl, list_manageable_space_children_impl, set_space_parent_impl,
-};
+use charm_lib::matrix::spaces::{create_space_impl, set_space_parent_impl};
 use common::synced_client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::ruma::api::client::room::create_room;
 use matrix_sdk::ruma::api::client::space::get_hierarchy;
+use matrix_sdk::ruma::api::client::state::get_state_event_for_key;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
 use matrix_sdk::ruma::events::tag::TagName;
+use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::room::RoomType;
 use matrix_sdk::Client;
 use tokio::time::timeout;
@@ -50,20 +51,27 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
 }
 
 async fn wait_for_space_child(client: &Client, parent_id: &str, child_id: &str, present: bool) {
+    let parent_id = matrix_sdk::ruma::RoomId::parse(parent_id).expect("parent room id");
     timeout(POLL_TIMEOUT, async {
         loop {
-            client
-                .sync_once(SyncSettings::default())
-                .await
-                .expect("sync space hierarchy");
-            // Read the authoritative live `m.space.child` state rather than
-            // Synapse's separately cached `/hierarchy` projection. The test
-            // above already proves that projection; this section proves the
-            // create/reparent commands' reciprocal state writes themselves.
-            let children = list_manageable_space_children_impl(client, parent_id)
-                .await
-                .expect("list space children");
-            if children.iter().any(|child| child.room_id == child_id) == present {
+            // Read the authoritative state event directly from Synapse. The
+            // earlier assertion separately proves `/hierarchy`; this proves
+            // the create/reparent commands' reciprocal state writes without
+            // depending on either the SDK's sync cache or that projection.
+            let request = get_state_event_for_key::v3::Request::new(
+                parent_id.clone(),
+                StateEventType::SpaceChild,
+                child_id.to_owned(),
+            );
+            let live = match client.send(request).await {
+                Ok(response) => response
+                    .into_content()
+                    .deserialize_as_unchecked::<SpaceChildEventContent>()
+                    .is_ok_and(|content| !content.via.is_empty()),
+                Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => false,
+                Err(error) => panic!("read m.space.child state: {error}"),
+            };
+            if live == present {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
