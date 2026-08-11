@@ -60,6 +60,7 @@ export function MemberRow({
       <button
         type="button"
         disabled={!onOpenProfile}
+        aria-label={onOpenProfile ? `Open profile for ${label}` : undefined}
         className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left enabled:hover:bg-accent enabled:focus-visible:outline-none enabled:focus-visible:ring-2 enabled:focus-visible:ring-ring"
         onClick={onOpenProfile}
       >
