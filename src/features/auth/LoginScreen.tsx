@@ -148,7 +148,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         setSsoPending(false);
         onSignedIn(session);
       } catch (pollError) {
-        if (!current) return;
+        if (!current || !ssoInProgressRef.current) return;
         ssoInProgressRef.current = false;
         setSsoPolling(false);
         setSsoPending(false);
@@ -478,10 +478,18 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSsoLogin(idpId?: string) {
     const operation = ++ssoOperationRef.current;
+    let browserPopup: Window | null = null;
     ssoSetupInFlightRef.current = true;
     setSsoPending(true);
     setError(null);
     try {
+      if (isWebBuild()) {
+        // Preserve the click's transient user activation while the companion
+        // performs discovery and creates the server-owned attempt.
+        browserPopup = window.open("about:blank", "_blank");
+        if (!browserPopup) throw new Error("The browser blocked the single sign-on window.");
+        browserPopup.opener = null;
+      }
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
@@ -490,12 +498,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         return;
       }
       ssoInProgressRef.current = true;
-      await openExternalUrl(ssoUrl);
-      if (isWebBuild()) setSsoPolling(true);
+      if (browserPopup) {
+        browserPopup.location.replace(ssoUrl);
+        setSsoPolling(true);
+      } else {
+        await openExternalUrl(ssoUrl);
+      }
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
+      browserPopup?.close();
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
         setSsoPending(false);

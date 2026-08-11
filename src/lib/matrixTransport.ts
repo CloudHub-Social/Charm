@@ -385,8 +385,11 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "poll_sso_login":
       return (await pollWebSso<T>()) as T;
     case "cancel_sso_login":
-      webSsoAttemptId = null;
-      return requestJson<T>("POST", "/api/auth/sso/cancel");
+      try {
+        return await requestJson<T>("POST", "/api/auth/sso/cancel");
+      } finally {
+        webSsoAttemptId = null;
+      }
     case "try_restore_session":
       return requestJson<T>("GET", "/api/auth/me").catch((error: unknown) => {
         if (error instanceof HttpError && (error.status === 401 || error.status === 400)) {

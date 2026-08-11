@@ -658,7 +658,13 @@ describe("LoginScreen login choices", () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     const onSignedIn = vi.fn();
     pollSsoLogin.mockResolvedValue(fakeSession());
-    const openWindow = vi.spyOn(window, "open").mockReturnValue(null);
+    const replacePopupLocation = vi.fn();
+    const popup = {
+      opener: window,
+      location: { replace: replacePopupLocation },
+      close: vi.fn(),
+    } as unknown as Window;
+    const openWindow = vi.spyOn(window, "open").mockReturnValue(popup);
     render(<LoginScreen onSignedIn={onSignedIn} />);
     await discoverLoginChoices();
 
@@ -667,11 +673,9 @@ describe("LoginScreen login choices", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(openWindow).toHaveBeenCalledWith(
-      "https://homeserver.example/sso/company",
-      "_blank",
-      "noopener,noreferrer",
-    );
+    expect(openWindow).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(popup.opener).toBeNull();
+    expect(replacePopupLocation).toHaveBeenCalledWith("https://homeserver.example/sso/company");
     expect(pollSsoLogin).toHaveBeenCalled();
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
     expect(screen.queryByRole("button", { name: "Sign in with QR code" })).toBeNull();
@@ -685,19 +689,40 @@ describe("LoginScreen login choices", () => {
         resolveStart = resolve;
       }),
     );
-    vi.spyOn(window, "open").mockReturnValue(null);
+    const replacePopupLocation = vi.fn();
+    vi.spyOn(window, "open").mockReturnValue({
+      opener: window,
+      location: { replace: replacePopupLocation },
+      close: vi.fn(),
+    } as unknown as Window);
     render(<LoginScreen onSignedIn={vi.fn()} />);
     await discoverLoginChoices();
 
     fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
     await act(async () => Promise.resolve());
     expect(pollSsoLogin).not.toHaveBeenCalled();
+    expect(replacePopupLocation).not.toHaveBeenCalled();
 
     await act(async () => {
       resolveStart?.("https://homeserver.example/sso/company");
       await Promise.resolve();
     });
+    expect(replacePopupLocation).toHaveBeenCalledWith("https://homeserver.example/sso/company");
     expect(pollSsoLogin).toHaveBeenCalled();
+  });
+
+  it("does not create an SSO attempt when the browser blocks the popup", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    vi.spyOn(window, "open").mockReturnValue(null);
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
+    await act(async () => Promise.resolve());
+
+    expect(screen.getByText(/blocked.*single sign-on window/i)).toBeVisible();
+    expect(startSsoLogin).not.toHaveBeenCalled();
+    expect(pollSsoLogin).not.toHaveBeenCalled();
   });
 
   it("falls back to generic SSO when login-flow discovery fails", async () => {

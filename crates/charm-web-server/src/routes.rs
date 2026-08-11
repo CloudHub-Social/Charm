@@ -13,6 +13,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use charm_lib::matrix::account::UiaCommandError;
@@ -69,10 +70,7 @@ use charm_lib::matrix::verification::{
     recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
-use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
-use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod;
-use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -2212,8 +2210,10 @@ async fn poll_browser_sso(
 async fn cancel_browser_sso(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     require_registration_and_recovery(&state)?;
+    require_allowed_origin(&headers)?;
     let owner = require_preauth_owner(&jar)?;
     state.pending_auth.cancel_owner(&owner).await;
     Ok((jar.remove(clear_preauth_cookie()), StatusCode::NO_CONTENT))
@@ -2251,7 +2251,7 @@ async fn provider_icon(
         .map_err(ApiError::bad_request)?;
     let client = matrix_sdk::Client::builder()
         .homeserver_url(homeserver)
-        .http_client(http_client)
+        .http_client(http_client.clone())
         .build()
         .await
         .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
@@ -2271,21 +2271,43 @@ async fn provider_icon(
             "identity-provider icon is not advertised by the homeserver",
         ));
     }
-    let request = MediaRequestParameters {
-        source: MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from(parsed.as_str())),
-        format: MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(
-            ThumbnailMethod::Scale,
-            64u32.into(),
-            64u32.into(),
-        )),
-    };
-    let bytes = client
-        .media()
-        .get_media_content(&request, true)
+    const MAX_PROVIDER_ICON_BYTES: usize = 1024 * 1024;
+    let server_name = parsed.host_str().expect("validated MXC host");
+    let media_id = parsed.path().trim_matches('/');
+    let mut media_url = client.homeserver().clone();
+    let base_path = media_url.path().trim_end_matches('/').to_owned();
+    media_url.set_path(&format!("{base_path}/_matrix/media/v3/thumbnail"));
+    media_url
+        .path_segments_mut()
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?
+        .extend([server_name, media_id]);
+    media_url.query_pairs_mut().extend_pairs([
+        ("width", "64"),
+        ("height", "64"),
+        ("method", "scale"),
+        ("allow_remote", "true"),
+    ]);
+    let response = http_client
+        .get(media_url)
+        .send()
         .await
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
-    if bytes.len() > 1024 * 1024 {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_ICON_BYTES as u64)
+    {
         return Err(ApiError::bad_request("identity-provider icon is too large"));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_ICON_BYTES {
+            return Err(ApiError::bad_request("identity-provider icon is too large"));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let content_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         "image/png"
