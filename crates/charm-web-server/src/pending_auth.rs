@@ -348,29 +348,41 @@ impl PendingAuthStore {
     }
 
     pub async fn poll_sso(&self, owner: &str, attempt_id: &str) -> PollSsoResult {
+        let mut completed = self.completed_sso.lock().await;
+        if let Some(completion) = completed.get(attempt_id) {
+            if completion.owner != owner || completion.created_at.elapsed() > ATTEMPT_TTL {
+                return PollSsoResult::Expired;
+            }
+            return match completed
+                .remove(attempt_id)
+                .expect("completion checked above")
+                .result
+            {
+                SsoCompletionResult::Success(completed) => PollSsoResult::Complete { completed },
+                SsoCompletionResult::Failed(error) => PollSsoResult::Failed(error),
+            };
+        }
+        drop(completed);
         if self
             .sso_attempts
             .lock()
             .await
             .get(attempt_id)
             .is_some_and(|pending| pending.owner == owner)
+            || self
+                .cancellations
+                .lock()
+                .await
+                .get(attempt_id)
+                .is_some_and(|(attempt_owner, _)| attempt_owner == owner)
         {
-            return PollSsoResult::Pending;
-        }
-        let mut completed = self.completed_sso.lock().await;
-        let Some(completion) = completed.get(attempt_id) else {
-            return PollSsoResult::Expired;
-        };
-        if completion.owner != owner || completion.created_at.elapsed() > ATTEMPT_TTL {
-            return PollSsoResult::Expired;
-        }
-        match completed
-            .remove(attempt_id)
-            .expect("completion checked above")
-            .result
-        {
-            SsoCompletionResult::Success(completed) => PollSsoResult::Complete { completed },
-            SsoCompletionResult::Failed(error) => PollSsoResult::Failed(error),
+            // The callback removes the pending client before exchanging the
+            // single-use login token. The cancellation entry deliberately
+            // spans that gap so a concurrent browser poll stays pending
+            // instead of falsely reporting an expired attempt.
+            PollSsoResult::Pending
+        } else {
+            PollSsoResult::Expired
         }
     }
 
@@ -1774,6 +1786,24 @@ mod tests {
             .complete_sso_callback("sso-state", "replayed-token".to_owned())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn sso_poll_stays_pending_while_the_callback_exchanges_its_token() {
+        let store = PendingAuthStore::default();
+        store.cancellations.lock().await.insert(
+            "callback-in-flight".to_owned(),
+            ("browser-a".to_owned(), CancellationToken::new()),
+        );
+
+        assert!(matches!(
+            store.poll_sso("browser-a", "callback-in-flight").await,
+            PollSsoResult::Pending
+        ));
+        assert!(matches!(
+            store.poll_sso("browser-b", "callback-in-flight").await,
+            PollSsoResult::Expired
+        ));
     }
 
     #[test]
