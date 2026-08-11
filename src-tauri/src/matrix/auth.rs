@@ -2464,8 +2464,9 @@ pub async fn login_with_token(
     }
 }
 
+pub const MAX_IDENTITY_PROVIDERS: usize = 32;
+
 fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
-    const MAX_IDENTITY_PROVIDERS: usize = 32;
     let mut summary = LoginFlowSummary {
         password: false,
         token: false,
@@ -2503,7 +2504,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
     summary
 }
 
-fn sanitized_provider_name(name: &str) -> String {
+pub fn sanitized_provider_name(name: &str) -> String {
     let sanitized = name
         .chars()
         .filter_map(|character| {

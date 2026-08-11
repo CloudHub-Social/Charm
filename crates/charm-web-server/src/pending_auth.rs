@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use charm_lib::matrix::auth::{
-    LoginFlowSummary, LoginIdentityProvider, LoginResponse, PasswordResetChallenge,
-    RegisterRequest, RegistrationAuthResponse, RegistrationEmailChallenge, RegistrationFlow,
-    RegistrationPolicy, RegistrationStep,
+    sanitized_provider_name, LoginFlowSummary, LoginIdentityProvider, LoginResponse,
+    PasswordResetChallenge, RegisterRequest, RegistrationAuthResponse, RegistrationEmailChallenge,
+    RegistrationFlow, RegistrationPolicy, RegistrationStep, MAX_IDENTITY_PROVIDERS,
 };
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::ruma::api::client::account::{
@@ -342,21 +342,41 @@ impl PendingAuthStore {
             Ok(Box::new(authenticated(completed, homeserver_url)))
         }
         .await;
-        if result.is_err() {
+        let failed = result.is_err();
+        if failed {
             crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
         }
-        self.completed_sso.lock().await.insert(
-            attempt_id.to_owned(),
-            CompletedSso {
-                _capacity,
-                owner,
-                result: match result {
-                    Ok(completed) => SsoCompletionResult::Success(completed),
-                    Err(error) => SsoCompletionResult::Failed(error),
-                },
-                created_at: Instant::now(),
+        let completion = CompletedSso {
+            _capacity,
+            owner,
+            result: match result {
+                Ok(completed) => SsoCompletionResult::Success(completed),
+                Err(error) => SsoCompletionResult::Failed(error),
             },
-        );
+            created_at: Instant::now(),
+        };
+        // Arbitrate publication with cancellation while holding the same lock
+        // cancel_owner uses to claim an attempt. If cancellation already won,
+        // discard a successfully authenticated Matrix session immediately.
+        let mut cancellations = self.cancellations.lock().await;
+        let active = cancellations
+            .get(attempt_id)
+            .is_some_and(|(attempt_owner, token)| {
+                attempt_owner == &completion.owner && !token.is_cancelled()
+            });
+        if !active {
+            drop(cancellations);
+            discard_completed_sso(completion).await;
+            return Err("single sign-on attempt expired or was already used".to_string());
+        }
+        if failed {
+            cancellations.remove(attempt_id);
+        }
+        self.completed_sso
+            .lock()
+            .await
+            .insert(attempt_id.to_owned(), completion);
+        drop(cancellations);
         let store = self.clone();
         let completed_attempt_id = attempt_id.to_owned();
         tokio::spawn(async move {
@@ -1756,16 +1776,22 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
             LoginType::Token(_) => summary.token = true,
             LoginType::Sso(sso) => {
                 summary.sso = true;
-                summary
-                    .identity_providers
-                    .extend(sso.identity_providers.into_iter().map(|provider| {
-                        LoginIdentityProvider {
-                            id: provider.id,
-                            name: provider.name,
-                            brand: provider.brand.map(|brand| brand.as_str().to_owned()),
-                            icon: provider.icon.map(|icon| icon.to_string()),
-                        }
-                    }));
+                for provider in sso.identity_providers {
+                    if summary.identity_providers.len() >= MAX_IDENTITY_PROVIDERS
+                        || summary
+                            .identity_providers
+                            .iter()
+                            .any(|existing| existing.id == provider.id)
+                    {
+                        continue;
+                    }
+                    summary.identity_providers.push(LoginIdentityProvider {
+                        id: provider.id,
+                        name: sanitized_provider_name(&provider.name),
+                        brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                        icon: provider.icon.map(|icon| icon.to_string()),
+                    });
+                }
             }
             _ => {}
         }
@@ -1786,8 +1812,9 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 #[cfg(test)]
 mod tests {
     use super::{
-        is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised, PendingAuthStore,
-        PendingPasswordReset, PendingSso, PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
+        is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
+        summarize_login_flows, PendingAuthStore, PendingPasswordReset, PendingSso, PollSsoResult,
+        MAX_PENDING_AUTH_ATTEMPTS,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -1907,6 +1934,10 @@ mod tests {
             .complete_sso_callback("sso-state", "invalid-login-token".to_owned())
             .await
             .expect("the callback is consumed even when token login fails");
+        assert!(
+            store.cancellations.lock().await.is_empty(),
+            "a failed callback must not leave a stale in-flight marker"
+        );
         assert!(matches!(
             store.poll_sso("browser-b", "sso-state").await,
             PollSsoResult::Expired
@@ -1959,6 +1990,34 @@ mod tests {
             (true, false)
         );
         assert_eq!(sso_selection_is_advertised(&[], None), (false, true));
+    }
+
+    #[test]
+    fn browser_login_summary_bounds_deduplicates_and_sanitizes_providers() {
+        let providers = (0..40)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("provider-{index}"),
+                    "name": format!("\u{202e}Provider {index}\n{}", "x".repeat(100)),
+                })
+            })
+            .chain(std::iter::once(serde_json::json!({
+                "id": "provider-0",
+                "name": "duplicate",
+            })))
+            .collect::<Vec<_>>();
+        let flows = serde_json::from_value(serde_json::json!([{
+            "type": "m.login.sso",
+            "identity_providers": providers,
+        }]))
+        .expect("login flows");
+
+        let summary = summarize_login_flows(flows);
+
+        assert_eq!(summary.identity_providers.len(), 32);
+        assert_eq!(summary.identity_providers[0].id, "provider-0");
+        assert!(!summary.identity_providers[0].name.contains('\u{202e}'));
+        assert!(summary.identity_providers[0].name.len() <= 80);
     }
 
     #[tokio::test]
