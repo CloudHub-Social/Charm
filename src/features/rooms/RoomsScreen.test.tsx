@@ -1158,6 +1158,34 @@ describe("RoomsScreen", () => {
     expect(listRooms).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the current chat visible until a newly-created DM reaches the room-list stream", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms.mockReset().mockResolvedValue([firstRoom]);
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(`chat-content:${firstRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText("chat-content:none")).not.toBeInTheDocument();
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, newDm]));
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+  });
+
   it("closes the members drawer when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();

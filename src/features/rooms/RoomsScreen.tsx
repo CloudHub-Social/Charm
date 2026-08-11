@@ -117,6 +117,9 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
+  const [profileRoomPendingSelection, setProfileRoomPendingSelection] = useState<string | null>(
+    null,
+  );
   // "Jump to message" — the room + event to scroll to once that room is
   // selected and loaded. Shared by two entry points that both just need
   // "load this event into view, paginating around it if it's outside the
@@ -210,9 +213,10 @@ export function RoomsScreen({
       selectRoomInVisibleMode(joinedRoom, visibleRooms);
       return;
     }
-    setRoomListMode("dms");
-    setSelectedSpaceId(null);
-    selectRoom(roomId);
+    // If the immediate SDK snapshot is also behind, retain the current room
+    // until the normal room-list stream publishes this specific target. This
+    // avoids navigating to an id that `activeRoom` cannot resolve.
+    setProfileRoomPendingSelection(roomId);
   }
 
   function selectHome() {
@@ -366,6 +370,17 @@ export function RoomsScreen({
     setAcceptedRoomPendingSelection(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [acceptedRoomPendingSelection, rooms, joinedRooms]);
+
+  useEffect(() => {
+    if (!profileRoomPendingSelection) return;
+    const joinedRoom = rooms.find(
+      (room) => room.room_id === profileRoomPendingSelection && room.membership === "join",
+    );
+    if (!joinedRoom) return;
+    selectRoomInVisibleMode(joinedRoom, joinedRooms);
+    setProfileRoomPendingSelection(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileRoomPendingSelection, rooms, joinedRooms]);
 
   async function handleDeclineInvite(roomId: string) {
     await declineInvite(roomId);
