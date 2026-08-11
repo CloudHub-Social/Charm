@@ -2169,9 +2169,11 @@ struct BrowserSsoPollQuery {
 async fn poll_browser_sso(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Query(query): Query<BrowserSsoPollQuery>,
 ) -> Result<Response, ApiError> {
     require_registration_and_recovery(&state)?;
+    require_web_transport_header(&headers)?;
     let owner = require_preauth_owner(&jar)?;
     match state.pending_auth.poll_sso(&owner, &query.attempt_id).await {
         crate::pending_auth::PollSsoResult::Pending => Ok((
