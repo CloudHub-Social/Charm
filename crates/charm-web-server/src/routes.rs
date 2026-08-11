@@ -9,7 +9,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -69,7 +69,10 @@ use charm_lib::matrix::verification::{
     recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
+use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method as ThumbnailMethod;
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -134,6 +137,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/auth/login-flows", post(get_login_flows))
         .route("/api/auth/token", post(login_with_token))
+        .route("/api/auth/sso/start", post(start_browser_sso))
+        .route("/api/auth/sso/callback", get(complete_browser_sso))
+        .route("/api/auth/sso/poll", get(poll_browser_sso))
+        .route("/api/auth/sso/cancel", post(cancel_browser_sso))
+        .route("/api/auth/provider-icon", get(provider_icon))
         // -- session --
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
@@ -2064,6 +2072,243 @@ async fn login_with_token(
             .add(session_cookie(token)),
         Json(response),
     ))
+}
+
+const PUBLIC_URL_ENV: &str = "CHARM_WEB_SERVER_PUBLIC_URL";
+
+#[derive(Deserialize)]
+struct StartBrowserSsoRequest {
+    homeserver_url: String,
+    idp_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StartBrowserSsoResponse {
+    attempt_id: String,
+    redirect_url: String,
+}
+
+async fn start_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<StartBrowserSsoRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
+    let owner = jar
+        .get(DISCOVERY_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
+    state.pending_auth.cancel_owner(&owner).await;
+    let public_url = std::env::var(PUBLIC_URL_ENV)
+        .ok()
+        .and_then(|configured| reqwest::Url::parse(configured.trim()).ok())
+        .filter(|url| {
+            matches!(url.scheme(), "https" | "http")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && (url.scheme() == "https"
+                    || std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1"))
+        })
+        .ok_or_else(|| ApiError::not_found("browser single sign-on is not configured"))?;
+    let callback_url = public_url
+        .join("/api/auth/sso/callback")
+        .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
+    let (attempt_id, redirect_url) = state
+        .pending_auth
+        .start_sso(
+            owner.clone(),
+            request.homeserver_url,
+            request.idp_id,
+            callback_url.to_string(),
+            state.persistence.is_some(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((
+        jar.add(preauth_cookie(owner)),
+        Json(StartBrowserSsoResponse {
+            attempt_id,
+            redirect_url,
+        }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct BrowserSsoCallbackQuery {
+    state: String,
+    #[serde(rename = "loginToken")]
+    login_token: String,
+}
+
+async fn complete_browser_sso(
+    State(state): State<AppState>,
+    Query(query): Query<BrowserSsoCallbackQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    state
+        .pending_auth
+        .complete_sso_callback(&query.state, query.login_token)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((
+        [
+            ("cache-control", "no-store"),
+            ("content-security-policy", "default-src 'none'"),
+            ("referrer-policy", "no-referrer"),
+        ],
+        Html(
+            "<!doctype html><meta charset=utf-8><title>Charm sign-in</title><p>Sign-in complete. You can close this window and return to Charm.</p>",
+        ),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct BrowserSsoPollQuery {
+    attempt_id: String,
+}
+
+async fn poll_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<BrowserSsoPollQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    let owner = require_preauth_owner(&jar)?;
+    match state.pending_auth.poll_sso(&owner, &query.attempt_id).await {
+        crate::pending_auth::PollSsoResult::Pending => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "pending" })),
+        )
+            .into_response()),
+        crate::pending_auth::PollSsoResult::Failed(error) => Err(ApiError::unauthorized(error)),
+        crate::pending_auth::PollSsoResult::Expired => Err(ApiError::unauthorized(
+            "single sign-on attempt expired or was cancelled",
+        )),
+        crate::pending_auth::PollSsoResult::Complete { completed } => {
+            let (response, session, initial_response, homeserver_url) = *completed;
+            let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            if !state
+                .pending_auth
+                .commit_attempt(&owner, &query.attempt_id)
+                .await
+            {
+                discard_unpublished_login(&state, &token).await;
+                return Err(ApiError::unauthorized(
+                    "single sign-on attempt expired or was cancelled",
+                ));
+            }
+            Ok((
+                jar.remove(clear_preauth_cookie())
+                    .remove(clear_discovery_cookie())
+                    .add(session_cookie(token)),
+                Json(response),
+            )
+                .into_response())
+        }
+    }
+}
+
+async fn cancel_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
+    let owner = require_preauth_owner(&jar)?;
+    state.pending_auth.cancel_owner(&owner).await;
+    Ok((jar.remove(clear_preauth_cookie()), StatusCode::NO_CONTENT))
+}
+
+#[derive(Deserialize)]
+struct ProviderIconQuery {
+    homeserver_url: String,
+    mxc: String,
+}
+
+async fn provider_icon(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ProviderIconQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    if jar.get(DISCOVERY_COOKIE).is_none() && jar.get(PREAUTH_COOKIE).is_none() {
+        return Err(ApiError::unauthorized(
+            "login options are no longer current",
+        ));
+    }
+    let parsed = reqwest::Url::parse(&query.mxc)
+        .ok()
+        .filter(|url| {
+            url.scheme() == "mxc"
+                && url.host_str().is_some()
+                && !url.path().trim_matches('/').is_empty()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+        .ok_or_else(|| ApiError::bad_request("identity-provider icon is not a valid MXC URI"))?;
+    let (homeserver, http_client) = crate::auth::validated_homeserver_client(&query.homeserver_url)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(homeserver)
+        .http_client(http_client)
+        .build()
+        .await
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+    let advertised = client
+        .matrix_auth()
+        .get_login_types()
+        .await
+        .map_err(|_| ApiError::bad_request("could not verify identity-provider icon"))?
+        .flows
+        .iter()
+        .any(|flow| {
+            matches!(flow, matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType::Sso(sso)
+                if sso.identity_providers.iter().any(|provider| provider.icon.as_ref().is_some_and(|icon| icon.as_str() == parsed.as_str())))
+        });
+    if !advertised {
+        return Err(ApiError::bad_request(
+            "identity-provider icon is not advertised by the homeserver",
+        ));
+    }
+    let request = MediaRequestParameters {
+        source: MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from(parsed.as_str())),
+        format: MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(
+            ThumbnailMethod::Scale,
+            64u32.into(),
+            64u32.into(),
+        )),
+    };
+    let bytes = client
+        .media()
+        .get_media_content(&request, true)
+        .await
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(ApiError::bad_request("identity-provider icon is too large"));
+    }
+    let content_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err(ApiError::bad_request(
+            "identity-provider icon is not a supported raster image",
+        ));
+    };
+    Ok((
+        [
+            ("content-type", content_type),
+            ("cache-control", "private, max-age=300"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn logout(

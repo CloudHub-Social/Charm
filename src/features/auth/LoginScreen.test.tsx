@@ -28,9 +28,12 @@ const getLoginFlows = vi.fn().mockResolvedValue({
 const loginWithToken = vi.fn();
 const requestPasswordReset = vi.fn();
 const confirmPasswordReset = vi.fn();
+const resendPasswordReset = vi.fn();
 const cancelPasswordReset = vi.fn().mockResolvedValue(undefined);
 const startSsoLogin = vi.fn().mockResolvedValue("https://homeserver.example/sso");
 const completeSsoLogin = vi.fn();
+const pollSsoLogin = vi.fn();
+const getLoginProviderIconUrl = vi.fn();
 const cancelSsoLogin = vi.fn().mockResolvedValue(undefined);
 const discoverHomeserver = vi.fn().mockReturnValue(new Promise(() => {}));
 const featureFlags = vi.hoisted(() => ({ registrationEnabled: false, initialized: true }));
@@ -55,9 +58,12 @@ vi.mock("@/lib/matrix", () => ({
   loginWithToken: (...args: unknown[]) => loginWithToken(...args),
   requestPasswordReset: (...args: unknown[]) => requestPasswordReset(...args),
   confirmPasswordReset: (...args: unknown[]) => confirmPasswordReset(...args),
+  resendPasswordReset: (...args: unknown[]) => resendPasswordReset(...args),
   cancelPasswordReset: (...args: unknown[]) => cancelPasswordReset(...args),
   startSsoLogin: (...args: unknown[]) => startSsoLogin(...args),
   completeSsoLogin: (...args: unknown[]) => completeSsoLogin(...args),
+  pollSsoLogin: (...args: unknown[]) => pollSsoLogin(...args),
+  getLoginProviderIconUrl: (...args: unknown[]) => getLoginProviderIconUrl(...args),
   cancelSsoLogin: (...args: unknown[]) => cancelSsoLogin(...args),
   discoverHomeserver: (...args: unknown[]) => discoverHomeserver(...args),
 }));
@@ -291,7 +297,13 @@ describe("LoginScreen registration UIA", () => {
     loginWithToken.mockReset();
     startSsoLogin.mockReset().mockResolvedValue("https://homeserver.example/sso");
     completeSsoLogin.mockReset();
+    pollSsoLogin.mockReset().mockResolvedValue(null);
+    getLoginProviderIconUrl.mockReset().mockReturnValue(null);
     cancelSsoLogin.mockReset().mockResolvedValue(undefined);
+    resendPasswordReset.mockReset().mockResolvedValue({
+      attempt_id: "reset-attempt",
+      requires_token: false,
+    });
     featureFlags.registrationEnabled = true;
   });
 
@@ -582,6 +594,8 @@ describe("LoginScreen login choices", () => {
     });
     startSsoLogin.mockReset().mockResolvedValue("https://homeserver.example/sso/company");
     completeSsoLogin.mockReset();
+    pollSsoLogin.mockReset().mockResolvedValue(null);
+    getLoginProviderIconUrl.mockReset().mockReturnValue(null);
     cancelSsoLogin.mockReset().mockResolvedValue(undefined);
     featureFlags.registrationEnabled = true;
   });
@@ -603,6 +617,26 @@ describe("LoginScreen login choices", () => {
     expect(openUrl).toHaveBeenCalledWith("https://homeserver.example/sso/company");
   });
 
+  it("shows an advertised provider icon through the companion proxy", async () => {
+    getLoginFlows.mockResolvedValue({
+      password: true,
+      token: false,
+      sso: true,
+      identity_providers: [
+        { id: "company", name: "Company SSO", brand: null, icon: "mxc://matrix.example/logo" },
+      ],
+    });
+    getLoginProviderIconUrl.mockReturnValue("/api/auth/provider-icon?mxc=logo");
+
+    const { container } = render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      "/api/auth/provider-icon?mxc=logo",
+    );
+  });
+
   it("uses an advertised standalone login token without persisting it in the form", async () => {
     const onSignedIn = vi.fn();
     render(<LoginScreen onSignedIn={onSignedIn} />);
@@ -620,14 +654,50 @@ describe("LoginScreen login choices", () => {
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
   });
 
-  it("exposes companion-backed token login on web without native callback options", async () => {
+  it("completes companion-backed provider SSO by polling the server-owned attempt", async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
-    render(<LoginScreen onSignedIn={vi.fn()} />);
+    const onSignedIn = vi.fn();
+    pollSsoLogin.mockResolvedValue(fakeSession());
+    const openWindow = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<LoginScreen onSignedIn={onSignedIn} />);
     await discoverLoginChoices();
 
     expect(screen.getByRole("button", { name: "Use a login token" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Continue with Company SSO" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(openWindow).toHaveBeenCalledWith(
+      "https://homeserver.example/sso/company",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(pollSsoLogin).toHaveBeenCalled();
+    expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
     expect(screen.queryByRole("button", { name: "Sign in with QR code" })).toBeNull();
+  });
+
+  it("waits for the companion to create the browser SSO attempt before polling", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    let resolveStart: ((url: string) => void) | undefined;
+    startSsoLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    vi.spyOn(window, "open").mockReturnValue(null);
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
+    await act(async () => Promise.resolve());
+    expect(pollSsoLogin).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveStart?.("https://homeserver.example/sso/company");
+      await Promise.resolve();
+    });
+    expect(pollSsoLogin).toHaveBeenCalled();
   });
 
   it("falls back to generic SSO when login-flow discovery fails", async () => {
@@ -691,6 +761,10 @@ describe("LoginScreen password recovery", () => {
     loginWithToken.mockReset();
     requestPasswordReset.mockReset();
     confirmPasswordReset.mockReset();
+    resendPasswordReset.mockReset().mockResolvedValue({
+      attempt_id: "reset-attempt",
+      requires_token: false,
+    });
     cancelPasswordReset.mockReset().mockResolvedValue(undefined);
     discoverHomeserver.mockReset().mockResolvedValue({
       homeserver_url: "https://matrix.example/",
@@ -739,6 +813,10 @@ describe("LoginScreen password recovery", () => {
       ),
     ).toBeVisible();
     expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
+    await act(async () => {
+      screen.getByRole("button", { name: "Resend recovery email" }).click();
+    });
+    expect(resendPasswordReset).toHaveBeenCalledWith("reset-attempt");
 
     fireEvent.change(screen.getByLabelText("New password"), {
       target: { value: "new correct horse" },

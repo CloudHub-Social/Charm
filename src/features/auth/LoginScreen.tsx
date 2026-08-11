@@ -14,8 +14,10 @@ import {
   completeSsoLogin,
   continueRegistration,
   getLoginFlows,
+  getLoginProviderIconUrl,
   login,
   loginWithToken,
+  pollSsoLogin,
   requestRegistrationEmail,
   requestPasswordReset,
   resendPasswordReset,
@@ -109,6 +111,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // the browser, so — unlike `pending` for the password form, which always
   // resolves on its own — this state needs a manual way out.
   const [ssoPending, setSsoPending] = useState(false);
+  // Browser builds must not poll until the companion has returned an opaque
+  // attempt id. `ssoPending` starts earlier so the setup button cannot race
+  // a second request while `/api/auth/sso/start` is still in flight.
+  const [ssoPolling, setSsoPolling] = useState(false);
   // Separate screen entirely, not another Mode: QR login has its own
   // multi-stage lifecycle (generating, waiting for scan, check code,
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
@@ -116,7 +122,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery");
   const showAlternativeSignInOptions =
-    showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
+    showNativeSignInOptions ||
+    (registrationUiaEnabled && (loginFlows?.token === true || loginFlows?.sso === true));
   const passwordLoginAvailable =
     !registrationUiaEnabled || loginFlows === undefined || loginFlowsFailed || loginFlows.password;
   const showGenericSso =
@@ -124,6 +131,38 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     loginFlows === undefined ||
     loginFlowsFailed ||
     (loginFlows.sso && loginFlows.identity_providers.length === 0);
+
+  useEffect(() => {
+    if (!isWebBuild() || !ssoPolling) return undefined;
+    let current = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const session = await pollSsoLogin();
+        if (!current || !session) return;
+        ssoInProgressRef.current = false;
+        setSsoPolling(false);
+        setSsoPending(false);
+        onSignedIn(session);
+      } catch (pollError) {
+        if (!current) return;
+        ssoInProgressRef.current = false;
+        setSsoPolling(false);
+        setSsoPending(false);
+        setError(String(pollError));
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_000);
+    void poll();
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [onSignedIn, ssoPolling]);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -450,6 +489,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       ssoInProgressRef.current = true;
       await openExternalUrl(ssoUrl);
+      if (isWebBuild()) setSsoPolling(true);
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
@@ -460,6 +500,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         return;
       }
       ssoInProgressRef.current = false;
+      setSsoPolling(false);
       setError(String(err));
       setSsoPending(false);
     }
@@ -468,6 +509,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   function handleCancelSso() {
     ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
+    setSsoPolling(false);
     // If setup is still in flight, keep the controls disabled. The stale
     // setup branch above performs a second cancellation after the backend
     // has actually installed its pending attempt, then clears this state.
@@ -548,7 +590,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleResendPasswordReset() {
     const attemptId = passwordResetAttemptRef.current;
-    if (!attemptId || !isWebBuild()) return;
+    if (!attemptId) return;
     const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
@@ -652,16 +694,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
                 </Button>
-                {isWebBuild() && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={handleResendPasswordReset}
-                  >
-                    Resend recovery email
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={handleResendPasswordReset}
+                >
+                  Resend recovery email
+                </Button>
                 <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
@@ -1061,7 +1101,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-2">
-                          {showNativeSignInOptions && showGenericSso && (
+                          {(showNativeSignInOptions || loginFlows?.sso) && showGenericSso && (
                             <Button
                               type="button"
                               variant="outline"
@@ -1072,8 +1112,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               Continue with SSO
                             </Button>
                           )}
-                          {showNativeSignInOptions &&
-                            registrationUiaEnabled &&
+                          {registrationUiaEnabled &&
                             loginFlows?.identity_providers.map((provider) => (
                               <Button
                                 key={provider.id}
@@ -1083,6 +1122,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                                 onClick={() => void handleSsoLogin(provider.id)}
                                 className="w-full"
                               >
+                                {getLoginProviderIconUrl(homeserverUrl, provider.icon) && (
+                                  <img
+                                    src={
+                                      getLoginProviderIconUrl(homeserverUrl, provider.icon) ??
+                                      undefined
+                                    }
+                                    alt=""
+                                    className="size-5 rounded-sm object-contain"
+                                  />
+                                )}
                                 Continue with {provider.name}
                               </Button>
                             ))}
