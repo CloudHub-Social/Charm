@@ -141,6 +141,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     const poll = async () => {
       if (polling) return;
       polling = true;
+      ssoPollInFlightRef.current = true;
       try {
         const session = await pollSsoLogin();
         if (!session) return;
@@ -160,6 +161,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
         setError(String(pollError));
       } finally {
         polling = false;
+        ssoPollInFlightRef.current = false;
+        if (!ssoInProgressRef.current && !ssoSetupInFlightRef.current) {
+          setSsoPending(false);
+        }
       }
     };
     const timer = window.setInterval(() => void poll(), 1_000);
@@ -214,6 +219,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // against completing a callback that doesn't belong to an SSO attempt this
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
+  const ssoPollInFlightRef = useRef(false);
   const ssoOperationRef = useRef(0);
   // Keeps cancellation from exposing the SSO buttons while the backend is
   // still creating an attempt. Once that setup settles, its stale-operation
@@ -534,12 +540,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     // If setup is still in flight, keep the controls disabled. The stale
     // setup branch above performs a second cancellation after the backend
     // has actually installed its pending attempt, then clears this state.
-    if (!ssoSetupInFlightRef.current) setSsoPending(false);
     setError(null);
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
     // already moved on regardless of whether this succeeds.
-    cancelSsoLogin().catch(logAndIgnore);
+    cancelSsoLogin()
+      .catch(logAndIgnore)
+      .finally(() => {
+        if (!ssoSetupInFlightRef.current && !ssoPollInFlightRef.current) {
+          setSsoPending(false);
+        }
+      });
   }
 
   async function handleRequestPasswordReset(e: React.FormEvent) {

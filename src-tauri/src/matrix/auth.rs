@@ -1776,21 +1776,6 @@ pub async fn resend_password_reset(
             }
         };
     let send_attempt = pending.send_attempt + 1;
-    if pending.synthetic {
-        // Keep unknown-address and rejected-address attempts
-        // indistinguishable on resend just as they are on the initial
-        // request. The quota reservation deliberately remains consumed so
-        // synthetic challenges cannot bypass authentication-mail throttles.
-        pending.send_attempt = send_attempt;
-        pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
-        if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
-            return Err("password reset attempt expired or was cancelled".to_string());
-        }
-        return Ok(PasswordResetChallenge {
-            attempt_id,
-            requires_token: false,
-        });
-    }
     let request = request_password_change_token_via_email::v3::Request::new(
         pending.client_secret.clone(),
         pending.delivery_email.clone(),
@@ -1846,6 +1831,7 @@ pub async fn resend_password_reset(
     };
     pending.sid = response.sid;
     pending.submit_url = submit_url;
+    pending.synthetic = false;
     pending.send_attempt = send_attempt;
     pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
     let requires_token = pending.submit_url.is_some();

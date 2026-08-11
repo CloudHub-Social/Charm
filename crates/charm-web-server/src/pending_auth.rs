@@ -963,24 +963,6 @@ impl PendingAuthStore {
             return Err(error);
         }
         let send_attempt = pending.send_attempt + 1;
-        if pending.synthetic {
-            // Preserve the initial request's anti-enumeration contract on
-            // every resend. Synthetic attempts consume the same quota and
-            // retry budget but never ask the homeserver the address question
-            // again, so the browser receives the same generic success shape.
-            pending.send_attempt = send_attempt;
-            pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
-            if !self
-                .restore_password_reset(attempt_id.to_owned(), pending)
-                .await
-            {
-                return Err("password reset attempt expired or was cancelled".to_string());
-            }
-            return Ok(PasswordResetChallenge {
-                attempt_id: attempt_id.to_owned(),
-                requires_token: false,
-            });
-        }
         let request = request_password_change_token_via_email::v3::Request::new(
             pending.client_secret.clone(),
             pending.normalized_email.clone(),
@@ -1034,6 +1016,7 @@ impl PendingAuthStore {
         };
         pending.submit_url = submit_url;
         pending.sid = response.sid;
+        pending.synthetic = false;
         pending.send_attempt = send_attempt;
         pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
         pending.submitted = false;
@@ -1896,7 +1879,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn synthetic_password_reset_resend_remains_generic_success() {
+    async fn synthetic_password_reset_resend_retries_upstream_with_generic_success() {
         let store = reset_store_for_resend(true).await;
 
         let challenge = store
