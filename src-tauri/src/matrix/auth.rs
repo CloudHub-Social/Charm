@@ -88,6 +88,8 @@ const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_
 const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const PASSWORD_RESET_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+const PASSWORD_RESET_MAX_SEND_ATTEMPTS: u32 = 3;
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const AUTH_MAILS_PER_ADDRESS: usize = 3;
 const AUTH_MAILS_PER_PROCESS: usize = 12;
@@ -120,7 +122,11 @@ pub(crate) struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<url::Url>,
+    synthetic: bool,
     token_submitted: bool,
+    delivery_email: String,
+    send_attempt: u32,
+    retry_not_before: std::time::Instant,
     attempt_id: String,
     created_at: std::time::Instant,
 }
@@ -193,6 +199,8 @@ pub struct LoginIdentityProvider {
     pub id: String,
     pub name: String,
     pub brand: Option<String>,
+    #[ts(optional)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1646,7 +1654,7 @@ pub async fn request_password_reset(
     let client_secret = ClientSecret::new();
     let request = request_password_change_token_via_email::v3::Request::new(
         client_secret.clone(),
-        delivery_email,
+        delivery_email.clone(),
         UInt::new_saturating(1),
     );
     let response = tokio::select! {
@@ -1660,7 +1668,7 @@ pub async fn request_password_reset(
             return Err("password reset attempt expired; start again".to_string());
         }
     };
-    let (sid, submit_url, requires_token) = match response {
+    let (sid, submit_url, requires_token, synthetic) = match response {
         Ok(response) => {
             let submit_url = sanitize_password_reset_submit_url(
                 &client.homeserver(),
@@ -1672,7 +1680,7 @@ pub async fn request_password_reset(
                     // this address produced a real homeserver session or the
                     // synthetic anti-enumeration path below. The UI already
                     // renders the token field as optional for both flows.
-                    (response.sid, submit_url, false)
+                    (response.sid, submit_url, false, false)
                 }
                 Err(_) => synthetic_password_reset_challenge()?,
             }
@@ -1697,7 +1705,11 @@ pub async fn request_password_reset(
         client_secret,
         sid,
         submit_url,
+        synthetic,
         token_submitted: false,
+        delivery_email,
+        send_attempt: 1,
+        retry_not_before: std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY,
         attempt_id: attempt_id.clone(),
         created_at: started_at,
     };
@@ -1715,6 +1727,153 @@ pub async fn request_password_reset(
         attempt_id,
         requires_token,
     })
+}
+
+#[tauri::command]
+pub async fn resend_password_reset(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    attempt_id: String,
+) -> Result<PasswordResetChallenge, String> {
+    ensure_registration_feature_enabled(&app)?;
+    let cancellation = state
+        .pending_password_reset_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|(current_id, _)| current_id == &attempt_id)
+        .map(|(_, cancellation)| cancellation.clone())
+        .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
+    let mut guard = state.pending_password_reset.lock().await;
+    let Some(current) = guard.as_ref() else {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    };
+    if current.attempt_id != attempt_id || current.created_at.elapsed() > PASSWORD_RESET_ATTEMPT_TTL
+    {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
+    if current.token_submitted {
+        return Err("password reset email was already confirmed".to_string());
+    }
+    if current.send_attempt >= PASSWORD_RESET_MAX_SEND_ATTEMPTS {
+        return Err("password reset email resend limit reached; start again".to_string());
+    }
+    if std::time::Instant::now() < current.retry_not_before {
+        return Err("wait before requesting another password reset email".to_string());
+    }
+    let mut pending = guard
+        .take()
+        .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
+    drop(guard);
+
+    let homeserver_scope = pending.client.homeserver().origin().ascii_serialization();
+    let quota_reservation =
+        match check_auth_mail_quota(&state, &pending.delivery_email, &homeserver_scope).await {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await;
+                return Err(error);
+            }
+        };
+    let send_attempt = pending.send_attempt + 1;
+    if pending.synthetic {
+        // Keep unknown-address and rejected-address attempts
+        // indistinguishable on resend just as they are on the initial
+        // request. The quota reservation deliberately remains consumed so
+        // synthetic challenges cannot bypass authentication-mail throttles.
+        pending.send_attempt = send_attempt;
+        pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+        if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
+        return Ok(PasswordResetChallenge {
+            attempt_id,
+            requires_token: false,
+        });
+    }
+    let request = request_password_change_token_via_email::v3::Request::new(
+        pending.client_secret.clone(),
+        pending.delivery_email.clone(),
+        UInt::new_saturating(send_attempt.into()),
+    );
+    let response = tokio::select! {
+        response = pending.client.send(request) => response,
+        () = cancellation.cancelled() => {
+            return Err("password reset attempt expired or was cancelled".to_string());
+        }
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.client_api_error_kind().is_none() {
+                refund_auth_mail_quota(&state, quota_reservation).await;
+            }
+            retain_password_reset_retry_after(&state, &homeserver_scope, &error).await;
+            // A real address can fail a later send because of rate limiting
+            // or provider policy. Returning that failure while synthetic
+            // unknown-address attempts return success would recreate the
+            // account oracle the initial request deliberately avoids.
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+            let requires_token = pending.submit_url.is_some();
+            if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id,
+                requires_token,
+            });
+        }
+    };
+    let submit_url = match sanitize_password_reset_submit_url(
+        &pending.client.homeserver(),
+        response.submit_url.as_deref(),
+    ) {
+        Ok(submit_url) => submit_url,
+        Err(error) => {
+            log::warn!("ignoring unsafe password-reset resend submit URL: {error}");
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+            let requires_token = pending.submit_url.is_some();
+            if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id,
+                requires_token,
+            });
+        }
+    };
+    pending.sid = response.sid;
+    pending.submit_url = submit_url;
+    pending.send_attempt = send_attempt;
+    pending.retry_not_before = std::time::Instant::now() + PASSWORD_RESET_RESEND_DELAY;
+    let requires_token = pending.submit_url.is_some();
+    if !restore_pending_password_reset(&state, &attempt_id, &cancellation, pending).await {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
+    Ok(PasswordResetChallenge {
+        attempt_id,
+        requires_token,
+    })
+}
+
+async fn restore_pending_password_reset(
+    state: &MatrixState,
+    attempt_id: &str,
+    cancellation: &tokio_util::sync::CancellationToken,
+    pending: PendingPasswordReset,
+) -> bool {
+    let mut guard = state.pending_password_reset.lock().await;
+    if cancellation.is_cancelled()
+        || !password_reset_cancellation_is_current(state, attempt_id)
+        || guard.is_some()
+        || pending.created_at.elapsed() > PASSWORD_RESET_ATTEMPT_TTL
+    {
+        return false;
+    }
+    *guard = Some(pending);
+    true
 }
 
 async fn check_auth_mail_quota(
@@ -1786,11 +1945,18 @@ async fn refund_auth_mail_quota(state: &MatrixState, reservation: AuthMailQuotaR
     }
 }
 
-fn synthetic_password_reset_challenge(
-) -> Result<(matrix_sdk::ruma::OwnedSessionId, Option<url::Url>, bool), String> {
+fn synthetic_password_reset_challenge() -> Result<
+    (
+        matrix_sdk::ruma::OwnedSessionId,
+        Option<url::Url>,
+        bool,
+        bool,
+    ),
+    String,
+> {
     let sid = serde_json::from_value(serde_json::json!(generate_attempt_id()))
         .map_err(|_| "could not start password reset".to_string())?;
-    Ok((sid, None, false))
+    Ok((sid, None, false, true))
 }
 
 async fn retain_password_reset_retry_after(
@@ -2298,8 +2464,9 @@ pub async fn login_with_token(
     }
 }
 
+pub const MAX_IDENTITY_PROVIDERS: usize = 32;
+
 fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
-    const MAX_IDENTITY_PROVIDERS: usize = 32;
     let mut summary = LoginFlowSummary {
         password: false,
         token: false,
@@ -2327,6 +2494,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
                         id: provider.id,
                         name: sanitized_provider_name(&provider.name),
                         brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                        icon: provider.icon.map(|icon| icon.to_string()),
                     });
                 }
             }
@@ -2336,7 +2504,7 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
     summary
 }
 
-fn sanitized_provider_name(name: &str) -> String {
+pub fn sanitized_provider_name(name: &str) -> String {
     let sanitized = name
         .chars()
         .filter_map(|character| {
@@ -3474,7 +3642,11 @@ mod registration_uia_tests {
                 url::Url::parse(&format!("{}/validate/email/submitToken", server.uri()))
                     .expect("submit URL"),
             ),
+            synthetic: false,
             token_submitted: false,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
             attempt_id: "opaque".to_owned(),
             created_at: std::time::Instant::now(),
         };

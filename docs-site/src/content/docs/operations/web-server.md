@@ -91,6 +91,12 @@ Set `CHARM_WEB_SERVER_ALLOWED_ORIGIN` to the exact frontend origin or a
 comma-separated allowlist. This setting controls credentialed CORS and the
 WebSocket/raw-body `Origin` guard.
 
+When `CHARM_WEB_REGISTRATION_AND_RECOVERY=1` exposes browser SSO, also set
+`CHARM_WEB_SERVER_PUBLIC_URL` to the operator-controlled HTTPS origin of the
+companion. It is the sole callback-authority source; request `Host` and
+forwarded headers are deliberately ignored. Plain HTTP is limited to local
+development with `CHARM_WEB_SERVER_INSECURE_COOKIES=1`.
+
 `SameSite=Strict` is not a substitute for origin validation: another subdomain
 can be same-site while still being a different origin. Dynamic preview hosts
 may use only the supported constrained wildcard form, with non-empty prefix and

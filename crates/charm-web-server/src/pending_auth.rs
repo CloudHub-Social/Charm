@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use charm_lib::matrix::auth::{
-    LoginFlowSummary, LoginIdentityProvider, LoginResponse, PasswordResetChallenge,
-    RegisterRequest, RegistrationAuthResponse, RegistrationEmailChallenge, RegistrationFlow,
-    RegistrationPolicy, RegistrationStep,
+    sanitized_provider_name, LoginFlowSummary, LoginIdentityProvider, LoginResponse,
+    PasswordResetChallenge, RegisterRequest, RegistrationAuthResponse, RegistrationEmailChallenge,
+    RegistrationFlow, RegistrationPolicy, RegistrationStep, MAX_IDENTITY_PROVIDERS,
 };
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::ruma::api::client::account::{
@@ -87,6 +87,7 @@ struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    synthetic: bool,
     normalized_email: String,
     send_attempt: u32,
     retry_not_before: Instant,
@@ -94,10 +95,46 @@ struct PendingPasswordReset {
     created_at: Instant,
 }
 
+struct PendingSso {
+    _capacity: OwnedSemaphorePermit,
+    owner: String,
+    client: Client,
+    crypto: Option<CryptoStoreHandle>,
+    homeserver_url: String,
+    cancellation: CancellationToken,
+    created_at: Instant,
+}
+
+enum SsoCompletionResult {
+    Success(Box<AuthenticatedClient>),
+    Failed(String),
+}
+
+struct CompletedSso {
+    _capacity: OwnedSemaphorePermit,
+    owner: String,
+    result: SsoCompletionResult,
+    created_at: Instant,
+}
+
+async fn discard_completed_sso(completion: CompletedSso) {
+    let SsoCompletionResult::Success(completed) = completion.result else {
+        return;
+    };
+    let (_, session, _, _) = *completed;
+    let crypto = session.persisted_crypto.clone();
+    let _ = session.client.matrix_auth().logout().await;
+    drop(session);
+    crate::auth::cleanup_failed_crypto_store(&crypto);
+}
+
 #[derive(Clone)]
 pub struct PendingAuthStore {
+    transitions: Arc<Mutex<()>>,
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     password_resets: Arc<Mutex<HashMap<String, PendingPasswordReset>>>,
+    sso_attempts: Arc<Mutex<HashMap<String, PendingSso>>>,
+    completed_sso: Arc<Mutex<HashMap<String, CompletedSso>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
     mail_quota: Arc<Mutex<MailQuota>>,
     mail_quota_salt: Arc<String>,
@@ -107,8 +144,11 @@ pub struct PendingAuthStore {
 impl Default for PendingAuthStore {
     fn default() -> Self {
         Self {
+            transitions: Arc::default(),
             registrations: Arc::default(),
             password_resets: Arc::default(),
+            sso_attempts: Arc::default(),
+            completed_sso: Arc::default(),
             cancellations: Arc::default(),
             mail_quota: Arc::default(),
             mail_quota_salt: Arc::new(opaque_id()),
@@ -124,19 +164,31 @@ impl PendingAuthStore {
         attempt_id: String,
         cancellation: CancellationToken,
     ) {
-        let mut guard = self.cancellations.lock().await;
-        guard.retain(|_, (attempt_owner, existing)| {
-            if attempt_owner == &owner {
-                existing.cancel();
-                false
-            } else {
-                true
-            }
-        });
-        guard.insert(attempt_id, (owner, cancellation));
+        let completed = {
+            let _transition = self.transitions.lock().await;
+            let completed = self.clear_owner_attempts(&owner).await;
+            self.cancellations
+                .lock()
+                .await
+                .insert(attempt_id, (owner, cancellation));
+            completed
+        };
+        for completion in completed {
+            discard_completed_sso(completion).await;
+        }
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
+        let completed = {
+            let _transition = self.transitions.lock().await;
+            self.clear_owner_attempts(owner).await
+        };
+        for completion in completed {
+            discard_completed_sso(completion).await;
+        }
+    }
+
+    async fn clear_owner_attempts(&self, owner: &str) -> Vec<CompletedSso> {
         let attempt_ids = {
             let guard = self.cancellations.lock().await;
             guard
@@ -151,6 +203,250 @@ impl PendingAuthStore {
                 crate::auth::cleanup_failed_crypto_store(&attempt.crypto);
             }
             self.password_resets.lock().await.remove(&id);
+            if let Some(pending) = self.sso_attempts.lock().await.remove(&id) {
+                crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+            }
+        }
+        {
+            let mut guard = self.completed_sso.lock().await;
+            let attempt_ids = guard
+                .iter()
+                .filter(|(_, completion)| completion.owner == owner)
+                .map(|(attempt_id, _)| attempt_id.clone())
+                .collect::<Vec<_>>();
+            attempt_ids
+                .into_iter()
+                .filter_map(|attempt_id| guard.remove(&attempt_id))
+                .collect::<Vec<_>>()
+        }
+    }
+
+    pub async fn start_sso(
+        &self,
+        owner: String,
+        homeserver_url: String,
+        idp_id: Option<String>,
+        callback_url: String,
+        has_persistence: bool,
+    ) -> Result<(String, String), String> {
+        let capacity = self.reserve_capacity()?;
+        let attempt_id = opaque_id();
+        let cancellation = CancellationToken::new();
+        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await;
+        let (client, crypto) = match tokio::select! {
+            result = crate::auth::build_client(&homeserver_url, has_persistence) => result,
+            () = cancellation.cancelled() => {
+                Err("single sign-on setup expired or was cancelled".to_string())
+            }
+        } {
+            Ok(value) => value,
+            Err(error) => {
+                self.finish_attempt(&attempt_id).await;
+                return Err(error);
+            }
+        };
+        let matrix_auth = client.matrix_auth();
+        let flows = match tokio::select! {
+            result = matrix_auth.get_login_types() => result,
+            () = cancellation.cancelled() => {
+                crate::auth::cleanup_failed_crypto_store(&crypto);
+                self.finish_attempt(&attempt_id).await;
+                return Err("single sign-on setup expired or was cancelled".to_string());
+            }
+        } {
+            Ok(flows) => flows.flows,
+            Err(_) => {
+                crate::auth::cleanup_failed_crypto_store(&crypto);
+                self.finish_attempt(&attempt_id).await;
+                return Err("could not verify single sign-on support".to_string());
+            }
+        };
+        let (sso_advertised, provider_allowed) =
+            sso_selection_is_advertised(&flows, idp_id.as_deref());
+        if !sso_advertised || !provider_allowed {
+            crate::auth::cleanup_failed_crypto_store(&crypto);
+            self.finish_attempt(&attempt_id).await;
+            return Err(if sso_advertised {
+                "this identity provider is not advertised by the homeserver".to_string()
+            } else {
+                "this homeserver does not advertise single sign-on".to_string()
+            });
+        }
+        let mut callback_url = match reqwest::Url::parse(&callback_url) {
+            Ok(url) => url,
+            Err(_) => {
+                crate::auth::cleanup_failed_crypto_store(&crypto);
+                self.finish_attempt(&attempt_id).await;
+                return Err("browser single sign-on is not configured".to_string());
+            }
+        };
+        callback_url
+            .query_pairs_mut()
+            .append_pair("state", &attempt_id);
+        let redirect_url = match client
+            .matrix_auth()
+            .get_sso_login_url(callback_url.as_str(), idp_id.as_deref())
+            .await
+        {
+            Ok(url) => url,
+            Err(_) => {
+                crate::auth::cleanup_failed_crypto_store(&crypto);
+                self.finish_attempt(&attempt_id).await;
+                return Err("could not start single sign-on".to_string());
+            }
+        };
+        let _transition = self.transitions.lock().await;
+        let active = self
+            .cancellations
+            .lock()
+            .await
+            .get(&attempt_id)
+            .is_some_and(|(attempt_owner, token)| attempt_owner == &owner && !token.is_cancelled());
+        if !active {
+            crate::auth::cleanup_failed_crypto_store(&crypto);
+            return Err("single sign-on setup expired or was cancelled".to_string());
+        }
+        self.sso_attempts.lock().await.insert(
+            attempt_id.clone(),
+            PendingSso {
+                _capacity: capacity,
+                owner,
+                client,
+                crypto,
+                homeserver_url,
+                cancellation,
+                created_at: Instant::now(),
+            },
+        );
+        drop(_transition);
+        self.spawn_expiry(attempt_id.clone());
+        Ok((attempt_id, redirect_url))
+    }
+
+    pub async fn complete_sso_callback(
+        &self,
+        attempt_id: &str,
+        login_token: String,
+    ) -> Result<(), String> {
+        let Some(pending) = self.sso_attempts.lock().await.remove(attempt_id) else {
+            return Err("single sign-on attempt expired or was already used".to_string());
+        };
+        let PendingSso {
+            _capacity,
+            owner,
+            client,
+            crypto,
+            homeserver_url,
+            cancellation,
+            created_at,
+        } = pending;
+        if cancellation.is_cancelled() || created_at.elapsed() > ATTEMPT_TTL {
+            crate::auth::cleanup_failed_crypto_store(&crypto);
+            self.finish_attempt(attempt_id).await;
+            return Err("single sign-on attempt expired or was already used".to_string());
+        }
+        let cleanup_crypto = crypto.clone();
+        let result = async {
+            client
+                .matrix_auth()
+                .login_token(&login_token)
+                .initial_device_display_name("Charm")
+                .send()
+                .await
+                .map_err(|_| "single sign-on failed".to_string())?;
+            let completed =
+                crate::auth::finish_authenticated_client(client, crypto, "sso login").await?;
+            Ok(Box::new(authenticated(completed, homeserver_url)))
+        }
+        .await;
+        let failed = result.is_err();
+        if failed {
+            crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+        }
+        let completion = CompletedSso {
+            _capacity,
+            owner,
+            result: match result {
+                Ok(completed) => SsoCompletionResult::Success(completed),
+                Err(error) => SsoCompletionResult::Failed(error),
+            },
+            created_at: Instant::now(),
+        };
+        // Serialize ownership transitions without nesting the payload locks.
+        // If cancellation already won, discard a successfully authenticated
+        // Matrix session immediately.
+        let _transition = self.transitions.lock().await;
+        let active = self.cancellations.lock().await.get(attempt_id).is_some_and(
+            |(attempt_owner, token)| attempt_owner == &completion.owner && !token.is_cancelled(),
+        );
+        if !active {
+            drop(_transition);
+            discard_completed_sso(completion).await;
+            return Err("single sign-on attempt expired or was already used".to_string());
+        }
+        if failed {
+            self.cancellations.lock().await.remove(attempt_id);
+        }
+        self.completed_sso
+            .lock()
+            .await
+            .insert(attempt_id.to_owned(), completion);
+        drop(_transition);
+        let store = self.clone();
+        let completed_attempt_id = attempt_id.to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(ATTEMPT_TTL).await;
+            let completion = store
+                .completed_sso
+                .lock()
+                .await
+                .remove(&completed_attempt_id);
+            if let Some(completion) = completion {
+                discard_completed_sso(completion).await;
+            }
+        });
+        Ok(())
+    }
+
+    pub async fn poll_sso(&self, owner: &str, attempt_id: &str) -> PollSsoResult {
+        let mut completed = self.completed_sso.lock().await;
+        if let Some(completion) = completed.get(attempt_id) {
+            if completion.owner != owner || completion.created_at.elapsed() > ATTEMPT_TTL {
+                return PollSsoResult::Expired;
+            }
+            let completion = completed
+                .remove(attempt_id)
+                .expect("completion checked above");
+            return match completion.result {
+                SsoCompletionResult::Success(completed) => PollSsoResult::Complete {
+                    completed,
+                    _capacity: completion._capacity,
+                },
+                SsoCompletionResult::Failed(error) => PollSsoResult::Failed(error),
+            };
+        }
+        drop(completed);
+        if self
+            .sso_attempts
+            .lock()
+            .await
+            .get(attempt_id)
+            .is_some_and(|pending| pending.owner == owner)
+            || self
+                .cancellations
+                .lock()
+                .await
+                .get(attempt_id)
+                .is_some_and(|(attempt_owner, _)| attempt_owner == owner)
+        {
+            // The callback removes the pending client before exchanging the
+            // single-use login token. The cancellation entry deliberately
+            // spans that gap so a concurrent browser poll stays pending
+            // instead of falsely reporting an expired attempt.
+            PollSsoResult::Pending
+        } else {
+            PollSsoResult::Expired
         }
     }
 
@@ -578,7 +874,7 @@ impl PendingAuthStore {
                 return Err("password reset attempt expired or was cancelled".to_string());
             }
         };
-        let (sid, submit_url, requires_token) = match response_result {
+        let (sid, submit_url, requires_token, synthetic) = match response_result {
             Ok(response) => {
                 let submit_url = match sanitize_submit_url(
                     &client.homeserver(),
@@ -592,14 +888,14 @@ impl PendingAuthStore {
                     }
                 };
                 let requires_token = submit_url.is_some();
-                (response.sid, submit_url, requires_token)
+                (response.sid, submit_url, requires_token, false)
             }
             Err(_) => {
                 // Keep an unknown-address rejection indistinguishable from a
                 // sent email through confirmation as well as this response.
                 let sid = serde_json::from_value(serde_json::json!(opaque_id()))
                     .map_err(|_| "could not start password reset".to_string())?;
-                (sid, None, false)
+                (sid, None, false, true)
             }
         };
         let restored = self
@@ -612,6 +908,7 @@ impl PendingAuthStore {
                     client_secret,
                     sid,
                     submit_url,
+                    synthetic,
                     normalized_email: address_key,
                     send_attempt: 1,
                     retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
@@ -666,6 +963,24 @@ impl PendingAuthStore {
             return Err(error);
         }
         let send_attempt = pending.send_attempt + 1;
+        if pending.synthetic {
+            // Preserve the initial request's anti-enumeration contract on
+            // every resend. Synthetic attempts consume the same quota and
+            // retry budget but never ask the homeserver the address question
+            // again, so the browser receives the same generic success shape.
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+            if !self
+                .restore_password_reset(attempt_id.to_owned(), pending)
+                .await
+            {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id: attempt_id.to_owned(),
+                requires_token: false,
+            });
+        }
         let request = request_password_change_token_via_email::v3::Request::new(
             pending.client_secret.clone(),
             pending.normalized_email.clone(),
@@ -680,10 +995,19 @@ impl PendingAuthStore {
         let response = match response {
             Ok(response) => response,
             Err(_) => {
-                let _ = self
+                pending.send_attempt = send_attempt;
+                pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+                let requires_token = pending.submit_url.is_some();
+                if !self
                     .restore_password_reset(attempt_id.to_owned(), pending)
-                    .await;
-                return Err("could not resend password reset email".to_string());
+                    .await
+                {
+                    return Err("password reset attempt expired or was cancelled".to_string());
+                }
+                return Ok(PasswordResetChallenge {
+                    attempt_id: attempt_id.to_owned(),
+                    requires_token,
+                });
             }
         };
         let submit_url = match sanitize_submit_url(
@@ -692,11 +1016,20 @@ impl PendingAuthStore {
             "password-reset",
         ) {
             Ok(submit_url) => submit_url,
-            Err(error) => {
-                let _ = self
+            Err(_) => {
+                pending.send_attempt = send_attempt;
+                pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+                let requires_token = pending.submit_url.is_some();
+                if !self
                     .restore_password_reset(attempt_id.to_owned(), pending)
-                    .await;
-                return Err(error);
+                    .await
+                {
+                    return Err("password reset attempt expired or was cancelled".to_string());
+                }
+                return Ok(PasswordResetChallenge {
+                    attempt_id: attempt_id.to_owned(),
+                    requires_token,
+                });
             }
         };
         pending.submit_url = submit_url;
@@ -927,11 +1260,21 @@ impl PendingAuthStore {
                 () = tokio::time::sleep(ATTEMPT_TTL) => {}
                 () = cancellation.cancelled() => return,
             }
-            store.cancel_token(&attempt_id).await;
-            if let Some(pending) = store.registrations.lock().await.remove(&attempt_id) {
-                crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+            let completion = {
+                let _transition = store.transitions.lock().await;
+                store.cancel_token(&attempt_id).await;
+                if let Some(pending) = store.registrations.lock().await.remove(&attempt_id) {
+                    crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+                }
+                store.password_resets.lock().await.remove(&attempt_id);
+                if let Some(pending) = store.sso_attempts.lock().await.remove(&attempt_id) {
+                    crate::auth::cleanup_failed_crypto_store(&pending.crypto);
+                }
+                store.completed_sso.lock().await.remove(&attempt_id)
+            };
+            if let Some(completion) = completion {
+                discard_completed_sso(completion).await;
             }
-            store.password_resets.lock().await.remove(&attempt_id);
         });
     }
 }
@@ -957,6 +1300,16 @@ pub enum ContinueRegistrationResult {
         completed: Box<AuthenticatedClient>,
         attempt_id: String,
     },
+}
+
+pub enum PollSsoResult {
+    Pending,
+    Complete {
+        completed: Box<AuthenticatedClient>,
+        _capacity: OwnedSemaphorePermit,
+    },
+    Failed(String),
+    Expired,
 }
 
 fn authenticated(
@@ -1447,15 +1800,22 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
             LoginType::Token(_) => summary.token = true,
             LoginType::Sso(sso) => {
                 summary.sso = true;
-                summary
-                    .identity_providers
-                    .extend(sso.identity_providers.into_iter().map(|provider| {
-                        LoginIdentityProvider {
-                            id: provider.id,
-                            name: provider.name,
-                            brand: provider.brand.map(|brand| brand.as_str().to_owned()),
-                        }
-                    }));
+                for provider in sso.identity_providers {
+                    if summary.identity_providers.len() >= MAX_IDENTITY_PROVIDERS
+                        || summary
+                            .identity_providers
+                            .iter()
+                            .any(|existing| existing.id == provider.id)
+                    {
+                        continue;
+                    }
+                    summary.identity_providers.push(LoginIdentityProvider {
+                        id: provider.id,
+                        name: sanitized_provider_name(&provider.name),
+                        brand: provider.brand.map(|brand| brand.as_str().to_owned()),
+                        icon: provider.icon.map(|icon| icon.to_string()),
+                    });
+                }
             }
             _ => {}
         }
@@ -1463,10 +1823,22 @@ fn summarize_login_flows(flows: Vec<LoginType>) -> LoginFlowSummary {
     summary
 }
 
+fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (bool, bool) {
+    let sso_advertised = flows.iter().any(|flow| matches!(flow, LoginType::Sso(_)));
+    let provider_allowed = selected.is_none_or(|selected| {
+        flows.iter().any(|flow| {
+            matches!(flow, LoginType::Sso(sso) if sso.identity_providers.iter().any(|provider| provider.id == selected))
+        })
+    });
+    (sso_advertised, provider_allowed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_public_network_ip, sanitize_submit_url, PendingAuthStore, MAX_PENDING_AUTH_ATTEMPTS,
+        is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
+        summarize_login_flows, PendingAuthStore, PendingPasswordReset, PendingSso, PollSsoResult,
+        MAX_PENDING_AUTH_ATTEMPTS,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -1486,6 +1858,234 @@ mod tests {
             .owned_cancellation("browser-b", "attempt")
             .await
             .is_err());
+    }
+
+    async fn reset_store_for_resend(synthetic: bool) -> PendingAuthStore {
+        let store = PendingAuthStore::default();
+        let attempt_id = "reset-attempt".to_owned();
+        let owner = "browser-a".to_owned();
+        store.cancellations.lock().await.insert(
+            attempt_id.clone(),
+            (owner.clone(), CancellationToken::new()),
+        );
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://127.0.0.1:9")
+            .build()
+            .await
+            .expect("client");
+        let sid =
+            serde_json::from_value(serde_json::json!("reset-session")).expect("valid session id");
+        store.password_resets.lock().await.insert(
+            attempt_id,
+            PendingPasswordReset {
+                _capacity: store.reserve_capacity().expect("capacity"),
+                owner,
+                client,
+                client_secret: matrix_sdk::ruma::ClientSecret::new(),
+                sid,
+                submit_url: None,
+                synthetic,
+                normalized_email: "alice@example.org".to_owned(),
+                send_attempt: 1,
+                retry_not_before: std::time::Instant::now(),
+                submitted: false,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        store
+    }
+
+    #[tokio::test]
+    async fn synthetic_password_reset_resend_remains_generic_success() {
+        let store = reset_store_for_resend(true).await;
+
+        let challenge = store
+            .resend_password_reset("source-a", "browser-a", "reset-attempt")
+            .await
+            .expect("synthetic resend stays generic");
+
+        assert!(!challenge.requires_token);
+        assert_eq!(
+            store.password_resets.lock().await["reset-attempt"].send_attempt,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_password_reset_resend_failure_remains_generic_success() {
+        let store = reset_store_for_resend(false).await;
+
+        let challenge = store
+            .resend_password_reset("source-a", "browser-a", "reset-attempt")
+            .await
+            .expect("upstream resend failure stays generic");
+
+        assert!(!challenge.requires_token);
+        assert_eq!(
+            store.password_resets.lock().await["reset-attempt"].send_attempt,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn sso_callback_is_single_use_and_completion_is_owner_bound() {
+        let homeserver_url = "http://127.0.0.1:9";
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver_url)
+            .build()
+            .await
+            .expect("client");
+        let store = PendingAuthStore::default();
+        let cancellation = CancellationToken::new();
+        store.cancellations.lock().await.insert(
+            "sso-state".to_owned(),
+            ("browser-a".to_owned(), cancellation.clone()),
+        );
+        store.sso_attempts.lock().await.insert(
+            "sso-state".to_owned(),
+            PendingSso {
+                _capacity: store.reserve_capacity().expect("capacity"),
+                owner: "browser-a".to_owned(),
+                client,
+                crypto: None,
+                homeserver_url: homeserver_url.to_owned(),
+                cancellation,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        store
+            .complete_sso_callback("sso-state", "invalid-login-token".to_owned())
+            .await
+            .expect("the callback is consumed even when token login fails");
+        assert!(
+            store.cancellations.lock().await.is_empty(),
+            "a failed callback must not leave a stale in-flight marker"
+        );
+        assert!(matches!(
+            store.poll_sso("browser-b", "sso-state").await,
+            PollSsoResult::Expired
+        ));
+        assert!(matches!(
+            store.poll_sso("browser-a", "sso-state").await,
+            PollSsoResult::Failed(_)
+        ));
+        assert!(store
+            .complete_sso_callback("sso-state", "replayed-token".to_owned())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn sso_poll_stays_pending_while_the_callback_exchanges_its_token() {
+        let store = PendingAuthStore::default();
+        store.cancellations.lock().await.insert(
+            "callback-in-flight".to_owned(),
+            ("browser-a".to_owned(), CancellationToken::new()),
+        );
+
+        assert!(matches!(
+            store.poll_sso("browser-a", "callback-in-flight").await,
+            PollSsoResult::Pending
+        ));
+        assert!(matches!(
+            store.poll_sso("browser-b", "callback-in-flight").await,
+            PollSsoResult::Expired
+        ));
+    }
+
+    #[tokio::test]
+    async fn superseding_login_cleans_an_owned_sso_payload() {
+        let homeserver_url = "http://127.0.0.1:9";
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(homeserver_url)
+            .build()
+            .await
+            .expect("client");
+        let store = PendingAuthStore::default();
+        let old_cancellation = CancellationToken::new();
+        store.cancellations.lock().await.insert(
+            "old-sso".to_owned(),
+            ("browser-a".to_owned(), old_cancellation.clone()),
+        );
+        store.sso_attempts.lock().await.insert(
+            "old-sso".to_owned(),
+            PendingSso {
+                _capacity: store.reserve_capacity().expect("capacity"),
+                owner: "browser-a".to_owned(),
+                client,
+                crypto: None,
+                homeserver_url: homeserver_url.to_owned(),
+                cancellation: old_cancellation.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        store
+            .admit_owner_attempt(
+                "browser-a".to_owned(),
+                "new-token-login".to_owned(),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(old_cancellation.is_cancelled());
+        assert!(!store.sso_attempts.lock().await.contains_key("old-sso"));
+        assert!(store
+            .cancellations
+            .lock()
+            .await
+            .contains_key("new-token-login"));
+    }
+
+    #[test]
+    fn browser_sso_accepts_only_freshly_advertised_providers() {
+        let flows = serde_json::from_value::<
+            Vec<matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType>,
+        >(serde_json::json!([{
+            "type": "m.login.sso",
+            "identity_providers": [{"id": "company", "name": "Company SSO"}]
+        }]))
+        .expect("login flows");
+
+        assert_eq!(sso_selection_is_advertised(&flows, None), (true, true));
+        assert_eq!(
+            sso_selection_is_advertised(&flows, Some("company")),
+            (true, true)
+        );
+        assert_eq!(
+            sso_selection_is_advertised(&flows, Some("forged")),
+            (true, false)
+        );
+        assert_eq!(sso_selection_is_advertised(&[], None), (false, true));
+    }
+
+    #[test]
+    fn browser_login_summary_bounds_deduplicates_and_sanitizes_providers() {
+        let providers = (0..40)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("provider-{index}"),
+                    "name": format!("\u{202e}Provider {index}\n{}", "x".repeat(100)),
+                })
+            })
+            .chain(std::iter::once(serde_json::json!({
+                "id": "provider-0",
+                "name": "duplicate",
+            })))
+            .collect::<Vec<_>>();
+        let flows = serde_json::from_value(serde_json::json!([{
+            "type": "m.login.sso",
+            "identity_providers": providers,
+        }]))
+        .expect("login flows");
+
+        let summary = summarize_login_flows(flows);
+
+        assert_eq!(summary.identity_providers.len(), 32);
+        assert_eq!(summary.identity_providers[0].id, "provider-0");
+        assert!(!summary.identity_providers[0].name.contains('\u{202e}'));
+        assert!(summary.identity_providers[0].name.len() <= 80);
     }
 
     #[tokio::test]

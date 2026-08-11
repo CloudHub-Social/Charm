@@ -365,6 +365,10 @@ export function installMockTauri(seed: {
       attempt_id: "e2e-password-reset",
       requires_token: false,
     }),
+    resend_password_reset: () => ({
+      attempt_id: "e2e-password-reset",
+      requires_token: false,
+    }),
     confirm_password_reset: () => null,
     cancel_password_reset: () => null,
     begin_registration: () => {

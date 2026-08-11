@@ -77,7 +77,7 @@ import type { VerificationRequestSummary } from "@bindings/VerificationRequestSu
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
 import { summarizeValue } from "@/observability/scrubbers";
-import { invoke, listen, type UnlistenFn } from "./matrixTransport";
+import { invoke, listen, webProviderIconUrl, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
 
 function addMatrixIpcBreadcrumb(
@@ -312,6 +312,14 @@ export function startSsoLogin(homeserverUrl: string, idpId?: string): Promise<st
 // with a stale/duplicate callback.
 export function completeSsoLogin(callbackUrl: string): Promise<LoginResponse> {
   return invoke("complete_sso_login", { callbackUrl }, { captureOnError: false });
+}
+
+export function pollSsoLogin(): Promise<LoginResponse | null> {
+  return invoke("poll_sso_login", {}, { captureOnError: false });
+}
+
+export function getLoginProviderIconUrl(homeserverUrl: string, mxc?: string | null): string | null {
+  return mxc ? webProviderIconUrl(homeserverUrl, mxc) : null;
 }
 
 export function cancelSsoLogin(): Promise<void> {
