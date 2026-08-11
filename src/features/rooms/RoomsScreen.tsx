@@ -378,6 +378,11 @@ export function RoomsScreen({
   }
 
   async function handleAcceptInvite(roomId: string) {
+    // Accepting an invite is a newer explicit navigation intent than any DM
+    // still waiting for its room-list entry. Cancel that older request before
+    // the join or refresh can publish a snapshot containing both targets.
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     await acceptInvite(roomId);
     // Joining completes on the homeserver before matrix-sdk's local room
     // state necessarily advances to `Joined`. Remember the navigation intent
