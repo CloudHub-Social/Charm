@@ -1,15 +1,36 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-05T17:24:32.342Z",
+  "generatedAt": "2026-08-11T15:23:03.043Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 39,
-    "follow-up": 3,
-    "in-progress": 6,
+    "shipped": 40,
+    "follow-up": 4,
+    "in-progress": 4,
     "planned": 29
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 441,
+      "title": "test: close Day-1 Spec 33, 39, and 63 live evidence",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/441",
+      "detail": "Day-1 Spec 33 · draft"
+    },
+    {
+      "type": "issue",
+      "number": 429,
+      "title": "Spec 28: keep room-scoped search consistent during room changes",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/429",
+      "detail": "bug · follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 416,
+      "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/416",
+      "detail": "bug · follow-up"
+    },
     {
       "type": "issue",
       "number": 415,
@@ -23,20 +44,6 @@
       "title": "Spec 28: persist kill-switch reconciliation across renderer restarts",
       "url": "https://github.com/CloudHub-Social/Charm/issues/417",
       "detail": "bug · follow-up"
-    },
-    {
-      "type": "issue",
-      "number": 416,
-      "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/416",
-      "detail": "bug · follow-up"
-    },
-    {
-      "type": "issue",
-      "number": 423,
-      "title": "Spec 28: make the E2E search mock locale-independent",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/423",
-      "detail": "tech-debt · follow-up"
     }
   ],
   "workstreams": [
@@ -123,9 +130,9 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 12,
-        "follow-up": 2,
-        "in-progress": 5,
+        "shipped": 13,
+        "follow-up": 3,
+        "in-progress": 3,
         "planned": 17
       }
     },
@@ -892,6 +899,61 @@
       ],
       "issues": [
         {
+          "number": 419,
+          "title": "Spec 28: add durable search indexing reconciliation checkpoints",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/419",
+          "updatedAt": "2026-08-06T06:24:18Z",
+          "labels": []
+        },
+        {
+          "number": 434,
+          "title": "Spec 28: avoid blocking the web async runtime on the search-index mutex",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/434",
+          "updatedAt": "2026-08-06T05:59:21Z",
+          "labels": []
+        },
+        {
+          "number": 429,
+          "title": "Spec 28: keep room-scoped search consistent during room changes",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/429",
+          "updatedAt": "2026-08-06T05:59:21Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 433,
+          "title": "Spec 28: optimize ignored-sender search reconciliation",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/433",
+          "updatedAt": "2026-08-06T04:11:51Z",
+          "labels": []
+        },
+        {
+          "number": 416,
+          "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/416",
+          "updatedAt": "2026-08-05T23:44:35Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 427,
+          "title": "Spec 28: cover web message-search transport serialization",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/427",
+          "updatedAt": "2026-08-05T21:48:34Z",
+          "labels": []
+        },
+        {
+          "number": 426,
+          "title": "Spec 28: keep successful room leave authoritative when local search purge fails",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/426",
+          "updatedAt": "2026-08-05T21:48:21Z",
+          "labels": []
+        },
+        {
           "number": 423,
           "title": "Spec 28: make the E2E search mock locale-independent",
           "url": "https://github.com/CloudHub-Social/Charm/issues/423",
@@ -922,27 +984,10 @@
           ]
         },
         {
-          "number": 419,
-          "title": "Spec 28: add durable search indexing reconciliation checkpoints",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/419",
-          "updatedAt": "2026-08-05T17:22:31Z",
-          "labels": []
-        },
-        {
           "number": 417,
           "title": "Spec 28: persist kill-switch reconciliation across renderer restarts",
           "url": "https://github.com/CloudHub-Social/Charm/issues/417",
           "updatedAt": "2026-08-05T14:33:25Z",
-          "labels": [
-            "bug",
-            "follow-up"
-          ]
-        },
-        {
-          "number": 416,
-          "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/416",
-          "updatedAt": "2026-08-05T14:33:24Z",
           "labels": [
             "bug",
             "follow-up"
@@ -1066,8 +1111,16 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 441,
+          "title": "test: close Day-1 Spec 33, 39, and 63 live evidence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/441",
+          "state": "open",
+          "draft": true,
+          "updatedAt": "2026-08-11T15:04:08Z"
+        },
         {
           "number": 393,
           "title": "docs: align Spec 33 child reconciliation contract",
@@ -1179,7 +1232,7 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 329,

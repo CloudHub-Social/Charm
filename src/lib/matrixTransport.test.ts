@@ -483,6 +483,24 @@ describe("matrix web transport", () => {
       "/api/users/%40alice%3Aexample.org/mutual-rooms",
       undefined,
     ],
+    [
+      "start_direct_message",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/users/%40alice%3Aexample.org/direct-message",
+      undefined,
+    ],
+    [
+      "set_room_profile",
+      {
+        roomId: "!room:example.org",
+        displayName: "Alice Here",
+        avatarUrl: "mxc://example.org/avatar",
+      },
+      "PUT",
+      "/api/rooms/!room%3Aexample.org/profile/me",
+      { display_name: "Alice Here", avatar_url: "mxc://example.org/avatar" },
+    ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
     [
       "get_account_data",

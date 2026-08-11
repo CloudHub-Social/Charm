@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Copy, MessageCircle, ShieldBan } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,10 +14,15 @@ import { useFlag } from "@/featureFlags";
 import {
   getMutualRooms,
   getUserProfile,
+  ignoreUser,
   onRoomDetailsUpdate,
   onRoomListUpdate,
+  setRoomProfile,
+  startDirectMessage,
 } from "@/lib/matrix";
 import { usePresence } from "@/features/presence/usePresence";
+import { formatLastActiveAgo } from "@/features/presence/PresenceDot";
+import { Input } from "@/components/ui/input";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
 export interface MessagePillProfile {
@@ -24,21 +30,38 @@ export interface MessagePillProfile {
   label: string;
 }
 
+interface ProfileModerationActions {
+  canSetPowerLevel: boolean;
+  canKick: boolean;
+  canBan: boolean;
+  onSetPowerLevel: () => void;
+  onKick: () => void;
+  onBan: () => void;
+}
+
+function copyToClipboard(value: string) {
+  void navigator.clipboard.writeText(value);
+}
+
 export function MessagePillProfileDialog({
   profile,
   accountId,
+  currentUserId,
   roomId,
   detailed = false,
   refetchOnMount = "always",
   onNavigateToRoom,
+  moderationActions,
   onClose,
 }: {
   profile: MessagePillProfile | null;
   accountId?: string;
+  currentUserId?: string;
   roomId?: string;
   detailed?: boolean;
   refetchOnMount?: "always" | boolean;
   onNavigateToRoom?: (roomId: string) => void;
+  moderationActions?: ProfileModerationActions;
   onClose: () => void;
 }) {
   const userId = profile?.userId ?? "";
@@ -51,6 +74,13 @@ export function MessagePillProfileDialog({
     pendingMutualRoomsRefreshRef.current = false;
     roomListSignatureRef.current = null;
   }, [accountId, userId]);
+  useEffect(() => {
+    if (detailed) return;
+    pendingProfileRefreshRef.current = false;
+    pendingMutualRoomsRefreshRef.current = false;
+    void queryClient.cancelQueries({ queryKey: ["user-profile", accountId ?? null, userId] });
+    void queryClient.cancelQueries({ queryKey: ["mutual-rooms", accountId ?? null, userId] });
+  }, [accountId, detailed, queryClient, userId]);
   const refreshMutualRooms = useCallback(() => {
     const queryKey = ["mutual-rooms", accountId ?? null, userId] as const;
     if (queryClient.isFetching({ queryKey, exact: true }) > 0) {
@@ -159,6 +189,34 @@ export function MessagePillProfileDialog({
       resolvedProfile.room_avatar_url !== resolvedProfile.avatar_url) ||
     (resolvedProfile?.room_avatar_path != null &&
       resolvedProfile.room_avatar_path !== resolvedProfile.avatar_path);
+  const isSelf = currentUserId != null && profile?.userId === currentUserId;
+  const [editingRoomProfile, setEditingRoomProfile] = useState(false);
+  const [roomDisplayName, setRoomDisplayName] = useState("");
+  const [roomAvatarUrl, setRoomAvatarUrl] = useState("");
+  useLayoutEffect(() => {
+    setEditingRoomProfile(false);
+    setRoomDisplayName("");
+    setRoomAvatarUrl("");
+  }, [roomId, userId]);
+  const startDm = useMutation({
+    mutationFn: () => startDirectMessage(userId),
+    onSuccess: (directRoomId) => {
+      onNavigateToRoom?.(directRoomId);
+      onClose();
+    },
+  });
+  const blockUser = useMutation({
+    mutationFn: () => ignoreUser(userId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] }),
+  });
+  const saveRoomProfile = useMutation({
+    mutationFn: () =>
+      setRoomProfile(roomId ?? "", roomDisplayName.trim() || null, roomAvatarUrl.trim() || null),
+    onSuccess: async () => {
+      setEditingRoomProfile(false);
+      await profileQuery.refetch();
+    },
+  });
 
   return (
     <Dialog open={profile !== null} onOpenChange={(open) => !open && onClose()}>
@@ -178,6 +236,26 @@ export function MessagePillProfileDialog({
             <DialogDescription className="max-w-full min-w-0 break-all">
               {profile.userId}
             </DialogDescription>
+            {detailed && (
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => copyToClipboard(profile.userId)}
+                >
+                  <Copy className="size-3.5" /> Copy ID
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => copyToClipboard(`https://matrix.to/#/${profile.userId}`)}
+                >
+                  <Copy className="size-3.5" /> Copy link
+                </Button>
+              </div>
+            )}
             {detailed && resolvedProfile && roomIdentityDiffers && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Avatar size="sm">
@@ -204,10 +282,135 @@ export function MessagePillProfileDialog({
               </p>
             )}
             {detailed && presence && (
-              <p className="max-w-full min-w-0 break-words text-sm text-muted-foreground">
-                {presence.presence === "unavailable" ? "away" : presence.presence}
-                {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
+              <div className="max-w-full min-w-0 text-sm text-muted-foreground">
+                <p className="break-words">
+                  {presence.presence === "unavailable" ? "away" : presence.presence}
+                  {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
+                </p>
+                {presenceDetailsEnabled && presence.last_active_ago_ms != null && (
+                  <p>{formatLastActiveAgo(presence.last_active_ago_ms)}</p>
+                )}
+              </div>
+            )}
+            {detailed && !isSelf && (
+              <div className="flex flex-wrap justify-center gap-2 pt-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!onNavigateToRoom || startDm.isPending}
+                  onClick={() => startDm.mutate()}
+                >
+                  <MessageCircle className="size-4" /> Message
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={blockUser.isPending}
+                  onClick={() => blockUser.mutate()}
+                >
+                  <ShieldBan className="size-4" /> Block
+                </Button>
+              </div>
+            )}
+            {(startDm.isError || blockUser.isError) && (
+              <p role="alert" className="text-sm text-destructive">
+                That profile action could not be completed.
               </p>
+            )}
+            {detailed && !isSelf && moderationActions && (
+              <div className="flex w-full flex-wrap justify-center gap-2 border-t border-border pt-3">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={!moderationActions.canSetPowerLevel}
+                  onClick={moderationActions.onSetPowerLevel}
+                >
+                  Set power level
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={!moderationActions.canKick}
+                  onClick={moderationActions.onKick}
+                >
+                  Kick
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={!moderationActions.canBan}
+                  onClick={moderationActions.onBan}
+                >
+                  Ban
+                </Button>
+              </div>
+            )}
+            {detailed && isSelf && roomId && resolvedProfile && !editingRoomProfile && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setRoomDisplayName(
+                    resolvedProfile?.room_display_name ?? resolvedProfile?.display_name ?? "",
+                  );
+                  setRoomAvatarUrl(
+                    resolvedProfile?.room_avatar_url ?? resolvedProfile?.avatar_url ?? "",
+                  );
+                  setEditingRoomProfile(true);
+                }}
+              >
+                Edit room profile
+              </Button>
+            )}
+            {detailed && isSelf && roomId && resolvedProfile && editingRoomProfile && (
+              <form
+                className="flex w-full flex-col gap-2 pt-2 text-left"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  saveRoomProfile.mutate();
+                }}
+              >
+                <label className="text-xs font-medium" htmlFor="room-profile-display-name">
+                  Display name in this room
+                </label>
+                <Input
+                  id="room-profile-display-name"
+                  value={roomDisplayName}
+                  onChange={(event) => setRoomDisplayName(event.target.value)}
+                />
+                <label className="text-xs font-medium" htmlFor="room-profile-avatar-url">
+                  Avatar MXC URL in this room
+                </label>
+                <Input
+                  id="room-profile-avatar-url"
+                  placeholder="mxc://server/media-id"
+                  value={roomAvatarUrl}
+                  onChange={(event) => setRoomAvatarUrl(event.target.value)}
+                />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingRoomProfile(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm" disabled={saveRoomProfile.isPending}>
+                    Save room profile
+                  </Button>
+                </div>
+                {saveRoomProfile.isError && (
+                  <p role="alert" className="text-sm text-destructive">
+                    Room profile could not be updated.
+                  </p>
+                )}
+              </form>
             )}
             {detailed && mutualRoomsQuery.isError && (
               <p role="alert" className="text-sm text-destructive">

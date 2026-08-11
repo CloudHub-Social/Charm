@@ -704,6 +704,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     }
     case "get_mutual_rooms":
       return requestJson<T>("GET", `/api/users/${encodeSegment(String(args.userId))}/mutual-rooms`);
+    case "start_direct_message":
+      return requestJson<T>(
+        "POST",
+        `/api/users/${encodeSegment(String(args.userId))}/direct-message`,
+      );
+    case "set_room_profile":
+      return requestJson<T>("PUT", `/api/rooms/${encodeSegment(String(args.roomId))}/profile/me`, {
+        display_name: args.displayName,
+        avatar_url: args.avatarUrl,
+      });
     case "get_profile": {
       const profile = await requestJson<{
         user_id: string;

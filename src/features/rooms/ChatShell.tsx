@@ -1156,6 +1156,7 @@ export function ChatShell({
       <MessagePillProfileDialog
         profile={pillProfile}
         accountId={currentUserId}
+        currentUserId={currentUserId}
         roomId={roomId}
         detailed={userProfileCardsEnabled}
         onNavigateToRoom={onNavigateToRoom}
