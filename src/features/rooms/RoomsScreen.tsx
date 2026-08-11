@@ -673,6 +673,7 @@ export function RoomsScreen({
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
+            onNavigateToProfileRoom={navigateToProfileRoom}
             jumpToEventId={
               jumpTarget && activeRoom?.room_id === jumpTarget.roomId ? jumpTarget.eventId : null
             }

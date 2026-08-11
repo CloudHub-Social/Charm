@@ -91,12 +91,14 @@ vi.mock("./ChatShell", () => ({
     room: activeRoom,
     onBack,
     onNavigateToRoom,
+    onNavigateToProfileRoom,
     jumpToEventId,
     onJumpHandled,
   }: {
     room: RoomSummary | null;
     onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
+    onNavigateToProfileRoom: (roomId: string) => void;
     jumpToEventId?: string | null;
     onJumpHandled?: () => void;
   }) => (
@@ -111,6 +113,9 @@ vi.mock("./ChatShell", () => ({
       </button>
       <button type="button" onClick={() => onNavigateToRoom("#b:example.org")}>
         alias-room-pill
+      </button>
+      <button type="button" onClick={() => onNavigateToProfileRoom("!new-dm:example.org")}>
+        timeline-profile-new-dm
       </button>
       {onJumpHandled && (
         <button type="button" onClick={onJumpHandled}>
@@ -1155,6 +1160,29 @@ describe("RoomsScreen", () => {
 
     expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
     expect(screen.getByText("space-rail:dms:none")).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the pending-room path for a newly-created DM from a timeline profile card", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, newDm]);
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
+
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
   });
 
