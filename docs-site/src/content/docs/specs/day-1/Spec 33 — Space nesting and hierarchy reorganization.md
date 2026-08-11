@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Space nesting and hierarchy reorganization
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 sidebar:
   label: "Space nesting & hierarchy"
 ---
@@ -13,7 +13,7 @@ room-list rebuild) — closes a sub-feature that spec's 4 phases scoped out.
 
 ## Implementation status
 
-The first delivery slice is in progress:
+The implementation is shipped:
 
 - `create_space` accepts an optional parent and creates the canonical
   `m.space.parent` state together with the parent's `m.space.child` edge.
@@ -53,11 +53,15 @@ span two rooms and are not atomic: failures are surfaced and the hierarchy is
 refetched rather than pretending a failed multi-event update rolled back.
 
 Repository tests cover the mutation, validation, reconciliation, transport, and
-settings paths. A real-account nightly smoke test confirmed the shared space
-settings shell and child list against synchronized homeserver state without
-performing writes. The spec remains `in-progress` until a live homeserver run
-records create-under-space, reparent, un-nest, cycle rejection, and post-resync
-results; the read-only artifact smoke is not a substitute for those writes.
+settings paths. The real-Synapse `room_org` integration suite now drives Charm's
+own command-boundary functions through create-under-space, reparent, cycle
+rejection, and un-nest. It verifies each resulting `m.space.child` event against
+authoritative homeserver state; a separate assertion proves Synapse's
+`/hierarchy` projection for the baseline child relationship. Post-write UI
+refresh and hierarchy reconciliation remain covered by deterministic repository
+tests rather than being claimed as part of this live projection check. Together
+with the earlier real-account settings-shell and child-list smoke test, this
+closes the former write-verification gap.
 
 ## Problem & why now
 
@@ -197,12 +201,12 @@ and
 ## Delivery slices
 
 1. Parent-aware creation, canonical-parent API, web transport, and create-under
-   UI. **In review.**
+   UI. **Merged.**
 2. Drag-to-nest and un-nest with fresh source/target permissions, cycle feedback,
-   and failure reconciliation. **In review.**
+   and failure reconciliation. **Merged.**
 3. Space settings in the existing room-settings shell: name, topic, avatar, join
    rules, permissions, and child management, plus **Settings** from
-   `SpaceRail`. **In review.**
+   `SpaceRail`. **Merged.**
 
 ## UI-parity addition (from the 2026-07-13 UI deep-dive)
 

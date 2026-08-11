@@ -3,15 +3,15 @@ title: "Charm 2.0 Spec — Sidebar and space management (pin, reorder, context m
 type: spec
 project: Charm 2.0
 created: "2026-07-16"
-status: in-progress
+status: shipped
 sidebar:
   label: "Sidebar & space management"
 ---
 
 ## Implementation status
 
-**All implementation scope has merged; closure remains paired with Spec 33's
-live Matrix-write verification.** Pin/unpin, reorder (Move up/down), and a
+**All implementation and verification scope has shipped.** Pin/unpin, reorder
+(Move up/down), and a
 per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
 Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
 Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
@@ -41,8 +41,11 @@ child-management surfaces merged in
 [#334](https://github.com/CloudHub-Social/Charm/pull/334) and
 [#335](https://github.com/CloudHub-Social/Charm/pull/335). A real-account nightly
 smoke test confirmed the rail menus and shared settings shell in read-only use.
-Spec 63 remains `in-progress` only until Spec 33 records its live hierarchy-write
-matrix; no implementation scope remains in this spec.
+Spec 33's real-Synapse command-boundary suite now records create-under, reparent,
+cycle rejection, and un-nest, and verifies the resulting raw Matrix state against
+the homeserver. Hierarchy refresh behavior is covered separately by deterministic
+repository tests; the live suite closes this spec's paired write dependency
+without claiming a post-write cache/projection proof.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —
