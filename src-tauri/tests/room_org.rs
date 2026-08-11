@@ -37,6 +37,10 @@ use matrix_sdk::Client;
 use tokio::time::timeout;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(15);
+// Synapse's `/hierarchy` response can lag the state event by more than the
+// generic 15-second poll window under CI load. This is specifically a live
+// hierarchy-cache convergence proof, so give that endpoint its own bound.
+const SPACE_EDGE_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn create_test_room(client: &Client) -> matrix_sdk::Room {
     let room = client
@@ -51,7 +55,7 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
 }
 
 async fn wait_for_space_child(client: &Client, parent_id: &str, child_id: &str, present: bool) {
-    timeout(POLL_TIMEOUT, async {
+    timeout(SPACE_EDGE_POLL_TIMEOUT, async {
         loop {
             client
                 .sync_once(SyncSettings::default())
