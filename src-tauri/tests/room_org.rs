@@ -23,7 +23,7 @@ mod common;
 use std::time::Duration;
 
 use charm_lib::matrix::spaces::{
-    create_space_impl, list_space_children_impl, set_space_parent_impl,
+    create_space_impl, list_manageable_space_children_impl, set_space_parent_impl,
 };
 use common::synced_client;
 use matrix_sdk::config::SyncSettings;
@@ -37,11 +37,6 @@ use matrix_sdk::Client;
 use tokio::time::timeout;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(15);
-// Synapse's `/hierarchy` response can lag the state event by more than the
-// generic 15-second poll window under CI load. This is specifically a live
-// hierarchy-cache convergence proof, so give that endpoint its own bound.
-const SPACE_EDGE_POLL_TIMEOUT: Duration = Duration::from_secs(30);
-
 async fn create_test_room(client: &Client) -> matrix_sdk::Room {
     let room = client
         .create_room(create_room::v3::Request::new())
@@ -55,13 +50,17 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
 }
 
 async fn wait_for_space_child(client: &Client, parent_id: &str, child_id: &str, present: bool) {
-    timeout(SPACE_EDGE_POLL_TIMEOUT, async {
+    timeout(POLL_TIMEOUT, async {
         loop {
             client
                 .sync_once(SyncSettings::default())
                 .await
                 .expect("sync space hierarchy");
-            let children = list_space_children_impl(client, parent_id)
+            // Read the authoritative live `m.space.child` state rather than
+            // Synapse's separately cached `/hierarchy` projection. The test
+            // above already proves that projection; this section proves the
+            // create/reparent commands' reciprocal state writes themselves.
+            let children = list_manageable_space_children_impl(client, parent_id)
                 .await
                 .expect("list space children");
             if children.iter().any(|child| child.room_id == child_id) == present {
