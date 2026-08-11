@@ -1216,6 +1216,46 @@ describe("RoomsScreen", () => {
     expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
   });
 
+  it("does not arm DM navigation when the user selects another room during refresh", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const otherRoom = room({ room_id: "!b:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    let finishRefresh: ((rooms: RoomSummary[]) => void) | undefined;
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom, otherRoom])
+      .mockImplementationOnce(
+        () =>
+          new Promise<RoomSummary[]>((resolve) => {
+            finishRefresh = resolve;
+          }),
+      );
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: otherRoom.room_id }));
+    await screen.findByText(`chat-content:${otherRoom.room_id}`);
+    await act(async () => finishRefresh?.([firstRoom, otherRoom]));
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, otherRoom, newDm]));
+    expect(screen.getByText(`chat-content:${otherRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
+  });
+
   it("closes the members drawer when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();

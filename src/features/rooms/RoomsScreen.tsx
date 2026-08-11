@@ -120,6 +120,7 @@ export function RoomsScreen({
   const [profileRoomPendingSelection, setProfileRoomPendingSelection] = useState<string | null>(
     null,
   );
+  const profileRoomNavigationRequestRef = useRef(0);
   // "Jump to message" — the room + event to scroll to once that room is
   // selected and loaded. Shared by two entry points that both just need
   // "load this event into view, paginating around it if it's outside the
@@ -166,6 +167,7 @@ export function RoomsScreen({
   }, [messageSearchEnabled]);
 
   function selectRoom(roomId: string) {
+    profileRoomNavigationRequestRef.current += 1;
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
@@ -192,6 +194,8 @@ export function RoomsScreen({
   }
 
   async function navigateToProfileRoom(roomId: string) {
+    const requestId = profileRoomNavigationRequestRef.current + 1;
+    profileRoomNavigationRequestRef.current = requestId;
     let visibleRooms = roomsRef.current;
     let joinedRoom = visibleRooms.find(
       (candidate) => candidate.room_id === roomId && candidate.membership === "join",
@@ -210,6 +214,7 @@ export function RoomsScreen({
         logAndIgnore(error);
       }
     }
+    if (profileRoomNavigationRequestRef.current !== requestId) return;
     if (joinedRoom) {
       selectRoomInVisibleMode(joinedRoom, visibleRooms);
       return;
@@ -221,6 +226,7 @@ export function RoomsScreen({
   }
 
   function selectHome() {
+    profileRoomNavigationRequestRef.current += 1;
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
@@ -228,6 +234,7 @@ export function RoomsScreen({
   }
 
   function selectDms() {
+    profileRoomNavigationRequestRef.current += 1;
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
@@ -235,6 +242,7 @@ export function RoomsScreen({
   }
 
   function selectSpace(spaceId: string) {
+    profileRoomNavigationRequestRef.current += 1;
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
