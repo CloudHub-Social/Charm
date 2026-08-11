@@ -306,6 +306,10 @@ export function RoomsScreen({
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
     if (room.is_space) {
       selectSpace(room.room_id);
+      // This is an explicit request to stay in the space scope with no room
+      // selected. Suppress the normal empty-detail auto-select just as the
+      // deep-link and newly-created-space paths do.
+      autoSelectSuppressedRef.current = { kind: "space" };
       setActiveRoomId(null);
       setMobileView("list");
       return;
