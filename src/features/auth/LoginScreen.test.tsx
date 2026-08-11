@@ -764,12 +764,14 @@ describe("LoginScreen login choices", () => {
     await act(async () => Promise.resolve());
     expect(pollSsoLogin).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("tab", { name: "Sign in" })).toBeDisabled();
     await act(async () => {
       resolvePoll?.(fakeSession());
       await Promise.resolve();
     });
 
     expect(logout).toHaveBeenCalledOnce();
+    expect(screen.getByRole("tab", { name: "Sign in" })).toBeEnabled();
   });
 
   it("does not create an SSO attempt when the browser blocks the popup", async () => {
