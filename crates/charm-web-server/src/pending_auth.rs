@@ -87,6 +87,7 @@ struct PendingPasswordReset {
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
     sid: matrix_sdk::ruma::OwnedSessionId,
     submit_url: Option<reqwest::Url>,
+    synthetic: bool,
     normalized_email: String,
     send_attempt: u32,
     retry_not_before: Instant,
@@ -835,7 +836,7 @@ impl PendingAuthStore {
                 return Err("password reset attempt expired or was cancelled".to_string());
             }
         };
-        let (sid, submit_url, requires_token) = match response_result {
+        let (sid, submit_url, requires_token, synthetic) = match response_result {
             Ok(response) => {
                 let submit_url = match sanitize_submit_url(
                     &client.homeserver(),
@@ -849,14 +850,14 @@ impl PendingAuthStore {
                     }
                 };
                 let requires_token = submit_url.is_some();
-                (response.sid, submit_url, requires_token)
+                (response.sid, submit_url, requires_token, false)
             }
             Err(_) => {
                 // Keep an unknown-address rejection indistinguishable from a
                 // sent email through confirmation as well as this response.
                 let sid = serde_json::from_value(serde_json::json!(opaque_id()))
                     .map_err(|_| "could not start password reset".to_string())?;
-                (sid, None, false)
+                (sid, None, false, true)
             }
         };
         let restored = self
@@ -869,6 +870,7 @@ impl PendingAuthStore {
                     client_secret,
                     sid,
                     submit_url,
+                    synthetic,
                     normalized_email: address_key,
                     send_attempt: 1,
                     retry_not_before: Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY,
@@ -923,6 +925,24 @@ impl PendingAuthStore {
             return Err(error);
         }
         let send_attempt = pending.send_attempt + 1;
+        if pending.synthetic {
+            // Preserve the initial request's anti-enumeration contract on
+            // every resend. Synthetic attempts consume the same quota and
+            // retry budget but never ask the homeserver the address question
+            // again, so the browser receives the same generic success shape.
+            pending.send_attempt = send_attempt;
+            pending.retry_not_before = Instant::now() + REGISTRATION_EMAIL_RESEND_DELAY;
+            if !self
+                .restore_password_reset(attempt_id.to_owned(), pending)
+                .await
+            {
+                return Err("password reset attempt expired or was cancelled".to_string());
+            }
+            return Ok(PasswordResetChallenge {
+                attempt_id: attempt_id.to_owned(),
+                requires_token: false,
+            });
+        }
         let request = request_password_change_token_via_email::v3::Request::new(
             pending.client_secret.clone(),
             pending.normalized_email.clone(),
