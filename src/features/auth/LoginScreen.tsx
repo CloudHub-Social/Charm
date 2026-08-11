@@ -105,6 +105,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [recoveryToken, setRecoveryToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [passwordResetComplete, setPasswordResetComplete] = useState(false);
+  const [passwordResetNotice, setPasswordResetNotice] = useState<string | null>(null);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
@@ -228,6 +229,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
+    setPasswordResetNotice(null);
     setRecoveryEmail("");
     setRecoveryToken("");
     setNewPassword("");
@@ -530,6 +532,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     if (passwordResetOperationRef.current !== operation) return;
     setPending(true);
     setError(null);
+    setPasswordResetNotice(null);
     let challenge: PasswordResetChallenge;
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
@@ -561,6 +564,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
+    setPasswordResetNotice(null);
     try {
       await confirmPasswordReset(attemptId, recoveryToken || undefined, newPassword);
       if (passwordResetOperationRef.current !== operation) return;
@@ -604,6 +608,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       setPasswordResetChallenge(challenge);
       setRecoveryToken("");
+      setPasswordResetNotice("Recovery email sent again.");
     } catch {
       if (
         passwordResetOperationRef.current === operation &&
@@ -630,6 +635,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
+    setPasswordResetNotice(null);
     setRecoveryEmail("");
     setRecoveryToken("");
     setNewPassword("");
@@ -690,6 +696,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   />
                 </div>
                 {error && <p className="text-xs text-destructive">{error}</p>}
+                {passwordResetNotice && (
+                  <p className="text-xs text-muted-foreground" aria-live="polite">
+                    {passwordResetNotice}
+                  </p>
+                )}
                 <Button type="submit" disabled={pending}>
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
@@ -1053,6 +1064,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                           setPassword("");
                           setShowPasswordReset(true);
                           setError(null);
+                          setPasswordResetNotice(null);
                         }}
                         className="w-full"
                       >

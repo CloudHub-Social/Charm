@@ -817,6 +817,7 @@ describe("LoginScreen password recovery", () => {
       screen.getByRole("button", { name: "Resend recovery email" }).click();
     });
     expect(resendPasswordReset).toHaveBeenCalledWith("reset-attempt");
+    expect(screen.getByText("Recovery email sent again.")).toBeVisible();
 
     fireEvent.change(screen.getByLabelText("New password"), {
       target: { value: "new correct horse" },
