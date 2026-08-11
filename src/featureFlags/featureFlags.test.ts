@@ -43,6 +43,23 @@ describe("resolveFlag", () => {
     expect(resolveFlag("canary", { canary: false })).toBe(false);
   });
 
+  it("lets a trusted remote false veto the encrypted search override", () => {
+    expect(
+      resolveFlag(
+        "encrypted_local_message_search",
+        { encrypted_local_message_search: true },
+        { encrypted_local_message_search: false },
+      ),
+    ).toBe(false);
+    expect(
+      resolveFlag(
+        "encrypted_local_message_search",
+        { encrypted_local_message_search: true },
+        { encrypted_local_message_search: true },
+      ),
+    ).toBe(true);
+  });
+
   it("has a catalog key for every exported flag key", () => {
     // FEATURE_FLAG_KEYS is derived from the record; this also fails to compile
     // if the record and the ts-rs union drift (the record is typed by it).

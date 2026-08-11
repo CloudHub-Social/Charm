@@ -63,6 +63,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registration_and_recovery_enabled: std::env::var("CHARM_WEB_REGISTRATION_AND_RECOVERY")
             .as_deref()
             == Ok("1"),
+        encrypted_local_message_search_enabled: std::env::var(
+            "CHARM_WEB_ENCRYPTED_LOCAL_MESSAGE_SEARCH",
+        )
+        .as_deref()
+            == Ok("1"),
         ..AppState::default()
     };
 
@@ -107,7 +112,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 persist,
                 initial_response,
                 session.sync_snapshots(),
-                state.space_hierarchy_reorganization,
+                sync_loop::SpawnOptions {
+                    include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+                    message_search: sync_loop::message_search_context(
+                        &session,
+                        state.encrypted_local_message_search_enabled,
+                    ),
+                },
             );
             *session
                 .sync_handle

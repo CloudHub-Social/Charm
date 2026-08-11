@@ -20,6 +20,10 @@ spec ([Spec 35](<../docs-site/src/content/docs/specs/day-1/Spec 35 — Feature f
      staged/percentage rollout), from the last-known-good cached response;
   3. **static default** — the flag's catalog default (the offline / not-yet-
      rolled-out backstop).
+- Local overrides normally take precedence. Sensitive derived-data flags may
+  instead define an explicit trusted remote `false` as a hard veto; currently
+  `encrypted_local_message_search` uses this stricter rule so the rollout
+  service can stop indexing and queries despite a persisted Labs override.
 - Both the frontend (`src/featureFlags/`) and the Rust core read the same
   `feature-flags.json` and the same defaults, so a flag reads identically on
   both sides of the IPC boundary for the same install.

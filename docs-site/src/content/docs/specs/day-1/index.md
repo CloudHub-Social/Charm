@@ -61,7 +61,7 @@ here.
 
 | # | Spec | Status | Evidence or boundary |
 |---|---|---|---|
-| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **In progress** | Device-scoped SQLCipher storage, edit/redaction semantics, and the default-off flag implemented but dormant; lifecycle, ingestion, query API, and UI remain |
+| 28 | [Cross-room message search](/specs/day-1/spec-28--cross-room-message-search/) | **Shipped** | Default-off encrypted local search on desktop and web: bounded sync indexing, scoped query API, edit/redaction cleanup, and result navigation; resilience follow-ups [#415](https://github.com/CloudHub-Social/Charm/issues/415)–[#417](https://github.com/CloudHub-Social/Charm/issues/417) remain |
 | 29 | [Link previews](/specs/day-1/spec-29--link-previews/) | **Shipped** | Desktop [#250](https://github.com/CloudHub-Social/Charm/pull/250) and web companion proxy merged; authenticated desktop/web transports, graceful failure, and cache reuse passed in the [live Synapse CI job](https://github.com/CloudHub-Social/Charm/actions/runs/30557178903/job/90920552948) |
 | 30 | [Focus mode and DND](/specs/day-1/spec-30--focus-mode-and-do-not-disturb/) | **Shipped** | [#249](https://github.com/CloudHub-Social/Charm/pull/249), default-off flag; manual tray verification remains non-blocking |
 | 31 | [Room upgrades](/specs/day-1/spec-31--room-upgrades/) | **Planned** | No matching merged implementation found |
