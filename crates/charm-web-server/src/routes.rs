@@ -36,7 +36,8 @@ use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
-    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, OwnProfile,
+    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
+    start_direct_message_impl, OwnProfile,
 };
 use charm_lib::matrix::room_admin::{
     add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
@@ -307,6 +308,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/profile/me", get(get_own_profile))
         .route("/api/users/{user_id}/profile", get(get_user_profile))
         .route("/api/users/{user_id}/mutual-rooms", get(get_mutual_rooms))
+        .route(
+            "/api/users/{user_id}/direct-message",
+            post(start_direct_message),
+        )
+        .route("/api/rooms/{room_id}/profile/me", put(set_room_profile))
         .route("/api/profile/display-name", put(set_display_name))
         .route(
             "/api/account/deactivate-url",
@@ -4001,6 +4007,42 @@ async fn get_mutual_rooms(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(rooms))
+}
+
+async fn start_direct_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(user_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let room_id = start_direct_message_impl(&session.client, &user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(room_id))
+}
+
+#[derive(Deserialize)]
+struct SetRoomProfileRequest {
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+}
+
+async fn set_room_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Json(request): Json<SetRoomProfileRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    set_room_profile_impl(
+        &session.client,
+        &room_id,
+        request.display_name,
+        request.avatar_url,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]

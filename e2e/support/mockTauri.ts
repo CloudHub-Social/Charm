@@ -498,6 +498,9 @@ export function installMockTauri(seed: {
         is_direct: Boolean(candidate.is_direct),
         is_space: Boolean(candidate.is_space),
       })),
+    start_direct_message: () =>
+      allRooms.find((candidate) => candidate.is_direct)?.room_id ?? room.room_id,
+    set_room_profile: () => undefined,
     get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
     set_account_data: (args) => {
       accountData.set(args.eventType as string, args.content);

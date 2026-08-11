@@ -841,6 +841,18 @@ export function getMutualRooms(userId: string): Promise<MutualRoomSummary[]> {
   return invoke("get_mutual_rooms", { userId });
 }
 
+export function startDirectMessage(userId: string): Promise<string> {
+  return invoke("start_direct_message", { userId });
+}
+
+export function setRoomProfile(
+  roomId: string,
+  displayName: string | null,
+  avatarUrl: string | null,
+): Promise<void> {
+  return invoke("set_room_profile", { roomId, displayName, avatarUrl });
+}
+
 /** Fires when the signed-in user's own display name/avatar changes out of band (e.g. from another client) — see `profiles.rs`'s module doc comment. */
 export function onSelfProfileUpdate(
   callback: (update: SelfProfileUpdate) => void,

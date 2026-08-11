@@ -187,6 +187,19 @@ export function RoomsScreen({
       .catch(logAndIgnore);
   }
 
+  function navigateToProfileRoom(roomId: string) {
+    const joinedRoom = roomsRef.current.find(
+      (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+    );
+    if (joinedRoom) {
+      selectRoomInVisibleMode(joinedRoom);
+      return;
+    }
+    setRoomListMode("dms");
+    setSelectedSpaceId(null);
+    selectRoom(roomId);
+  }
+
   function selectHome() {
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
@@ -627,6 +640,7 @@ export function RoomsScreen({
             <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
+              onNavigateToRoom={navigateToProfileRoom}
               onClose={() => setMembersDrawerOpen(false)}
             />
           ) : null
@@ -657,6 +671,7 @@ export function RoomsScreen({
       <RoomSettingsModal
         currentUserId={currentUserId}
         rooms={joinedRooms}
+        onNavigateToRoom={navigateToProfileRoom}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

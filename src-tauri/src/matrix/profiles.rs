@@ -16,11 +16,13 @@
 //! that and pushes `profile:self`.
 
 use futures_util::StreamExt;
+use matrix_sdk::deserialized_responses::RawSyncOrStrippedState;
 use matrix_sdk::ruma::api::client::profile::{AvatarUrl, DisplayName};
 use matrix_sdk::ruma::events::room::member::{
     MembershipState, RoomMemberEventContent, SyncRoomMemberEvent,
 };
-use matrix_sdk::ruma::UserId;
+use matrix_sdk::ruma::events::SyncStateEvent;
+use matrix_sdk::ruma::{OwnedMxcUri, RoomId, UserId};
 use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -359,6 +361,102 @@ pub async fn get_mutual_rooms_impl(
     Ok(rooms)
 }
 
+/// Opens the first existing one-to-one room for `user_id`, or creates an
+/// encrypted direct room when none exists. Returning the room id lets every
+/// shell (desktop and web companion) use its normal room-selection path.
+#[tauri::command]
+pub async fn start_direct_message(
+    state: State<'_, MatrixState>,
+    user_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    start_direct_message_impl(&client, &user_id).await
+}
+
+pub async fn start_direct_message_impl(client: &Client, user_id: &str) -> Result<String, String> {
+    let user_id = UserId::parse(user_id).map_err(|error| error.to_string())?;
+    if client.user_id() == Some(user_id.as_ref()) {
+        return Err("cannot start a direct message with yourself".to_string());
+    }
+    if let Some(room) = client.get_dm_room(&user_id) {
+        return Ok(room.room_id().to_string());
+    }
+    client
+        .create_dm(&user_id)
+        .await
+        .map(|room| room.room_id().to_string())
+        .map_err(|error| error.to_string())
+}
+
+/// Replaces the signed-in user's room-scoped display name and avatar while
+/// preserving every other field of their current `m.room.member` event.
+#[tauri::command]
+pub async fn set_room_profile(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    set_room_profile_impl(&client, &room_id, display_name, avatar_url).await
+}
+
+pub async fn set_room_profile_impl(
+    client: &Client,
+    room_id: &str,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+) -> Result<(), String> {
+    let room_id = RoomId::parse(room_id).map_err(|error| error.to_string())?;
+    let room = client
+        .get_room(&room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+    if room.state() != RoomState::Joined {
+        return Err(format!("room {room_id} is not joined"));
+    }
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let member_event = room
+        .get_state_event_static_for_key::<RoomMemberEventContent, _>(user_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "own room membership event not found".to_string())?;
+    let mut content = match member_event {
+        RawSyncOrStrippedState::Sync(raw_event) => {
+            match raw_event.deserialize().map_err(|error| error.to_string())? {
+                SyncStateEvent::Original(event) => event.content,
+                SyncStateEvent::Redacted(event) => {
+                    RoomMemberEventContent::new(event.content.membership)
+                }
+            }
+        }
+        RawSyncOrStrippedState::Stripped(_) => {
+            return Err(format!("room {room_id} is not joined"));
+        }
+    };
+
+    content = apply_room_profile(content, display_name, avatar_url)?;
+    room.send_state_event_for_key(user_id, content)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn apply_room_profile(
+    mut content: RoomMemberEventContent,
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+) -> Result<RoomMemberEventContent, String> {
+    let avatar_url = avatar_url.map(OwnedMxcUri::from);
+    if let Some(url) = &avatar_url {
+        url.validate().map_err(|error| error.to_string())?;
+    }
+    content.displayname = display_name;
+    content.avatar_url = avatar_url;
+    Ok(content)
+}
+
 /// Pure: given the signed-in user's id and an incoming `m.room.member`
 /// event's state key + content, returns the profile update to push if (and
 /// only if) this event is about the signed-in user themself. Unit-tested
@@ -472,6 +570,42 @@ mod self_profile_update_tests {
         let update = self_profile_update(own, own, &content).expect("own event yields an update");
         assert_eq!(update.display_name, None);
         assert_eq!(update.avatar_url, None);
+    }
+
+    #[test]
+    fn room_profile_update_preserves_membership_metadata() {
+        let mut content = RoomMemberEventContent::new(MembershipState::Join);
+        content.reason = Some("preserve me".to_string());
+        content.is_direct = Some(true);
+
+        let updated = apply_room_profile(
+            content,
+            Some("Room Alice".to_string()),
+            Some("mxc://example.org/room-avatar".to_string()),
+        )
+        .expect("valid room profile");
+
+        assert_eq!(updated.displayname.as_deref(), Some("Room Alice"));
+        assert_eq!(
+            updated.avatar_url.as_deref().map(|url| url.as_str()),
+            Some("mxc://example.org/room-avatar")
+        );
+        assert_eq!(updated.membership, MembershipState::Join);
+        assert_eq!(updated.reason.as_deref(), Some("preserve me"));
+        assert_eq!(updated.is_direct, Some(true));
+    }
+
+    #[test]
+    fn room_profile_update_rejects_non_mxc_avatar_urls() {
+        let content = RoomMemberEventContent::new(MembershipState::Join);
+        let error = apply_room_profile(
+            content,
+            None,
+            Some("https://example.org/avatar.png".to_string()),
+        )
+        .expect_err("non-MXC avatar must be rejected");
+
+        assert!(!error.is_empty());
     }
 
     #[tokio::test]
