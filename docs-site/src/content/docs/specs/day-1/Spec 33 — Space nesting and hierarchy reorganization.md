@@ -55,9 +55,13 @@ refetched rather than pretending a failed multi-event update rolled back.
 Repository tests cover the mutation, validation, reconciliation, transport, and
 settings paths. The real-Synapse `room_org` integration suite now drives Charm's
 own command-boundary functions through create-under-space, reparent, cycle
-rejection, un-nest, and post-write resync, then reads the homeserver hierarchy
-back through Charm. This closes the former write-verification gap in addition to
-the earlier real-account settings-shell and child-list smoke test.
+rejection, and un-nest. It verifies each resulting `m.space.child` event against
+authoritative homeserver state; a separate assertion proves Synapse's
+`/hierarchy` projection for the baseline child relationship. Post-write UI
+refresh and hierarchy reconciliation remain covered by deterministic repository
+tests rather than being claimed as part of this live projection check. Together
+with the earlier real-account settings-shell and child-list smoke test, this
+closes the former write-verification gap.
 
 ## Problem & why now
 

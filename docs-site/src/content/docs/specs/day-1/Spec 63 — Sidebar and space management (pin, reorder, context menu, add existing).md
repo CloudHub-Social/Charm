@@ -42,8 +42,10 @@ child-management surfaces merged in
 [#335](https://github.com/CloudHub-Social/Charm/pull/335). A real-account nightly
 smoke test confirmed the rail menus and shared settings shell in read-only use.
 Spec 33's real-Synapse command-boundary suite now records create-under, reparent,
-cycle rejection, un-nest, and authoritative post-write hierarchy reads, closing
-this spec's paired live-write dependency.
+cycle rejection, and un-nest, and verifies the resulting raw Matrix state against
+the homeserver. Hierarchy refresh behavior is covered separately by deterministic
+repository tests; the live suite closes this spec's paired write dependency
+without claiming a post-write cache/projection proof.
 
 **Power-level gating closed for the `SpaceRail` context menu.** `RoomPermissions`
 (Spec 07's existing `room_admin.rs` pattern) gained a `set_space_child` field —
