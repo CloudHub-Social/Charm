@@ -285,9 +285,13 @@ impl PendingAuthStore {
                 return Err("could not start single sign-on".to_string());
             }
         };
-        if cancellation.is_cancelled() {
+        let cancellations = self.cancellations.lock().await;
+        let active = cancellations
+            .get(&attempt_id)
+            .is_some_and(|(attempt_owner, token)| attempt_owner == &owner && !token.is_cancelled());
+        if !active {
+            drop(cancellations);
             crate::auth::cleanup_failed_crypto_store(&crypto);
-            self.finish_attempt(&attempt_id).await;
             return Err("single sign-on setup expired or was cancelled".to_string());
         }
         self.sso_attempts.lock().await.insert(
@@ -302,6 +306,7 @@ impl PendingAuthStore {
                 created_at: Instant::now(),
             },
         );
+        drop(cancellations);
         self.spawn_expiry(attempt_id.clone());
         Ok((attempt_id, redirect_url))
     }

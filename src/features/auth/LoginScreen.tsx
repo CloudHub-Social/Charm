@@ -493,6 +493,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
+        browserPopup?.close();
         await cancelSsoLogin().catch(logAndIgnore);
         setSsoPending(false);
         return;

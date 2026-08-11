@@ -711,6 +711,35 @@ describe("LoginScreen login choices", () => {
     expect(pollSsoLogin).toHaveBeenCalled();
   });
 
+  it("closes the placeholder popup when SSO setup is cancelled", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    let resolveStart: ((url: string) => void) | undefined;
+    startSsoLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    const closePopup = vi.fn();
+    vi.spyOn(window, "open").mockReturnValue({
+      opener: window,
+      location: { replace: vi.fn() },
+      close: closePopup,
+    } as unknown as Window);
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+    await discoverLoginChoices();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Company SSO" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => {
+      resolveStart?.("https://homeserver.example/sso/company");
+      await Promise.resolve();
+    });
+
+    expect(closePopup).toHaveBeenCalledOnce();
+    expect(cancelSsoLogin).toHaveBeenCalled();
+    expect(pollSsoLogin).not.toHaveBeenCalled();
+  });
+
   it("does not create an SSO attempt when the browser blocks the popup", async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     vi.spyOn(window, "open").mockReturnValue(null);
