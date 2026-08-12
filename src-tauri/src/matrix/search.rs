@@ -404,8 +404,14 @@ impl SearchIndex {
             Err(error) => return Err(safe_io_error(error)),
         };
         let search_root = validated_search_root(&app_data_dir)?;
+        let mut first_error = None;
         for name in cleanup_targets(&search_root)? {
-            delete_index_directory(&search_root, &search_root.join(name))?;
+            if let Err(error) = delete_index_directory(&search_root, &search_root.join(name)) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         match std::fs::remove_dir(&search_root) {
             Ok(()) => Ok(()),
@@ -3910,6 +3916,36 @@ mod tests {
         assert!(slot.is_none());
         assert!(!active_path.exists());
         assert!(!retained_path.exists());
+    }
+
+    #[test]
+    fn delete_all_continues_after_one_retained_index_fails() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = open_index(directory.path(), "account", "DEVICE-A");
+        let second = open_index(directory.path(), "other-account", "DEVICE-B");
+        let first_directory = first.database_path().parent().expect("first parent").to_owned();
+        let second_directory = second
+            .database_path()
+            .parent()
+            .expect("second parent")
+            .to_owned();
+        drop((first, second));
+        let (blocked, deletable) = if first_directory < second_directory {
+            (first_directory, second_directory)
+        } else {
+            (second_directory, first_directory)
+        };
+        std::fs::write(blocked.join("unexpected.txt"), b"retain").expect("block first cleanup");
+
+        SearchIndex::delete_all(directory.path()).expect_err("one cleanup remains blocked");
+
+        assert!(blocked.exists());
+        assert!(!deletable.exists());
+        assert!(cleanup_marker(
+            &directory.path().join(SEARCH_ROOT),
+            blocked.file_name().and_then(std::ffi::OsStr::to_str).expect("opaque name"),
+        )
+        .exists());
     }
 
     #[test]

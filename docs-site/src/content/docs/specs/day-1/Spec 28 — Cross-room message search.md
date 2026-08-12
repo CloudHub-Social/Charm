@@ -195,7 +195,8 @@ connection: the SDK owns that schema and migration lifecycle.
   allowlist; symlinks and unexpected entries fail closed before deletion. A private,
   opaque cleanup marker survives failure or process exit and must reconcile before
   that account/device path can reopen. Explicit device, account, and all-index
-  cleanup are idempotent and never traverse into matrix-sdk-owned storage. Merely
+  cleanup are idempotent, attempt every retained target even when one target fails,
+  and never traverse into matrix-sdk-owned storage. Merely
   switching the active in-process handle closes but does not opportunistically
   delete an inactive account/device database; lifecycle teardown owns deletion.
   No decrypted-content quarantine is retained and an SDK store is never modified.
