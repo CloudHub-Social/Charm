@@ -159,6 +159,9 @@ define_feature_flag_keys!(
         EncryptedLocalMessageSearch,
         /// Spec 55 command palette and quick room/DM/space navigation.
         QuickSwitcher,
+        /// Spec 38 shared searchable Unicode emoji picker for reactions and
+        /// composer insertion.
+        FullEmojiPicker,
     }
 );
 
@@ -190,6 +193,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RegistrationAndRecovery => false,
             FeatureFlagKey::EncryptedLocalMessageSearch => false,
             FeatureFlagKey::QuickSwitcher => false,
+            FeatureFlagKey::FullEmojiPicker => false,
         }
     }
 
@@ -266,6 +270,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::QuickSwitcher => {
                 "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher."
             }
+            FeatureFlagKey::FullEmojiPicker => {
+                "Use the searchable full-Unicode emoji picker for reactions and composer insertion."
+            }
         }
     }
 
@@ -306,6 +313,7 @@ impl FeatureFlagKey {
             }
             FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
             FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
+            FeatureFlagKey::FullEmojiPicker => "Spec 38 (full emoji picker)",
         }
     }
 
@@ -336,6 +344,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
             FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
             FeatureFlagKey::QuickSwitcher => "quick_switcher",
+            FeatureFlagKey::FullEmojiPicker => "full_emoji_picker",
         }
     }
 }

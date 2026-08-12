@@ -1,7 +1,8 @@
 /**
- * A compact, hand-picked shortcode index (not the full Unicode CLDR set —
- * see the spec's "emoji shortcode index size vs. bundle" open question) for
- * the composer's `:` autocomplete.
+ * A compact, hand-picked shortcode fast path for the composer's `:`
+ * autocomplete. Spec 38's full Unicode dataset stays in the lazy-loaded
+ * browse picker, so ordinary typing does not pull that large chunk into the
+ * initial composer bundle.
  */
 export const EMOJI_SHORTCODES: Record<string, string> = {
   smile: "😄",

@@ -1,7 +1,31 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/react";
 import { FormattingToolbar } from "./FormattingToolbar";
+
+const flags = vi.hoisted(() => ({ fullEmojiPicker: false }));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) => key === "full_emoji_picker" && flags.fullEmojiPicker,
+}));
+
+vi.mock("./EmojiPicker", () => ({
+  EmojiPicker: ({
+    children,
+    onSelect,
+  }: {
+    children: ReactNode;
+    onSelect: (emoji: string) => void;
+  }) => (
+    <div>
+      {children}
+      <button type="button" onClick={() => onSelect("🧭")}>
+        Choose test emoji
+      </button>
+    </div>
+  ),
+}));
 
 /** A minimal fake covering only what `FormattingToolbar` calls. */
 function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
@@ -14,6 +38,7 @@ function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
     toggleBlockquote: () => chainable,
     toggleBulletList: () => chainable,
     toggleOrderedList: () => chainable,
+    insertContent: vi.fn(() => chainable),
     run,
   };
   return {
@@ -23,6 +48,10 @@ function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
 }
 
 describe("FormattingToolbar", () => {
+  beforeEach(() => {
+    flags.fullEmojiPicker = false;
+  });
+
   it("renders a disabled toolbar when there is no editor yet", () => {
     render(<FormattingToolbar editor={null} />);
     expect(screen.getByRole("button", { name: /Bold/ })).toBeDisabled();
@@ -48,5 +77,21 @@ describe("FormattingToolbar", () => {
       fireEvent.click(screen.getByRole("button", { name }));
     }
     expect(editor.chain().focus().toggleItalic().run).toHaveBeenCalled();
+  });
+
+  it("inserts a selected emoji at the editor cursor when the flag is enabled", () => {
+    flags.fullEmojiPicker = true;
+    const editor = fakeEditor();
+    render(<FormattingToolbar editor={editor} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose test emoji" }));
+
+    expect(editor.chain().focus().insertContent).toHaveBeenCalledWith("🧭");
+    expect(editor.chain().run).toHaveBeenCalled();
+  });
+
+  it("does not expose the composer picker while the flag is disabled", () => {
+    render(<FormattingToolbar editor={fakeEditor()} />);
+    expect(screen.queryByRole("button", { name: "Insert emoji" })).not.toBeInTheDocument();
   });
 });

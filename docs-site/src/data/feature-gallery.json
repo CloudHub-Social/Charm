@@ -231,6 +231,26 @@
       }
     },
     {
+      "slug": "full-emoji-picker",
+      "title": "Full emoji picker",
+      "summary": "Search the full Unicode emoji set, browse categories, choose skin tones, and reuse recent emoji from reactions or the composer.",
+      "status": "preview",
+      "spec": "Spec 38",
+      "specLinks": [
+        {
+          "label": "Spec 38",
+          "href": "/specs/day-1/spec-38--full-emoji-picker/"
+        }
+      ],
+      "flag": "full_emoji_picker",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-full-emoji-picker",
+        "alt": "Charm conversation with the searchable full Unicode emoji picker open above the composer",
+        "caption": "The E2E fixture opens the shared picker from the composer and verifies its searchable Unicode surface."
+      }
+    },
+    {
       "slug": "media-attachments",
       "title": "Media and attachments",
       "summary": "Preview images, open a lightbox, download Matrix attachments, and send polished uploads with captions, size preflight, cancellation, GIF controls, EXIF stripping, and a stable full-chat drop target.",
