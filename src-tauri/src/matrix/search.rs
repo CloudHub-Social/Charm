@@ -1658,8 +1658,8 @@ pub(crate) async fn submit_sync_response(
         let app_data_dir = app.path().app_data_dir().ok();
         let app = app.clone();
         let deleted = tauri::async_runtime::spawn_blocking(move || {
-            let mut slot = app
-                .state::<super::MatrixState>()
+            let state = app.state::<super::MatrixState>();
+            let mut slot = state
                 .search_index
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
