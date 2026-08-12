@@ -135,23 +135,20 @@ pub fn init() -> Option<SentryGuard> {
         return None;
     };
 
-    let client = sentry::init((
-        config.dsn,
-        sentry::ClientOptions {
-            release: config.release,
-            environment: config.environment,
-            send_default_pii: false,
-            traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.2 },
-            auto_session_tracking: true,
-            session_mode: sentry::SessionMode::Application,
-            enable_logs: true,
-            before_send: Some(std::sync::Arc::new(
-                charm_lib::observability_scrub::scrub_event,
-            )),
-            before_send_log: Some(std::sync::Arc::new(scrub_log)),
-            ..Default::default()
-        },
-    ));
+    let client_options = sentry::ClientOptions::new()
+        .maybe_release(config.release)
+        .send_default_pii(false)
+        .traces_sample_rate(if cfg!(debug_assertions) { 1.0 } else { 0.2 })
+        .auto_session_tracking(true)
+        .session_mode(sentry::SessionMode::Application)
+        .enable_logs(true)
+        .before_send(charm_lib::observability_scrub::scrub_event)
+        .before_send_log(scrub_log);
+    let client_options = match config.environment {
+        Some(environment) => client_options.environment(environment),
+        None => client_options,
+    };
+    let client = sentry::init((config.dsn, client_options));
 
     let sentry_layer = sentry::integrations::tracing::layer()
         .event_filter(sentry_event_filter)
