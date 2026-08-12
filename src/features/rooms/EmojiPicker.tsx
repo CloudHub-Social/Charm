@@ -1,7 +1,9 @@
 import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import type { EmojiClickData, PickerProps } from "emoji-picker-react";
+import { useAtomValue } from "jotai";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useFlag } from "@/featureFlags";
+import { themeAtom, type Theme } from "@/features/appearance/atoms";
 
 const FullPicker = lazy(() => import("emoji-picker-react"));
 
@@ -19,6 +21,13 @@ interface EmojiPickerPanelProps {
 
 const NO_EXTRA_CATEGORIES: readonly EmojiPickerExtraCategory[] = [];
 
+/** Maps Charm's four appearance choices onto the picker's three themes. */
+export function emojiPickerTheme(theme: Theme): PickerProps["theme"] {
+  if (theme === "system") return "auto" as PickerProps["theme"];
+  if (theme === "light") return "light" as PickerProps["theme"];
+  return "dark" as PickerProps["theme"];
+}
+
 /**
  * The lazy-loaded full picker surface. Exported separately so Storybook can
  * exercise the grid and its axe/keyboard checks without opening a popover.
@@ -27,6 +36,7 @@ export function EmojiPickerPanel({
   onSelect,
   extraCategories = NO_EXTRA_CATEGORIES,
 }: EmojiPickerPanelProps) {
+  const theme = useAtomValue(themeAtom);
   const customEmojis = useMemo(
     () =>
       extraCategories.flatMap((category) =>
@@ -53,7 +63,7 @@ export function EmojiPickerPanel({
       <FullPicker
         width="min(22rem, calc(100vw - 2rem))"
         height={420}
-        theme={"auto" as PickerProps["theme"]}
+        theme={emojiPickerTheme(theme)}
         emojiStyle={"native" as PickerProps["emojiStyle"]}
         suggestedEmojisMode={"recent" as PickerProps["suggestedEmojisMode"]}
         searchPlaceholder="Search emoji"

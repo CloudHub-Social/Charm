@@ -13,6 +13,9 @@ Charm now ships the shared full-Unicode picker behind the default-off
 while the flag is disabled. When enabled, `emoji-picker-react@4.19.1` is loaded only
 when the popover opens and provides search, category navigation, recent ordering,
 skin-tone variants, native system glyphs, and lazy emoji rendering.
+Its chrome follows the user's Charm appearance choice: light uses the light
+picker, dark and midnight use the dark picker, and system delegates to the OS
+color scheme.
 
 The same `EmojiPicker` wrapper mounts from message reactions and the TipTap
 formatting toolbar; composer selection inserts at the active cursor. Optional
@@ -74,6 +77,9 @@ custom emoji packs) is the clean move.
 - **Extension point:** the picker takes an optional set of extra categories
   (custom emoji), so day-2 Spec 05 injects subscribed pack emoji without modifying
   this component's core.
+- **Appearance:** read the canonical Spec 09 theme atom. Map Charm's light theme
+  to the picker's light theme, dark and midnight to dark, and system to auto so
+  live OS color-scheme changes continue to apply.
 - Respect the "use system emoji vs twemoji" appearance setting once that exists
   (Spec 47) — render the chosen glyph style; until then, system default.
 
