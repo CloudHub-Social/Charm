@@ -82,6 +82,8 @@ interface RoomListProps {
   onSelectSearchResult?: (room: RoomSummary) => void;
   /** Opens Spec 28's decrypted-message search, distinct from this list's room filter. */
   onOpenMessageSearch?: () => void;
+  /** Whether Spec 55's global Cmd/Ctrl+F integration is active for message search. */
+  messageSearchShortcutEnabled?: boolean;
   /** Opens Spec 55's account-wide room/DM/space quick switcher. */
   onOpenQuickSwitcher?: () => void;
   mode: RoomListMode;
@@ -136,6 +138,7 @@ export function RoomList({
   onSelectSpace,
   onSelectSearchResult,
   onOpenMessageSearch,
+  messageSearchShortcutEnabled = false,
   onOpenQuickSwitcher,
   mode,
   selectedSpace,
@@ -788,7 +791,9 @@ export function RoomList({
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Search messages"
-                title="Search messages (⌘/Ctrl+F)"
+                title={
+                  messageSearchShortcutEnabled ? "Search messages (⌘/Ctrl+F)" : "Search messages"
+                }
                 onClick={onOpenMessageSearch}
               >
                 <SearchIcon />

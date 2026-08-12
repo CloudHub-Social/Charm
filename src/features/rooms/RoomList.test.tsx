@@ -177,6 +177,25 @@ describe("RoomList", () => {
     expect(screen.getByText("No rooms yet")).toBeInTheDocument();
   });
 
+  it("advertises the message-search shortcut only when the Spec 55 integration is active", () => {
+    const onOpenMessageSearch = vi.fn();
+    const { unmount } = renderRoomList(<RoomList {...roomListProps({ onOpenMessageSearch })} />);
+
+    expect(screen.getByRole("button", { name: "Search messages" })).toHaveAttribute(
+      "title",
+      "Search messages",
+    );
+
+    unmount();
+    renderRoomList(
+      <RoomList {...roomListProps({ onOpenMessageSearch, messageSearchShortcutEnabled: true })} />,
+    );
+    expect(screen.getByRole("button", { name: "Search messages" })).toHaveAttribute(
+      "title",
+      "Search messages (⌘/Ctrl+F)",
+    );
+  });
+
   it("labels unresolved space mode as space instead of Home", () => {
     renderRoomList(<RoomList {...roomListProps({ mode: "space", selectedSpace: null })} />);
 

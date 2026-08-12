@@ -683,6 +683,7 @@ export function RoomsScreen({
             onOpenMessageSearch={
               messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
             }
+            messageSearchShortcutEnabled={messageSearchEnabled && quickSwitcherEnabled}
             onOpenQuickSwitcher={quickSwitcherEnabled ? openQuickSwitcher : undefined}
             mode={roomListMode}
             selectedSpace={selectedSpace}

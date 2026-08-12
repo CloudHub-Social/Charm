@@ -51,6 +51,23 @@ describe("QuickSwitcherDialog", () => {
     expect(screen.getByRole("option", { name: /Design Studio/ })).toBeInTheDocument();
   });
 
+  it("shows an empty state and ignores navigation when no rooms match", () => {
+    const onSelectRoom = vi.fn();
+    renderDialog({ onSelectRoom });
+    const input = screen.getByRole("combobox", {
+      name: "Search rooms, direct messages, and spaces",
+    });
+
+    fireEvent.change(input, { target: { value: "definitely-not-a-room" } });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByText("No rooms found.")).toBeInTheDocument();
+    expect(screen.getByText("0 results available.")).toBeInTheDocument();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    expect(onSelectRoom).not.toHaveBeenCalled();
+  });
+
   it("navigates with the keyboard and records only the chosen joined room", () => {
     const onSelectRoom = vi.fn();
     const onOpenChange = vi.fn();
