@@ -171,7 +171,11 @@ connection: the SDK owns that schema and migration lifecycle.
   from the session's random `crypto_store_key` with a session-bound context. Never use,
   persist, log, or transport either source secret or derived key as application data.
   Decrypted text exists in process memory while indexing or querying, but database,
-  WAL, and SHM pages must not expose it at rest.
+  WAL, SHM, and rollback-journal pages must not expose it at rest. Android excludes
+  the actual Tauri app-data `message_search/` root from both cloud backup and device
+  transfer through the `root` backup domain. iOS marks that exact direct child as
+  excluded from backup when the root is created; the native bridge compares path
+  components instead of trusting a string prefix.
 - Desktop logout closes and deletes the current device's index, because Charm's
   logout flow revokes and removes that session and a later interactive login creates
   a new device that cannot safely reopen the old device-keyed index. Creating a
@@ -185,8 +189,17 @@ connection: the SDK owns that schema and migration lifecycle.
   session expiry, and administrative session removal close and delete that
   session's index. A failed/corrupt migration records only non-sensitive diagnostics
   (schema version, error category, and a random incident ID), securely removes the
-  search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
-  no decrypted-content quarantine is retained and an SDK store is never modified.
+  search database plus WAL/SHM/rollback-journal sidecars through the same bounded
+  cleanup path, and rebuilds from decrypted SDK history. Cleanup first validates
+  the opaque search root, direct account/device child, and complete retained-file
+  allowlist; symlinks and unexpected entries fail closed before deletion. A private,
+  opaque cleanup marker survives failure or process exit and must reconcile before
+  that account/device path can reopen. Explicit device, account, and all-index
+  cleanup are idempotent, attempt every retained target even when one target fails,
+  and never traverse into matrix-sdk-owned storage. Merely
+  switching the active in-process handle closes but does not opportunistically
+  delete an inactive account/device database; lifecycle teardown owns deletion.
+  No decrypted-content quarantine is retained and an SDK store is never modified.
 - Terminal-authentication cleanup and remote device-revocation recovery remain
   resilience work in [#416](https://github.com/CloudHub-Social/Charm/issues/416).
   Queries still fail closed once the owning authenticated session is unavailable.
@@ -199,8 +212,8 @@ connection: the SDK owns that schema and migration lifecycle.
   SQLCipher protects disk snapshots but does not protect against an operator or
   attacker with access to live process memory. Web operations guidance and the UI
   disclose that trust boundary. Web logout deletes the session index; host-backup
-  exclusion and expiry/removal cleanup are tracked in
-  [#415](https://github.com/CloudHub-Social/Charm/issues/415).
+  exclusion remains deployment-specific, while the shared bounded cleanup contract
+  applies to web logout, expiry, and administrative session removal.
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
   threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
   through a bounded per-session queue. Overflow never retains unbounded decrypted
@@ -291,10 +304,12 @@ without the user knowing which is which.
   neither transport owns indexing semantics.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
-  when the flag is off. An enabled-to-disabled transition first closes every
-  account/session handle, securely removes the Charm-owned encrypted database
-  and its WAL/SHM files on the next desktop sync, and records no reusable quarantine.
-  Durable retry and pre-session startup cleanup remain in
+  when the flag is off. An enabled-to-disabled transition first closes the active
+  handle, securely removes every retained Charm-owned account/device encrypted
+  database and its database sidecars on the next desktop sync, and records no
+  reusable quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
+  block that path from reopening. Persisting kill-switch transition intent before
+  renderer invocation and pre-session disabled-startup reconciliation remain in
   [#417](https://github.com/CloudHub-Social/Charm/issues/417).
 - Because this flag controls a sensitive derived-content index, a trusted remote
   `false` is a hard veto over any persisted Labs/local override. The desktop veto
@@ -317,7 +332,9 @@ without the user knowing which is which.
 - Rust storage tests cover encrypted-at-rest marker scans, literal queries,
   Unicode substring matching, account/cursor isolation, edit replacement and
   sender validation, redaction restoration and tombstones, room/sender purge,
-  cursor expiry/incarnation, migration, and no-follow filesystem containment.
+  cursor expiry/incarnation, migration, no-follow filesystem containment, bounded
+  device/account/all cleanup, unexpected-entry rejection, durable cleanup blocking,
+  rollback-journal removal, and exact Android/iOS path-boundary contracts.
 - Sync-ingestion tests cover eligible decrypted text, notices and emotes; reply
   fallback removal; spoiler exclusion; edits, redactions, ignored senders, and
   joined-to-left purges. Ciphertext and undecryptable placeholders are never an
@@ -326,8 +343,11 @@ without the user knowing which is which.
   cursor reset, pagination, incomplete-index disclosure and result selection.
   Playwright covers the room-scoped shortcut and navigation journey through the
   mocked transport.
-- Workspace Rust/frontend checks and docs/Storybook/Playwright gates remain the
-  repository acceptance evidence. Live Synapse verification of encrypted send,
+- GitHub Actions Rust/frontend checks and docs/Storybook/Playwright gates are the
+  repository acceptance evidence; Charm's workstation policy intentionally skips
+  local build and test execution. The iOS simulator build provides compile evidence
+  for the native backup bridge, but actual backup/restore behavior on Android and
+  iOS remains platform runtime evidence. Live Synapse verification of encrypted send,
   edit, redaction, restart persistence, desktop, and web companion behavior must be
   recorded separately and must not be inferred from repository tests.
 - Durable reconciliation for edit-order ambiguity, missed/deferred events, ignore

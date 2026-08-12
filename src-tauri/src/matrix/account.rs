@@ -311,24 +311,35 @@ async fn clear_local_session(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
+            let mut first_error = None;
             if let Some(active) = active {
-                active.index.delete()?;
+                if let Err(error) = active.index.delete() {
+                    first_error = Some(error);
+                }
             }
-            match search_cleanup_scope {
+            let scoped_cleanup = match search_cleanup_scope {
                 SearchCleanupScope::CurrentDevice => {
                     if let Some(device_id) = search_device_id {
                         super::search::SearchIndex::delete_for_source(
                             &app_data_dir,
                             &account_key,
                             &device_id,
-                        )?;
+                        )
+                    } else {
+                        Ok(())
                     }
                 }
                 SearchCleanupScope::EntireAccount => {
-                    super::search::SearchIndex::delete_for_account(&app_data_dir, &account_key)?;
+                    super::search::SearchIndex::delete_for_account(&app_data_dir, &account_key)
                 }
+            };
+            if let Err(error) = scoped_cleanup {
+                first_error.get_or_insert(error);
             }
-            Ok::<(), String>(())
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         })
         .await
         .is_ok_and(|result| result.is_ok()),
