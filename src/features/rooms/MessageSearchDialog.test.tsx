@@ -29,8 +29,9 @@ describe("MessageSearchDialog", () => {
   });
 
   it("never widens stale room scope when the active room disappears", () => {
-    expect(effectiveMessageSearchRoomId("room", null)).toBeUndefined();
-    expect(effectiveMessageSearchRoomId("all", null)).toBeNull();
+    expect(effectiveMessageSearchRoomId("room", null, [room])).toBeUndefined();
+    expect(effectiveMessageSearchRoomId("room", room.room_id, [])).toBeUndefined();
+    expect(effectiveMessageSearchRoomId("all", null, [])).toBeNull();
   });
 
   it("discloses hosted companion memory custody on web", () => {

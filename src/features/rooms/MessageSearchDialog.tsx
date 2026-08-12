@@ -31,9 +31,12 @@ type SearchScope = "room" | "all";
 export function effectiveMessageSearchRoomId(
   scope: SearchScope,
   activeRoomId: string | null,
+  rooms: readonly RoomSummary[],
 ): string | null | undefined {
   if (scope === "all") return null;
-  return activeRoomId ?? undefined;
+  return activeRoomId && rooms.some((room) => room.room_id === activeRoomId)
+    ? activeRoomId
+    : undefined;
 }
 
 export function MessageSearchDialog({
@@ -43,8 +46,13 @@ export function MessageSearchDialog({
   activeRoomId,
   onSelectResult,
 }: MessageSearchDialogProps) {
+  const joinedActiveRoomId = useMemo(
+    () =>
+      activeRoomId && rooms.some((room) => room.room_id === activeRoomId) ? activeRoomId : null,
+    [activeRoomId, rooms],
+  );
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<SearchScope>(activeRoomId ? "room" : "all");
+  const [scope, setScope] = useState<SearchScope>(joinedActiveRoomId ? "room" : "all");
   const [page, setPage] = useState<SearchResultPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,12 +72,12 @@ export function MessageSearchDialog({
     requestId.current += 1;
     setLoading(false);
     if (!open) return;
-    setScope(activeRoomId ? "room" : "all");
+    setScope(joinedActiveRoomId ? "room" : "all");
     setPage(null);
     setError(null);
     setPendingResult(null);
     queryInput.current?.focus();
-  }, [open, activeRoomId]);
+  }, [open, joinedActiveRoomId]);
 
   function navigateToResult(result: SearchResult) {
     onSelectResult(result);
@@ -96,7 +104,7 @@ export function MessageSearchDialog({
   async function runSearch(cursor: string | null = null) {
     const normalized = query.trim();
     if (!normalized) return;
-    const roomId = effectiveMessageSearchRoomId(scope, activeRoomId);
+    const roomId = effectiveMessageSearchRoomId(scope, joinedActiveRoomId, rooms);
     // `undefined` means room scope no longer has a room. Do not encode that
     // as `null`: the backend contract uses null for an intentional all-room
     // search, so doing so would widen the request during render-before-effect.
@@ -168,7 +176,7 @@ export function MessageSearchDialog({
             disabled={
               loading ||
               !query.trim() ||
-              effectiveMessageSearchRoomId(scope, activeRoomId) === undefined
+              effectiveMessageSearchRoomId(scope, joinedActiveRoomId, rooms) === undefined
             }
           >
             Search
@@ -181,7 +189,7 @@ export function MessageSearchDialog({
               type="radio"
               name="message-search-scope"
               checked={scope === "room"}
-              disabled={!activeRoomId}
+              disabled={!joinedActiveRoomId}
               onChange={() => changeScope("room")}
             />
             This room
