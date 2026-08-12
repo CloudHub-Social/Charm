@@ -17,11 +17,16 @@ interface EmojiPickerPanelProps {
   extraCategories?: readonly EmojiPickerExtraCategory[];
 }
 
+const NO_EXTRA_CATEGORIES: readonly EmojiPickerExtraCategory[] = [];
+
 /**
  * The lazy-loaded full picker surface. Exported separately so Storybook can
  * exercise the grid and its axe/keyboard checks without opening a popover.
  */
-export function EmojiPickerPanel({ onSelect, extraCategories = [] }: EmojiPickerPanelProps) {
+export function EmojiPickerPanel({
+  onSelect,
+  extraCategories = NO_EXTRA_CATEGORIES,
+}: EmojiPickerPanelProps) {
   const customEmojis = useMemo(
     () =>
       extraCategories.flatMap((category) =>
@@ -40,12 +45,9 @@ export function EmojiPickerPanel({ onSelect, extraCategories = [] }: EmojiPicker
   return (
     <Suspense
       fallback={
-        <div
-          className="flex h-80 w-80 items-center justify-center text-sm text-muted-foreground"
-          role="status"
-        >
+        <output className="flex h-80 w-80 items-center justify-center text-sm text-muted-foreground">
           Loading emoji…
-        </div>
+        </output>
       }
     >
       <FullPicker
