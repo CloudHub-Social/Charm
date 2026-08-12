@@ -3917,7 +3917,10 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let index = open_index(directory.path(), "account", "DEVICE");
         let database_path = index.database_path().to_owned();
-        let unexpected = database_path.parent().expect("parent").join("unexpected.txt");
+        let unexpected = database_path
+            .parent()
+            .expect("parent")
+            .join("unexpected.txt");
         drop(index);
         std::fs::write(&unexpected, b"do not remove").expect("seed unexpected entry");
 
@@ -3949,14 +3952,10 @@ mod tests {
         std::fs::write(device_directory.join("unexpected.txt"), b"retained")
             .expect("seed cleanup blocker");
 
-        let error = SearchIndex::open_with_secret(
-            directory.path(),
-            "account",
-            "DEVICE",
-            TEST_STORE_SECRET,
-        )
-        .err()
-        .expect("pending failed cleanup must block reopen");
+        let error =
+            SearchIndex::open_with_secret(directory.path(), "account", "DEVICE", TEST_STORE_SECRET)
+                .err()
+                .expect("pending failed cleanup must block reopen");
 
         assert_eq!(error, "message search filesystem entry invalid");
         assert!(marker.exists());
@@ -3993,16 +3992,11 @@ mod tests {
     fn backup_roots_use_exact_path_components_and_android_root_domain() {
         let app_data = Path::new("/private/container/Application Support/social.cloudhub.charm");
         assert!(direct_search_root(app_data, &app_data.join(SEARCH_ROOT)).is_some());
-        assert!(
-            direct_search_root(app_data, &app_data.join("message_search-copy")).is_none()
-        );
-        assert!(
-            direct_search_root(app_data, &app_data.join(SEARCH_ROOT).join("nested")).is_none()
-        );
+        assert!(direct_search_root(app_data, &app_data.join("message_search-copy")).is_none());
+        assert!(direct_search_root(app_data, &app_data.join(SEARCH_ROOT).join("nested")).is_none());
 
-        let modern = include_str!(
-            "../../gen/android/app/src/main/res/xml/secure_store_backup_rules.xml"
-        );
+        let modern =
+            include_str!("../../gen/android/app/src/main/res/xml/secure_store_backup_rules.xml");
         let legacy = include_str!(
             "../../gen/android/app/src/main/res/xml/secure_store_backup_rules_legacy.xml"
         );
