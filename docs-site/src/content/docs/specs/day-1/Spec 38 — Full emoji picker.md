@@ -3,8 +3,28 @@ title: Charm 2.0 Spec — Full emoji picker
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+Charm now ships the shared full-Unicode picker behind the default-off
+`full_emoji_picker` flag. The existing compact reaction grid remains the fallback
+while the flag is disabled. When enabled, `emoji-picker-react@4.19.1` is loaded only
+when the popover opens and provides search, category navigation, recent ordering,
+skin-tone variants, native system glyphs, and lazy emoji rendering.
+Its chrome follows the user's Charm appearance choice: light uses the light
+picker, dark and midnight use the dark picker, and system delegates to the OS
+color scheme.
+
+The same `EmojiPicker` wrapper mounts from message reactions and the TipTap
+formatting toolbar; composer selection inserts at the active cursor. Optional
+named extra-category inputs are flattened into the library's custom-emoji category,
+giving day-2 Spec 05 a stable pack-injection seam without changing either caller.
+Component regressions cover the flag fallback, full-picker configuration, custom
+emoji forwarding, popover close, and cursor insertion. The dedicated Storybook
+story exercises the real grid through the repository's remote build, axe, and
+visual-snapshot gates.
 
 **Workstream:** one PR / one agent. Shared component underpinning Spec 03
 (reactions), Spec 04 (composer emoji), and day-2 Spec 05 (custom emoji/sticker
@@ -12,9 +32,9 @@ packs).
 
 ## Problem & why now
 
-Charm 2.0's emoji picker (`src/features/rooms/EmojiPicker.tsx`) is **40 hardcoded
-emoji with no search and no custom emoji**. The parity audit (2026-07-13) flagged
-this from two directions:
+Before this delivery, Charm 2.0's emoji picker (`src/features/rooms/EmojiPicker.tsx`)
+was **40 hardcoded emoji with no search and no custom emoji**. The parity audit
+(2026-07-13) flagged this from two directions:
 
 - **Reactions** (Spec 03): reacting is limited to those 40; Charm 1.0 uses a full
   `EmojiBoard` picker with search and categories.
@@ -40,13 +60,15 @@ custom emoji packs) is the clean move.
 
 ## High-level design
 
-- Replace `EmojiPicker.tsx`'s hardcoded list with a real picker: full Unicode
+- Behind `full_emoji_picker`, replace `EmojiPicker.tsx`'s hardcoded list with the
+  lazy-loaded `emoji-picker-react` picker: full Unicode
   emoji dataset, category tabs (smileys, people, nature, food, activities, etc.),
-  **search by name/shortcode**, recently-used section (persisted locally), and
-  skin-tone selection. Prefer a well-maintained, reasonably-sized emoji dataset
-  over hand-maintaining one — check what's already available in the dependency
-  tree (the `:shortcode:` autocomplete from Spec 04 already needs an emoji dataset;
-  reuse that same source rather than adding a second).
+  **search by name/shortcode**, account-scoped recently-used section (persisted
+  locally), and
+  skin-tone selection. Native emoji rendering avoids a new image-CDN dependency;
+  the library's dataset remains outside the initial bundle. Spec 04's compact
+  shortcode map remains the keystroke fast path rather than eagerly importing the
+  browse dataset.
 - **Two mount points, one component:**
   - Reaction picker: opened from `MessageActions` "React"; selecting inserts an
     `m.reaction`.
@@ -56,14 +78,20 @@ custom emoji packs) is the clean move.
 - **Extension point:** the picker takes an optional set of extra categories
   (custom emoji), so day-2 Spec 05 injects subscribed pack emoji without modifying
   this component's core.
+- **Appearance:** read the canonical Spec 09 theme atom. Map Charm's light theme
+  to the picker's light theme, dark and midnight to dark, and system to auto so
+  live OS color-scheme changes continue to apply.
 - Respect the "use system emoji vs twemoji" appearance setting once that exists
   (Spec 47) — render the chosen glyph style; until then, system default.
 
 ## Data flow
 
-Emoji dataset is bundled/static — no IPC. Recently-used list persists in the local
-settings store (same store as other client-local prefs). Reaction insert and
-composer insert reuse existing send/compose paths.
+Emoji data is bundled into the lazy picker chunk — no IPC. Charm persists the
+recently-used ordering through its existing Matrix-account-scoped reaction store.
+The dependency's profile-wide Suggested category is disabled and its legacy
+`epr_suggested` key is cleared so switching accounts cannot expose another user's
+emoji history. Reaction insert and composer insert reuse existing send/compose
+paths.
 
 ## API/contract changes
 
@@ -82,8 +110,9 @@ None (no Rust/IPC). Pure frontend component swap + a new composer toolbar button
 ## Trade-offs
 
 - **Reuse the Spec 04 autocomplete's emoji dataset vs a picker-specific one**:
-  reuse avoids shipping two emoji datasets (bundle-size and consistency win — a
-  shortcode that autocompletes should exist in the picker and vice versa).
+  the existing autocomplete has only a compact map, not a full dataset. The chosen
+  picker therefore owns the sole full dataset and is lazy-loaded; keeping the tiny
+  map on the typing path avoids eagerly loading the browse chunk.
 - **Build the extension point now vs retrofit for day-2 packs later**: adding the
   optional-extra-categories seam now is cheap and saves day-2 Spec 05 from having
   to refactor this component; building the whole pack system now would over-reach

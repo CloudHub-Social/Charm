@@ -251,7 +251,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             </button>
           ))}
         {!isRedacted && (
-          <EmojiPicker onSelect={react}>
+          <EmojiPicker accountId={accountId} onSelect={react}>
             <button
               type="button"
               aria-label="React"

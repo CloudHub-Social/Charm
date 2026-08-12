@@ -136,5 +136,11 @@
     "default": false,
     "description": "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher.",
     "owner": "Spec 55 (command palette and quick switcher)"
+  },
+  {
+    "key": "full_emoji_picker",
+    "default": false,
+    "description": "Use the searchable full-Unicode emoji picker for reactions and composer insertion.",
+    "owner": "Spec 38 (full emoji picker)"
   }
 ]

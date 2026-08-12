@@ -13,6 +13,21 @@ function enableFlags(flags: Record<string, boolean>) {
   );
 }
 
+test("full emoji picker opens from the composer", async ({ page }) => {
+  await page.addInitScript(enableFlags, { full_emoji_picker: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await page.getByRole("button", { name: "Insert emoji" }).click();
+  await expect(page.getByPlaceholder("Search emoji")).toBeVisible();
+  await captureSnapshot(page, "feature-full-emoji-picker");
+});
+
 test("link previews render inside a complete conversation", async ({ page }) => {
   await page.addInitScript(enableFlags, { link_previews: true });
   await page.addInitScript(installMockTauri, {

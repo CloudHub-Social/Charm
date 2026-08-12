@@ -1,8 +1,11 @@
 import type { Editor } from "@tiptap/react";
-import { Bold, Code, Italic, List, ListOrdered, Quote } from "lucide-react";
+import { Bold, Code, Italic, List, ListOrdered, Quote, Smile } from "lucide-react";
+import { useFlag } from "@/featureFlags";
 import { cn } from "@/lib/utils";
+import { EmojiPicker } from "./EmojiPicker";
 
 interface FormattingToolbarProps {
+  accountId?: string;
   editor: Editor | null;
 }
 
@@ -60,7 +63,9 @@ const BUTTONS: ToolbarButtonSpec[] = [
 ];
 
 /** Bold/italic/code/quote/list toggle buttons bound to TipTap commands. */
-export function FormattingToolbar({ editor }: FormattingToolbarProps) {
+export function FormattingToolbar({ accountId = "anonymous", editor }: FormattingToolbarProps) {
+  const fullEmojiPickerEnabled = useFlag("full_emoji_picker");
+
   return (
     <div className="flex items-center gap-0.5" role="toolbar" aria-label="Formatting">
       {BUTTONS.map(({ key, label, icon: Icon, isActive, run }) => (
@@ -80,6 +85,23 @@ export function FormattingToolbar({ editor }: FormattingToolbarProps) {
           <Icon size={16} />
         </button>
       ))}
+      {fullEmojiPickerEnabled && (
+        <EmojiPicker
+          accountId={accountId}
+          align="end"
+          onSelect={(emoji) => editor?.chain().focus().insertContent(emoji).run()}
+        >
+          <button
+            type="button"
+            aria-label="Insert emoji"
+            disabled={!editor}
+            onMouseDown={(event) => event.preventDefault()}
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Smile size={16} />
+          </button>
+        </EmojiPicker>
+      )}
     </div>
   );
 }

@@ -13,5 +13,5 @@ type Story = StoryObj<typeof meta>;
 
 /** No editor mounted yet — every button renders disabled. */
 export const NoEditor: Story = {
-  args: { editor: null },
+  args: { accountId: "@storybook:example.org", editor: null },
 };

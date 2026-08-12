@@ -9,6 +9,7 @@ import { EmojiPicker } from "./EmojiPicker";
 import { WhoReactedDialog } from "./WhoReactedDialog";
 
 interface ReactionBarProps {
+  accountId?: string;
   reactions: ReactionGroup[];
   onToggle: (key: string) => void;
   /**
@@ -36,6 +37,7 @@ const TOOLTIP_NAME_LIMIT = 8;
  * reserve dead space under every message.
  */
 export function ReactionBar({
+  accountId = "anonymous",
   reactions,
   onToggle,
   disabled = false,
@@ -265,7 +267,7 @@ export function ReactionBar({
     <TooltipProvider>
       <div className="mt-0.5 flex flex-wrap items-center gap-1">
         {chips}
-        <EmojiPicker onSelect={onToggle}>
+        <EmojiPicker accountId={accountId} onSelect={onToggle}>
           <button
             type="button"
             aria-label="Add reaction"
