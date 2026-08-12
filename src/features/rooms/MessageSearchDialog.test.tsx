@@ -2,7 +2,10 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import type * as MatrixModule from "@/lib/matrix";
-import { MessageSearchDialog } from "./MessageSearchDialog";
+import {
+  effectiveMessageSearchRoomId,
+  MessageSearchDialog,
+} from "./MessageSearchDialog";
 
 const searchMessages = vi.fn();
 const isWebBuild = vi.fn(() => false);
@@ -26,6 +29,11 @@ describe("MessageSearchDialog", () => {
   beforeEach(() => {
     searchMessages.mockReset();
     isWebBuild.mockReturnValue(false);
+  });
+
+  it("never widens stale room scope when the active room disappears", () => {
+    expect(effectiveMessageSearchRoomId("room", null)).toBeUndefined();
+    expect(effectiveMessageSearchRoomId("all", null)).toBeNull();
   });
 
   it("discloses hosted companion memory custody on web", () => {
@@ -163,6 +171,45 @@ describe("MessageSearchDialog", () => {
     );
     expect(screen.getByText("first result")).toBeInTheDocument();
     expect(await screen.findByText("second result")).toBeInTheDocument();
+  });
+
+  it("clears results and pagination when the user changes scope", async () => {
+    searchMessages.mockResolvedValue({
+      results: [
+        {
+          room_id: room.room_id,
+          event_id: "$first",
+          sender: "@alice:example.org",
+          origin_server_ts: 1,
+          snippet: "first result",
+          match_ranges: [],
+        },
+      ],
+      next_cursor: "room-cursor",
+      incomplete: false,
+    });
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={vi.fn()}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "result" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByText("first result")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "All rooms" }));
+
+    expect(screen.queryByText("first result")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+    expect(searchMessages).toHaveBeenCalledOnce();
   });
 
   it("shows a generic error after an asynchronous backend failure", async () => {

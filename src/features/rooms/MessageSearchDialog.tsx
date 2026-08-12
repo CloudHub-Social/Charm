@@ -26,6 +26,16 @@ interface MessageSearchDialogProps {
   onSelectResult: (result: SearchResult) => void;
 }
 
+type SearchScope = "room" | "all";
+
+export function effectiveMessageSearchRoomId(
+  scope: SearchScope,
+  activeRoomId: string | null,
+): string | null | undefined {
+  if (scope === "all") return null;
+  return activeRoomId ?? undefined;
+}
+
 export function MessageSearchDialog({
   open,
   onOpenChange,
@@ -34,7 +44,7 @@ export function MessageSearchDialog({
   onSelectResult,
 }: MessageSearchDialogProps) {
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"room" | "all">(activeRoomId ? "room" : "all");
+  const [scope, setScope] = useState<SearchScope>(activeRoomId ? "room" : "all");
   const [page, setPage] = useState<SearchResultPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,19 +84,28 @@ export function MessageSearchDialog({
     setPendingResult(result);
   }
 
+  function changeScope(nextScope: SearchScope) {
+    requestId.current += 1;
+    setLoading(false);
+    setScope(nextScope);
+    setPage(null);
+    setError(null);
+    setPendingResult(null);
+  }
+
   async function runSearch(cursor: string | null = null) {
     const normalized = query.trim();
     if (!normalized) return;
+    const roomId = effectiveMessageSearchRoomId(scope, activeRoomId);
+    // `undefined` means room scope no longer has a room. Do not encode that
+    // as `null`: the backend contract uses null for an intentional all-room
+    // search, so doing so would widen the request during render-before-effect.
+    if (roomId === undefined) return;
     const id = ++requestId.current;
     setLoading(true);
     setError(null);
     try {
-      const next = await searchMessages(
-        normalized,
-        scope === "room" ? activeRoomId : null,
-        30,
-        cursor,
-      );
+      const next = await searchMessages(normalized, roomId, 30, cursor);
       if (id !== requestId.current) return;
       setPage((current) =>
         cursor && current ? { ...next, results: [...current.results, ...next.results] } : next,
@@ -144,7 +163,14 @@ export function MessageSearchDialog({
               className="pl-9"
             />
           </div>
-          <Button type="submit" disabled={loading || !query.trim()}>
+          <Button
+            type="submit"
+            disabled={
+              loading ||
+              !query.trim() ||
+              effectiveMessageSearchRoomId(scope, activeRoomId) === undefined
+            }
+          >
             Search
           </Button>
         </form>
@@ -156,7 +182,7 @@ export function MessageSearchDialog({
               name="message-search-scope"
               checked={scope === "room"}
               disabled={!activeRoomId}
-              onChange={() => setScope("room")}
+              onChange={() => changeScope("room")}
             />
             This room
           </label>
@@ -165,7 +191,7 @@ export function MessageSearchDialog({
               type="radio"
               name="message-search-scope"
               checked={scope === "all"}
-              onChange={() => setScope("all")}
+              onChange={() => changeScope("all")}
             />
             All rooms
           </label>
