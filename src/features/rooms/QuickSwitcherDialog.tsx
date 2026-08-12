@@ -63,10 +63,14 @@ export function QuickSwitcherDialog({
     () => new Set(entries.map((entry) => entry.room.room_id)),
     [entries],
   );
-  const recentRoomIds =
-    recentState.accountId === currentUserId
-      ? recentState.roomIds.filter((roomId) => validRoomIds.has(roomId))
-      : readQuickSwitcherRecents(currentUserId).filter((roomId) => validRoomIds.has(roomId));
+  const recentRoomIds = useMemo(
+    () =>
+      (recentState.accountId === currentUserId
+        ? recentState.roomIds
+        : readQuickSwitcherRecents(currentUserId)
+      ).filter((roomId) => validRoomIds.has(roomId)),
+    [currentUserId, recentState, validRoomIds],
+  );
   const fuse = useMemo(
     () =>
       new Fuse(entries, {
