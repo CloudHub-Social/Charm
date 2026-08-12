@@ -96,11 +96,12 @@ describe("MessageSearchDialog", () => {
       next_cursor: null,
       incomplete: false,
     });
-    const onSelectResult = vi.fn();
+    const onSelectResult = vi.fn(() => true);
+    const onOpenChange = vi.fn();
     renderWithProviders(
       <MessageSearchDialog
         open
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         rooms={[room]}
         activeRoomId={room.room_id}
         onSelectResult={onSelectResult}
@@ -124,6 +125,55 @@ describe("MessageSearchDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/reveals the event ID/i);
     fireEvent.click(screen.getByRole("button", { name: "Open message" }));
     expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({ event_id: "$event" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("stays open when click or keyboard selection targets a room that is no longer joined", async () => {
+    searchMessages.mockResolvedValue({
+      results: [
+        {
+          room_id: room.room_id,
+          event_id: "$stale",
+          sender: "@alice:example.org",
+          origin_server_ts: 1_700_000_000_000,
+          snippet: "stale result",
+          match_ranges: [],
+        },
+      ],
+      next_cursor: null,
+      incomplete: false,
+    });
+    const onSelectResult = vi.fn(() => false);
+    const onOpenChange = vi.fn();
+    renderWithProviders(
+      <MessageSearchDialog
+        open
+        onOpenChange={onOpenChange}
+        rooms={[room]}
+        activeRoomId={room.room_id}
+        onSelectResult={onSelectResult}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "stale" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    const result = await screen.findByRole("button", { name: /stale result/i });
+
+    fireEvent.click(result);
+    fireEvent.click(screen.getByRole("button", { name: "Open message" }));
+    expect(onSelectResult).toHaveBeenCalledOnce();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/no longer in the room/i);
+    expect(result).toBeInTheDocument();
+
+    fireEvent.keyDown(result, { key: "Enter" });
+    fireEvent.keyUp(result, { key: "Enter" });
+    fireEvent.click(result, { detail: 0 });
+    expect(onSelectResult).toHaveBeenCalledTimes(2);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(result).toBeInTheDocument();
   });
 
   it("discloses an incomplete local index", async () => {

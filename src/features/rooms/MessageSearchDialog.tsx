@@ -23,7 +23,7 @@ interface MessageSearchDialogProps {
   onOpenChange: (open: boolean) => void;
   rooms: RoomSummary[];
   activeRoomId: string | null;
-  onSelectResult: (result: SearchResult) => void;
+  onSelectResult: (result: SearchResult) => boolean;
 }
 
 type SearchScope = "room" | "all";
@@ -92,7 +92,11 @@ export function MessageSearchDialog({
   }, [open, activeRoomId, joinedActiveRoomId]);
 
   function navigateToResult(result: SearchResult) {
-    onSelectResult(result);
+    if (!onSelectResult(result)) {
+      setPendingResult(null);
+      setError("This result is no longer available because you are no longer in the room.");
+      return;
+    }
     onOpenChange(false);
   }
 

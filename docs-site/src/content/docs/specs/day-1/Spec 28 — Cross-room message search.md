@@ -245,7 +245,10 @@ connection: the SDK owns that schema and migration lifecycle.
   effective scope, and an explicit scope change clears the prior page and cursor.
 - Selecting a result jumps to that message in its room's timeline and highlights it
   (reuse the scroll-to/highlight mechanism Spec 03's reply-click-to-scroll already
-  has, if one exists, rather than building a second one).
+  has, if one exists, rather than building a second one). Navigation revalidates
+  current joined-room state: a result that outlives a leave or kick keeps the
+  dialog open and explains why it is no longer available instead of closing as
+  though navigation succeeded.
 
 ## Data flow
 
