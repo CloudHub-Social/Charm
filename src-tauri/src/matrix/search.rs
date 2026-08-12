@@ -3923,7 +3923,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let first = open_index(directory.path(), "account", "DEVICE-A");
         let second = open_index(directory.path(), "other-account", "DEVICE-B");
-        let first_directory = first.database_path().parent().expect("first parent").to_owned();
+        let first_directory = first
+            .database_path()
+            .parent()
+            .expect("first parent")
+            .to_owned();
         let second_directory = second
             .database_path()
             .parent()
@@ -3943,7 +3947,10 @@ mod tests {
         assert!(!deletable.exists());
         assert!(cleanup_marker(
             &directory.path().join(SEARCH_ROOT),
-            blocked.file_name().and_then(std::ffi::OsStr::to_str).expect("opaque name"),
+            blocked
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .expect("opaque name"),
         )
         .exists());
     }
