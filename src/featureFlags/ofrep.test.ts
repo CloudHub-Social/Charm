@@ -103,9 +103,13 @@ describe("fetchRemoteFlags", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     // Only the targeting key is passed — the Rust command fixes the URL itself
     // (no attacker-controllable endpoint → no SSRF).
-    expect(mocks.invoke).toHaveBeenCalledWith("fetch_remote_flags", {
-      targetingKey: "install-9",
-    });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "fetch_remote_flags",
+      {
+        targetingKey: "install-9",
+      },
+      { captureOnError: false },
+    );
   });
 
   it("returns null (fail-open) when the IPC command errors", async () => {
