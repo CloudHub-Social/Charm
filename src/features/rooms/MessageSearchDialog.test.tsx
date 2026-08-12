@@ -2,10 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import type * as MatrixModule from "@/lib/matrix";
-import {
-  effectiveMessageSearchRoomId,
-  MessageSearchDialog,
-} from "./MessageSearchDialog";
+import { effectiveMessageSearchRoomId, MessageSearchDialog } from "./MessageSearchDialog";
 
 const searchMessages = vi.fn();
 const isWebBuild = vi.fn(() => false);
