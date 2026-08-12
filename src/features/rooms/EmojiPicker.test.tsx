@@ -18,7 +18,7 @@ vi.mock("emoji-picker-react", () => ({
       data-theme={String(props.theme)}
       data-style={String(props.emojiStyle)}
       data-suggestions={String(props.suggestedEmojisMode)}
-      data-categories={(props.categories ?? []).map(String).join(",")}
+      data-categories={(props.categories ?? []).map((category) => category.category).join(",")}
       data-search-disabled={String(props.searchDisabled ?? false)}
       data-skin-tones-disabled={String(props.skinTonesDisabled ?? false)}
       data-custom-names={(props.customEmojis ?? []).flatMap((emoji) => emoji.names).join(",")}

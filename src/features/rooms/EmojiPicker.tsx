@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { EmojiClickData, PickerProps } from "emoji-picker-react";
+import type { CategoryConfig, EmojiClickData, PickerProps } from "emoji-picker-react";
 import { useAtomValue } from "jotai";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useFlag } from "@/featureFlags";
@@ -24,16 +24,16 @@ interface EmojiPickerPanelProps {
 const NO_EXTRA_CATEGORIES: readonly EmojiPickerExtraCategory[] = [];
 const UPSTREAM_RECENT_KEY = "epr_suggested";
 const PICKER_CATEGORIES = [
-  "custom",
-  "smileys_people",
-  "animals_nature",
-  "food_drink",
-  "travel_places",
-  "activities",
-  "objects",
-  "symbols",
-  "flags",
-] as PickerProps["categories"];
+  { category: "custom" as CategoryConfig["category"], name: "Custom Emojis" },
+  { category: "smileys_people" as CategoryConfig["category"], name: "Smileys & People" },
+  { category: "animals_nature" as CategoryConfig["category"], name: "Animals & Nature" },
+  { category: "food_drink" as CategoryConfig["category"], name: "Food & Drink" },
+  { category: "travel_places" as CategoryConfig["category"], name: "Travel & Places" },
+  { category: "activities" as CategoryConfig["category"], name: "Activities" },
+  { category: "objects" as CategoryConfig["category"], name: "Objects" },
+  { category: "symbols" as CategoryConfig["category"], name: "Symbols" },
+  { category: "flags" as CategoryConfig["category"], name: "Flags" },
+] satisfies NonNullable<PickerProps["categories"]>;
 
 function clearUpstreamRecentEmoji(): void {
   try {
