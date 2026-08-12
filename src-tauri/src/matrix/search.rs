@@ -5,7 +5,7 @@
 //! emote events after applying Matrix reply and HTML normalization.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     future::Future as _,
     path::{Path, PathBuf},
@@ -40,6 +40,7 @@ use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
+const CLEANUP_MARKER_PREFIX: &str = ".cleanup-";
 const SCHEMA_VERSION: u32 = 5;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
@@ -280,8 +281,11 @@ impl SearchIndex {
         // the trusted app-data root once, then continue to reject symlinks in
         // every Charm-owned component beneath it.
         let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
-        create_private_directory(&app_data_dir.join(SEARCH_ROOT))?;
+        let search_root = app_data_dir.join(SEARCH_ROOT);
+        create_private_directory(&search_root)?;
+        exclude_search_root_from_backup(&app_data_dir, &search_root)?;
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
+        reconcile_pending_cleanup(&search_root, &directory)?;
         create_private_directory(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
         let mut connection = match open_encrypted_connection(
@@ -345,7 +349,13 @@ impl SearchIndex {
     pub fn delete(self) -> Result<(), String> {
         let database_path = self.database_path.clone();
         drop(self);
-        delete_database_path(&database_path)
+        let directory = database_path
+            .parent()
+            .ok_or_else(|| "message search filesystem boundary invalid".to_string())?;
+        let search_root = directory
+            .parent()
+            .ok_or_else(|| "message search filesystem boundary invalid".to_string())?;
+        delete_index_directory(search_root, directory)
     }
 
     /// Removes one derived account/device index without opening it or
@@ -361,19 +371,9 @@ impl SearchIndex {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(safe_io_error(error)),
         };
-        let search_root = app_data_dir.join(SEARCH_ROOT);
+        let search_root = validated_search_root(&app_data_dir)?;
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
-        for path in [&search_root, &directory] {
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_dir() => {}
-                Ok(_) => {
-                    return Err("message search filesystem path is not a directory".to_string())
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(safe_io_error(error)),
-            }
-        }
-        delete_database_path(&directory.join(SEARCH_DATABASE))
+        delete_index_directory(&search_root, &directory)
     }
 
     /// Removes every retained device index derived from one account store
@@ -385,28 +385,33 @@ impl SearchIndex {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(safe_io_error(error)),
         };
-        let search_root = app_data_dir.join(SEARCH_ROOT);
-        match std::fs::symlink_metadata(&search_root) {
-            Ok(metadata) if metadata.file_type().is_dir() => {}
-            Ok(_) => return Err("message search filesystem path is not a directory".to_string()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(safe_io_error(error)),
-        }
+        let search_root = validated_search_root(&app_data_dir)?;
         let prefix = account_directory_prefix(account_store_key);
-        for entry in std::fs::read_dir(&search_root).map_err(safe_io_error)? {
-            let entry = entry.map_err(safe_io_error)?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if !name.starts_with(&prefix) {
-                continue;
+        for name in cleanup_targets(&search_root)? {
+            if name.starts_with(&prefix) {
+                delete_index_directory(&search_root, &search_root.join(name))?;
             }
-            let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
-            if !metadata.file_type().is_dir() {
-                return Err("message search filesystem path is not a directory".to_string());
-            }
-            delete_database_path(&entry.path().join(SEARCH_DATABASE))?;
         }
         Ok(())
+    }
+
+    /// Removes every Charm-owned message-search index while leaving sibling
+    /// application and matrix-sdk storage untouched.
+    pub fn delete_all(app_data_dir: &Path) -> Result<(), String> {
+        let app_data_dir = match std::fs::canonicalize(app_data_dir) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(safe_io_error(error)),
+        };
+        let search_root = validated_search_root(&app_data_dir)?;
+        for name in cleanup_targets(&search_root)? {
+            delete_index_directory(&search_root, &search_root.join(name))?;
+        }
+        match std::fs::remove_dir(&search_root) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(safe_io_error(error)),
+        }
     }
 
     /// Inserts a renderer-selected message version and atomically updates the
@@ -1178,9 +1183,10 @@ fn ensure_index<'a>(
         .as_ref()
         .is_some_and(|active| !active.matches(account_store_key, device_id))
     {
-        if let Some(active) = slot.take() {
-            active.index.delete()?;
-        }
+        // Account switching closes the previous handle but preserves its
+        // device-scoped database. Explicit logout, deactivation, kill-switch,
+        // and forget-local-data paths own physical deletion.
+        slot.take();
     }
     if slot.is_none() {
         let app_data_dir = app
@@ -2728,7 +2734,10 @@ fn rebuild_encrypted_connection(
         %incident_id,
         status = "rebuilding"
     );
-    delete_database_path(database_path)?;
+    let search_root = directory
+        .parent()
+        .ok_or_else(|| "message search filesystem boundary invalid".to_string())?;
+    delete_index_directory(search_root, directory)?;
     create_private_directory(directory)?;
     let connection = open_encrypted_connection(
         database_path,
@@ -3065,8 +3074,163 @@ fn snippet_and_ranges(body: &str, query: &str) -> (String, Vec<SearchMatchRange>
     )
 }
 
-fn delete_database_path(database_path: &Path) -> Result<(), String> {
-    retry_delete(|| delete_database_path_once(database_path))
+fn delete_index_directory(search_root: &Path, directory: &Path) -> Result<(), String> {
+    validate_search_root_entries(search_root)?;
+    let directory_name = direct_index_child_name(search_root, directory)?;
+    let marker = cleanup_marker(search_root, &directory_name);
+    match std::fs::symlink_metadata(directory) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match std::fs::remove_dir(&marker) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(safe_io_error(error)),
+            };
+        }
+        Err(error) => return Err(safe_io_error(error)),
+    }
+    create_private_directory(&marker)?;
+    validate_index_directory(directory)?;
+
+    let result = retry_delete(|| delete_database_path_once(&directory.join(SEARCH_DATABASE)));
+    if result.is_ok() {
+        std::fs::remove_dir(&marker).map_err(safe_io_error)?;
+    }
+    result
+}
+
+fn reconcile_pending_cleanup(search_root: &Path, directory: &Path) -> Result<(), String> {
+    validate_search_root_entries(search_root)?;
+    let directory_name = direct_index_child_name(search_root, directory)?;
+    let marker = cleanup_marker(search_root, &directory_name);
+    match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            delete_index_directory(search_root, directory)
+        }
+        Ok(_) => Err("message search filesystem cleanup marker invalid".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+fn validated_search_root(app_data_dir: &Path) -> Result<PathBuf, String> {
+    let search_root = app_data_dir.join(SEARCH_ROOT);
+    match std::fs::symlink_metadata(&search_root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("message search filesystem path is not a directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(search_root),
+        Err(error) => return Err(safe_io_error(error)),
+    }
+    validate_search_root_entries(&search_root)?;
+    Ok(search_root)
+}
+
+fn validate_search_root_entries(search_root: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(search_root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("message search filesystem path is not a directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(safe_io_error(error)),
+    }
+    for entry in std::fs::read_dir(search_root).map_err(safe_io_error)? {
+        let entry = entry.map_err(safe_io_error)?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "message search filesystem entry invalid".to_string())?;
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
+        let valid_directory = is_index_directory_name(&name) && metadata.file_type().is_dir();
+        let valid_marker = cleanup_target_name(&name).is_some() && metadata.file_type().is_dir();
+        if !valid_directory && !valid_marker {
+            return Err("message search filesystem entry invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_index_directory(directory: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("message search filesystem path is not a directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(safe_io_error(error)),
+    }
+    for entry in std::fs::read_dir(directory).map_err(safe_io_error)? {
+        let entry = entry.map_err(safe_io_error)?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "message search filesystem entry invalid".to_string())?;
+        let expected = [
+            SEARCH_DATABASE.to_string(),
+            format!("{SEARCH_DATABASE}-wal"),
+            format!("{SEARCH_DATABASE}-shm"),
+            format!("{SEARCH_DATABASE}-journal"),
+        ]
+        .contains(&name);
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
+        if !expected || !metadata.file_type().is_file() {
+            return Err("message search filesystem entry invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_targets(search_root: &Path) -> Result<BTreeSet<String>, String> {
+    validate_search_root_entries(search_root)?;
+    let mut targets = BTreeSet::new();
+    let entries = match std::fs::read_dir(search_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(targets),
+        Err(error) => return Err(safe_io_error(error)),
+    };
+    for entry in entries {
+        let name = entry
+            .map_err(safe_io_error)?
+            .file_name()
+            .into_string()
+            .map_err(|_| "message search filesystem entry invalid".to_string())?;
+        if is_index_directory_name(&name) {
+            targets.insert(name);
+        } else if let Some(target) = cleanup_target_name(&name) {
+            targets.insert(target.to_string());
+        }
+    }
+    Ok(targets)
+}
+
+fn direct_index_child_name(search_root: &Path, directory: &Path) -> Result<String, String> {
+    let relative = directory
+        .strip_prefix(search_root)
+        .map_err(|_| "message search filesystem boundary invalid".to_string())?;
+    let mut components = relative.components();
+    let name = components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        .filter(|name| is_index_directory_name(name))
+        .ok_or_else(|| "message search filesystem boundary invalid".to_string())?;
+    if components.next().is_some() {
+        return Err("message search filesystem boundary invalid".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn is_index_directory_name(name: &str) -> bool {
+    name.len() == 65
+        && name.as_bytes().get(32) == Some(&b'-')
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 32 || byte.is_ascii_hexdigit())
+}
+
+fn cleanup_marker(search_root: &Path, directory_name: &str) -> PathBuf {
+    search_root.join(format!("{CLEANUP_MARKER_PREFIX}{directory_name}"))
+}
+
+fn cleanup_target_name(name: &str) -> Option<&str> {
+    name.strip_prefix(CLEANUP_MARKER_PREFIX)
+        .filter(|target| is_index_directory_name(target))
 }
 
 fn retry_delete(mut delete: impl FnMut() -> Result<(), String>) -> Result<(), String> {
@@ -3094,7 +3258,10 @@ fn delete_database_path_once(database_path: &Path) -> Result<(), String> {
             Err(error) => return Err(safe_io_error(error)),
         }
     }
-    match std::fs::remove_dir(database_path.parent().expect("index database has parent")) {
+    let Some(directory) = database_path.parent() else {
+        return Err("message search filesystem boundary invalid".to_string());
+    };
+    match std::fs::remove_dir(directory) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(safe_io_error(error)),
@@ -3152,6 +3319,48 @@ fn create_private_directory(path: &Path) -> Result<(), String> {
             .map_err(safe_io_error)?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "ios")]
+fn exclude_search_root_from_backup(app_data_dir: &Path, search_root: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    if direct_search_root(app_data_dir, search_root).is_none() {
+        return Err("message search filesystem boundary invalid".to_string());
+    }
+    let app_data = CString::new(app_data_dir.as_os_str().as_bytes())
+        .map_err(|_| "message search filesystem path invalid".to_string())?;
+    let search = CString::new(search_root.as_os_str().as_bytes())
+        .map_err(|_| "message search filesystem path invalid".to_string())?;
+    unsafe extern "C" {
+        fn charm_exclude_search_root_from_backup(
+            app_data_path: *const std::ffi::c_char,
+            search_root_path: *const std::ffi::c_char,
+        ) -> bool;
+    }
+    // SAFETY: both pointers remain valid for the duration of the synchronous
+    // bridge call and contain NUL-terminated filesystem bytes.
+    if unsafe { charm_exclude_search_root_from_backup(app_data.as_ptr(), search.as_ptr()) } {
+        Ok(())
+    } else {
+        Err("message search backup exclusion unavailable".to_string())
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn exclude_search_root_from_backup(app_data_dir: &Path, search_root: &Path) -> Result<(), String> {
+    direct_search_root(app_data_dir, search_root)
+        .map(|_| ())
+        .ok_or_else(|| "message search filesystem boundary invalid".to_string())
+}
+
+fn direct_search_root<'a>(app_data_dir: &'a Path, search_root: &'a Path) -> Option<&'a Path> {
+    let relative = search_root.strip_prefix(app_data_dir).ok()?;
+    let mut components = relative.components();
+    let component = components.next()?;
+    (component.as_os_str() == std::ffi::OsStr::new(SEARCH_ROOT) && components.next().is_none())
+        .then_some(search_root)
 }
 
 fn safe_storage_error(error: rusqlite::Error) -> String {
@@ -3644,7 +3853,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let index = open_index(directory.path(), "account", "DEVICE");
         let database_path = index.database_path().to_path_buf();
+        let mut journal_path = database_path.as_os_str().to_os_string();
+        journal_path.push("-journal");
+        let journal_path = PathBuf::from(journal_path);
         drop(index);
+        std::fs::write(&journal_path, b"retained rollback journal").expect("seed journal");
 
         SearchIndex::delete_for_source(directory.path(), "account", "DEVICE")
             .expect("delete unopened index");
@@ -3652,6 +3865,10 @@ mod tests {
         assert!(!database_path.exists());
         assert!(!database_path.with_extension("sqlite3-wal").exists());
         assert!(!database_path.with_extension("sqlite3-shm").exists());
+        assert!(!journal_path.exists());
+
+        SearchIndex::delete_for_source(directory.path(), "account", "DEVICE")
+            .expect("repeat delete is idempotent");
     }
 
     #[test]
@@ -3671,6 +3888,138 @@ mod tests {
         assert!(!first_path.exists());
         assert!(!second_path.exists());
         assert!(other_path.exists());
+    }
+
+    #[test]
+    fn delete_all_removes_only_the_validated_search_root() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = open_index(directory.path(), "account", "DEVICE-A");
+        let second = open_index(directory.path(), "other-account", "DEVICE-B");
+        let first_path = first.database_path().to_owned();
+        let second_path = second.database_path().to_owned();
+        let sibling = directory.path().join("matrix_store");
+        drop((first, second));
+        std::fs::create_dir(&sibling).expect("create sibling SDK store");
+        std::fs::write(sibling.join("retained"), b"sdk-owned").expect("seed SDK store");
+
+        SearchIndex::delete_all(directory.path()).expect("delete every search index");
+
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        assert_eq!(
+            std::fs::read(sibling.join("retained")).expect("read sibling SDK store"),
+            b"sdk-owned"
+        );
+    }
+
+    #[test]
+    fn cleanup_fails_closed_on_unexpected_retained_content() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        let unexpected = database_path.parent().expect("parent").join("unexpected.txt");
+        drop(index);
+        std::fs::write(&unexpected, b"do not remove").expect("seed unexpected entry");
+
+        let error = SearchIndex::delete_for_source(directory.path(), "account", "DEVICE")
+            .expect_err("unexpected content must stop bounded cleanup");
+
+        assert_eq!(error, "message search filesystem entry invalid");
+        assert!(database_path.exists());
+        assert_eq!(
+            std::fs::read(unexpected).expect("read unexpected entry"),
+            b"do not remove"
+        );
+    }
+
+    #[test]
+    fn pending_cleanup_blocks_reopen_until_bounded_cleanup_succeeds() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        let device_directory = database_path.parent().expect("parent").to_owned();
+        let search_root = device_directory.parent().expect("search root");
+        let device_name = device_directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("opaque device name");
+        let marker = cleanup_marker(search_root, device_name);
+        drop(index);
+        create_private_directory(&marker).expect("record durable cleanup intent");
+        std::fs::write(device_directory.join("unexpected.txt"), b"retained")
+            .expect("seed cleanup blocker");
+
+        let error = SearchIndex::open_with_secret(
+            directory.path(),
+            "account",
+            "DEVICE",
+            TEST_STORE_SECRET,
+        )
+        .err()
+        .expect("pending failed cleanup must block reopen");
+
+        assert_eq!(error, "message search filesystem entry invalid");
+        assert!(marker.exists());
+        assert!(database_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_rejects_a_symlinked_sidecar_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        let outside_path = outside.path().to_owned();
+        std::fs::write(&outside_path, b"outside content").expect("seed outside file");
+        let mut journal_path = database_path.as_os_str().to_os_string();
+        journal_path.push("-journal");
+        drop(index);
+        symlink(&outside_path, PathBuf::from(journal_path)).expect("create sidecar symlink");
+
+        SearchIndex::delete_for_source(directory.path(), "account", "DEVICE")
+            .expect_err("symlinked sidecar must fail closed");
+
+        assert_eq!(
+            std::fs::read(outside_path).expect("read outside target"),
+            b"outside content"
+        );
+        assert!(database_path.exists());
+    }
+
+    #[test]
+    fn backup_roots_use_exact_path_components_and_android_root_domain() {
+        let app_data = Path::new("/private/container/Application Support/social.cloudhub.charm");
+        assert!(direct_search_root(app_data, &app_data.join(SEARCH_ROOT)).is_some());
+        assert!(
+            direct_search_root(app_data, &app_data.join("message_search-copy")).is_none()
+        );
+        assert!(
+            direct_search_root(app_data, &app_data.join(SEARCH_ROOT).join("nested")).is_none()
+        );
+
+        let modern = include_str!(
+            "../../gen/android/app/src/main/res/xml/secure_store_backup_rules.xml"
+        );
+        let legacy = include_str!(
+            "../../gen/android/app/src/main/res/xml/secure_store_backup_rules_legacy.xml"
+        );
+        assert_eq!(
+            modern
+                .matches("<exclude domain=\"root\" path=\"message_search/\" />")
+                .count(),
+            2
+        );
+        assert_eq!(
+            legacy
+                .matches("<exclude domain=\"root\" path=\"message_search/\" />")
+                .count(),
+            1
+        );
+        assert!(!modern.contains("domain=\"file\" path=\"message_search/\""));
+        assert!(!legacy.contains("domain=\"file\" path=\"message_search/\""));
     }
 
     #[test]
