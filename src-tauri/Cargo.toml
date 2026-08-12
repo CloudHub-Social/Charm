@@ -26,8 +26,8 @@ matrix-sdk = { version = "0.18.0", features = ["sqlite", "e2e-encryption", "sso-
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = "0.7"
 ts-rs = "12.0.1"
-sentry = { version = "0.48.3", features = ["logs", "metrics", "tracing"] }
-base64 = "0.22"
+sentry = { version = "0.49.0", features = ["logs", "metrics", "tracing"] }
+base64 = "0.23"
 # Also present as a dev-dependency below (cookie-jar OIDC test flow); this is
 # the runtime use — forwarding Sentry envelopes through the desktop CSP, see
 # `forward_sentry_envelope` in src/lib.rs. Cargo unifies the two declarations'
@@ -46,8 +46,7 @@ url = "2"
 mime_guess = "2.0.5"
 mime = "0.3.17"
 sha2 = "0.11.0"
-hkdf = "0.12"
-sha2_compat = { package = "sha2", version = "0.10" }
+hkdf = "0.13"
 zeroize = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 eyeball = "0.8.8"

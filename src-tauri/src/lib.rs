@@ -885,23 +885,22 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
     // one case.
     let build_id_tag = resolve_build_id_tag(std::env::var("SENTRY_RELEASE").ok(), BUILD_ID);
 
-    let client = sentry::init((
-        dsn,
-        sentry::ClientOptions {
-            release,
-            environment,
-            send_default_pii: false,
-            traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.5 },
-            auto_session_tracking: true,
-            session_mode: sentry::SessionMode::Application,
-            // Keep Sentry Logs initialized for same-session opt-in; scrub_log
-            // drops every native log unless runtime log consent is enabled.
-            enable_logs: true,
-            before_send: Some(std::sync::Arc::new(observability_scrub::scrub_event)),
-            before_send_log: Some(std::sync::Arc::new(scrub_log)),
-            ..Default::default()
-        },
-    ));
+    let client_options = sentry::ClientOptions::new()
+        .maybe_release(release)
+        .send_default_pii(false)
+        .traces_sample_rate(if cfg!(debug_assertions) { 1.0 } else { 0.5 })
+        .auto_session_tracking(true)
+        .session_mode(sentry::SessionMode::Application)
+        // Keep Sentry Logs initialized for same-session opt-in; scrub_log
+        // drops every native log unless runtime log consent is enabled.
+        .enable_logs(true)
+        .before_send(observability_scrub::scrub_event)
+        .before_send_log(scrub_log);
+    let client_options = match environment {
+        Some(environment) => client_options.environment(environment),
+        None => client_options,
+    };
+    let client = sentry::init((dsn, client_options));
     if let Some(build_id) = build_id_tag {
         sentry::configure_scope(|scope| scope.set_tag("charm.build.id", build_id));
     }

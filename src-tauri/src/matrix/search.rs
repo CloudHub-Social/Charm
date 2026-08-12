@@ -34,7 +34,6 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sha2_compat::Sha256 as HkdfSha256;
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 use zeroize::Zeroizing;
@@ -2747,7 +2746,7 @@ fn derive_search_key(
     device_id: &str,
     store_passphrase: &str,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let hkdf = Hkdf::<HkdfSha256>::new(Some(KEY_DERIVATION_SALT), store_passphrase.as_bytes());
+    let hkdf = Hkdf::<Sha256>::new(Some(KEY_DERIVATION_SALT), store_passphrase.as_bytes());
     let mut derived_key = Zeroizing::new([0_u8; 32]);
     let mut context = Vec::with_capacity(account_store_key.len() + device_id.len() + 1);
     context.extend_from_slice(account_store_key.as_bytes());
@@ -2985,7 +2984,7 @@ fn random_id() -> String {
 }
 
 fn snapshot_query_digest(key: &[u8; 32], query: &str) -> [u8; 32] {
-    let hkdf = Hkdf::<HkdfSha256>::new(Some(key), query.as_bytes());
+    let hkdf = Hkdf::<Sha256>::new(Some(key), query.as_bytes());
     let mut digest = [0_u8; 32];
     hkdf.expand(SNAPSHOT_QUERY_DIGEST_INFO, &mut digest)
         .expect("fixed-size SHA-256 snapshot digest");
