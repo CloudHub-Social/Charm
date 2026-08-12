@@ -74,6 +74,39 @@ type TimelineEntry = (
 /// `persistence::account_key`.
 pub struct MatrixState {
     pub(crate) client: Mutex<Option<Client>>,
+    /// SQLCipher-backed decrypted-message index for the active account/device.
+    /// SQLite work is always performed from `spawn_blocking`; the mutex keeps
+    /// the non-`Sync` connection isolated from async workers and IPC calls.
+    pub(crate) search_index: std::sync::Arc<std::sync::Mutex<Option<search::ActiveSearchIndex>>>,
+    /// Bounded FIFO feeding the blocking search-index worker from `/sync`.
+    pub(crate) search_work_tx:
+        tokio::sync::OnceCell<tokio::sync::mpsc::Sender<search::QueuedSearchWork>>,
+    /// Invalidates plaintext work buffered by a prior signed-in lifecycle.
+    /// Logout increments this before deleting the index, so the long-lived
+    /// worker cannot reopen that index from stale queue entries afterwards.
+    pub(crate) search_generation: std::sync::atomic::AtomicU64,
+    /// Serializes generation resets with sticky-incomplete writes so a stale
+    /// worker cannot mark the lifecycle that replaced it as incomplete.
+    pub(crate) search_lifecycle_lock: std::sync::Mutex<()>,
+    /// Set when the bounded queue overflows; surfaced on result pages so the
+    /// UI never presents a partial local index as complete.
+    pub(crate) search_incomplete: std::sync::atomic::AtomicBool,
+    /// Guards the one-time local event-cache seed for each enabled lifecycle.
+    pub(crate) search_backfill_started: std::sync::atomic::AtomicBool,
+    /// True while the first local-cache seed is queued/being applied. Search
+    /// result pages report incomplete until its completion marker is handled.
+    pub(crate) search_backfill_pending: std::sync::atomic::AtomicBool,
+    /// Coalesces timeline-pagination re-seeds so decrypted room snapshots
+    /// cannot accumulate in an unbounded set of detached tasks.
+    pub(crate) search_pagination_seed_running: std::sync::atomic::AtomicBool,
+    /// Metadata-only follow-up queue for room re-seeds that arrive while the
+    /// single detached seed worker is busy. Generation is part of the key so
+    /// an old lifecycle can never consume a newer session's request.
+    pub(crate) search_pending_seed_rooms:
+        std::sync::Mutex<std::collections::HashSet<(u64, matrix_sdk::ruma::OwnedRoomId)>>,
+    /// Wakes leave/forget cleanup once an in-flight pagination re-seed has
+    /// finished enqueueing, so its final purge is ordered last in the FIFO.
+    pub(crate) search_pagination_seed_done: tokio::sync::Notify,
     /// Serializes an interactive login's *entire* completion sequence —
     /// stopping the previous sync loop/client, relocating the account's
     /// store, saving the session, and adopting the new client — across
@@ -378,6 +411,16 @@ impl Default for MatrixState {
     fn default() -> Self {
         Self {
             client: Mutex::default(),
+            search_index: std::sync::Arc::default(),
+            search_work_tx: tokio::sync::OnceCell::default(),
+            search_generation: std::sync::atomic::AtomicU64::default(),
+            search_lifecycle_lock: std::sync::Mutex::default(),
+            search_incomplete: std::sync::atomic::AtomicBool::default(),
+            search_backfill_started: std::sync::atomic::AtomicBool::default(),
+            search_backfill_pending: std::sync::atomic::AtomicBool::default(),
+            search_pagination_seed_running: std::sync::atomic::AtomicBool::default(),
+            search_pending_seed_rooms: std::sync::Mutex::default(),
+            search_pagination_seed_done: tokio::sync::Notify::new(),
             login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
@@ -487,6 +530,24 @@ impl MatrixState {
             .ok_or_else(|| "not logged in".to_string())
     }
 
+    /// Returns the active client and message-search generation from one
+    /// client-lock epoch. Logout clears `client` under this same lock before
+    /// advancing the generation, so callers that will await Matrix work cannot
+    /// accidentally pair an old client with a newer post-logout generation.
+    pub(crate) async fn require_client_with_search_generation(
+        &self,
+    ) -> Result<(Client, u64), String> {
+        let client_guard = self.client.lock().await;
+        let client = client_guard
+            .clone()
+            .ok_or_else(|| "not logged in".to_string())?;
+        let generation = self
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        drop(client_guard);
+        Ok((client, generation))
+    }
+
     /// Whether `room_id` already has a live `Timeline` cached — a cheap peek
     /// (`LruCache::contains`, which doesn't touch recency order) for callers
     /// that want to tell a cold open (this returns `false`, then
@@ -553,7 +614,6 @@ impl MatrixState {
         force_live: bool,
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
-
         // Review fix: a focused entry being force-reset to live used to have
         // its listener merely `.abort()`-ed in place (via `get_mut`, keeping
         // the entry cached) and only *awaited* once displaced by the later
@@ -835,6 +895,17 @@ impl MatrixState {
         // never touches whatever's currently cached in the first place.
         let previous = {
             let mut timelines = self.timelines.lock().await;
+            if expected_event_id.is_some()
+                && client
+                    .get_room(room_id)
+                    .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
+                drop(timelines);
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
+                return None;
+            }
             if let Some(event_id) = expected_event_id {
                 let still_latest = self
                     .latest_jump_target
@@ -904,6 +975,17 @@ impl MatrixState {
             current.user_id() == client.user_id() && current.device_id() == client.device_id()
         });
         if !still_active {
+            drop(timelines);
+            if inserted_transition_marker {
+                self.transitioning_timelines.lock().await.remove(room_id);
+            }
+            return None;
+        }
+        if expected_event_id.is_some()
+            && client
+                .get_room(room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
             drop(timelines);
             if inserted_transition_marker {
                 self.transitioning_timelines.lock().await.remove(room_id);

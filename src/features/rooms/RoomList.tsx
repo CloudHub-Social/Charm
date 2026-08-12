@@ -80,6 +80,8 @@ interface RoomListProps {
    * cross-scope search (e.g. tests).
    */
   onSelectSearchResult?: (room: RoomSummary) => void;
+  /** Opens Spec 28's decrypted-message search, distinct from this list's room filter. */
+  onOpenMessageSearch?: () => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   /**
@@ -131,6 +133,7 @@ export function RoomList({
   onSelectRoom,
   onSelectSpace,
   onSelectSearchResult,
+  onOpenMessageSearch,
   mode,
   selectedSpace,
   intendedSpaceId = null,
@@ -776,6 +779,17 @@ export function RoomList({
                   {unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
                 </TooltipContent>
               </Tooltip>
+            )}
+            {onOpenMessageSearch && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Search messages"
+                title="Search messages (⌘/Ctrl+F)"
+                onClick={onOpenMessageSearch}
+              >
+                <SearchIcon />
+              </Button>
             )}
             <Button
               variant="ghost"

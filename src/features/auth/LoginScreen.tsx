@@ -14,8 +14,11 @@ import {
   completeSsoLogin,
   continueRegistration,
   getLoginFlows,
+  getLoginProviderIconUrl,
   login,
   loginWithToken,
+  logout,
+  pollSsoLogin,
   requestRegistrationEmail,
   requestPasswordReset,
   resendPasswordReset,
@@ -103,12 +106,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [recoveryToken, setRecoveryToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [passwordResetComplete, setPasswordResetComplete] = useState(false);
+  const [passwordResetNotice, setPasswordResetNotice] = useState<string | null>(null);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
   // Distinct because there's no way to know if/when the user will finish in
   // the browser, so — unlike `pending` for the password form, which always
   // resolves on its own — this state needs a manual way out.
   const [ssoPending, setSsoPending] = useState(false);
+  // Browser builds must not poll until the companion has returned an opaque
+  // attempt id. `ssoPending` starts earlier so the setup button cannot race
+  // a second request while `/api/auth/sso/start` is still in flight.
+  const [ssoPolling, setSsoPolling] = useState(false);
   // Separate screen entirely, not another Mode: QR login has its own
   // multi-stage lifecycle (generating, waiting for scan, check code,
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
@@ -116,7 +124,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery");
   const showAlternativeSignInOptions =
-    showNativeSignInOptions || (registrationUiaEnabled && loginFlows?.token === true);
+    showNativeSignInOptions ||
+    (registrationUiaEnabled && (loginFlows?.token === true || loginFlows?.sso === true));
   const passwordLoginAvailable =
     !registrationUiaEnabled || loginFlows === undefined || loginFlowsFailed || loginFlows.password;
   const showGenericSso =
@@ -124,6 +133,47 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     loginFlows === undefined ||
     loginFlowsFailed ||
     (loginFlows.sso && loginFlows.identity_providers.length === 0);
+
+  useEffect(() => {
+    if (!isWebBuild() || !ssoPolling) return undefined;
+    let current = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      ssoPollInFlightRef.current = true;
+      try {
+        const session = await pollSsoLogin();
+        if (!session) return;
+        if (!current || !ssoInProgressRef.current) {
+          await logout().catch(logAndIgnore);
+          return;
+        }
+        ssoInProgressRef.current = false;
+        setSsoPolling(false);
+        setSsoPending(false);
+        onSignedIn(session);
+      } catch (pollError) {
+        if (!current || !ssoInProgressRef.current) return;
+        ssoInProgressRef.current = false;
+        setSsoPolling(false);
+        setSsoPending(false);
+        setError(String(pollError));
+      } finally {
+        polling = false;
+        ssoPollInFlightRef.current = false;
+        if (!ssoInProgressRef.current && !ssoSetupInFlightRef.current) {
+          setSsoPending(false);
+        }
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_000);
+    void poll();
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [onSignedIn, ssoPolling]);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -169,6 +219,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // against completing a callback that doesn't belong to an SSO attempt this
   // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
+  const ssoPollInFlightRef = useRef(false);
   const ssoOperationRef = useRef(0);
   // Keeps cancellation from exposing the SSO buttons while the backend is
   // still creating an attempt. Once that setup settles, its stale-operation
@@ -189,6 +240,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
+    setPasswordResetNotice(null);
     setRecoveryEmail("");
     setRecoveryToken("");
     setNewPassword("");
@@ -437,29 +489,45 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleSsoLogin(idpId?: string) {
     const operation = ++ssoOperationRef.current;
+    let browserPopup: Window | null = null;
     ssoSetupInFlightRef.current = true;
     setSsoPending(true);
     setError(null);
     try {
+      if (isWebBuild()) {
+        // Preserve the click's transient user activation while the companion
+        // performs discovery and creates the server-owned attempt.
+        browserPopup = window.open("about:blank", "_blank");
+        if (!browserPopup) throw new Error("The browser blocked the single sign-on window.");
+        browserPopup.opener = null;
+      }
       const ssoUrl = await startSsoLogin(homeserverUrl, idpId);
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
+        browserPopup?.close();
         await cancelSsoLogin().catch(logAndIgnore);
         setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = true;
-      await openExternalUrl(ssoUrl);
+      if (browserPopup) {
+        browserPopup.location.replace(ssoUrl);
+        setSsoPolling(true);
+      } else {
+        await openExternalUrl(ssoUrl);
+      }
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
+      browserPopup?.close();
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
         setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = false;
+      setSsoPolling(false);
       setError(String(err));
       setSsoPending(false);
     }
@@ -468,15 +536,21 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   function handleCancelSso() {
     ssoOperationRef.current += 1;
     ssoInProgressRef.current = false;
+    setSsoPolling(false);
     // If setup is still in flight, keep the controls disabled. The stale
     // setup branch above performs a second cancellation after the backend
     // has actually installed its pending attempt, then clears this state.
-    if (!ssoSetupInFlightRef.current) setSsoPending(false);
     setError(null);
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
     // already moved on regardless of whether this succeeds.
-    cancelSsoLogin().catch(logAndIgnore);
+    cancelSsoLogin()
+      .catch(logAndIgnore)
+      .finally(() => {
+        if (!ssoSetupInFlightRef.current && !ssoPollInFlightRef.current) {
+          setSsoPending(false);
+        }
+      });
   }
 
   async function handleRequestPasswordReset(e: React.FormEvent) {
@@ -488,6 +562,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     if (passwordResetOperationRef.current !== operation) return;
     setPending(true);
     setError(null);
+    setPasswordResetNotice(null);
     let challenge: PasswordResetChallenge;
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
@@ -519,6 +594,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
+    setPasswordResetNotice(null);
     try {
       await confirmPasswordReset(attemptId, recoveryToken || undefined, newPassword);
       if (passwordResetOperationRef.current !== operation) return;
@@ -548,7 +624,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   async function handleResendPasswordReset() {
     const attemptId = passwordResetAttemptRef.current;
-    if (!attemptId || !isWebBuild()) return;
+    if (!attemptId) return;
     const operation = ++passwordResetOperationRef.current;
     setPending(true);
     setError(null);
@@ -562,6 +638,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       setPasswordResetChallenge(challenge);
       setRecoveryToken("");
+      setPasswordResetNotice("Recovery email sent again.");
     } catch {
       if (
         passwordResetOperationRef.current === operation &&
@@ -588,6 +665,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
+    setPasswordResetNotice(null);
     setRecoveryEmail("");
     setRecoveryToken("");
     setNewPassword("");
@@ -648,20 +726,23 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   />
                 </div>
                 {error && <p className="text-xs text-destructive">{error}</p>}
+                {passwordResetNotice && (
+                  <p className="text-xs text-muted-foreground" aria-live="polite">
+                    {passwordResetNotice}
+                  </p>
+                )}
                 <Button type="submit" disabled={pending}>
                   {pending && <Loader2 className="animate-spin" />}
                   Reset password
                 </Button>
-                {isWebBuild() && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={handleResendPasswordReset}
-                  >
-                    Resend recovery email
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={handleResendPasswordReset}
+                >
+                  Resend recovery email
+                </Button>
                 <Button type="button" variant="ghost" onClick={closePasswordReset}>
                   Cancel
                 </Button>
@@ -1013,6 +1094,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                           setPassword("");
                           setShowPasswordReset(true);
                           setError(null);
+                          setPasswordResetNotice(null);
                         }}
                         className="w-full"
                       >
@@ -1061,7 +1143,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                         </div>
                       ) : (
                         <div className="flex flex-col gap-2">
-                          {showNativeSignInOptions && showGenericSso && (
+                          {(showNativeSignInOptions || loginFlows?.sso) && showGenericSso && (
                             <Button
                               type="button"
                               variant="outline"
@@ -1072,8 +1154,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                               Continue with SSO
                             </Button>
                           )}
-                          {showNativeSignInOptions &&
-                            registrationUiaEnabled &&
+                          {registrationUiaEnabled &&
                             loginFlows?.identity_providers.map((provider) => (
                               <Button
                                 key={provider.id}
@@ -1083,6 +1164,16 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                                 onClick={() => void handleSsoLogin(provider.id)}
                                 className="w-full"
                               >
+                                {getLoginProviderIconUrl(homeserverUrl, provider.icon) && (
+                                  <img
+                                    src={
+                                      getLoginProviderIconUrl(homeserverUrl, provider.icon) ??
+                                      undefined
+                                    }
+                                    alt=""
+                                    className="size-5 rounded-sm object-contain"
+                                  />
+                                )}
                                 Continue with {provider.name}
                               </Button>
                             ))}

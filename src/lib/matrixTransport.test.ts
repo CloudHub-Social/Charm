@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC_OPERATION_ID_HEADER } from "@/observability/ipc";
-import { invoke, listen } from "./matrixTransport";
+import { invoke, listen, webProviderIconUrl } from "./matrixTransport";
 
 type FetchCall = [string, RequestInit];
 
@@ -179,6 +179,13 @@ describe("matrix web transport", () => {
       { roomId: "!r:example.org", limit: 50 },
       "GET",
       "/api/rooms/!r%3Aexample.org/timeline?limit=50",
+      undefined,
+    ],
+    [
+      "load_timeline_around_event",
+      { roomId: "!r:example.org", eventId: "$older" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/timeline/around?event_id=%24older",
       undefined,
     ],
     [
@@ -476,6 +483,24 @@ describe("matrix web transport", () => {
       "/api/users/%40alice%3Aexample.org/mutual-rooms",
       undefined,
     ],
+    [
+      "start_direct_message",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/users/%40alice%3Aexample.org/direct-message",
+      undefined,
+    ],
+    [
+      "set_room_profile",
+      {
+        roomId: "!room:example.org",
+        displayName: "Alice Here",
+        avatarUrl: "mxc://example.org/avatar",
+      },
+      "PUT",
+      "/api/rooms/!room%3Aexample.org/profile/me",
+      { display_name: "Alice Here", avatar_url: "mxc://example.org/avatar" },
+    ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
     [
       "get_account_data",
@@ -681,6 +706,49 @@ describe("matrix web transport", () => {
       expect(typeof init.body).toBe("string");
       expect(JSON.parse(init.body as string)).toEqual(body);
     }
+  });
+
+  it("starts, polls, and completes a browser SSO attempt without exposing its login token", async () => {
+    fetchMock()
+      .mockResolvedValueOnce(
+        okJson({
+          attempt_id: "opaque-sso-attempt",
+          redirect_url: "https://matrix.example/sso",
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "pending" }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(okJson({ user_id: "@alice:example.org", device_id: "DEVICE" }));
+
+    await expect(
+      invoke<string>("start_sso_login", {
+        homeserverUrl: "https://matrix.example",
+        idpId: "company",
+      }),
+    ).resolves.toBe("https://matrix.example/sso");
+    await expect(invoke("poll_sso_login")).resolves.toBeNull();
+    await expect(invoke("poll_sso_login")).resolves.toEqual({
+      user_id: "@alice:example.org",
+      device_id: "DEVICE",
+    });
+
+    expect(fetchMock().mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ homeserver_url: "https://matrix.example", idp_id: "company" }),
+    );
+    expect(fetchMock().mock.calls[1]?.[0]).toContain(
+      "/api/auth/sso/poll?attempt_id=opaque-sso-attempt",
+    );
+  });
+
+  it("only builds provider icon proxy URLs for web MXC sources", () => {
+    expect(webProviderIconUrl("https://matrix.example", "mxc://matrix.example/logo")).toBe(
+      "https://api.example/api/auth/provider-icon?homeserver_url=https%3A%2F%2Fmatrix.example&mxc=mxc%3A%2F%2Fmatrix.example%2Flogo",
+    );
+    expect(webProviderIconUrl("https://matrix.example", "https://example.org/logo.png")).toBeNull();
   });
 
   it("returns API URLs for media without fetching bytes eagerly", async () => {

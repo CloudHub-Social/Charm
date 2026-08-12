@@ -329,3 +329,10 @@ and lifecycle setup is documented at the top of `.do/app.yaml`.
 default-off `registration_and_recovery` feature flag. Without it, registration,
 password recovery, login-flow discovery, and token-login endpoints return 404
 even if a browser has stale frontend flag state.
+
+Browser SSO additionally requires `CHARM_WEB_SERVER_PUBLIC_URL` to be the
+operator-controlled public origin of this companion (for example,
+`https://charm.example`). Charm constructs `/api/auth/sso/callback` from this
+value and never trusts `Host` or forwarded headers for callback authority. HTTP
+is accepted only alongside `CHARM_WEB_SERVER_INSECURE_COOKIES=1` for local
+development; production SSO requires HTTPS.

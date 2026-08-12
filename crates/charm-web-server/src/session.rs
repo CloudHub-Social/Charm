@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use charm_lib::matrix::timeline::RoomTimelineUpdate;
@@ -172,6 +173,36 @@ pub struct Session {
     /// on the very next re-save, permanently orphaning a store that might
     /// still be perfectly readable.
     pub persisted_crypto: Option<CryptoStoreHandle>,
+    /// Session-scoped encrypted local-message index. It is intentionally not
+    /// part of durable crypto backup and is discarded with this web session.
+    pub message_search_index: Arc<std::sync::Mutex<Option<charm_lib::matrix::search::SearchIndex>>>,
+    /// Sticky disclosure that at least one live-sync batch could not be queued.
+    /// It stays set until this ephemeral session and its index are rebuilt.
+    pub message_search_incomplete: Arc<AtomicBool>,
+    /// True while the initial cached-history backfill still has queued work.
+    /// Search responses combine this transient state with the sticky
+    /// `message_search_incomplete` disclosure above.
+    pub message_search_backfill_pending: Arc<AtomicBool>,
+    /// Bounded plaintext-work queue shared by sync and timeline pagination.
+    /// `None` while the feature is disabled or before the sync loop starts.
+    pub(crate) message_search_sender: Arc<
+        std::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::sync_loop::QueuedSearchWork>>>,
+    >,
+    /// Coalesces pagination re-seeds so detached plaintext snapshots stay
+    /// bounded to one per web session.
+    pub message_search_pagination_seed_running: Arc<AtomicBool>,
+    /// Metadata-only room ids waiting for the single cached-room seed worker.
+    /// This preserves a follow-up pass when multiple decryption updates overlap
+    /// without retaining another plaintext snapshot or detached task.
+    pub message_search_pending_seed_rooms:
+        Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
+    /// Wakes leave cleanup after an in-flight pagination re-seed finishes
+    /// enqueueing, keeping the subsequent room purge last in the FIFO.
+    pub message_search_pagination_seed_done: Arc<tokio::sync::Notify>,
+    /// Revokes all detached work before logout or idle eviction removes this
+    /// session. Search workers and timeline listeners recheck it immediately
+    /// before writing storage or broadcasting decrypted state.
+    pub session_closed: Arc<AtomicBool>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -194,6 +225,11 @@ pub struct Session {
     /// shared across sessions, keeping the same "session A can't see
     /// session B's state" isolation every other field on `Session` has).
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, Arc<Timeline>>>,
+    /// Most recently requested historical jump per room. A slower earlier
+    /// `/context` response must not replace the timeline selected by a newer
+    /// search-result click in the same session.
+    latest_jump_targets:
+        Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, matrix_sdk::ruma::OwnedEventId>>,
     /// Fan-out for this session's WebSocket event channel (sub-PR B) — the
     /// sync loop and per-room timeline listeners below push onto this;
     /// `crate::routes::ws_handler` subscribes one receiver per connected
@@ -529,6 +565,16 @@ impl Session {
             client,
             user_id,
             persisted_crypto,
+            message_search_index: Arc::new(std::sync::Mutex::new(None)),
+            message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
+            message_search_sender: Arc::new(std::sync::Mutex::new(None)),
+            message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
+            message_search_pending_seed_rooms: Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
+            message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
+            session_closed: Arc::new(AtomicBool::new(false)),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -538,6 +584,7 @@ impl Session {
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            latest_jump_targets: Mutex::new(HashMap::new()),
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -680,12 +727,21 @@ impl Session {
     pub async fn get_or_create_timeline(
         &self,
         room_id: &matrix_sdk::ruma::RoomId,
+        force_live: bool,
     ) -> Result<Arc<Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if let Some(existing) = self.timelines.lock().await.get(room_id) {
-            return Ok(Arc::clone(existing));
-        }
+        // A forced load should replace the timeline that existed when this
+        // request began, but it must not replace a newer timeline installed
+        // by another forced load while `room.timeline()` is awaiting.
+        let timeline_at_start = {
+            let mut timelines = self.timelines.lock().await;
+            match timelines.get(room_id) {
+                Some(existing) if !force_live => return Ok(Arc::clone(existing)),
+                Some(existing) => Some(Arc::clone(existing)),
+                None => None,
+            }
+        };
 
         let room = self
             .client
@@ -694,6 +750,24 @@ impl Session {
         let timeline = Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
 
         let mut timelines = self.timelines.lock().await;
+        if force_live {
+            if let Some(existing) = timelines.get(room_id) {
+                if timeline_changed_while_building(timeline_at_start.as_ref(), Some(existing)) {
+                    return Ok(Arc::clone(existing));
+                }
+            }
+            spawn_timeline_listener(
+                self.client.clone(),
+                Arc::downgrade(&timeline),
+                room_id.to_owned(),
+                self.events.clone(),
+                self.room_snapshots.clone(),
+                Arc::clone(&self.session_closed),
+                crate::sync_loop::timeline_search_context(self),
+            );
+            timelines.put(room_id.to_owned(), Arc::clone(&timeline));
+            return Ok(timeline);
+        }
         // Re-check: another concurrent call may have built and inserted one
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
@@ -708,9 +782,94 @@ impl Session {
             room_id.to_owned(),
             self.events.clone(),
             self.room_snapshots.clone(),
+            Arc::clone(&self.session_closed),
+            crate::sync_loop::timeline_search_context(self),
         );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
+    }
+
+    /// Installs an event-focused timeline for search/bookmark navigation.
+    /// The listener generation prevents the replaced live listener from
+    /// clearing this newer snapshot when its final handle drops.
+    pub async fn begin_timeline_jump(
+        &self,
+        room_id: matrix_sdk::ruma::OwnedRoomId,
+        event_id: matrix_sdk::ruma::OwnedEventId,
+    ) {
+        self.latest_jump_targets
+            .lock()
+            .await
+            .insert(room_id, event_id);
+    }
+
+    pub async fn replace_timeline_if_latest(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+        event_id: &matrix_sdk::ruma::EventId,
+        timeline: Arc<Timeline>,
+    ) -> bool {
+        if self
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        if self
+            .client
+            .get_room(room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return false;
+        }
+        let latest_jump_targets = self.latest_jump_targets.lock().await;
+        if latest_jump_targets
+            .get(room_id)
+            .is_none_or(|latest| latest != event_id)
+        {
+            return false;
+        }
+        if self
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        if self
+            .client
+            .get_room(room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return false;
+        }
+        spawn_timeline_listener(
+            self.client.clone(),
+            Arc::downgrade(&timeline),
+            room_id.to_owned(),
+            self.events.clone(),
+            self.room_snapshots.clone(),
+            Arc::clone(&self.session_closed),
+            crate::sync_loop::timeline_search_context(self),
+        );
+        self.timelines
+            .lock()
+            .await
+            .put(room_id.to_owned(), timeline);
+        true
+    }
+}
+
+/// Reports whether another request replaced the cached value while this
+/// request was building its own replacement. Pointer identity matters here:
+/// an equal value may still own a distinct live listener.
+fn timeline_changed_while_building<T>(
+    value_at_start: Option<&Arc<T>>,
+    cached_after_build: Option<&Arc<T>>,
+) -> bool {
+    match (value_at_start, cached_after_build) {
+        (None, Some(_)) => true,
+        (Some(previous), Some(current)) => !Arc::ptr_eq(previous, current),
+        _ => false,
     }
 }
 
@@ -741,6 +900,8 @@ fn spawn_timeline_listener(
     room_snapshots: Arc<
         std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>,
     >,
+    session_closed: Arc<AtomicBool>,
+    search_context: crate::sync_loop::TimelineSearchContext,
 ) {
     use futures_util::StreamExt;
 
@@ -755,6 +916,15 @@ fn spawn_timeline_listener(
     let own_user_id = client.user_id().map(ToOwned::to_owned);
 
     tokio::spawn(async move {
+        if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        if client
+            .get_room(&room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return;
+        }
         let Some(strong) = timeline.upgrade() else {
             return;
         };
@@ -778,7 +948,16 @@ fn spawn_timeline_listener(
             None,
         )
         .await;
-        let initial_messages = initial_items
+        if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        if client
+            .get_room(&room_id)
+            .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+        {
+            return;
+        }
+        let initial_messages: Vec<charm_lib::matrix::timeline::RoomMessageSummary> = initial_items
             .iter()
             .filter_map(|item| match item {
                 charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
@@ -787,6 +966,11 @@ fn spawn_timeline_listener(
                 _ => None,
             })
             .collect();
+        let mut seen_undecrypted = std::collections::HashSet::new();
+        charm_lib::matrix::timeline::observe_newly_decrypted(
+            &mut seen_undecrypted,
+            &initial_messages,
+        );
         let initial_event = ServerEvent::Timeline(RoomTimelineUpdate {
             room_id: room_id.to_string(),
             messages: initial_messages,
@@ -797,6 +981,12 @@ fn spawn_timeline_listener(
             .unwrap_or_else(|e| e.into_inner())
             .insert(room_id.clone(), (generation, initial_event.clone()));
         let _ = events.send(initial_event);
+        crate::sync_loop::submit_timeline_search_selection(
+            &search_context,
+            &client,
+            room_id.as_str(),
+            items.iter(),
+        );
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         // The first `tick()` fires immediately, not after the first
@@ -806,6 +996,15 @@ fn spawn_timeline_listener(
         // `routes.rs`).
         liveness_check.tick().await;
         loop {
+            if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if client
+                .get_room(&room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
+                break;
+            }
             let diffs = tokio::select! {
                 diffs = stream.next() => diffs,
                 _ = liveness_check.tick() => {
@@ -833,7 +1032,16 @@ fn spawn_timeline_listener(
                 None,
             )
             .await;
-            let messages = timeline_items
+            if session_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if client
+                .get_room(&room_id)
+                .is_none_or(|room| room.state() != matrix_sdk::RoomState::Joined)
+            {
+                break;
+            }
+            let messages: Vec<charm_lib::matrix::timeline::RoomMessageSummary> = timeline_items
                 .iter()
                 .filter_map(|item| match item {
                     charm_lib::matrix::timeline::TimelineItemSummary::Message { message } => {
@@ -842,6 +1050,17 @@ fn spawn_timeline_listener(
                     _ => None,
                 })
                 .collect();
+            let newly_decrypted = charm_lib::matrix::timeline::observe_newly_decrypted(
+                &mut seen_undecrypted,
+                &messages,
+            );
+            if newly_decrypted {
+                crate::sync_loop::schedule_cached_room_search_with_context(
+                    search_context.clone(),
+                    client.clone(),
+                    room_id.clone(),
+                );
+            }
             let event = ServerEvent::Timeline(RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages,
@@ -852,6 +1071,12 @@ fn spawn_timeline_listener(
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(room_id.clone(), (generation, event.clone()));
             let _ = events.send(event);
+            crate::sync_loop::submit_timeline_search_selection(
+                &search_context,
+                &client,
+                room_id.as_str(),
+                items.iter(),
+            );
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
         // drop this room's cached snapshot too, so a stale, possibly very
@@ -1039,7 +1264,31 @@ impl SessionStore {
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
-        self.inner.write().await.remove(token)
+        let session = {
+            let mut inner = self.inner.write().await;
+            let session = inner.remove(token);
+            if let Some(session) = &session {
+                // Revoke detached work while removal is still atomic with
+                // respect to lookups. Cleanup below may await, so it cannot
+                // remain under the store lock.
+                session
+                    .session_closed
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            session
+        };
+
+        if let Some(session) = &session {
+            // `remove` is the permanent-session boundary used by explicit
+            // logout, cross-instance revocation, and expiry. Keep encrypted
+            // search-index deletion here so none of those callers can leave
+            // decrypted message content orphaned on local disk. Idle eviction
+            // deliberately uses `sweep_idle` instead and preserves the index
+            // for a later persisted-session restore.
+            delete_message_search_index(session, crate::crypto_store::data_root_path()).await;
+        }
+
+        session
     }
 
     /// Stable snapshot of the currently-live sessions for graceful process
@@ -1082,6 +1331,14 @@ impl SessionStore {
             {
                 true
             } else {
+                // Revokes the detached message-search worker before this
+                // session leaves the live map. A later persisted-session
+                // restore gets a fresh marker and worker, while buffered
+                // plaintext from this evicted lifecycle can no longer
+                // reopen the encrypted index after expiry/logout cleanup.
+                session
+                    .session_closed
+                    .store(true, std::sync::atomic::Ordering::Release);
                 // Abort the sync loop right here — synchronously, still
                 // under this write lock, in the same statement as the
                 // `has_pending_verification_events` check above — rather
@@ -1196,9 +1453,81 @@ impl SessionStore {
     }
 }
 
+/// Opens a web session's index from a clean lifecycle. Web sessions can be
+/// restored after process restart or idle eviction while retaining the same
+/// Matrix account/device source identity, so merely opening the stable path
+/// would reuse rows produced by the previous ephemeral `Session`. Delete that
+/// path under the caller-held index-slot lock before the first open; later
+/// calls in the same lifecycle reuse the populated slot and do not come here.
+pub(crate) fn open_fresh_message_search_index(
+    app_data_dir: &std::path::Path,
+    store_key: &str,
+    device_id: &str,
+    passphrase: &str,
+) -> Result<charm_lib::matrix::search::SearchIndex, String> {
+    charm_lib::matrix::search::SearchIndex::delete_for_source(app_data_dir, store_key, device_id)?;
+    charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+        app_data_dir,
+        store_key,
+        device_id,
+        passphrase,
+    )
+}
+
+async fn delete_message_search_index(session: &Session, app_data_dir: std::path::PathBuf) {
+    let index = Arc::clone(&session.message_search_index);
+    let unopened_source = session
+        .persisted_crypto
+        .clone()
+        .zip(session.client.device_id().map(ToString::to_string));
+    let deleted = tokio::task::spawn_blocking(move || {
+        let live_index = index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(search_index) = live_index {
+            search_index.delete()
+        } else if let Some((crypto, device_id)) = unopened_source {
+            charm_lib::matrix::search::SearchIndex::delete_for_source(
+                &app_data_dir,
+                &crypto.store_key,
+                &device_id,
+            )
+        } else {
+            Ok(())
+        }
+    })
+    .await;
+    if !matches!(deleted, Ok(Ok(()))) {
+        tracing::warn!("failed to remove encrypted message-search index on session removal");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forced_timeline_build_detects_a_concurrent_first_insert() {
+        let concurrent = Arc::new(());
+
+        assert!(timeline_changed_while_building(None, Some(&concurrent)));
+    }
+
+    #[test]
+    fn forced_timeline_build_only_replaces_the_value_it_observed() {
+        let original = Arc::new(());
+        let concurrent_replacement = Arc::new(());
+
+        assert!(!timeline_changed_while_building(
+            Some(&original),
+            Some(&original)
+        ));
+        assert!(timeline_changed_while_building(
+            Some(&original),
+            Some(&concurrent_replacement)
+        ));
+    }
 
     #[test]
     fn session_revocation_grace_exceeds_the_bare_cookie_max_age_by_the_touch_throttle() {
@@ -1241,6 +1570,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_a_session_revokes_its_detached_decrypted_work() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@removed:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-remove-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let search_index = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            "removed-account",
+            "REMOVEDDEVICE",
+            "removed-secret",
+        )
+        .expect("temporary encrypted search index");
+        let database_path = search_index.database_path().to_owned();
+        *session
+            .message_search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(search_index);
+
+        store.remove(&token).await.expect("removed session");
+
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !database_path.exists(),
+            "permanent session removal must delete the encrypted search database"
+        );
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[tokio::test]
+    async fn removal_cleanup_deletes_an_unopened_persisted_session_index() {
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-unopened-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let store_key = "unopened-account";
+        let device_id = "UNOPENEDDEVICE";
+        let passphrase = "unopened-secret";
+        let search_index = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            store_key,
+            device_id,
+            passphrase,
+        )
+        .expect("temporary encrypted search index");
+        let database_path = search_index.database_path().to_owned();
+        drop(search_index);
+
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("test client");
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk::SessionMeta {
+                        user_id: matrix_sdk::ruma::UserId::parse("@unopened-search:example.org")
+                            .expect("test user id"),
+                        device_id: matrix_sdk::ruma::device_id!("UNOPENEDDEVICE").to_owned(),
+                    },
+                    tokens: matrix_sdk::authentication::SessionTokens {
+                        access_token: "test-access-token".to_string(),
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .expect("restore test session");
+        let session = Session::new(
+            client,
+            "@unopened-search:example.org".to_string(),
+            Some(CryptoStoreHandle {
+                store_key: store_key.to_string(),
+                passphrase: passphrase.to_string(),
+            }),
+            true,
+        );
+
+        delete_message_search_index(&session, app_data_dir.clone()).await;
+
+        assert!(
+            !database_path.exists(),
+            "removal must delete an index left unopened by the current process"
+        );
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn a_new_web_session_rebuilds_instead_of_reusing_a_previous_index() {
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let app_data_dir = std::env::temp_dir().join(format!("charm-session-rebuild-{suffix}"));
+        std::fs::create_dir_all(&app_data_dir).expect("temporary app-data directory");
+        let mut first = charm_lib::matrix::search::SearchIndex::open_with_source_secret(
+            &app_data_dir,
+            "rebuild-account",
+            "REBUILDDEVICE",
+            "rebuild-secret",
+        )
+        .expect("first encrypted search index");
+        let database_path = first.database_path().to_owned();
+        first
+            .apply_document(&charm_lib::matrix::search::SearchDocument {
+                room_id: "!rebuild:example.org".to_string(),
+                event_id: "$stale".to_string(),
+                version_event_id: "$stale".to_string(),
+                sender: "@alice:example.org".to_string(),
+                body: Some("stale lifecycle message".to_string()),
+                origin_server_ts: 42,
+                selection_order: 1,
+            })
+            .expect("seed previous lifecycle");
+        drop(first);
+
+        let mut rebuilt = open_fresh_message_search_index(
+            &app_data_dir,
+            "rebuild-account",
+            "REBUILDDEVICE",
+            "rebuild-secret",
+        )
+        .expect("fresh encrypted search index");
+
+        assert_eq!(rebuilt.database_path(), database_path);
+        let allowed_rooms = std::collections::HashSet::from(["!rebuild:example.org".to_string()]);
+        let page = rebuilt
+            .search("stale", None, &allowed_rooms, 20, None)
+            .expect("query rebuilt index");
+        assert!(
+            page.results.is_empty(),
+            "a new web lifecycle must not reuse rows from the previous session"
+        );
+        drop(rebuilt);
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[tokio::test]
     async fn sweep_idle_evicts_only_sessions_past_the_timeout_with_no_open_connection() {
         let store = SessionStore::new();
         let idle_timeout = std::time::Duration::from_secs(60);
@@ -1264,6 +1747,13 @@ mod tests {
         assert!(
             store.get(&active_token).await.is_some(),
             "a recently-touched session must survive the sweep"
+        );
+        assert!(
+            evicted[0]
+                .1
+                .session_closed
+                .load(std::sync::atomic::Ordering::Acquire),
+            "idle eviction must revoke the detached search worker"
         );
     }
 

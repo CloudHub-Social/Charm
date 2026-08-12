@@ -15,16 +15,22 @@ use std::time::Duration;
 use charm_lib::matrix::room_admin::{
     build_room_details, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
 };
+use charm_lib::matrix::timeline::{
+    items_to_timeline_items, TimelineItemSummary, TimelineMembershipChange, TimelineStateChange,
+};
 use common::{synced_client, synced_client_2, test_username_2};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::api::client::room::create_room;
+use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
+use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
 use matrix_sdk::ruma::{int, Int};
 use matrix_sdk::Client;
+use matrix_sdk_ui::timeline::RoomExt as _;
 use tokio::time::timeout;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -45,6 +51,7 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
 async fn room_admin_round_trips_against_a_real_homeserver() {
     let admin = synced_client().await;
     let room = create_test_room(&admin).await;
+    let timeline = room.timeline().await.expect("build room timeline");
 
     // --- Room settings: name, topic, join rule, history visibility ---
     room.set_name("Spec 07 Test Room".to_string())
@@ -76,6 +83,21 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
     })
     .await
     .expect("room topic observed");
+
+    let avatar_upload = admin
+        .media()
+        .upload(
+            &mime::IMAGE_PNG,
+            format!("spec39-room-avatar-{}", std::process::id()).into_bytes(),
+            None,
+        )
+        .await
+        .expect("upload room avatar");
+    let mut avatar = RoomAvatarEventContent::new();
+    avatar.url = Some(avatar_upload.content_uri.clone());
+    room.send_state_event(avatar)
+        .await
+        .expect("set room avatar");
 
     room.send_state_event(RoomJoinRulesEventContent::new(JoinRule::Public))
         .await
@@ -141,6 +163,12 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
         .await
         .expect("invite second user");
     wait_for_membership(&admin, &room, &second_user_id, MembershipState::Invite).await;
+
+    second
+        .join_room_by_id(room.room_id())
+        .await
+        .expect("second user joins");
+    wait_for_membership(&admin, &room, &second_user_id, MembershipState::Join).await;
 
     room.kick_user(&second_user_id, None)
         .await
@@ -228,6 +256,88 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
         HistoryVisibilityKind::WorldReadable
     );
     assert!(details.is_encrypted);
+
+    let replacement = create_test_room(&admin).await;
+    room.send_state_event(RoomTombstoneEventContent::new(
+        "This room has moved".to_owned(),
+        replacement.room_id().to_owned(),
+    ))
+    .await
+    .expect("send room tombstone");
+
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            let _ = admin.sync_once(SyncSettings::default()).await;
+            let (items, _stream) = timeline.subscribe().await;
+            let summaries = items_to_timeline_items(&items, admin.user_id(), &admin, None).await;
+
+            let has_name = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::State {
+                        change: TimelineStateChange::Name { new_value, .. },
+                        ..
+                    } if new_value.as_deref() == Some("Spec 07 Test Room")
+                )
+            });
+            let has_topic = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::State {
+                        change: TimelineStateChange::Topic { new_value, .. },
+                        ..
+                    } if new_value.as_deref() == Some("testing room settings")
+                )
+            });
+            let has_avatar = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::State {
+                        change: TimelineStateChange::Avatar { new_value, .. },
+                        ..
+                    } if new_value.as_deref() == Some(avatar_upload.content_uri.as_str())
+                )
+            });
+            let has_tombstone = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::State {
+                        change: TimelineStateChange::Tombstone { replacement_room_id, .. },
+                        ..
+                    } if replacement_room_id.as_deref() == Some(replacement.room_id().as_str())
+                )
+            });
+            let has_join = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::Membership {
+                        target_user_id,
+                        change: TimelineMembershipChange::Joined
+                            | TimelineMembershipChange::InvitationAccepted,
+                        ..
+                    } if target_user_id == second_user_id.as_str()
+                )
+            });
+            let has_leave = summaries.iter().any(|item| {
+                matches!(
+                    item,
+                    TimelineItemSummary::Membership {
+                        target_user_id,
+                        change: TimelineMembershipChange::Left
+                            | TimelineMembershipChange::Kicked,
+                        ..
+                    } if target_user_id == second_user_id.as_str()
+                )
+            });
+
+            if has_name && has_topic && has_avatar && has_tombstone && has_join && has_leave {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("Spec 39 state and membership variants appeared in Charm's timeline DTO");
 }
 
 async fn wait_for_membership(

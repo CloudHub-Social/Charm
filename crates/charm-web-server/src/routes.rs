@@ -9,10 +9,11 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use charm_lib::matrix::account::UiaCommandError;
@@ -36,7 +37,8 @@ use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
-    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, OwnProfile,
+    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
+    start_direct_message_impl, OwnProfile,
 };
 use charm_lib::matrix::room_admin::{
     add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
@@ -61,7 +63,7 @@ use charm_lib::matrix::spaces::{
     list_manageable_space_children_impl, list_space_children_impl, list_space_hierarchy_impl,
     remove_space_child_impl, set_space_child_suggested_impl, set_space_parent_impl,
 };
-use charm_lib::matrix::timeline::get_timeline_page_impl;
+use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
@@ -133,11 +135,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/auth/login-flows", post(get_login_flows))
         .route("/api/auth/token", post(login_with_token))
+        .route("/api/auth/sso/start", post(start_browser_sso))
+        .route("/api/auth/sso/callback", get(complete_browser_sso))
+        .route("/api/auth/sso/poll", get(poll_browser_sso))
+        .route("/api/auth/sso/cancel", post(cancel_browser_sso))
+        .route("/api/auth/provider-icon", get(provider_icon))
         // -- session --
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         // -- rooms --
         .route("/api/rooms", get(list_rooms))
+        .route("/api/search/messages", post(search_messages))
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/knock", post(knock_room))
@@ -149,6 +157,10 @@ pub fn router(state: AppState) -> Router {
             get(get_room_member_list),
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
+        .route(
+            "/api/rooms/{room_id}/timeline/around",
+            get(load_timeline_around_event),
+        )
         .route("/api/rooms/{room_id}/invite/accept", post(accept_invite))
         .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
@@ -302,6 +314,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/profile/me", get(get_own_profile))
         .route("/api/users/{user_id}/profile", get(get_user_profile))
         .route("/api/users/{user_id}/mutual-rooms", get(get_mutual_rooms))
+        .route(
+            "/api/users/{user_id}/direct-message",
+            post(start_direct_message),
+        )
+        .route("/api/rooms/{room_id}/profile/me", put(set_room_profile))
         .route("/api/profile/display-name", put(set_display_name))
         .route(
             "/api/account/deactivate-url",
@@ -1575,7 +1592,13 @@ async fn finish_login(
         persist,
         initial_response,
         stored.sync_snapshots(),
-        state.space_hierarchy_reorganization,
+        crate::sync_loop::SpawnOptions {
+            include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            message_search: crate::sync_loop::message_search_context(
+                &stored,
+                state.encrypted_local_message_search_enabled,
+            ),
+        },
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -2049,6 +2072,293 @@ async fn login_with_token(
     ))
 }
 
+const PUBLIC_URL_ENV: &str = "CHARM_WEB_SERVER_PUBLIC_URL";
+
+#[derive(Deserialize)]
+struct StartBrowserSsoRequest {
+    homeserver_url: String,
+    idp_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StartBrowserSsoResponse {
+    attempt_id: String,
+    redirect_url: String,
+}
+
+async fn start_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<StartBrowserSsoRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
+    let owner = jar
+        .get(DISCOVERY_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
+    let public_url = std::env::var(PUBLIC_URL_ENV)
+        .ok()
+        .and_then(|configured| reqwest::Url::parse(configured.trim()).ok())
+        .filter(|url| {
+            matches!(url.scheme(), "https" | "http")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && (url.scheme() == "https"
+                    || std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() == Ok("1"))
+        })
+        .ok_or_else(|| ApiError::not_found("browser single sign-on is not configured"))?;
+    let callback_url = public_url
+        .join("/api/auth/sso/callback")
+        .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
+    state.pending_auth.cancel_owner(&owner).await;
+    let (attempt_id, redirect_url) = state
+        .pending_auth
+        .start_sso(
+            owner.clone(),
+            request.homeserver_url,
+            request.idp_id,
+            callback_url.to_string(),
+            state.persistence.is_some(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((
+        jar.add(preauth_cookie(owner)),
+        Json(StartBrowserSsoResponse {
+            attempt_id,
+            redirect_url,
+        }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct BrowserSsoCallbackQuery {
+    state: String,
+    #[serde(rename = "loginToken")]
+    login_token: String,
+}
+
+async fn complete_browser_sso(
+    State(state): State<AppState>,
+    Query(query): Query<BrowserSsoCallbackQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    state
+        .pending_auth
+        .complete_sso_callback(&query.state, query.login_token)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok((
+        [
+            ("cache-control", "no-store"),
+            ("content-security-policy", "default-src 'none'"),
+            ("referrer-policy", "no-referrer"),
+        ],
+        Html(
+            "<!doctype html><meta charset=utf-8><title>Charm sign-in</title><p>Sign-in complete. You can close this window and return to Charm.</p>",
+        ),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct BrowserSsoPollQuery {
+    attempt_id: String,
+}
+
+async fn poll_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<BrowserSsoPollQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    require_web_transport_header(&headers)?;
+    let owner = require_preauth_owner(&jar)?;
+    match state.pending_auth.poll_sso(&owner, &query.attempt_id).await {
+        crate::pending_auth::PollSsoResult::Pending => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "pending" })),
+        )
+            .into_response()),
+        crate::pending_auth::PollSsoResult::Failed(error) => Err(ApiError::unauthorized(error)),
+        crate::pending_auth::PollSsoResult::Expired => Err(ApiError::unauthorized(
+            "single sign-on attempt expired or was cancelled",
+        )),
+        crate::pending_auth::PollSsoResult::Complete {
+            completed,
+            _capacity,
+        } => {
+            let (response, session, initial_response, homeserver_url) = *completed;
+            let token = finish_login(&state, session, &homeserver_url, initial_response).await;
+            if !state
+                .pending_auth
+                .commit_attempt(&owner, &query.attempt_id)
+                .await
+            {
+                discard_unpublished_login(&state, &token).await;
+                return Err(ApiError::unauthorized(
+                    "single sign-on attempt expired or was cancelled",
+                ));
+            }
+            Ok((
+                jar.remove(clear_preauth_cookie())
+                    .remove(clear_discovery_cookie())
+                    .add(session_cookie(token)),
+                Json(response),
+            )
+                .into_response())
+        }
+    }
+}
+
+async fn cancel_browser_sso(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    require_registration_and_recovery(&state)?;
+    require_allowed_origin(&headers)?;
+    let owner = require_preauth_owner(&jar)?;
+    state.pending_auth.cancel_owner(&owner).await;
+    Ok((jar.remove(clear_preauth_cookie()), StatusCode::NO_CONTENT))
+}
+
+#[derive(Deserialize)]
+struct ProviderIconQuery {
+    homeserver_url: String,
+    mxc: String,
+}
+
+async fn provider_icon(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ProviderIconQuery>,
+) -> Result<Response, ApiError> {
+    require_registration_and_recovery(&state)?;
+    if jar.get(DISCOVERY_COOKIE).is_none() && jar.get(PREAUTH_COOKIE).is_none() {
+        return Err(ApiError::unauthorized(
+            "login options are no longer current",
+        ));
+    }
+    let parsed = reqwest::Url::parse(&query.mxc)
+        .ok()
+        .filter(|url| {
+            url.scheme() == "mxc"
+                && url.host_str().is_some()
+                && !url.path().trim_matches('/').is_empty()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+        .ok_or_else(|| ApiError::bad_request("identity-provider icon is not a valid MXC URI"))?;
+    let (homeserver, http_client) = crate::auth::validated_homeserver_client(&query.homeserver_url)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(homeserver)
+        .http_client(http_client.clone())
+        .build()
+        .await
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+    let advertised = client
+        .matrix_auth()
+        .get_login_types()
+        .await
+        .map_err(|_| ApiError::bad_request("could not verify identity-provider icon"))?
+        .flows
+        .iter()
+        .any(|flow| {
+            matches!(flow, matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType::Sso(sso)
+                if sso.identity_providers.iter().any(|provider| provider.icon.as_ref().is_some_and(|icon| icon.as_str() == parsed.as_str())))
+        });
+    if !advertised {
+        return Err(ApiError::bad_request(
+            "identity-provider icon is not advertised by the homeserver",
+        ));
+    }
+    const MAX_PROVIDER_ICON_BYTES: usize = 1024 * 1024;
+    let server_name = parsed
+        .as_str()
+        .strip_prefix("mxc://")
+        .and_then(|remainder| remainder.split_once('/'))
+        .map(|(authority, _)| authority)
+        .expect("validated MXC authority");
+    let media_id = parsed.path().trim_matches('/');
+    let mut media_url = client.homeserver().clone();
+    let base_path = media_url.path().trim_end_matches('/').to_owned();
+    media_url.set_path(&format!("{base_path}/_matrix/media/v3/thumbnail"));
+    media_url
+        .path_segments_mut()
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?
+        .extend([server_name, media_id]);
+    media_url.query_pairs_mut().extend_pairs([
+        ("width", "64"),
+        ("height", "64"),
+        ("method", "scale"),
+        ("allow_remote", "true"),
+    ]);
+    let response = http_client
+        .get(media_url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_ICON_BYTES as u64)
+    {
+        return Err(ApiError::bad_request("identity-provider icon is too large"));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|_| ApiError::bad_request("could not load identity-provider icon"))?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_ICON_BYTES {
+            return Err(ApiError::bad_request("identity-provider icon is too large"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let content_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err(ApiError::bad_request(
+            "identity-provider icon is not a supported raster image",
+        ));
+    };
+    let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|_| ApiError::bad_request("identity-provider icon is not a valid image"))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| ApiError::bad_request("identity-provider icon is not a valid image"))?;
+    const MAX_PROVIDER_ICON_DIMENSION: u32 = 512;
+    const MAX_PROVIDER_ICON_PIXELS: u64 = 512 * 512;
+    if width > MAX_PROVIDER_ICON_DIMENSION
+        || height > MAX_PROVIDER_ICON_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PROVIDER_ICON_PIXELS
+    {
+        return Err(ApiError::bad_request(
+            "identity-provider icon dimensions are too large",
+        ));
+    }
+    Ok((
+        [
+            ("content-type", content_type),
+            ("cache-control", "private, max-age=300"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2455,7 +2765,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         persist,
         initial_response,
         session.sync_snapshots(),
-        state.space_hierarchy_reorganization,
+        crate::sync_loop::SpawnOptions {
+            include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            message_search: crate::sync_loop::message_search_context(
+                &session,
+                state.encrypted_local_message_search_enabled,
+            ),
+        },
     );
     *session
         .sync_handle
@@ -2501,6 +2817,125 @@ async fn list_rooms(
         )
         .await,
     ))
+}
+
+#[derive(Deserialize)]
+struct MessageSearchRequest {
+    query: String,
+    room_id: Option<String>,
+    limit: usize,
+    cursor: Option<String>,
+}
+
+async fn search_messages(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<MessageSearchRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !state.encrypted_local_message_search_enabled {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    let session = require_session(&state, &jar).await?;
+    let crypto = session
+        .persisted_crypto
+        .clone()
+        .ok_or_else(|| ApiError::bad_request("message search is unavailable"))?;
+    let device_id = session
+        .client
+        .device_id()
+        .map(ToString::to_string)
+        .ok_or_else(|| ApiError::bad_request("message search is unavailable"))?;
+    let allowed_rooms: std::collections::HashSet<String> = session
+        .client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    let ignored_senders: std::collections::HashSet<String> =
+        charm_lib::matrix::account::ignored_user_ids(&session.client)
+            .await
+            .map_err(|_| ApiError::bad_request("message search is unavailable"))?
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+    if request
+        .room_id
+        .as_ref()
+        .is_some_and(|room_id| !allowed_rooms.contains(room_id))
+    {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    let index = Arc::clone(&session.message_search_index);
+    let closed = Arc::clone(&session.session_closed);
+    let closed_during_search = Arc::clone(&closed);
+    let app_data_dir = crate::crypto_store::data_root_path();
+    let mut page = tokio::task::spawn_blocking(move || {
+        let mut slot = index.lock().unwrap_or_else(|error| error.into_inner());
+        // Logout sets this marker before waiting for the index lock and
+        // deleting the database. Checking while holding the same lock keeps
+        // an already-authenticated in-flight request from reopening it after
+        // teardown.
+        if closed_during_search.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(charm_lib::matrix::search::SearchCommandError::unavailable());
+        }
+        if slot.is_none() {
+            *slot = Some(
+                crate::session::open_fresh_message_search_index(
+                    &app_data_dir,
+                    &crypto.store_key,
+                    &device_id,
+                    &crypto.passphrase,
+                )
+                .map_err(|_| charm_lib::matrix::search::SearchCommandError::unavailable())?,
+            );
+        }
+        let index = slot.as_mut().expect("web search index initialized");
+        index
+            .purge_ignored_senders(&ignored_senders)
+            .map_err(|_| charm_lib::matrix::search::SearchCommandError::unavailable())?;
+        index.search(
+            &request.query,
+            request.room_id.as_deref(),
+            &allowed_rooms,
+            request.limit,
+            request.cursor.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| {
+        ApiError::message_search(charm_lib::matrix::search::SearchCommandError::unavailable())
+    })?
+    .map_err(ApiError::message_search)?;
+    if closed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    let current_allowed_rooms: std::collections::HashSet<String> = session
+        .client
+        .joined_rooms()
+        .into_iter()
+        .map(|room| room.room_id().to_string())
+        .collect();
+    let current_ignored_senders: std::collections::HashSet<String> =
+        charm_lib::matrix::account::ignored_user_ids(&session.client)
+            .await
+            .map_err(|_| ApiError::bad_request("message search is unavailable"))?
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+    // Account-data reads yield to logout in another tab. Do not return the
+    // already-decrypted page if that session closed while the final
+    // visibility state was being refreshed.
+    if closed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ApiError::bad_request("message search is unavailable"));
+    }
+    page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
+    page.incomplete = session
+        .message_search_incomplete
+        .load(std::sync::atomic::Ordering::Acquire)
+        || session
+            .message_search_backfill_pending
+            .load(std::sync::atomic::Ordering::Acquire);
+    Ok(Json(page))
 }
 
 async fn accept_invite(
@@ -2579,6 +3014,7 @@ async fn get_room_member_list(
 struct TimelineQuery {
     limit: Option<u32>,
     paginate: Option<bool>,
+    force_live: Option<bool>,
 }
 
 async fn get_timeline_page(
@@ -2596,7 +3032,7 @@ async fn get_timeline_page(
     // brand-new one on every call silently reset pagination and made
     // "load older messages" always return the same first page.
     let timeline = session
-        .get_or_create_timeline(&parsed_room_id)
+        .get_or_create_timeline(&parsed_room_id, query.force_live.unwrap_or(false))
         .await
         .map_err(|e| {
             if e == format!("room {room_id} not found") {
@@ -2618,7 +3054,164 @@ async fn get_timeline_page(
     )
     .await
     .map_err(ApiError::bad_request)?;
+    if query.paginate.unwrap_or(true) {
+        crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id);
+    }
     Ok(Json(page))
+}
+
+#[derive(Deserialize)]
+struct TimelineAroundQuery {
+    event_id: String,
+}
+
+const MAX_WEB_LOAD_AROUND_ITERATIONS: usize = 20;
+const WEB_LOAD_AROUND_EVENTS_PER_BATCH: u16 = 50;
+
+async fn load_timeline_around_event(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(room_id): Path<String>,
+    Query(query): Query<TimelineAroundQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
+
+    // Although this is a GET, it can fall back to Matrix `/context` and is
+    // therefore not a passive cached-resource read. Require Charm's
+    // non-simple transport header before resolving the session so an
+    // untrusted same-site page cannot attach Strict cookies with a no-CORS
+    // request and make the client disclose an event id to the homeserver.
+    require_web_transport_header(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let parsed_room_id =
+        RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&query.event_id)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    require_room_still_joined(&room)?;
+    session
+        .begin_timeline_jump(parsed_room_id.clone(), parsed_event_id.clone())
+        .await;
+    let timeline = session
+        .get_or_create_timeline(&parsed_room_id, false)
+        .await
+        .map_err(ApiError::bad_request)?;
+
+    if timeline_contains_event(&timeline, &query.event_id).await {
+        require_session_still_open(&session)?;
+        require_room_still_joined(&room)?;
+        return Ok(Json(found_jump_result(false)));
+    }
+
+    for _ in 0..MAX_WEB_LOAD_AROUND_ITERATIONS {
+        require_session_still_open(&session)?;
+        require_room_still_joined(&room)?;
+        let hit_start = timeline
+            .paginate_backwards(WEB_LOAD_AROUND_EVENTS_PER_BATCH)
+            .await
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+        if timeline_contains_event(&timeline, &query.event_id).await {
+            require_session_still_open(&session)?;
+            require_room_still_joined(&room)?;
+            crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
+            return Ok(Json(found_jump_result(false)));
+        }
+        if hit_start {
+            break;
+        }
+    }
+
+    // The focused builder can disclose the target event id via `/context`.
+    // Logout/idle eviction closes the retained session before cleanup, so
+    // recheck immediately before starting that Matrix request.
+    require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
+    let focused = room
+        .timeline_builder()
+        .with_focus(TimelineFocus::Event {
+            target: parsed_event_id.clone(),
+            num_context_events: WEB_LOAD_AROUND_EVENTS_PER_BATCH,
+            thread_mode: TimelineEventFocusThreadMode::Automatic {
+                hide_threaded_events: false,
+            },
+        })
+        .build()
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    // The request may have been logged out while the focused timeline was
+    // building. Never install or broadcast decrypted results from a session
+    // that no longer exists in the live store.
+    require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
+    let focused = Arc::new(focused);
+    if !timeline_contains_event(&focused, &query.event_id).await {
+        return Ok(Json(JumpToEventResult {
+            found: false,
+            installed_focused_view: false,
+        }));
+    }
+    require_room_still_joined(&room)?;
+    let installed = session
+        .replace_timeline_if_latest(&parsed_room_id, &parsed_event_id, focused)
+        .await;
+    require_session_still_open(&session)?;
+    require_room_still_joined(&room)?;
+    if installed {
+        crate::sync_loop::schedule_cached_room_search(session.clone(), parsed_room_id.clone());
+    }
+    Ok(Json(found_jump_result(installed)))
+}
+
+fn found_jump_result(installed_focused_view: bool) -> JumpToEventResult {
+    JumpToEventResult {
+        found: true,
+        installed_focused_view,
+    }
+}
+
+#[cfg(test)]
+mod timeline_jump_result_tests {
+    #[test]
+    fn a_stale_focused_install_does_not_turn_a_located_event_into_not_found() {
+        let result = super::found_jump_result(false);
+
+        assert!(result.found);
+        assert!(!result.installed_focused_view);
+    }
+}
+
+fn require_session_still_open(session: &Session) -> Result<(), ApiError> {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        Err(ApiError::unauthorized("session closed"))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_room_still_joined(room: &matrix_sdk::Room) -> Result<(), ApiError> {
+    if room.state() == matrix_sdk::RoomState::Joined {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("room is no longer joined"))
+    }
+}
+
+async fn timeline_contains_event(
+    timeline: &matrix_sdk_ui::timeline::Timeline,
+    event_id: &str,
+) -> bool {
+    let (items, _stream) = timeline.subscribe().await;
+    items
+        .iter()
+        .filter_map(|item| item.as_event())
+        .any(|item| item.event_id().is_some_and(|id| id.as_str() == event_id))
 }
 
 async fn list_space_hierarchy(
@@ -2771,6 +3364,14 @@ async fn leave_room(
     leave_room_impl(&session.client, &room_id)
         .await
         .map_err(ApiError::bad_request)?;
+    if state.encrypted_local_message_search_enabled {
+        let purge_result = crate::sync_loop::purge_room_after_leave(&session, &room_id).await;
+        charm_lib::matrix::search::record_room_leave_purge_result(
+            &session.message_search_incomplete,
+            purge_result,
+            "web_leave_room",
+        );
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3699,6 +4300,42 @@ async fn get_mutual_rooms(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(rooms))
+}
+
+async fn start_direct_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(user_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let room_id = start_direct_message_impl(&session.client, &user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(room_id))
+}
+
+#[derive(Deserialize)]
+struct SetRoomProfileRequest {
+    display_name: Option<String>,
+    avatar_url: Option<String>,
+}
+
+async fn set_room_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Json(request): Json<SetRoomProfileRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    set_room_profile_impl(
+        &session.client,
+        &room_id,
+        request.display_name,
+        request.avatar_url,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
@@ -5493,6 +6130,24 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
             kind: Some("Other"),
+        }
+    }
+    fn message_search(error: charm_lib::matrix::search::SearchCommandError) -> Self {
+        let (kind, message) = match error {
+            charm_lib::matrix::search::SearchCommandError::InvalidQuery { message } => {
+                ("invalid_query", message)
+            }
+            charm_lib::matrix::search::SearchCommandError::StaleCursor { message } => {
+                ("stale_cursor", message)
+            }
+            charm_lib::matrix::search::SearchCommandError::Unavailable { message } => {
+                ("unavailable", message)
+            }
+        };
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+            kind: Some(kind),
         }
     }
 }
