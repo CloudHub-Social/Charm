@@ -3,7 +3,12 @@ import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
 
 const ROOM = { room_id: "!profile:e2e", name: "Profile Room", unread_count: 0 };
-const MUTUAL_ROOM = { room_id: "!mutual:e2e", name: "Mutual Room", unread_count: 0 };
+const MUTUAL_ROOM = {
+  room_id: "!mutual:e2e",
+  name: "Mutual Room",
+  unread_count: 0,
+  is_direct: true,
+};
 const OWN_USER = "@me:e2e";
 const OTHER_USER = "@alice:e2e";
 
@@ -59,4 +64,10 @@ test("opens a message sender profile and navigates through a mutual room", async
   await dialog.getByRole("button", { name: MUTUAL_ROOM.name }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByPlaceholder(`Message ${MUTUAL_ROOM.name}`)).toBeVisible();
+
+  await page.getByRole("button", { name: "Show members" }).click();
+  await page.getByRole("button", { name: "Open profile for Alice" }).click();
+  await expect(dialog.getByRole("button", { name: "Message" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Message" }).click();
+  await expect(dialog).toHaveCount(0);
 });

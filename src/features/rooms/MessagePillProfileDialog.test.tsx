@@ -2,10 +2,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { featureFlagTestHooks } from "@/featureFlags";
-import { getMutualRooms, getUserProfile } from "@/lib/matrix";
+import {
+  getMutualRooms,
+  getUserProfile,
+  ignoreUser,
+  setRoomProfile,
+  startDirectMessage,
+} from "@/lib/matrix";
 import { MessagePillProfileDialog } from "./MessagePillProfileDialog";
 
 const mocks = vi.hoisted(() => ({
+  clipboardWriteText: vi.fn(),
   livePresence: null as null | Record<string, unknown>,
   roomDetailsCallback: undefined as undefined | ((details: { room_id: string }) => void),
   roomListCallback: undefined as undefined | (() => void),
@@ -14,6 +21,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/matrix", () => ({
   getUserProfile: vi.fn(),
   getMutualRooms: vi.fn(),
+  ignoreUser: vi.fn(),
+  setRoomProfile: vi.fn(),
+  startDirectMessage: vi.fn(),
   onRoomDetailsUpdate: vi.fn((callback: (details: { room_id: string }) => void) => {
     mocks.roomDetailsCallback = callback;
     return Promise.resolve(() => {});
@@ -53,6 +63,14 @@ describe("MessagePillProfileDialog", () => {
     mocks.roomListCallback = undefined;
     vi.mocked(getUserProfile).mockReset();
     vi.mocked(getMutualRooms).mockReset();
+    vi.mocked(ignoreUser).mockReset().mockResolvedValue(undefined);
+    vi.mocked(setRoomProfile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(startDirectMessage).mockReset().mockResolvedValue("!dm:example.org");
+    mocks.clipboardWriteText.mockReset().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: mocks.clipboardWriteText },
+    });
   });
 
   it("shows the pill identity and closes through the dialog control", () => {
@@ -77,7 +95,7 @@ describe("MessagePillProfileDialog", () => {
         user_id: "@alice:example.org",
         presence: "online",
         status_msg: "Writing tests",
-        last_active_ago_ms: null,
+        last_active_ago_ms: 5 * 60_000,
       },
     });
     vi.mocked(getMutualRooms).mockResolvedValue([
@@ -99,10 +117,227 @@ describe("MessagePillProfileDialog", () => {
     expect(await screen.findByRole("heading", { name: "Alice Here" })).toBeInTheDocument();
     expect(screen.getByText("Global profile: Alice Global")).toBeInTheDocument();
     expect(screen.getByText("online · Writing tests")).toBeInTheDocument();
+    expect(screen.getByText("Active 5m ago")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(mocks.clipboardWriteText).toHaveBeenNthCalledWith(1, "@alice:example.org");
+    expect(mocks.clipboardWriteText).toHaveBeenNthCalledWith(
+      2,
+      "https://matrix.to/#/@alice:example.org",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Mutual Room" }));
     expect(onNavigateToRoom).toHaveBeenCalledWith("!mutual:example.org");
     expect(onClose).toHaveBeenCalledOnce();
     expect(getUserProfile).toHaveBeenCalledWith("@alice:example.org", "!current:example.org");
+  });
+
+  it("opens a direct message and blocks another user from the card", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    const { onClose, onNavigateToRoom } = renderDialog({
+      detailed: true,
+      currentUserId: "@me:example.org",
+    });
+    await screen.findByRole("heading", { name: "Alice" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Message" }));
+    await vi.waitFor(() => expect(startDirectMessage).toHaveBeenCalledWith("@alice:example.org"));
+    expect(onNavigateToRoom).toHaveBeenCalledWith("!dm:example.org");
+    expect(onClose).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Block" }));
+    await vi.waitFor(() => expect(ignoreUser).toHaveBeenCalledWith("@alice:example.org"));
+  });
+
+  it("reports profile action failures", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    vi.mocked(startDirectMessage).mockRejectedValue(new Error("offline"));
+    vi.mocked(ignoreUser).mockRejectedValue(new Error("offline"));
+    renderDialog({
+      detailed: true,
+      currentUserId: "@me:example.org",
+      onNavigateToRoom: vi.fn(),
+    });
+    await screen.findByRole("heading", { name: "Alice" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Block" }));
+
+    expect(await screen.findByText("That profile action could not be completed.")).toBeVisible();
+  });
+
+  it("hosts power-level-gated moderation actions", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    const onSetPowerLevel = vi.fn();
+    const onKick = vi.fn();
+    const onBan = vi.fn();
+    renderDialog({
+      detailed: true,
+      currentUserId: "@me:example.org",
+      moderationActions: {
+        canSetPowerLevel: false,
+        canKick: true,
+        canBan: true,
+        onSetPowerLevel,
+        onKick,
+        onBan,
+      },
+    });
+    await screen.findByRole("heading", { name: "Alice" });
+
+    expect(screen.getByRole("button", { name: "Set power level" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Kick" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ban" }));
+    expect(onSetPowerLevel).not.toHaveBeenCalled();
+    expect(onKick).toHaveBeenCalledOnce();
+    expect(onBan).toHaveBeenCalledOnce();
+  });
+
+  it("updates the signed-in user's room-scoped profile", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: "mxc://example.org/global",
+      avatar_path: null,
+      room_display_name: "Alice Here",
+      room_avatar_url: "mxc://example.org/room",
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({
+      detailed: true,
+      currentUserId: "@alice:example.org",
+      roomId: "!room:example.org",
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit room profile" }));
+    fireEvent.change(screen.getByLabelText("Display name in this room"), {
+      target: { value: "Alice Local" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save room profile" }));
+
+    await vi.waitFor(() =>
+      expect(setRoomProfile).toHaveBeenCalledWith(
+        "!room:example.org",
+        "Alice Local",
+        "mxc://example.org/room",
+      ),
+    );
+  });
+
+  it("clears and cancels room-scoped profile edits", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: null,
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: "mxc://example.org/room",
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({
+      detailed: true,
+      currentUserId: "@alice:example.org",
+      roomId: "!room:example.org",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit room profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit room profile" }));
+    fireEvent.change(screen.getByLabelText("Avatar MXC URL in this room"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save room profile" }));
+
+    await vi.waitFor(() =>
+      expect(setRoomProfile).toHaveBeenCalledWith("!room:example.org", null, null),
+    );
+  });
+
+  it("reports profile loading and room-profile update failures", async () => {
+    vi.mocked(getUserProfile).mockRejectedValue(new Error("offline"));
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({ detailed: true });
+    expect(await screen.findByText("Profile details could not be loaded.")).toBeVisible();
+
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(setRoomProfile).mockRejectedValue(new Error("denied"));
+    const { onClose } = renderDialog({
+      profile: { userId: "@bob:example.org", label: "Bob" },
+      detailed: true,
+      currentUserId: "@bob:example.org",
+      roomId: "!room:example.org",
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit room profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save room profile" }));
+    expect(await screen.findByText("Room profile could not be updated.")).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("shows a room id when a mutual room has no name and navigation is unavailable", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([
+      {
+        room_id: "!unnamed:example.org",
+        name: null,
+        avatar_url: null,
+        avatar_path: null,
+        is_direct: false,
+        is_space: false,
+      },
+    ]);
+    renderDialog({ detailed: true, onNavigateToRoom: undefined });
+
+    expect(await screen.findByRole("button", { name: "!unnamed:example.org" })).toBeDisabled();
   });
 
   it("hides status detail when presence privacy controls are disabled", async () => {
@@ -238,5 +473,44 @@ describe("MessagePillProfileDialog", () => {
     });
 
     expect(await screen.findByRole("button", { name: "New Mutual" })).toBeInTheDocument();
+  });
+
+  it("refetches a profile after a membership update races the initial request", async () => {
+    let resolveInitial: ((profile: Awaited<ReturnType<typeof getUserProfile>>) => void) | undefined;
+    vi.mocked(getUserProfile)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        user_id: "@alice:example.org",
+        display_name: "Alice Updated",
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: null,
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: null,
+      });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({ detailed: true, roomId: "!current:example.org" });
+
+    await act(async () => {
+      mocks.roomDetailsCallback?.({ room_id: "!current:example.org" });
+      resolveInitial?.({
+        user_id: "@alice:example.org",
+        display_name: "Alice Initial",
+        avatar_url: null,
+        avatar_path: null,
+        room_display_name: null,
+        room_avatar_url: null,
+        room_avatar_path: null,
+        presence: null,
+      });
+    });
+
+    expect(await screen.findByRole("heading", { name: "Alice Updated" })).toBeInTheDocument();
   });
 });

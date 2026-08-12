@@ -21,6 +21,7 @@ let webSocket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
 let cookieKeepaliveTimer: number | null = null;
+let webSsoAttemptId: string | null = null;
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -95,6 +96,11 @@ function shouldUseWebTransport(): boolean {
 function apiBase(): string {
   const configured = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
   return configured?.replace(/\/+$/, "") ?? "";
+}
+
+export function webProviderIconUrl(homeserverUrl: string, mxc: string): string | null {
+  if (!shouldUseWebTransport() || !mxc.startsWith("mxc://")) return null;
+  return `${apiBase()}/api/auth/provider-icon${query({ homeserver_url: homeserverUrl, mxc })}`;
 }
 
 function websocketUrl(): string {
@@ -257,6 +263,23 @@ async function requestJson<T>(
   return (await response.json()) as T;
 }
 
+async function pollWebSso<T>(): Promise<T | null> {
+  if (!webSsoAttemptId) throw new WebCommandError("InvalidState", "No SSO login is in progress.");
+  const path = `/api/auth/sso/poll${query({ attempt_id: webSsoAttemptId })}`;
+  const response = await fetch(`${apiBase()}${path}`, {
+    method: "GET",
+    credentials: "include",
+    headers: { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() },
+  });
+  if (response.status === 202) return null;
+  if (!response.ok) {
+    webSsoAttemptId = null;
+    throw await readErrorResponse(response, `GET ${path} failed with ${response.status}`);
+  }
+  webSsoAttemptId = null;
+  return (await response.json()) as T;
+}
+
 async function requestBytes<T>(
   method: "POST" | "PUT" | "DELETE",
   path: string,
@@ -350,6 +373,23 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         homeserver_url: args.homeserverUrl,
         token: args.token,
       });
+    case "start_sso_login": {
+      const started = await requestJson<{ attempt_id: string; redirect_url: string }>(
+        "POST",
+        "/api/auth/sso/start",
+        { homeserver_url: args.homeserverUrl, idp_id: args.idpId ?? null },
+      );
+      webSsoAttemptId = started.attempt_id;
+      return started.redirect_url as T;
+    }
+    case "poll_sso_login":
+      return (await pollWebSso<T>()) as T;
+    case "cancel_sso_login":
+      try {
+        return await requestJson<T>("POST", "/api/auth/sso/cancel");
+      } finally {
+        webSsoAttemptId = null;
+      }
     case "try_restore_session":
       return requestJson<T>("GET", "/api/auth/me").catch((error: unknown) => {
         if (error instanceof HttpError && (error.status === 401 || error.status === 400)) {
@@ -385,8 +425,23 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/rooms/${encodeSegment(String(args.roomId))}/timeline${query({
           limit: args.limit as number | undefined,
           paginate: args.paginate as boolean | undefined,
+          force_live: args.forceLive as boolean | undefined,
         })}`,
       );
+    case "load_timeline_around_event":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/timeline/around${query({
+          event_id: String(args.eventId),
+        })}`,
+      );
+    case "search_messages":
+      return requestJson<T>("POST", "/api/search/messages", {
+        query: args.query,
+        room_id: args.roomId ?? null,
+        limit: args.limit,
+        cursor: args.cursor ?? null,
+      });
     case "list_space_hierarchy":
       return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.spaceId))}/hierarchy`);
     case "list_space_children":
@@ -689,6 +744,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     }
     case "get_mutual_rooms":
       return requestJson<T>("GET", `/api/users/${encodeSegment(String(args.userId))}/mutual-rooms`);
+    case "start_direct_message":
+      return requestJson<T>(
+        "POST",
+        `/api/users/${encodeSegment(String(args.userId))}/direct-message`,
+      );
+    case "set_room_profile":
+      return requestJson<T>("PUT", `/api/rooms/${encodeSegment(String(args.roomId))}/profile/me`, {
+        display_name: args.displayName,
+        avatar_url: args.avatarUrl,
+      });
     case "get_profile": {
       const profile = await requestJson<{
         user_id: string;

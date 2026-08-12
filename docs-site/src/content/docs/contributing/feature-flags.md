@@ -37,8 +37,10 @@ The remote rollout layer is live through GO Feature Flag's OFREP protocol.
 Desktop and mobile builds proxy evaluations through the Rust core because the
 webview CSP blocks direct external requests; web builds call the public proxy
 directly. Evaluations are cached as last-known-good state in
-`feature-flags.json`, while local Labs overrides remain the highest-precedence
-layer. If the proxy is unavailable or returns invalid data, Charm fails open to
+`feature-flags.json`, while local Labs overrides are normally the highest-precedence
+layer. Sensitive derived-data flags may give an explicit trusted remote `false`
+hard-veto precedence; `encrypted_local_message_search` currently does so. If the
+proxy is unavailable or returns invalid data, Charm fails open to
 the cached remote value and then the catalog default.
 
 For the full how-to, see

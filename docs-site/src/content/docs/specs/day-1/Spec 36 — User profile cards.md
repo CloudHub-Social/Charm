@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — User profile cards
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 **Workstream:** staged delivery. Extends Spec 01 (timeline identity & profiles),
@@ -130,16 +130,25 @@ helper before hand-rolling.
 
 ## Implementation status
 
-- Merged: canonical `UserProfile` and privacy-minimal `MutualRoomSummary`
-  contracts, desktop commands, web routes, and the default-off feature flag in
-  [#323](https://github.com/CloudHub-Social/Charm/pull/323).
-- Merged: the profile card in
-  [#329](https://github.com/CloudHub-Social/Charm/pull/329) renders room-aware
-  identity, presence/status, account-isolated mutual-room queries and navigation;
-  mentions retain their existing entry point, while sender avatars/names/nicks
-  become keyboard accessible entry points only when `user_profile_cards` is
-  enabled. A real-account nightly smoke test confirmed the sender entry point,
-  synchronized presence, and mutual-room list.
-- Remaining: migrate the two legacy own-profile DTO consumers, add member-list
-  entry, render last-active time and identity copy actions, wire
-  DM/block/moderation actions, and implement `set_room_profile`.
+- Shipped behind the default-off `user_profile_cards` flag: canonical
+  `UserProfile` and privacy-minimal `MutualRoomSummary` contracts, desktop
+  commands, authenticated web-companion routes, room-aware identity,
+  presence/status/last-active detail, and account-isolated mutual-room
+  navigation.
+- Profile cards open from mentions, sender identity, and the member list. They
+  include copy-ID/permalink utilities, existing-or-new encrypted DM navigation,
+  ignore/block, and power-level-gated moderation actions.
+- The signed-in user's card can replace its room-scoped display name and MXC
+  avatar while preserving the rest of the existing `m.room.member` content.
+  The command is covered by unit/transport tests and a two-client real-Synapse
+  round trip in `src-tauri/tests/profiles.rs`; the same live test proves that a
+  second DM request reuses the existing room.
+- Request closeout from [#383](https://github.com/CloudHub-Social/Charm/issues/383)
+  is included: disabling the flag cancels in-flight profile/mutual-room queries
+  and clears queued refreshes, while account/user-keyed caches keep superseded
+  completions isolated.
+
+The older own-account `OwnProfile` and settings-only `ProfileSummary` shapes
+remain compatibility adapters for pre-card surfaces; removing them is cleanup,
+not a second profile model exposed to new work. Avatar cropping remains owned by
+day-2 Spec 08 rather than duplicating an editor here.

@@ -18,9 +18,17 @@ interface MemberRowProps {
   can: RoomPermissions;
   myPowerLevel: number;
   currentUserId: string;
+  onOpenProfile?: () => void;
 }
 
-export function MemberRow({ roomId, member, can, myPowerLevel, currentUserId }: MemberRowProps) {
+export function MemberRow({
+  roomId,
+  member,
+  can,
+  myPowerLevel,
+  currentUserId,
+  onOpenProfile,
+}: MemberRowProps) {
   const actions = useRoomAdminActions(roomId);
   const [powerLevelDialogOpen, setPowerLevelDialogOpen] = useState(false);
   const label = member.display_name ?? member.user_id;
@@ -49,24 +57,32 @@ export function MemberRow({ roomId, member, can, myPowerLevel, currentUserId }: 
 
   return (
     <div className="flex min-h-11 items-center gap-2 px-4 py-1.5">
-      <Avatar size="sm">
-        {/* `text-white`: AvatarFallback's default is `text-muted-foreground`
+      <button
+        type="button"
+        disabled={!onOpenProfile}
+        aria-label={onOpenProfile ? `Open profile for ${label}` : undefined}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left enabled:hover:bg-accent enabled:focus-visible:outline-none enabled:focus-visible:ring-2 enabled:focus-visible:ring-ring"
+        onClick={onOpenProfile}
+      >
+        <Avatar size="sm">
+          {/* `text-white`: AvatarFallback's default is `text-muted-foreground`
             (meant for the no-color placeholder state) — without an explicit
             override it renders muted-gray text on the colorful
             `avatarColor()` background at ~1.5:1, real WCAG AA failures. */}
-        <AvatarFallback
-          style={{ backgroundColor: avatarColor(member.user_id) }}
-          className="text-white"
-        >
-          {initials(member.user_id, member.display_name)}
-        </AvatarFallback>
-      </Avatar>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-medium text-foreground">{label}</span>
-        <span className="text-xs text-muted-foreground">
-          {member.user_id} · PL {member.power_level}
+          <AvatarFallback
+            style={{ backgroundColor: avatarColor(member.user_id) }}
+            className="text-white"
+          >
+            {initials(member.user_id, member.display_name)}
+          </AvatarFallback>
+        </Avatar>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm font-medium text-foreground">{label}</span>
+          <span className="text-xs text-muted-foreground">
+            {member.user_id} · PL {member.power_level}
+          </span>
         </span>
-      </div>
+      </button>
       {hasAnyAction && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

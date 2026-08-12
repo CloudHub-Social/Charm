@@ -10,8 +10,8 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, shell, verification,
-    MatrixState,
+    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    verification, MatrixState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -577,7 +577,13 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // `clear_timelines` above, for pin/unpin's own cache instead of the
     // timeline listeners.
     app.state::<MatrixState>().clear_pinned_event_cache().await;
-    *app.state::<MatrixState>().client.lock().await = None;
+    let state = app.state::<MatrixState>();
+    *state.client.lock().await = None;
+    // Interactive login/registration/QR/SSO all use this teardown before
+    // adopting a replacement client. Invalidate search work here, at the
+    // shared supersession boundary, so no queued/deferred task from the old
+    // client can borrow the replacement session's generation or index slot.
+    super::search::invalidate_for_session_replacement(&state).await;
 }
 
 /// Decides what the sync loop's next `sync_once` call should report as this
@@ -725,6 +731,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
+        search::submit_sync_response(&app, &client, &initial_response).await;
         // Review fix (P2): snapshotted here, before `emit_room_list_and_badge`'s
         // own await — see `emit_room_updates`'s `seq_before_response` param doc
         // comment for why capturing it any later (even at the top of
@@ -814,6 +821,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
+                    search::submit_sync_response(&app, &client, &response).await;
                     // Review fix (P2): same reasoning as the initial-response
                     // call site above — snapshotted before
                     // `emit_room_list_and_badge`'s own await.

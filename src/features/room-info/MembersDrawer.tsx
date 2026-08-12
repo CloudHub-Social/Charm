@@ -7,6 +7,7 @@ interface MembersDrawerProps {
   roomId: string;
   currentUserId: string;
   onClose: () => void;
+  onNavigateToRoom?: (roomId: string) => void;
 }
 
 /**
@@ -15,7 +16,12 @@ interface MembersDrawerProps {
  * `RoomSettingsModal`. Reuses `MemberList` as-is rather than a parallel
  * implementation, per Spec 17's design notes.
  */
-export function MembersDrawer({ roomId, currentUserId, onClose }: MembersDrawerProps) {
+export function MembersDrawer({
+  roomId,
+  currentUserId,
+  onClose,
+  onNavigateToRoom,
+}: MembersDrawerProps) {
   const { data: details, isLoading, isError } = useRoomDetails(roomId);
 
   return (
@@ -39,7 +45,11 @@ export function MembersDrawer({ roomId, currentUserId, onClose }: MembersDrawerP
       {details && (
         <TooltipProvider>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <MemberList details={details} currentUserId={currentUserId} />
+            <MemberList
+              details={details}
+              currentUserId={currentUserId}
+              onNavigateToRoom={onNavigateToRoom}
+            />
           </div>
         </TooltipProvider>
       )}

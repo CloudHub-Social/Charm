@@ -53,6 +53,8 @@ import type { RoomMembershipKind } from "@bindings/RoomMembershipKind";
 import type { RoomNotificationModeKind } from "@bindings/RoomNotificationModeKind";
 import type { RoomPermissions } from "@bindings/RoomPermissions";
 import type { RoomSummary } from "@bindings/RoomSummary";
+import type { SearchResultPage } from "@bindings/SearchResultPage";
+import type { SearchResult } from "@bindings/SearchResult";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SelfProfileUpdate } from "@bindings/SelfProfileUpdate";
@@ -75,7 +77,7 @@ import type { VerificationRequestSummary } from "@bindings/VerificationRequestSu
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
 import { summarizeValue } from "@/observability/scrubbers";
-import { invoke, listen, type UnlistenFn } from "./matrixTransport";
+import { invoke, listen, webProviderIconUrl, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
 
 function addMatrixIpcBreadcrumb(
@@ -193,6 +195,8 @@ export type {
   RoomPermissions,
   RoomSummary,
   RoomTimelineUpdate,
+  SearchResultPage,
+  SearchResult,
   SasUpdateEvent,
   SelfProfileUpdate,
   SendState,
@@ -308,6 +312,14 @@ export function startSsoLogin(homeserverUrl: string, idpId?: string): Promise<st
 // with a stale/duplicate callback.
 export function completeSsoLogin(callbackUrl: string): Promise<LoginResponse> {
   return invoke("complete_sso_login", { callbackUrl }, { captureOnError: false });
+}
+
+export function pollSsoLogin(): Promise<LoginResponse | null> {
+  return invoke("poll_sso_login", {}, { captureOnError: false });
+}
+
+export function getLoginProviderIconUrl(homeserverUrl: string, mxc?: string | null): string | null {
+  return mxc ? webProviderIconUrl(homeserverUrl, mxc) : null;
 }
 
 export function cancelSsoLogin(): Promise<void> {
@@ -453,6 +465,16 @@ export function loadTimelineAroundEvent(
   eventId: string,
 ): Promise<JumpToEventResult> {
   return invoke("load_timeline_around_event", { roomId, eventId });
+}
+
+/** Searches only Charm's encrypted, device-local decrypted-message index. */
+export function searchMessages(
+  query: string,
+  roomId: string | null,
+  limit = 30,
+  cursor: string | null = null,
+): Promise<SearchResultPage> {
+  return invoke("search_messages", { query, roomId, limit, cursor });
 }
 
 /** Bookmarks (Spec 12: personal, private "saved messages" — never a Matrix
@@ -825,6 +847,18 @@ export function getUserProfile(userId: string, roomId?: string): Promise<UserPro
 
 export function getMutualRooms(userId: string): Promise<MutualRoomSummary[]> {
   return invoke("get_mutual_rooms", { userId });
+}
+
+export function startDirectMessage(userId: string): Promise<string> {
+  return invoke("start_direct_message", { userId });
+}
+
+export function setRoomProfile(
+  roomId: string,
+  displayName: string | null,
+  avatarUrl: string | null,
+): Promise<void> {
+  return invoke("set_room_profile", { roomId, displayName, avatarUrl });
 }
 
 /** Fires when the signed-in user's own display name/avatar changes out of band (e.g. from another client) — see `profiles.rs`'s module doc comment. */
