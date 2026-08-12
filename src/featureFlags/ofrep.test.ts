@@ -108,8 +108,18 @@ describe("fetchRemoteFlags", () => {
       {
         targetingKey: "install-9",
       },
-      { captureOnError: false },
+      { captureOnError: expect.any(Function) },
     );
+
+    const captureOnError = mocks.invoke.mock.calls[0][2].captureOnError as (
+      error: unknown,
+    ) => boolean;
+    expect(captureOnError("OFREP request failed: timed out")).toBe(false);
+    expect(captureOnError("OFREP returned status 503 Service Unavailable")).toBe(false);
+    expect(captureOnError("OFREP read failed: connection reset")).toBe(false);
+    expect(captureOnError("OFREP decode failed: expected value")).toBe(true);
+    expect(captureOnError("unknown IPC command fetch_remote_flags")).toBe(true);
+    expect(captureOnError(new Error("serialization failed"))).toBe(true);
   });
 
   it("returns null (fail-open) when the IPC command errors", async () => {

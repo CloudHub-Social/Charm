@@ -35,6 +35,15 @@ interface OfrepBulkResponse {
   flags?: OfrepFlag[];
 }
 
+/** Expected proxy-availability failures are handled by the last-known-good
+ * cache. Keep malformed responses and IPC/command failures visible in Sentry. */
+function shouldCaptureOfrepIpcError(error: unknown): boolean {
+  if (typeof error !== "string") return true;
+  return !["OFREP request failed:", "OFREP returned status ", "OFREP read failed:"].some((prefix) =>
+    error.startsWith(prefix),
+  );
+}
+
 /**
  * Keeps only boolean values for known catalog keys that evaluated without an
  * error. Sentry evaluation tracking (and the catalog) are boolean-only by
@@ -92,7 +101,7 @@ async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse |
   return invoke<OfrepBulkResponse>(
     "fetch_remote_flags",
     { targetingKey },
-    { captureOnError: false },
+    { captureOnError: shouldCaptureOfrepIpcError },
   );
 }
 
