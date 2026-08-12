@@ -2466,10 +2466,18 @@ fn purge_disabled_search_indices_from_slot(
     // The kill switch owns every retained account/device index, not only the
     // identity that happens to be active when the flag is evaluated.
     let active = slot.take();
-    drop(active);
-    let app_data_dir = app_data_dir
-        .ok_or_else(|| "message search application data directory unavailable".to_string())?;
-    SearchIndex::delete_all(app_data_dir)
+    match app_data_dir {
+        Some(app_data_dir) => {
+            drop(active);
+            SearchIndex::delete_all(app_data_dir)
+        }
+        None => {
+            if let Some(active) = active {
+                active.index.delete()?;
+            }
+            Err("message search application data directory unavailable".to_string())
+        }
+    }
 }
 
 fn restore_visible_row(
@@ -3967,6 +3975,28 @@ mod tests {
         assert!(slot.is_none());
         assert!(!active_path.exists());
         assert!(!retained_path.exists());
+    }
+
+    #[test]
+    fn kill_switch_removes_active_index_when_app_data_is_unavailable() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let active = open_index(directory.path(), "account", "DEVICE-A");
+        let active_path = active.database_path().to_owned();
+        let retained = open_index(directory.path(), "other-account", "DEVICE-B");
+        let retained_path = retained.database_path().to_owned();
+        drop(retained);
+        let mut slot = Some(ActiveSearchIndex {
+            account_store_key: "account".to_string(),
+            device_id: "DEVICE-A".to_string(),
+            index: active,
+        });
+
+        purge_disabled_search_indices_from_slot(&mut slot, None)
+            .expect_err("retained indexes cannot be enumerated without application data");
+
+        assert!(slot.is_none());
+        assert!(!active_path.exists());
+        assert!(retained_path.exists());
     }
 
     #[test]
