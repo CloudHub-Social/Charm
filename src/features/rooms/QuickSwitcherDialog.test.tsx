@@ -59,6 +59,35 @@ describe("QuickSwitcherDialog", () => {
     expect(screen.getByRole("option", { name: /Design Studio/ })).toBeInTheDocument();
   });
 
+  it("preserves the query when the joined-room snapshot updates", () => {
+    const returnFocusRef = createRef<HTMLElement>();
+    const props: React.ComponentProps<typeof QuickSwitcherDialog> = {
+      open: true,
+      onOpenChange: () => {},
+      rooms,
+      roomsLoaded: true,
+      currentUserId: "@me:example.org",
+      onSelectRoom: () => {},
+      returnFocusRef,
+    };
+    const { rerender } = render(<QuickSwitcherDialog {...props} />);
+    const input = screen.getByRole("combobox", {
+      name: "Search rooms, direct messages, and spaces",
+    });
+
+    fireEvent.change(input, { target: { value: "alice" } });
+    rerender(
+      <QuickSwitcherDialog
+        {...props}
+        rooms={[...rooms, makeRoomSummary({ room_id: "!new:example.org", name: "New room" })]}
+      />,
+    );
+
+    expect(input).toHaveValue("alice");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: /Alice/ })).toBeInTheDocument();
+  });
+
   it("shows an empty state and ignores navigation when no rooms match", () => {
     const onSelectRoom = vi.fn();
     renderDialog({ onSelectRoom });

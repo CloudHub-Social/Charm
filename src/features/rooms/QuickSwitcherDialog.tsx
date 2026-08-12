@@ -90,11 +90,15 @@ export function QuickSwitcherDialog({
   );
 
   useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setActiveIndex(0);
+  }, [open, currentUserId]);
+
+  useEffect(() => {
     if (!open || !roomsLoaded) return;
     const roomIds = reconcileQuickSwitcherRecents(currentUserId, validRoomIds);
     setRecentState({ accountId: currentUserId, roomIds });
-    setQuery("");
-    setActiveIndex(0);
   }, [open, roomsLoaded, currentUserId, validRoomIds]);
 
   useEffect(() => {
