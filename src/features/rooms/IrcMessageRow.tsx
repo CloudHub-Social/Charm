@@ -161,6 +161,7 @@ export function IrcMessageRow({
         <>
           {!message.redacted && (
             <ReactionBar
+              accountId={currentUserId ?? ""}
               reactions={message.reactions}
               onToggle={onReact}
               disabled={disableRelationActions || isUndecrypted}

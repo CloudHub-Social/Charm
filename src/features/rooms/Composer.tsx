@@ -30,6 +30,7 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 export type ComposerMode = "send" | "edit" | "reply";
 
 interface ComposerProps {
+  accountId?: string;
   roomId: string;
   mode: ComposerMode;
   /** Preloaded editor HTML when entering edit mode; ignored otherwise. */
@@ -161,6 +162,7 @@ function textWithMentionIds(editor: Editor): string {
  */
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
+    accountId = "anonymous",
     roomId,
     mode,
     initialHtml,
@@ -495,7 +497,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="flex flex-1 flex-col gap-1">
-      {showFormattingToolbar && <FormattingToolbar editor={editor} />}
+      {showFormattingToolbar && <FormattingToolbar accountId={accountId} editor={editor} />}
       <EditorContent editor={editor} />
       {menu.state.open && (
         <AutocompletePopover

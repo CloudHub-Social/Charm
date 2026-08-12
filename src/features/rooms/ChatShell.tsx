@@ -1074,6 +1074,7 @@ export function ChatShell({
             <Paperclip size={18} />
           </button>
           <Composer
+            accountId={currentUserId}
             key={`${room.room_id}-${editingEventId ?? "new"}`}
             ref={composerRef}
             roomId={room.room_id}

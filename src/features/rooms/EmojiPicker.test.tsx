@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmojiClickData, PickerProps } from "emoji-picker-react";
 import { createStore, Provider } from "jotai";
 import { themeAtom } from "@/features/appearance/atoms";
-import { EmojiPicker, emojiPickerTheme } from "./EmojiPicker";
+import { EmojiPicker, EmojiPickerPanel, emojiPickerTheme } from "./EmojiPicker";
 
 const mocks = vi.hoisted(() => ({ fullPickerEnabled: false }));
 
@@ -18,6 +18,7 @@ vi.mock("emoji-picker-react", () => ({
       data-theme={String(props.theme)}
       data-style={String(props.emojiStyle)}
       data-suggestions={String(props.suggestedEmojisMode)}
+      data-categories={(props.categories ?? []).map(String).join(",")}
       data-search-disabled={String(props.searchDisabled ?? false)}
       data-skin-tones-disabled={String(props.skinTonesDisabled ?? false)}
       data-custom-names={(props.customEmojis ?? []).flatMap((emoji) => emoji.names).join(",")}
@@ -37,12 +38,13 @@ vi.mock("emoji-picker-react", () => ({
 describe("EmojiPicker", () => {
   beforeEach(() => {
     mocks.fullPickerEnabled = false;
+    localStorage.clear();
   });
 
   it("retains the compact picker while the full picker flag is disabled", async () => {
     const onSelect = vi.fn();
     render(
-      <EmojiPicker onSelect={onSelect}>
+      <EmojiPicker accountId="@alice:example.org" onSelect={onSelect}>
         <button type="button">Open emoji picker</button>
       </EmojiPicker>,
     );
@@ -62,6 +64,7 @@ describe("EmojiPicker", () => {
     render(
       <Provider store={store}>
         <EmojiPicker
+          accountId="@alice:example.org"
           onSelect={onSelect}
           extraCategories={[
             {
@@ -81,7 +84,8 @@ describe("EmojiPicker", () => {
 
     expect(picker).toHaveAttribute("data-theme", "light");
     expect(picker).toHaveAttribute("data-style", "native");
-    expect(picker).toHaveAttribute("data-suggestions", "recent");
+    expect(picker).toHaveAttribute("data-suggestions", "undefined");
+    expect(picker.getAttribute("data-categories")?.split(",")).not.toContain("suggested");
     expect(picker).toHaveAttribute("data-search-disabled", "false");
     expect(picker).toHaveAttribute("data-skin-tones-disabled", "false");
     expect(picker).toHaveAttribute("data-custom-names", "charm,CloudHub,cloudhub");
@@ -92,6 +96,18 @@ describe("EmojiPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select mocked emoji" }));
     expect(onSelect).toHaveBeenCalledWith("🧭");
     await waitFor(() => expect(screen.queryByTestId("full-emoji-picker")).not.toBeInTheDocument());
+  });
+
+  it("keeps recent emoji partitioned by Matrix account", async () => {
+    mocks.fullPickerEnabled = true;
+    const view = render(<EmojiPickerPanel accountId="@alice:example.org" onSelect={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select mocked emoji" }));
+    expect(screen.getByRole("button", { name: "Recently used 🧭" })).toBeInTheDocument();
+    expect(localStorage.getItem("epr_suggested")).toBeNull();
+
+    view.rerender(<EmojiPickerPanel accountId="@bob:example.org" onSelect={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Recently used 🧭" })).not.toBeInTheDocument();
   });
 
   it("maps every Charm appearance choice to the matching picker theme", () => {

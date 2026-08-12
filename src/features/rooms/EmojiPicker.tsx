@@ -1,9 +1,10 @@
-import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { EmojiClickData, PickerProps } from "emoji-picker-react";
 import { useAtomValue } from "jotai";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useFlag } from "@/featureFlags";
 import { themeAtom, type Theme } from "@/features/appearance/atoms";
+import { useRecentReactions } from "./useRecentReactions";
 
 const FullPicker = lazy(() => import("emoji-picker-react"));
 
@@ -15,11 +16,32 @@ export interface EmojiPickerExtraCategory {
 }
 
 interface EmojiPickerPanelProps {
+  accountId: string;
   onSelect: (emoji: string) => void;
   extraCategories?: readonly EmojiPickerExtraCategory[];
 }
 
 const NO_EXTRA_CATEGORIES: readonly EmojiPickerExtraCategory[] = [];
+const UPSTREAM_RECENT_KEY = "epr_suggested";
+const PICKER_CATEGORIES = [
+  "custom",
+  "smileys_people",
+  "animals_nature",
+  "food_drink",
+  "travel_places",
+  "activities",
+  "objects",
+  "symbols",
+  "flags",
+] as PickerProps["categories"];
+
+function clearUpstreamRecentEmoji(): void {
+  try {
+    localStorage.removeItem(UPSTREAM_RECENT_KEY);
+  } catch {
+    // The account-scoped Charm store still works in memory when storage is unavailable.
+  }
+}
 
 /** Maps Charm's four appearance choices onto the picker's three themes. */
 export function emojiPickerTheme(theme: Theme): PickerProps["theme"] {
@@ -33,10 +55,12 @@ export function emojiPickerTheme(theme: Theme): PickerProps["theme"] {
  * exercise the grid and its axe/keyboard checks without opening a popover.
  */
 export function EmojiPickerPanel({
+  accountId,
   onSelect,
   extraCategories = NO_EXTRA_CATEGORIES,
 }: EmojiPickerPanelProps) {
   const theme = useAtomValue(themeAtom);
+  const { recent, recordReaction } = useRecentReactions(accountId);
   const customEmojis = useMemo(
     () =>
       extraCategories.flatMap((category) =>
@@ -48,32 +72,54 @@ export function EmojiPickerPanel({
     [extraCategories],
   );
 
-  function select(data: EmojiClickData) {
-    onSelect(data.emoji);
+  useEffect(clearUpstreamRecentEmoji, [accountId]);
+
+  function select(emoji: string) {
+    // emoji-picker-react writes its own profile-wide recent list before this
+    // callback. Charm owns recents per Matrix account, so remove that copy.
+    clearUpstreamRecentEmoji();
+    recordReaction(emoji);
+    onSelect(emoji);
   }
 
   return (
-    <Suspense
-      fallback={
-        <output className="flex h-80 w-80 items-center justify-center text-sm text-muted-foreground">
-          Loading emoji…
-        </output>
-      }
-    >
-      <FullPicker
-        width="min(22rem, calc(100vw - 2rem))"
-        height={420}
-        theme={emojiPickerTheme(theme)}
-        emojiStyle={"native" as PickerProps["emojiStyle"]}
-        suggestedEmojisMode={"recent" as PickerProps["suggestedEmojisMode"]}
-        searchPlaceholder="Search emoji"
-        searchClearButtonLabel="Clear emoji search"
-        lazyLoadEmojis
-        customEmojis={customEmojis}
-        previewConfig={{ showPreview: false }}
-        onEmojiClick={select}
-      />
-    </Suspense>
+    <div className="overflow-hidden rounded-lg bg-card">
+      <div className="flex max-w-[min(22rem,calc(100vw-2rem))] items-center gap-1 border-b border-border px-2 py-1.5">
+        <span className="mr-1 text-xs text-muted-foreground">Recent</span>
+        {recent.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            aria-label={`Recently used ${emoji}`}
+            className="flex size-7 items-center justify-center rounded-md text-base hover:bg-secondary"
+            onClick={() => select(emoji)}
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+      <Suspense
+        fallback={
+          <output className="flex h-80 w-80 items-center justify-center text-sm text-muted-foreground">
+            Loading emoji…
+          </output>
+        }
+      >
+        <FullPicker
+          width="min(22rem, calc(100vw - 2rem))"
+          height={420}
+          theme={emojiPickerTheme(theme)}
+          emojiStyle={"native" as PickerProps["emojiStyle"]}
+          categories={PICKER_CATEGORIES}
+          searchPlaceholder="Search emoji"
+          searchClearButtonLabel="Clear emoji search"
+          lazyLoadEmojis
+          customEmojis={customEmojis}
+          previewConfig={{ showPreview: false }}
+          onEmojiClick={(data: EmojiClickData) => select(data.emoji)}
+        />
+      </Suspense>
+    </div>
   );
 }
 
@@ -129,6 +175,7 @@ interface EmojiPickerProps extends EmojiPickerPanelProps {
 /** Shared reaction/composer emoji popover with a default-off full-picker path. */
 export function EmojiPicker({
   children,
+  accountId,
   onSelect,
   extraCategories,
   align = "start",
@@ -149,7 +196,11 @@ export function EmojiPicker({
         align={align}
       >
         {fullPickerEnabled ? (
-          <EmojiPickerPanel onSelect={select} extraCategories={extraCategories} />
+          <EmojiPickerPanel
+            accountId={accountId}
+            onSelect={select}
+            extraCategories={extraCategories}
+          />
         ) : (
           <div className="grid grid-cols-8 gap-1">
             {COMMON_EMOJI.map((emoji) => (

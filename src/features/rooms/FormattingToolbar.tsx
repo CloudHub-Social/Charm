@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
 
 interface FormattingToolbarProps {
+  accountId?: string;
   editor: Editor | null;
 }
 
@@ -62,7 +63,7 @@ const BUTTONS: ToolbarButtonSpec[] = [
 ];
 
 /** Bold/italic/code/quote/list toggle buttons bound to TipTap commands. */
-export function FormattingToolbar({ editor }: FormattingToolbarProps) {
+export function FormattingToolbar({ accountId = "anonymous", editor }: FormattingToolbarProps) {
   const fullEmojiPickerEnabled = useFlag("full_emoji_picker");
 
   return (
@@ -86,6 +87,7 @@ export function FormattingToolbar({ editor }: FormattingToolbarProps) {
       ))}
       {fullEmojiPickerEnabled && (
         <EmojiPicker
+          accountId={accountId}
           align="end"
           onSelect={(emoji) => editor?.chain().focus().insertContent(emoji).run()}
         >

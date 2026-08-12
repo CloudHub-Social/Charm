@@ -63,7 +63,8 @@ custom emoji packs) is the clean move.
 - Behind `full_emoji_picker`, replace `EmojiPicker.tsx`'s hardcoded list with the
   lazy-loaded `emoji-picker-react` picker: full Unicode
   emoji dataset, category tabs (smileys, people, nature, food, activities, etc.),
-  **search by name/shortcode**, recently-used section (persisted locally), and
+  **search by name/shortcode**, account-scoped recently-used section (persisted
+  locally), and
   skin-tone selection. Native emoji rendering avoids a new image-CDN dependency;
   the library's dataset remains outside the initial bundle. Spec 04's compact
   shortcode map remains the keystroke fast path rather than eagerly importing the
@@ -85,9 +86,12 @@ custom emoji packs) is the clean move.
 
 ## Data flow
 
-Emoji data is bundled into the lazy picker chunk — no IPC. The picker persists its
-recently-used ordering locally. Reaction insert and composer insert reuse existing
-send/compose paths.
+Emoji data is bundled into the lazy picker chunk — no IPC. Charm persists the
+recently-used ordering through its existing Matrix-account-scoped reaction store.
+The dependency's profile-wide Suggested category is disabled and its legacy
+`epr_suggested` key is cleared so switching accounts cannot expose another user's
+emoji history. Reaction insert and composer insert reuse existing send/compose
+paths.
 
 ## API/contract changes
 

@@ -7,7 +7,7 @@ const meta = {
   component: EmojiPickerPanel,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
-  args: { onSelect: fn() },
+  args: { accountId: "@storybook:example.org", onSelect: fn() },
 } satisfies Meta<typeof EmojiPickerPanel>;
 
 export default meta;
