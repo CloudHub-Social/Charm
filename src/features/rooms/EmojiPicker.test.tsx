@@ -110,6 +110,31 @@ describe("EmojiPicker", () => {
     expect(screen.queryByRole("button", { name: "Recently used 🧭" })).not.toBeInTheDocument();
   });
 
+  it("contains Escape so the surrounding composer does not cancel", async () => {
+    mocks.fullPickerEnabled = true;
+    const documentEscape = vi.fn();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") documentEscape();
+    };
+    document.addEventListener("keydown", listener);
+
+    try {
+      render(
+        <EmojiPicker accountId="@alice:example.org" onSelect={vi.fn()}>
+          <button type="button">Open emoji picker</button>
+        </EmojiPicker>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open emoji picker" }));
+      const picker = await screen.findByTestId("full-emoji-picker");
+
+      fireEvent.keyDown(picker, { key: "Escape" });
+
+      expect(documentEscape).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", listener);
+    }
+  });
+
   it("maps every Charm appearance choice to the matching picker theme", () => {
     expect(emojiPickerTheme("dark")).toBe("dark");
     expect(emojiPickerTheme("light")).toBe("light");

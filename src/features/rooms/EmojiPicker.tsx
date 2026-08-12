@@ -194,6 +194,12 @@ export function EmojiPicker({
       <PopoverContent
         className={fullPickerEnabled ? "w-auto overflow-hidden p-0" : "w-64 p-2"}
         align={align}
+        onKeyDown={(event) => {
+          // Composer owns a document-level Escape shortcut for cancelling an
+          // edit/reply. Escape inside this nested popover must only dismiss
+          // the picker, not bubble out and cancel the surrounding composer.
+          if (event.key === "Escape") event.stopPropagation();
+        }}
       >
         {fullPickerEnabled ? (
           <EmojiPickerPanel
