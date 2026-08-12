@@ -387,12 +387,18 @@ impl SearchIndex {
         };
         let search_root = validated_search_root(&app_data_dir)?;
         let prefix = account_directory_prefix(account_store_key);
+        let mut first_error = None;
         for name in cleanup_targets(&search_root)? {
             if name.starts_with(&prefix) {
-                delete_index_directory(&search_root, &search_root.join(name))?;
+                if let Err(error) = delete_index_directory(&search_root, &search_root.join(name)) {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        Ok(())
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Removes every Charm-owned message-search index while leaving sibling
@@ -3872,6 +3878,51 @@ mod tests {
         assert!(!first_path.exists());
         assert!(!second_path.exists());
         assert!(other_path.exists());
+    }
+
+    #[test]
+    fn delete_for_account_continues_after_one_device_index_fails() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = open_index(directory.path(), "account", "DEVICE-A");
+        let second = open_index(directory.path(), "account", "DEVICE-B");
+        let other = open_index(directory.path(), "other-account", "DEVICE-A");
+        let first_directory = first
+            .database_path()
+            .parent()
+            .expect("first parent")
+            .to_owned();
+        let second_directory = second
+            .database_path()
+            .parent()
+            .expect("second parent")
+            .to_owned();
+        let other_directory = other
+            .database_path()
+            .parent()
+            .expect("other parent")
+            .to_owned();
+        drop((first, second, other));
+        let (blocked, deletable) = if first_directory < second_directory {
+            (first_directory, second_directory)
+        } else {
+            (second_directory, first_directory)
+        };
+        std::fs::write(blocked.join("unexpected.txt"), b"retain").expect("block first cleanup");
+
+        SearchIndex::delete_for_account(directory.path(), "account")
+            .expect_err("one account cleanup remains blocked");
+
+        assert!(blocked.exists());
+        assert!(!deletable.exists());
+        assert!(other_directory.exists());
+        assert!(cleanup_marker(
+            &directory.path().join(SEARCH_ROOT),
+            blocked
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .expect("opaque name"),
+        )
+        .exists());
     }
 
     #[test]
