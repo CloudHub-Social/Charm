@@ -145,7 +145,7 @@ describe("MessageSearchDialog", () => {
     });
     const onSelectResult = vi.fn(() => false);
     const onOpenChange = vi.fn();
-    renderWithProviders(
+    const { rerender, client } = renderWithProviders(
       <MessageSearchDialog
         open
         onOpenChange={onOpenChange}
@@ -160,6 +160,20 @@ describe("MessageSearchDialog", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     const result = await screen.findByRole("button", { name: /stale result/i });
+
+    rerender(
+      wrapWithProviders(
+        <MessageSearchDialog
+          open
+          onOpenChange={onOpenChange}
+          rooms={[]}
+          activeRoomId={room.room_id}
+          onSelectResult={onSelectResult}
+        />,
+        client,
+      ),
+    );
+    expect(result).toBeInTheDocument();
 
     fireEvent.click(result);
     fireEvent.click(screen.getByRole("button", { name: "Open message" }));

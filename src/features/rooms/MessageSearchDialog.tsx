@@ -84,11 +84,11 @@ export function MessageSearchDialog({
     // a fresh open or an actual active-room navigation selects a default.
     if (opening || activeRoomChanged) {
       setScope(joinedActiveRoomId ? "room" : "all");
+      setPage(null);
+      setError(null);
+      setPendingResult(null);
+      queryInput.current?.focus();
     }
-    setPage(null);
-    setError(null);
-    setPendingResult(null);
-    queryInput.current?.focus();
   }, [open, activeRoomId, joinedActiveRoomId]);
 
   function navigateToResult(result: SearchResult) {
