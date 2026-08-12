@@ -3,7 +3,7 @@ import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRoomSummary } from "./testFixtures";
 import { QuickSwitcherDialog } from "./QuickSwitcherDialog";
-import { recordQuickSwitcherRecent } from "./quickSwitcherRecents";
+import { readQuickSwitcherRecents, recordQuickSwitcherRecent } from "./quickSwitcherRecents";
 
 const rooms = [
   makeRoomSummary({ room_id: "!general:example.org", name: "General" }),
@@ -32,6 +32,14 @@ describe("QuickSwitcherDialog", () => {
     ["Design Studio", "Work", "Alice", "General"].forEach((name, index) => {
       expect(within(options[index]).getByText(name, { exact: true })).toBeInTheDocument();
     });
+  });
+
+  it("preserves saved recents until the initial room snapshot has loaded", () => {
+    recordQuickSwitcherRecent("@me:example.org", "!design:example.org");
+
+    renderDialog({ rooms: [], roomsLoaded: false });
+
+    expect(readQuickSwitcherRecents("@me:example.org")).toEqual(["!design:example.org"]);
   });
 
   it("uses Fuse.js across names, DM peers, and parent-space context", () => {
@@ -93,6 +101,7 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof QuickSwitch
       open
       onOpenChange={() => {}}
       rooms={rooms}
+      roomsLoaded
       currentUserId="@me:example.org"
       onSelectRoom={() => {}}
       returnFocusRef={returnFocusRef}

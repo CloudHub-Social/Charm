@@ -17,6 +17,7 @@ export const Open: Story = {
   args: {
     open: true,
     onOpenChange: () => {},
+    roomsLoaded: true,
     currentUserId: "@evie:example.org",
     onSelectRoom: () => {},
     returnFocusRef: createRef<HTMLElement>(),
