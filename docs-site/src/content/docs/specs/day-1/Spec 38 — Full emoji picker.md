@@ -20,7 +20,7 @@ named extra-category inputs are flattened into the library's custom-emoji catego
 giving day-2 Spec 05 a stable pack-injection seam without changing either caller.
 Component regressions cover the flag fallback, full-picker configuration, custom
 emoji forwarding, popover close, and cursor insertion. The dedicated Storybook
-stories exercise the real grid through the repository's remote build, axe, and
+story exercises the real grid through the repository's remote build, axe, and
 visual-snapshot gates.
 
 **Workstream:** one PR / one agent. Shared component underpinning Spec 03
