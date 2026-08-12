@@ -298,9 +298,10 @@ export function RoomsScreen({
 
   function handleMessageSearchResult(result: SearchResult) {
     const room = joinedRooms.find((candidate) => candidate.room_id === result.room_id);
-    if (!room) return;
+    if (!room) return false;
     selectRoomInVisibleMode(room);
     setJumpTarget({ roomId: result.room_id, eventId: result.event_id });
+    return true;
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
