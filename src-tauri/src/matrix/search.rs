@@ -1520,15 +1520,12 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
     }
     if !feature_enabled(app) {
         reset_index_lifecycle(&state);
-        if let Some(active) = app
-            .state::<super::MatrixState>()
+        let app_data_dir = app.path().app_data_dir().ok();
+        let mut slot = state
             .search_index
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-        {
-            active.index.delete()?;
-        }
+            .unwrap_or_else(|error| error.into_inner());
+        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())?;
         return Ok(());
     }
     let mut slot = state
@@ -1548,9 +1545,8 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
     }
     if !feature_enabled(app) {
         reset_index_lifecycle(&state);
-        if let Some(active) = slot.take() {
-            active.index.delete()?;
-        }
+        let app_data_dir = app.path().app_data_dir().ok();
+        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())?;
         return Ok(());
     }
     let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
@@ -1659,36 +1655,18 @@ pub(crate) async fn submit_sync_response(
     let state = app.state::<super::MatrixState>();
     if !feature_enabled(app) {
         reset_index_lifecycle(&state);
-        let source = active_identity(client);
         let app_data_dir = app.path().app_data_dir().ok();
         let app = app.clone();
         let deleted = tauri::async_runtime::spawn_blocking(move || {
-            let mut deleted = true;
-            let active = app
+            let mut slot = app
                 .state::<super::MatrixState>()
                 .search_index
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            if let Some(active) = active {
-                deleted &= active.index.delete().is_ok();
-            }
-            match (app_data_dir, source) {
-                (Some(app_data_dir), Some((account_store_key, device_id))) => {
-                    deleted &= SearchIndex::delete_for_source(
-                        &app_data_dir,
-                        &account_store_key,
-                        &device_id,
-                    )
-                    .is_ok();
-                }
-                (None, Some(_)) => deleted = false,
-                _ => {}
-            }
-            deleted
+                .unwrap_or_else(|error| error.into_inner());
+            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
         })
         .await;
-        if !matches!(deleted, Ok(true)) {
+        if !matches!(deleted, Ok(Ok(()))) {
             tracing::warn!(
                 command = "message_search_kill_switch",
                 status = "cleanup_failed"
@@ -2306,7 +2284,7 @@ pub async fn search_messages(
     cursor: Option<String>,
 ) -> Result<SearchResultPage, SearchCommandError> {
     if !feature_enabled(&app) {
-        delete_disabled_active_index(&app, &state).await;
+        purge_disabled_search_indices(&app, &state).await;
         return Err(SearchCommandError::unavailable());
     }
     validate_query(&query)?;
@@ -2381,12 +2359,9 @@ pub async fn search_messages(
         // change during those awaits cannot reopen or query the local index.
         if !feature_enabled(&app) {
             reset_index_lifecycle(&state);
-            if let Some(active) = slot.take() {
-                active
-                    .index
-                    .delete()
-                    .map_err(|_| SearchCommandError::unavailable())?;
-            }
+            let app_data_dir = app.path().app_data_dir().ok();
+            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+                .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
         let index = ensure_index(&app, &mut slot, &account_store_key, &device_id)
@@ -2403,12 +2378,9 @@ pub async fn search_messages(
         )?;
         if !feature_enabled(&app) {
             reset_index_lifecycle(&state);
-            if let Some(active) = slot.take() {
-                active
-                    .index
-                    .delete()
-                    .map_err(|_| SearchCommandError::unavailable())?;
-            }
+            let app_data_dir = app.path().app_data_dir().ok();
+            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+                .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
         page.incomplete = state
@@ -2452,29 +2424,18 @@ pub async fn search_messages(
     Ok(page)
 }
 
-async fn delete_disabled_active_index(app: &AppHandle, state: &super::MatrixState) {
+async fn purge_disabled_search_indices(app: &AppHandle, state: &super::MatrixState) {
     // Invalidate queued plaintext and force a fresh cache seed before taking
     // the derived index. Cleanup can fail after the live handle is removed;
     // that must not leave a later re-enable believing backfill is complete.
     reset_index_lifecycle(state);
-    let source = state.client.lock().await.as_ref().and_then(active_identity);
     let app_data_dir = app.path().app_data_dir().ok();
     let search_index = std::sync::Arc::clone(&state.search_index);
     let deleted = tokio::task::spawn_blocking(move || {
-        let active = search_index
+        let mut slot = search_index
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-        if let Some(active) = active {
-            active.index.delete()?;
-        }
-        match (app_data_dir, source) {
-            (Some(app_data_dir), Some((account_store_key, device_id))) => {
-                SearchIndex::delete_for_source(&app_data_dir, &account_store_key, &device_id)
-            }
-            (None, Some(_)) => Err("message search application data directory unavailable".into()),
-            _ => Ok(()),
-        }
+            .unwrap_or_else(|error| error.into_inner());
+        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
     })
     .await;
     if !matches!(deleted, Ok(Ok(()))) {
@@ -2483,6 +2444,20 @@ async fn delete_disabled_active_index(app: &AppHandle, state: &super::MatrixStat
             status = "cleanup_failed"
         );
     }
+}
+
+fn purge_disabled_search_indices_from_slot(
+    slot: &mut Option<ActiveSearchIndex>,
+    app_data_dir: Option<&Path>,
+) -> Result<(), String> {
+    // Close the live SQLCipher connection before traversing the search root.
+    // The kill switch owns every retained account/device index, not only the
+    // identity that happens to be active when the flag is evaluated.
+    let active = slot.take();
+    drop(active);
+    let app_data_dir = app_data_dir
+        .ok_or_else(|| "message search application data directory unavailable".to_string())?;
+    SearchIndex::delete_all(app_data_dir)
 }
 
 fn restore_visible_row(
@@ -3094,6 +3069,9 @@ fn delete_index_directory(search_root: &Path, directory: &Path) -> Result<(), St
 
     let result = retry_delete(|| delete_database_path_once(&directory.join(SEARCH_DATABASE)));
     if result.is_ok() {
+        // The marker is the durable tombstone for an interrupted cleanup. If
+        // removing it fails, report cleanup as incomplete so a later open
+        // reconciles the marker instead of silently accepting stale state.
         std::fs::remove_dir(&marker).map_err(safe_io_error)?;
     }
     result
@@ -3910,6 +3888,28 @@ mod tests {
             std::fs::read(sibling.join("retained")).expect("read sibling SDK store"),
             b"sdk-owned"
         );
+    }
+
+    #[test]
+    fn kill_switch_removes_active_and_retained_device_indices() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let active = open_index(directory.path(), "account", "DEVICE-A");
+        let active_path = active.database_path().to_owned();
+        let retained = open_index(directory.path(), "other-account", "DEVICE-B");
+        let retained_path = retained.database_path().to_owned();
+        drop(retained);
+        let mut slot = Some(ActiveSearchIndex {
+            account_store_key: "account".to_string(),
+            device_id: "DEVICE-A".to_string(),
+            index: active,
+        });
+
+        purge_disabled_search_indices_from_slot(&mut slot, Some(directory.path()))
+            .expect("kill switch cleanup succeeds");
+
+        assert!(slot.is_none());
+        assert!(!active_path.exists());
+        assert!(!retained_path.exists());
     }
 
     #[test]

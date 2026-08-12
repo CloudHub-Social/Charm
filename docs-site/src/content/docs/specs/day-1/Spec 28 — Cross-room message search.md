@@ -300,10 +300,10 @@ without the user knowing which is which.
   neither transport owns indexing semantics.
 - New default-off `encrypted_local_message_search` flag in both Rust and TypeScript
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
-  when the flag is off. An enabled-to-disabled transition first closes every
-  account/session handle, securely removes the Charm-owned encrypted database
-  and its database sidecars on the next desktop sync, and records no reusable
-  quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
+  when the flag is off. An enabled-to-disabled transition first closes the active
+  handle, securely removes every retained Charm-owned account/device encrypted
+  database and its database sidecars on the next desktop sync, and records no
+  reusable quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
   block that path from reopening. Persisting kill-switch transition intent before
   renderer invocation and pre-session disabled-startup reconciliation remain in
   [#417](https://github.com/CloudHub-Social/Charm/issues/417).
