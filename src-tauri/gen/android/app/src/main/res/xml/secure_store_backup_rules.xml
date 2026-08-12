@@ -18,14 +18,20 @@
   generated passphrase — a mismatch, not a working store. Excluding both
   keeps the failure mode a clean "no local session" that falls through to
   re-login, rather than a store present, encrypted, and unopenable.
+
+  `message_search/` is a separate Charm-owned derived-content root under
+  Tauri's app-data directory. Android maps that directory to the `root`
+  backup domain, not `file`; exclude it from cloud restore and device transfer.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
         <exclude domain="file" path="matrix_store/" />
+        <exclude domain="root" path="message_search/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
         <exclude domain="file" path="matrix_store/" />
+        <exclude domain="root" path="message_search/" />
     </device-transfer>
 </data-extraction-rules>
