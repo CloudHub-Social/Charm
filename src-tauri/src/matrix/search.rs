@@ -12,7 +12,6 @@ use std::{
 use hkdf::Hkdf;
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
-use sha2_compat::Sha256 as HkdfSha256;
 use zeroize::Zeroizing;
 
 const SEARCH_ROOT: &str = "message_search";
@@ -404,7 +403,7 @@ fn derive_search_key(
     device_id: &str,
     store_passphrase: &str,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let hkdf = Hkdf::<HkdfSha256>::new(Some(KEY_DERIVATION_SALT), store_passphrase.as_bytes());
+    let hkdf = Hkdf::<Sha256>::new(Some(KEY_DERIVATION_SALT), store_passphrase.as_bytes());
     let mut derived_key = Zeroizing::new([0_u8; 32]);
     let mut context = Vec::with_capacity(account_store_key.len() + device_id.len() + 1);
     context.extend_from_slice(account_store_key.as_bytes());
