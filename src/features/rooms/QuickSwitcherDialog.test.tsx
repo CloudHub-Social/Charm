@@ -92,6 +92,21 @@ describe("QuickSwitcherDialog", () => {
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("keeps the active keyboard result scrolled into view", () => {
+    renderDialog();
+    const input = screen.getByRole("combobox", {
+      name: "Search rooms, direct messages, and spaces",
+    });
+    const options = screen.getAllByRole("option");
+    const scrollIntoView = vi.fn();
+    options.at(-1)!.scrollIntoView = scrollIntoView;
+
+    fireEvent.keyDown(input, { key: "End" });
+
+    expect(options.at(-1)).toHaveAttribute("aria-selected", "true");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+  });
 });
 
 function renderDialog(overrides: Partial<React.ComponentProps<typeof QuickSwitcherDialog>> = {}) {

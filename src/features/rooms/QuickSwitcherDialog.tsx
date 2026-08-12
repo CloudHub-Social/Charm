@@ -57,6 +57,7 @@ export function QuickSwitcherDialog({
     roomIds: readQuickSwitcherRecents(currentUserId),
   }));
   const inputRef = useRef<HTMLInputElement>(null);
+  const activeOptionRef = useRef<HTMLButtonElement>(null);
   const entries = useMemo(() => buildEntries(rooms), [rooms]);
   const validRoomIds = useMemo(
     () => new Set(entries.map((entry) => entry.room.room_id)),
@@ -99,6 +100,10 @@ export function QuickSwitcherDialog({
   useEffect(() => {
     setActiveIndex((index) => Math.min(index, Math.max(0, results.length - 1)));
   }, [results.length]);
+
+  useEffect(() => {
+    activeOptionRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex, results]);
 
   function choose(entry: SwitcherEntry) {
     // Every entry is resolved from the current joined-room snapshot, so this
@@ -199,6 +204,7 @@ export function QuickSwitcherDialog({
               {results.map((entry, index) => (
                 <button
                   key={entry.room.room_id}
+                  ref={index === activeIndex ? activeOptionRef : undefined}
                   id={optionId(entry)}
                   type="button"
                   role="option"
