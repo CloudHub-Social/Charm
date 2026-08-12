@@ -78,6 +78,9 @@ test("password recovery requests email validation and sets a new password", asyn
       "Follow the instructions in your email. If it includes a token, enter it below.",
     ),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Resend recovery email" })).toBeVisible();
+  await page.getByRole("button", { name: "Resend recovery email" }).click();
+  await expect(page.getByText("Recovery email sent again.")).toBeVisible();
   await page.getByLabel("Email token (if provided)").fill("email-validation-token");
   await page.getByLabel("New password").fill("new correct horse battery staple");
   await page.getByRole("button", { name: "Reset password" }).click();

@@ -4,6 +4,7 @@ import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
+import { MessageSearchDialog } from "./MessageSearchDialog";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -24,6 +25,7 @@ import {
   resolveRoomAlias,
   setFocusedRoom,
   type RoomSummary,
+  type SearchResult,
 } from "@/lib/matrix";
 import { MembersDrawer } from "@/features/room-info/MembersDrawer";
 import { PinnedMessagesPanel } from "@/features/room-info/PinnedMessagesPanel";
@@ -90,17 +92,20 @@ export function RoomsScreen({
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
+  const messageSearchEnabled = useFlag("encrypted_local_message_search");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
   const [roomsLoaded, setRoomsLoaded] = useState(false);
   const [syncedRoomListReceived, setSyncedRoomListReceived] = useState(false);
   const syncedRoomListReceivedRef = useRef(false);
+  const roomListUpdateRevisionRef = useRef(0);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [createSpaceParentId, setCreateSpaceParentId] = useState<string | null>(null);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
@@ -113,6 +118,10 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
+  const [profileRoomPendingSelection, setProfileRoomPendingSelection] = useState<string | null>(
+    null,
+  );
+  const profileRoomNavigationRequestRef = useRef(0);
   // "Jump to message" — the room + event to scroll to once that room is
   // selected and loaded. Shared by two entry points that both just need
   // "load this event into view, paginating around it if it's outside the
@@ -145,7 +154,22 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
+
+  useEffect(() => {
+    if (!messageSearchEnabled) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setMessageSearchOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [messageSearchEnabled]);
+
   function selectRoom(roomId: string) {
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
@@ -170,19 +194,60 @@ export function RoomsScreen({
       .catch(logAndIgnore);
   }
 
+  async function navigateToProfileRoom(roomId: string) {
+    const requestId = profileRoomNavigationRequestRef.current + 1;
+    profileRoomNavigationRequestRef.current = requestId;
+    // Arm the exact target before any refresh can publish a room snapshot.
+    // This both lets a concurrent room-list update complete the navigation
+    // and prevents initial auto-selection from stealing an explicit profile
+    // action while no chat is active.
+    setProfileRoomPendingSelection(roomId);
+    let visibleRooms = roomsRef.current;
+    let joinedRoom = visibleRooms.find(
+      (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+    );
+    if (!joinedRoom) {
+      try {
+        // `start_direct_message` can return a newly-created room before the
+        // background `room_list:update` reaches React. Publish an immediate
+        // SDK snapshot before selecting it so `activeRoom` and ChatShell move
+        // together instead of briefly rendering an empty conversation pane.
+        visibleRooms = await refreshRooms();
+        joinedRoom = visibleRooms.find(
+          (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+        );
+      } catch (error) {
+        logAndIgnore(error);
+      }
+    }
+    if (profileRoomNavigationRequestRef.current !== requestId) return;
+    if (joinedRoom) {
+      selectRoomInVisibleMode(joinedRoom, visibleRooms);
+      return;
+    }
+    // If the immediate SDK snapshot is also behind, retain the already-armed
+    // intent until the normal room-list stream publishes this specific target.
+  }
+
   function selectHome() {
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
     setSelectedSpaceId(null);
   }
 
   function selectDms() {
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
   }
 
   function selectSpace(spaceId: string) {
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
@@ -212,6 +277,13 @@ export function RoomsScreen({
     if (!room) return;
     selectRoomInVisibleMode(room);
     setJumpTarget({ roomId, eventId });
+  }
+
+  function handleMessageSearchResult(result: SearchResult) {
+    const room = joinedRooms.find((candidate) => candidate.room_id === result.room_id);
+    if (!room) return;
+    selectRoomInVisibleMode(room);
+    setJumpTarget({ roomId: result.room_id, eventId: result.event_id });
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -269,6 +341,7 @@ export function RoomsScreen({
     listRooms()
       .then((nextRooms) => {
         if (cancelled || syncedRoomListReceivedRef.current) return;
+        roomsRef.current = nextRooms;
         setRooms(nextRooms);
       })
       .catch(logAndIgnore)
@@ -278,7 +351,9 @@ export function RoomsScreen({
     const unlisten = onRoomListUpdate((nextRooms) => {
       if (cancelled) return;
       syncedRoomListReceivedRef.current = true;
+      roomListUpdateRevisionRef.current += 1;
       setSyncedRoomListReceived(true);
+      roomsRef.current = nextRooms;
       setRooms(nextRooms);
       setRoomsLoaded(true);
     });
@@ -289,12 +364,25 @@ export function RoomsScreen({
   }, []);
 
   async function refreshRooms() {
+    const roomListUpdateRevision = roomListUpdateRevisionRef.current;
     const nextRooms = await listRooms();
+    // A room-list push published after this refresh started is newer than
+    // its point-in-time SDK snapshot. Keep and return the push so a slow
+    // refresh cannot roll the UI back or hide a newly-created DM.
+    if (roomListUpdateRevisionRef.current !== roomListUpdateRevision) {
+      return roomsRef.current;
+    }
+    roomsRef.current = nextRooms;
     setRooms(nextRooms);
     return nextRooms;
   }
 
   async function handleAcceptInvite(roomId: string) {
+    // Accepting an invite is a newer explicit navigation intent than any DM
+    // still waiting for its room-list entry. Cancel that older request before
+    // the join or refresh can publish a snapshot containing both targets.
+    profileRoomNavigationRequestRef.current += 1;
+    setProfileRoomPendingSelection(null);
     await acceptInvite(roomId);
     // Joining completes on the homeserver before matrix-sdk's local room
     // state necessarily advances to `Joined`. Remember the navigation intent
@@ -314,6 +402,17 @@ export function RoomsScreen({
     setAcceptedRoomPendingSelection(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [acceptedRoomPendingSelection, rooms, joinedRooms]);
+
+  useEffect(() => {
+    if (!profileRoomPendingSelection) return;
+    const joinedRoom = rooms.find(
+      (room) => room.room_id === profileRoomPendingSelection && room.membership === "join",
+    );
+    if (!joinedRoom) return;
+    selectRoomInVisibleMode(joinedRoom, joinedRooms);
+    setProfileRoomPendingSelection(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileRoomPendingSelection, rooms, joinedRooms]);
 
   async function handleDeclineInvite(roomId: string) {
     await declineInvite(roomId);
@@ -452,13 +551,20 @@ export function RoomsScreen({
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
     if (acceptedRoomPendingSelection) return; // let explicit post-accept navigation win
+    if (profileRoomPendingSelection) return; // let explicit profile-card navigation win
     const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
       if (autoSelectSuppressedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinedRooms, activeRoomId, deepLinkRoomId, acceptedRoomPendingSelection]);
+  }, [
+    joinedRooms,
+    activeRoomId,
+    deepLinkRoomId,
+    acceptedRoomPendingSelection,
+    profileRoomPendingSelection,
+  ]);
 
   const selectedSpace =
     roomListMode === "space"
@@ -553,6 +659,9 @@ export function RoomsScreen({
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
             onSelectSearchResult={selectRoomInVisibleMode}
+            onOpenMessageSearch={
+              messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
+            }
             mode={roomListMode}
             selectedSpace={selectedSpace}
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
@@ -569,6 +678,7 @@ export function RoomsScreen({
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
+            onNavigateToProfileRoom={navigateToProfileRoom}
             jumpToEventId={
               jumpTarget && activeRoom?.room_id === jumpTarget.roomId ? jumpTarget.eventId : null
             }
@@ -600,6 +710,7 @@ export function RoomsScreen({
             <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
+              onNavigateToRoom={navigateToProfileRoom}
               onClose={() => setMembersDrawerOpen(false)}
             />
           ) : null
@@ -618,9 +729,19 @@ export function RoomsScreen({
         }}
         onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
+      {messageSearchEnabled && (
+        <MessageSearchDialog
+          open={messageSearchOpen}
+          onOpenChange={setMessageSearchOpen}
+          rooms={joinedRooms}
+          activeRoomId={activeRoomId}
+          onSelectResult={handleMessageSearchResult}
+        />
+      )}
       <RoomSettingsModal
         currentUserId={currentUserId}
         rooms={joinedRooms}
+        onNavigateToRoom={navigateToProfileRoom}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

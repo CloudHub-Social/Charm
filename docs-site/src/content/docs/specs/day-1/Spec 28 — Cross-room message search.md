@@ -3,31 +3,40 @@ title: Charm 2.0 Spec — Cross-room message search
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 ## Implementation status
 
-The storage architecture is decision-ready. Charm uses a dedicated,
-per-account and per-device SQLCipher database owned by Charm, not tables or
-connections owned by matrix-sdk. The first storage-only foundation now adds
-the approved direct desktop `rusqlite`/SQLCipher dependency, a domain-separated
-per-device key derived from the keychain-backed matrix-sdk store passphrase,
-opaque device-scoped private directories, visible-message and edit-provenance
-tables, persistent redaction tombstones, physical redaction/room cleanup, and a
-default-off `encrypted_local_message_search` flag. The module is compiled and
-tested but has no Tauri command, renderer entry point, event-ingestion path, or
-session-lifecycle wiring yet, so production sessions cannot create or query an
-index in this slice.
+Charm now ships encrypted local message search behind the default-off
+`encrypted_local_message_search` flag on desktop and the web companion. A dedicated,
+per-account/device SQLCipher database is owned by Charm rather than matrix-sdk.
+Its domain-separated key comes from the existing random encrypted-store secret;
+neither that source secret nor the derived key crosses IPC or appears in logs.
 
-The next backend slices own filesystem-safe device/account cleanup, incompatible-index
-rebuild and backup exclusion, logout/deactivation and kill-switch reconciliation,
-the bounded off-runtime worker, FTS5 tokenizer, startup reconciliation,
-joined-room/ignored-user enforcement, and desktop/web session wiring. The global
-and current-room search UI follows only after that indexing contract is stable.
+Decrypted `m.text`, `m.notice`, and `m.emote` events from every joined room flow
+through bounded background workers into an FTS5 trigram index. Replies are
+normalized, spoiler-bearing events fail closed, edits replace the visible result,
+forged cross-sender edits are ignored, and redactions or joined-to-left transitions
+physically remove indexed text and compact SQLite sidecars. Queries re-check the
+current joined-room set, support current-room and global scope with stable cursors,
+and return plain snippets plus UTF-16 match ranges. Desktop IPC and the authenticated
+web route share the same storage/query core. Logout and account deactivation close
+and delete the derived index; the companion does the same on session logout.
 
-**Workstream:** ordered backend foundation and ingestion/query PRs, followed by the
-frontend search UI and result navigation — see Trade-offs.
+The feature UI adds a distinct message-search button and `Cmd/Ctrl+F`, scoped/all-
+room selection, keyboard-accessible results, incomplete-index disclosure, and
+navigation through the existing load-around-event/highlight path. Repository
+evidence includes SQLCipher marker scans, no-follow filesystem tests, edit/redaction/
+cursor/query tests, component coverage, workspace compilation, and a Playwright
+search-navigation journey. Real-homeserver verification remains operational
+evidence rather than a repository correctness gate. Filesystem/backup hardening,
+durable overflow recovery, and kill-switch restart reconciliation remain tracked in
+[#415](https://github.com/CloudHub-Social/Charm/issues/415),
+[#419](https://github.com/CloudHub-Social/Charm/issues/419), and
+[#417](https://github.com/CloudHub-Social/Charm/issues/417).
+
+**Workstream:** shipped daily-driver parity; bounded resilience follow-ups remain.
 
 ## Problem & why now
 
@@ -85,9 +94,10 @@ connection: the SDK owns that schema and migration lifecycle.
 - Index fields: room ID, event ID, sender, plain-text body, origin timestamp.
   Normalize formatted Matrix content with Ruma's sanitizer and
   `RemoveReplyFallback::Yes` before text extraction; do not implement a second tag
-  stripper or index hidden/disallowed elements. Remove the descendants of
-  `data-mx-spoiler` elements before extraction, so concealed text cannot appear in
-  either matches or plain snippets. When normalizing an edit of a reply, carry
+  stripper or index hidden/disallowed elements. Because the result DTO cannot
+  preserve concealed ranges, fail closed for any event containing a
+  `data-mx-spoiler` element, so concealed text cannot appear in either matches or
+  plain snippets. When normalizing an edit of a reply, carry
   the original event's reply relation into the replacement content before
   removing the fallback; `m.new_content` alone does not preserve that context.
   Cross-spec tests must cover Spec 58 spoilers and edited replies whose quoted
@@ -167,21 +177,19 @@ connection: the SDK owns that schema and migration lifecycle.
   a new device that cannot safely reopen the old device-keyed index. Creating a
   superseding device likewise closes and deletes the prior device index. Account
   deactivation must close and delete every retained index.
-  PR 1 owns an explicit account-management "Forget local data" control that closes
-  the account, removes both the retained SDK store and every search index, and
-  tests the confirmation and physical cleanup. Its Spec 08 copy discloses the
-  separately encrypted search index and key lifecycle. Web logout, session
-  expiry, and administrative session removal close and delete that session's
-  index. A failed/corrupt migration records only non-sensitive diagnostics
+  An explicit account-management "Forget local data" control that closes the
+  account, removes both the retained SDK store and every search index, and tests
+  the confirmation and physical cleanup remains lifecycle follow-up
+  [#416](https://github.com/CloudHub-Social/Charm/issues/416). Its Spec 08 copy must
+  disclose the separately encrypted search index and key lifecycle. Web logout,
+  session expiry, and administrative session removal close and delete that
+  session's index. A failed/corrupt migration records only non-sensitive diagnostics
   (schema version, error category, and a random incident ID), securely removes the
   search database plus WAL/SHM sidecars, and rebuilds from decrypted SDK history;
   no decrypted-content quarantine is retained and an SDK store is never modified.
-- A terminal Matrix authentication error, including remote deletion of the
-  current device from another session, is session teardown rather than a
-  retryable sync failure. Desktop, mobile, and web immediately stop serving
-  queries, close the handle, and remove the database and sidecars. Integration
-  tests revoke the device from a second session and verify both access denial
-  and physical cleanup.
+- Terminal-authentication cleanup and remote device-revocation recovery remain
+  resilience work in [#416](https://github.com/CloudHub-Social/Charm/issues/416).
+  Queries still fail closed once the owning authenticated session is unavailable.
 - Web indexes are intentionally session-ephemeral in the first slice. They are not
   copied into the crypto-store backup and may be rebuilt only from decrypted
   history available to that same session after restart. The UI must disclose
@@ -190,39 +198,23 @@ connection: the SDK owns that schema and migration lifecycle.
   process while indexing and querying, not in the browser or user's device.
   SQLCipher protects disk snapshots but does not protect against an operator or
   attacker with access to live process memory. Web operations guidance and the UI
-  must disclose that trust boundary; companion search directories are excluded from host backups,
-  deleted on session expiry/removal, and retained no longer than the owning
-  session.
+  disclose that trust boundary. Web logout deletes the session index; host-backup
+  exclusion and expiry/removal cleanup are tracked in
+  [#415](https://github.com/CloudHub-Social/Charm/issues/415).
 - Run schema creation, writes, rebuilds, and queries off the async runtime's worker
   threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
-  through a bounded queue that coalesces work by room/event and persists only a
-  non-content sync checkpoint. Overflow schedules a bounded reconciliation from
-  the encrypted SDK store instead of retaining every event in memory, blocking
-  sync, or silently dropping work. Tests stall SQLite while delivering a large
-  sync and prove bounded memory plus eventual reconciliation.
-- Persist a Charm-owned indexing journal/checkpoint before acknowledging a sync
-  position as searchable. The journal contains only opaque event/room identifiers
-  and checkpoints; it never stores message bodies, normalized text, snippets, or
-  other decrypted content and rehydrates work from the encrypted SDK store. Startup
-  replays incomplete journal entries and reconciles the index against decrypted
-  events in the SDK store before serving queries; this includes redactions and
-  edit provenance. An index file existing is never sufficient evidence that
-  backfill/reconciliation completed. Tests stop the process between SDK
-  persistence and search commit, scan the journal for raw markers, and verify
-  restart removes redacted plaintext and fills missing events.
+  through a bounded per-session queue. Overflow never retains unbounded decrypted
+  text: it drops the batch, marks the index incomplete, and discloses that state on
+  every result page. Durable non-content checkpoints and automatic overflow
+  reconciliation are tracked in [#419](https://github.com/CloudHub-Social/Charm/issues/419).
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
   eligible events to the indexer even when that room has never been opened. The
-  current `m.ignored_user_list` is applied before live writes and during backfill;
+  current `m.ignored_user_list` is applied before live writes;
   newly ignored senders are purged transactionally before the updated ignore list
-  becomes visible to queries. Unignoring permits future live writes and a bounded
-  rebuild of locally retained eligible events, but never restores text from a
-  decrypted-content quarantine. Initial and recovery backfill enumerate each joined room's
-  locally persisted SDK event cache and pass encrypted events through the SDK's
-  decryption machinery; the indexer never scrapes mounted React timelines. Tests
-  cover an encrypted message arriving in an unopened room and becoming searchable
-  without opening that room or making a search-triggered Matrix request, plus ignore
-  and unignore transitions.
+  becomes visible to queries. Unignoring permits future live writes; durable local
+  backfill and reconciliation are the same bounded follow-up in #419. The indexer
+  never scrapes mounted React timelines.
 
 ### Search UI
 
@@ -246,16 +238,13 @@ New Tauri/web-server command:
 `search_messages(query, room_id?, limit, cursor) -> SearchResultPage`
 
 The user query is literal text, not raw FTS5 syntax. The backend stores the
-unmodified display text separately from the token/search representation and uses a
-maintained Lindera-backed custom FTS tokenizer that preserves byte offsets into
-that original text internally. The backend converts matched byte spans to UTF-16
-code-unit offsets before transport, validates that every boundary falls on a
-Unicode scalar boundary, and returns the original display snippet plus those
-JavaScript-safe ranges. Tests cover emoji, combining characters, and CJK text.
-Pre-segmented or normalized text is never returned to the UI. This is the
-selected CJK-capable strategy (subject to the repository's
-explicit dependency approval); do not fall back to `unicode61` for unsegmented
-Chinese/Japanese content.
+unmodified display text separately from the token/search representation and uses
+SQLite's maintained FTS5 `trigram` tokenizer. This supports literal substring and
+unsegmented CJK matching without adding a new package. Queries shorter than three
+characters use an escaped parameterized `LIKE` fallback. The backend converts
+matched spans to UTF-16 code-unit offsets before transport and returns the original
+display snippet plus those JavaScript-safe ranges; pre-segmented or normalized text
+is never returned to the UI.
 unmatched quotes and FTS operators are searched as text. Empty-token queries are
 rejected with a typed invalid-query error. Requests are capped server-side at 512
 UTF-8 bytes and `limit` is clamped to 1–100.
@@ -276,16 +265,11 @@ departed-room results before return. Expired snapshots and pages routed to anoth
 web process during a rolling deployment are rejected as stale, never replayed
 against an independently rebuilt index. The UI restarts pagination from page one
 on this typed response.
-Each session has a strict cap on live snapshots and aggregate retained identifiers,
-and the process has a separate global byte/count budget. Creating a first page
-deterministically evicts that session's oldest snapshot or returns a typed
-resource-limit error when the global budget cannot admit it; expiry and session
-teardown release accounting immediately. Tests repeatedly request first pages,
-including from concurrent hosted sessions, and assert both quotas and eviction.
-Rolling-deploy integration tests alternate requests between old and new companion
-processes. Results contain event ID, room ID, sender, origin timestamp, a plain-text
-snippet with match ranges, and the next cursor; they never contain FTS-generated
-HTML markup.
+Each index caps snapshots at eight and identifier capture at 2,000 results, evicting
+the oldest snapshot after its five-minute TTL. A cursor from another index
+incarnation is rejected as stale. Results contain event ID, room ID, sender, origin
+timestamp, a plain-text snippet with match ranges, and the next cursor; they never
+contain FTS-generated HTML markup.
 
 Executing a local-index query causes no Matrix protocol traffic. Opening a result
 outside the loaded timeline can use the existing `/context` navigation path and
@@ -306,21 +290,16 @@ without the user knowing which is which.
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off. An enabled-to-disabled transition first closes every
   account/session handle, securely removes the Charm-owned encrypted database
-  and its WAL/SHM files, and records no reusable quarantine. Startup also purges
-  a leftover index before serving other account work when the effective flag is
-  false. Kill-switch tests cover an active handle, restart cleanup, and failure
-  reporting without reopening the index.
+  and its WAL/SHM files on the next desktop sync, and records no reusable quarantine.
+  Durable retry and pre-session startup cleanup remain in
+  [#417](https://github.com/CloudHub-Social/Charm/issues/417).
 - Because this flag controls a sensitive derived-content index, a trusted remote
-  `false` is a hard veto over any persisted Labs/local override. The veto closes
-  active handles and triggers the same purge even when Labs previously persisted
-  `true`; tests cover that exact transition on every transport.
-- The companion evaluates that flag in trusted server configuration on every
-  indexing/search request (or through a bounded cache with explicit configuration
-  invalidation), rather than binding a `true` value for the lifetime of a
-  sliding-expiry session. Browser OFREP/local-storage state may hide UI but cannot
-  enable indexing or search routes. Disabled and enabled companion sessions are
-  covered separately, including a forged client request while the server-side
-  value is false and a kill-switch transition during an active session.
+  `false` is a hard veto over any persisted Labs/local override. The desktop veto
+  prevents queries immediately and triggers the cleanup path above.
+- The companion requires trusted server configuration
+  (`CHARM_WEB_ENCRYPTED_LOCAL_MESSAGE_SEARCH=1`) before creating a worker or serving
+  the search route. Browser OFREP/local-storage state may hide UI but cannot enable
+  indexing or search routes.
 - New IPC and authenticated web-companion command surface as above, with generated
   bindings via ts-rs per existing convention.
 - Search instrumentation uses an explicit metadata allowlist: duration, result
@@ -330,32 +309,26 @@ without the user knowing which is which.
   they are absent, and the operations observability guidance documents this rule.
 - No changes to existing commands.
 
-## Testing strategy
+## Validation evidence and follow-ups
 
-- Rust unit tests: index insert/query/redact/edit-replace correctness against a
-  fixture set of events, including multi-room, multi-sender, text-to-non-text
-  replacements, out-of-order edits, equal-timestamp edits deferred until an
-  authoritative collapsed projection is available, and redaction restoring the
-  preceding renderer-selected searchable version.
-- Rust unit tests: account A cannot open, query, or consume a cursor from account
-  B; flag-off performs no index file creation; corrupt-schema rebuild cannot touch
-  matrix-sdk files.
-- Rust unit tests: literal quotes/operators, maximum query/page bounds, tied-result
-  ordering, cursor TTL expiry and index-incarnation mismatch, local leave/forget and remote kick/ban
-  purge, deactivation wipe, legacy web-session crypto-key migration, and
-  web-session isolation/cleanup. Include substring word queries within unsegmented
-  Chinese and Japanese sentences, not just whole-message queries.
-- Rust test: encrypted-room round-trip — decrypt a fixture event, confirm it's
-  indexed; confirm a never-decrypted (e.g. undecryptable/UTD) event is not indexed
-  with garbage ciphertext.
-- Frontend: search UI component tests (query input, results list, scope toggle,
-  empty-state, jump-to-message behavior) with a mocked IPC search command.
-- Manual: verify search survives app restart (index persisted, not rebuilt from
-  scratch each launch) and verify redacting a message removes it from subsequent
-  search results.
-- Real Synapse: send and edit an encrypted text event from another client, wait for
-  decryption, then verify replacement and redaction in desktop and web-companion
-  results. Record this separately from repository tests.
+- Rust storage tests cover encrypted-at-rest marker scans, literal queries,
+  Unicode substring matching, account/cursor isolation, edit replacement and
+  sender validation, redaction restoration and tombstones, room/sender purge,
+  cursor expiry/incarnation, migration, and no-follow filesystem containment.
+- Sync-ingestion tests cover eligible decrypted text, notices and emotes; reply
+  fallback removal; spoiler exclusion; edits, redactions, ignored senders, and
+  joined-to-left purges. Ciphertext and undecryptable placeholders are never an
+  input to the indexer.
+- Frontend component coverage exercises query, scope, pagination, incomplete-index
+  disclosure and result selection. Playwright covers the room-scoped shortcut and
+  navigation journey through the mocked transport.
+- Workspace Rust/frontend checks and docs/Storybook/Playwright gates remain the
+  repository acceptance evidence. Live Synapse verification of encrypted send,
+  edit, redaction, restart persistence, desktop, and web companion behavior must be
+  recorded separately and must not be inferred from repository tests.
+- Durable reconciliation for edit-order ambiguity, missed/deferred events, ignore
+  list changes, and queue overflow remains tracked in
+  [#419](https://github.com/CloudHub-Social/Charm/issues/419).
 
 ## Trade-offs
 

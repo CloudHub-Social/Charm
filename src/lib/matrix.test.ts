@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeMatrix, removeAltAlias } from "./matrix";
+import { invokeMatrix, removeAltAlias, searchMessages } from "./matrix";
 
 const mocks = vi.hoisted(() => ({
   addBreadcrumb: vi.fn(),
@@ -208,6 +208,25 @@ describe("removeAltAlias", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("remove_alt_alias", {
       roomId: "!room:example.org",
       alias: "#stale:example.org",
+    });
+  });
+});
+
+describe("searchMessages", () => {
+  it("uses the bounded first-page defaults", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      incomplete: false,
+    });
+
+    await searchMessages("needle", null);
+
+    expect(mocks.invoke).toHaveBeenCalledWith("search_messages", {
+      query: "needle",
+      roomId: null,
+      limit: 30,
+      cursor: null,
     });
   });
 });

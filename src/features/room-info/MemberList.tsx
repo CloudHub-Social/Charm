@@ -12,10 +12,18 @@ import type { MembershipKind, RoomDetails, RoomMemberSummary } from "@/lib/matri
 import { useRoomMembers } from "./useRoomMembers";
 import { MemberRow } from "./MemberRow";
 import { InviteMemberDialog } from "./InviteMemberDialog";
+import { useRoomAdminActions } from "./useRoomAdminActions";
+import { MemberPowerLevelDialog } from "./PowerLevelEditor";
+import { useFlag } from "@/featureFlags";
+import {
+  MessagePillProfileDialog,
+  type MessagePillProfile,
+} from "@/features/rooms/MessagePillProfileDialog";
 
 interface MemberListProps {
   details: RoomDetails;
   currentUserId: string;
+  onNavigateToRoom?: (roomId: string) => void;
 }
 
 type MembershipFilter = "join" | "invite" | "ban";
@@ -47,11 +55,15 @@ function matchesFilter(membership: MembershipKind, filter: MembershipFilter): bo
  * real benefit, matching Spec 17's scope (member management UX, not a new
  * backend paging API).
  */
-export function MemberList({ details, currentUserId }: MemberListProps) {
+export function MemberList({ details, currentUserId, onNavigateToRoom }: MemberListProps) {
   const { data: members, isLoading } = useRoomMembers(details.room_id);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MembershipFilter>("join");
   const [sort, setSort] = useState<SortOrder>("name");
+  const profileCardsEnabled = useFlag("user_profile_cards");
+  const [profile, setProfile] = useState<MessagePillProfile | null>(null);
+  const [powerLevelMember, setPowerLevelMember] = useState<RoomMemberSummary | null>(null);
+  const adminActions = useRoomAdminActions(details.room_id);
 
   const filtered = useMemo(() => {
     if (!members) return [];
@@ -70,6 +82,10 @@ export function MemberList({ details, currentUserId }: MemberListProps) {
           : b.power_level - a.power_level,
       );
   }, [members, query, filter, sort]);
+  const selectedMember = members?.find((member) => member.user_id === profile?.userId) ?? null;
+  const targetOutranked = selectedMember
+    ? selectedMember.power_level < details.my_power_level
+    : false;
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -145,9 +161,55 @@ export function MemberList({ details, currentUserId }: MemberListProps) {
               can={details.can}
               myPowerLevel={details.my_power_level}
               currentUserId={currentUserId}
+              onOpenProfile={
+                profileCardsEnabled
+                  ? () => setProfile({ userId: member.user_id, label: memberLabel(member) })
+                  : undefined
+              }
             />
           ))}
         </div>
+      )}
+      <MessagePillProfileDialog
+        profile={profile}
+        accountId={currentUserId}
+        currentUserId={currentUserId}
+        roomId={details.room_id}
+        detailed={profileCardsEnabled}
+        onNavigateToRoom={onNavigateToRoom}
+        moderationActions={
+          selectedMember && selectedMember.user_id !== currentUserId
+            ? {
+                canSetPowerLevel: details.can.set_power_levels && targetOutranked,
+                canKick: details.can.kick && targetOutranked,
+                canBan: details.can.ban && targetOutranked,
+                onSetPowerLevel: () => {
+                  setPowerLevelMember(selectedMember);
+                  setProfile(null);
+                },
+                onKick: () => {
+                  adminActions.kick.mutate({ userId: selectedMember.user_id });
+                  setProfile(null);
+                },
+                onBan: () => {
+                  adminActions.ban.mutate({ userId: selectedMember.user_id });
+                  setProfile(null);
+                },
+              }
+            : undefined
+        }
+        onClose={() => setProfile(null)}
+      />
+      {powerLevelMember && (
+        <MemberPowerLevelDialog
+          roomId={details.room_id}
+          userId={powerLevelMember.user_id}
+          currentPowerLevel={powerLevelMember.power_level}
+          myPowerLevel={details.my_power_level}
+          isSelf={powerLevelMember.user_id === currentUserId}
+          open
+          onOpenChange={(open) => !open && setPowerLevelMember(null)}
+        />
       )}
     </div>
   );

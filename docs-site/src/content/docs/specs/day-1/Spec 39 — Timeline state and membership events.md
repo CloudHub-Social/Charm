@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Timeline state and membership events
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 ## Implementation status
@@ -27,10 +27,11 @@ behavior rather than changing row identity for the dark launch.
 Repository evidence includes Rust mapper and binding tests, web-server compilation,
 frontend unit coverage, and a Playwright full-shell collapsed-membership journey.
 A real-account nightly smoke test also confirmed a synchronized membership/profile
-notice, collapse rendering, and the Appearance visibility controls. This spec
-remains in progress until a second client produces live join, leave, name, topic,
-avatar, and tombstone changes and Charm records the resulting variants; the
-read-only artifact smoke does not cover that Matrix event matrix.
+notice, collapse rendering, and the Appearance visibility controls. The real-Synapse
+`room_admin` integration suite now uses a second Matrix client to produce live join
+and leave transitions and sends live name, topic, avatar, and tombstone state. It
+then asserts that Charm's actual timeline DTO contains each corresponding variant,
+closing the former live-event-matrix gap.
 
 **Workstream:** one PR / one agent. Extends Spec 14/26 (timeline). Likely the
 single most-noticeable omission found in the whole parity audit.
