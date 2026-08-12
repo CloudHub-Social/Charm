@@ -10,6 +10,7 @@ import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
+import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -83,6 +84,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       crashRecoveryPromptOpen={crashRecoveryPromptOpen}
       onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
       onLoggedOut={() => {
+        clearQuickSwitcherRecents(session.user_id);
         // Clears every account-scoped cache entry (profile, devices,
         // notification settings, room list, ...) so a subsequent sign-in as
         // a *different* account in the same app session never shows stale

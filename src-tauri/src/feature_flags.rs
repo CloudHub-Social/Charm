@@ -157,6 +157,8 @@ define_feature_flag_keys!(
         RegistrationAndRecovery,
         /// Spec 28 decrypted-message indexing and local message search.
         EncryptedLocalMessageSearch,
+        /// Spec 55 command palette and quick room/DM/space navigation.
+        QuickSwitcher,
     }
 );
 
@@ -187,6 +189,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => false,
             FeatureFlagKey::RegistrationAndRecovery => false,
             FeatureFlagKey::EncryptedLocalMessageSearch => false,
+            FeatureFlagKey::QuickSwitcher => false,
         }
     }
 
@@ -260,6 +263,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => {
                 "Build and query an encrypted device-local index of decrypted Matrix messages."
             }
+            FeatureFlagKey::QuickSwitcher => {
+                "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher."
+            }
         }
     }
 
@@ -299,6 +305,7 @@ impl FeatureFlagKey {
                 "Spec 45 (registration and password-reset flows)"
             }
             FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
+            FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
         }
     }
 
@@ -328,6 +335,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => "timeline_state_events",
             FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
             FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
+            FeatureFlagKey::QuickSwitcher => "quick_switcher",
         }
     }
 }

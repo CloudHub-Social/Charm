@@ -110,13 +110,22 @@ export function installMockTauri(seed: {
   passwordRecovery?: boolean;
   /** Enable Spec 28 and search the seeded room's initial messages. */
   messageSearch?: boolean;
+  /** Enable Spec 55's room/DM/space quick switcher. */
+  quickSwitcher?: boolean;
 }) {
-  if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery || seed.messageSearch) {
+  if (
+    seed.registrationUia ||
+    seed.loginChoices ||
+    seed.passwordRecovery ||
+    seed.messageSearch ||
+    seed.quickSwitcher
+  ) {
     const overrides: Record<string, boolean> = {};
     if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
       overrides.registration_and_recovery = true;
     }
     if (seed.messageSearch) overrides.encrypted_local_message_search = true;
+    if (seed.quickSwitcher) overrides.quick_switcher = true;
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({

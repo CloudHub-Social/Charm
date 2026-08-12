@@ -3,19 +3,26 @@ title: Charm 2.0 Spec — Command palette and quick switcher
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
 
 ## Implementation status
 
-The navigation-only v1 is decision-ready. Its ⌘F integration remains conditional
-on the linked [Spec 28 message-search contract](/specs/day-1/spec-28--cross-room-message-search/)
-landing first. No user-facing implementation exists yet.
-The first code PR may start after approval to add an established fuzzy-search
-dependency; the preferred choice is Fuse.js.
+Charm now ships the navigation-only v1 behind the default-off `quick_switcher`
+flag. ⌘/Ctrl-K and the sidebar launcher open a Fuse.js-powered room, DM, and
+space switcher over the joined-room snapshot. Weighted name, DM-peer, and parent-
+space matching feeds a keyboard-accessible dialog with stable empty-query ordering,
+deduplicated room IDs, canonical navigation, and account-scoped recents.
 
-**Workstream:** one PR / one agent. New spec from the UI-parity deep-dive
-(2026-07-13); two agents independently confirmed its absence.
+Spec 28 has landed, so ⌘/Ctrl-F delegates to encrypted local message search when
+both `quick_switcher` and `encrypted_local_message_search` are enabled. Logout and
+account deactivation remove the active account's quick-switcher recents. Component,
+recents, Rust catalog-parity, Storybook accessibility, and Playwright keyboard-
+navigation coverage provide the repository evidence; live-account search remains
+an owner verification step after the preview flag is enabled.
+
+**Workstream:** shipped preview parity; action commands and richer result types
+remain follow-up work.
 
 ## Problem & why now
 

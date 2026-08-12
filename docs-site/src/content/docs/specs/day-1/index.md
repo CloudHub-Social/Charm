@@ -88,7 +88,7 @@ here.
 | 52 | [Responsive and mobile-web hardening](/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/) | **Shipped** | [#242](https://github.com/CloudHub-Social/Charm/pull/242), [#245](https://github.com/CloudHub-Social/Charm/pull/245); redesign defaults off |
 | 53 | [Avatars and presence visuals](/specs/day-1/spec-53--avatars-and-presence-visuals/) | **Planned** | No matching merged implementation found |
 | 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **Shipped** | Flag-gated All / Unread filter, last-message preview, sort control (default/activity/A-Z/unread-first), and a typing-in-list indicator; each behind its own default-off flag |
-| 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Planned** | Navigation, account-scoped recents, keyboard behavior, and Spec 28 boundary decision-ready; implementation pending |
+| 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Shipped** | Default-off Fuse.js room/DM/space switcher with keyboard navigation, account-scoped recents, and gated Spec 28 shortcut delegation |
 | 56 | [Room invites](/specs/day-1/spec-56--room-invites-surface/) | **Shipped** | [#243](https://github.com/CloudHub-Social/Charm/pull/243), default-off flag |
 | 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | No matching merged implementation found |
 | 58 | [Rich message content](/specs/day-1/spec-58--rich-message-content-rendering/) | **Shipped** | [#244](https://github.com/CloudHub-Social/Charm/pull/244), default-off flag |

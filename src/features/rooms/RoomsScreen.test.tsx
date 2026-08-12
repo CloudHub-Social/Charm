@@ -173,19 +173,49 @@ vi.mock("./CreateJoinSpaceDialog", () => ({
     ) : null,
 }));
 
+vi.mock("./QuickSwitcherDialog", () => ({
+  QuickSwitcherDialog: ({
+    open,
+    rooms,
+    onSelectRoom,
+  }: {
+    open: boolean;
+    rooms: RoomSummary[];
+    onSelectRoom: (room: RoomSummary) => void;
+  }) =>
+    open ? (
+      <button
+        type="button"
+        onClick={() => {
+          const space = rooms.find((candidate) => candidate.is_space);
+          if (space) onSelectRoom(space);
+        }}
+      >
+        quick-switch-to-space
+      </button>
+    ) : null,
+}));
+
 vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
     onSelectRoom,
     onAcceptInvite,
     onDeclineInvite,
+    onOpenQuickSwitcher,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
     onAcceptInvite: (id: string) => Promise<void>;
     onDeclineInvite: (id: string) => Promise<void>;
+    onOpenQuickSwitcher?: () => void;
   }) => (
     <div>
+      {onOpenQuickSwitcher && (
+        <button type="button" onClick={onOpenQuickSwitcher}>
+          open-quick-switcher
+        </button>
+      )}
       {rooms.map((r) => (
         <div key={r.room_id}>
           <button type="button" onClick={() => onSelectRoom(r.room_id)}>
@@ -258,6 +288,23 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("keeps an explicitly quick-switched space selected without auto-selecting a room", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Space", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!room:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "open-quick-switcher" }));
+    fireEvent.click(screen.getByRole("button", { name: "quick-switch-to-space" }));
+
+    expect(screen.getByText("space-rail:space:!space:example.org")).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("chat-content:none")).toBeInTheDocument());
+  });
+
   it("opens the shared room-settings shell in space mode from the rail", async () => {
     const store = createStore();
     render(

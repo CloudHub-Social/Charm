@@ -10,6 +10,7 @@ test("searches the current room and navigates to the selected message", async ({
     deviceId: "E2E_DEVICE",
     room: ROOM,
     messageSearch: true,
+    quickSwitcher: true,
     initialMessages: [
       {
         event_id: "$search-result",

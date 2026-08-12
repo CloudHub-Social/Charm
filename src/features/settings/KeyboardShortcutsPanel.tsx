@@ -1,4 +1,5 @@
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
+import { useFlag } from "@/featureFlags";
 
 const COMPOSER_SHORTCUTS = [
   { keys: "Enter", description: "Send message" },
@@ -14,6 +15,8 @@ const MEDIA_SHORTCUTS = [
 
 /** Documents shortcuts that already exist in `Composer`/`Lightbox` — this panel doesn't add new bindings, just surfaces them (Spec 18). */
 export function KeyboardShortcutsPanel() {
+  const quickSwitcherEnabled = useFlag("quick_switcher");
+  const messageSearchEnabled = useFlag("encrypted_local_message_search");
   return (
     <div className="max-w-lg space-y-6">
       <h1 className="text-lg font-bold text-foreground">Keyboard Shortcuts</h1>
@@ -28,6 +31,24 @@ export function KeyboardShortcutsPanel() {
           />
         ))}
       </SettingsCard>
+      {quickSwitcherEnabled && (
+        <SettingsCard heading="Navigation">
+          <SettingTile
+            title="Open the quick switcher"
+            control={
+              <kbd className="rounded border border-border px-1.5 py-0.5 text-xs">⌘/Ctrl + K</kbd>
+            }
+          />
+          {messageSearchEnabled && (
+            <SettingTile
+              title="Search messages"
+              control={
+                <kbd className="rounded border border-border px-1.5 py-0.5 text-xs">⌘/Ctrl + F</kbd>
+              }
+            />
+          )}
+        </SettingsCard>
+      )}
       <SettingsCard heading="Media viewer">
         {MEDIA_SHORTCUTS.map((s) => (
           <SettingTile
