@@ -40,10 +40,10 @@ describe("QuickSwitcherDialog", () => {
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
   });
 
-  it("preserves saved recents until the initial room snapshot has loaded", () => {
+  it("preserves saved recents until the first synced room snapshot", () => {
     recordQuickSwitcherRecent("@me:example.org", "!design:example.org");
 
-    renderDialog({ rooms: [], roomsLoaded: false });
+    renderDialog({ rooms: [rooms[0]], recentsPruningReady: false });
 
     expect(readQuickSwitcherRecents("@me:example.org")).toEqual(["!design:example.org"]);
   });
@@ -71,7 +71,7 @@ describe("QuickSwitcherDialog", () => {
       open: true,
       onOpenChange: () => {},
       rooms,
-      roomsLoaded: true,
+      recentsPruningReady: true,
       currentUserId: "@me:example.org",
       onSelectRoom: () => {},
       returnFocusRef,
@@ -151,7 +151,7 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof QuickSwitch
       open
       onOpenChange={() => {}}
       rooms={rooms}
-      roomsLoaded
+      recentsPruningReady
       currentUserId="@me:example.org"
       onSelectRoom={() => {}}
       returnFocusRef={returnFocusRef}

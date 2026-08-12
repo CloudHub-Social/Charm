@@ -35,7 +35,7 @@ interface QuickSwitcherDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   rooms: RoomSummary[];
-  roomsLoaded: boolean;
+  recentsPruningReady: boolean;
   currentUserId: string;
   onSelectRoom: (room: RoomSummary) => void;
   returnFocusRef: RefObject<HTMLElement | null>;
@@ -45,7 +45,7 @@ export function QuickSwitcherDialog({
   open,
   onOpenChange,
   rooms,
-  roomsLoaded,
+  recentsPruningReady,
   currentUserId,
   onSelectRoom,
   returnFocusRef,
@@ -96,10 +96,10 @@ export function QuickSwitcherDialog({
   }, [open, currentUserId]);
 
   useEffect(() => {
-    if (!open || !roomsLoaded) return;
+    if (!open || !recentsPruningReady) return;
     const roomIds = reconcileQuickSwitcherRecents(currentUserId, validRoomIds);
     setRecentState({ accountId: currentUserId, roomIds });
-  }, [open, roomsLoaded, currentUserId, validRoomIds]);
+  }, [open, recentsPruningReady, currentUserId, validRoomIds]);
 
   useEffect(() => {
     setActiveIndex((index) => Math.min(index, Math.max(0, results.length - 1)));

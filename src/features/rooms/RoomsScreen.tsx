@@ -766,7 +766,7 @@ export function RoomsScreen({
           open={quickSwitcherOpen}
           onOpenChange={setQuickSwitcherOpen}
           rooms={joinedRooms}
-          roomsLoaded={roomsLoaded}
+          recentsPruningReady={syncedRoomListReceived}
           currentUserId={currentUserId}
           onSelectRoom={selectRoomInVisibleMode}
           returnFocusRef={quickSwitcherReturnFocusRef}
