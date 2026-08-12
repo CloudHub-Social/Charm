@@ -239,7 +239,10 @@ connection: the SDK owns that schema and migration lifecycle.
   plain-text snippet plus match ranges. The UI must not consume or render FTS-generated
   `snippet()`/`highlight()` markup.
 - Scope toggle: "this room" vs "all rooms" — mirrors Charm 1.0's per-room vs global
-  search modes.
+  search modes. Room scope is fail-closed: if the active room disappears between
+  render and submission, Charm issues no request rather than encoding that missing
+  room as the global `null` scope. Submission and pagination resolve the same
+  effective scope, and an explicit scope change clears the prior page and cursor.
 - Selecting a result jumps to that message in its room's timeline and highlights it
   (reuse the scroll-to/highlight mechanism Spec 03's reply-click-to-scroll already
   has, if one exists, rather than building a second one).
@@ -336,9 +339,10 @@ without the user knowing which is which.
   fallback removal; spoiler exclusion; edits, redactions, ignored senders, and
   joined-to-left purges. Ciphertext and undecryptable placeholders are never an
   input to the indexer.
-- Frontend component coverage exercises query, scope, pagination, incomplete-index
-  disclosure and result selection. Playwright covers the room-scoped shortcut and
-  navigation journey through the mocked transport.
+- Frontend component coverage exercises query, fail-closed room scope, scope-change
+  cursor reset, pagination, incomplete-index disclosure and result selection.
+  Playwright covers the room-scoped shortcut and navigation journey through the
+  mocked transport.
 - GitHub Actions Rust/frontend checks and docs/Storybook/Playwright gates are the
   repository acceptance evidence; Charm's workstation policy intentionally skips
   local build and test execution. The iOS simulator build provides compile evidence
