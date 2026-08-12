@@ -59,6 +59,10 @@ describe("MessageSearchDialog", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "All rooms" }));
     expect(screen.getByRole("button", { name: "Search" })).not.toBeDisabled();
+
+    rerender(wrapWithProviders(<MessageSearchDialog {...props} rooms={[room]} />, client));
+    expect(screen.getByRole("radio", { name: "All rooms" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "This room" })).not.toBeChecked();
   });
 
   it("discloses hosted companion memory custody on web", () => {

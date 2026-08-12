@@ -59,6 +59,7 @@ export function MessageSearchDialog({
   const [pendingResult, setPendingResult] = useState<SearchResult | null>(null);
   const requestId = useRef(0);
   const wasOpen = useRef(false);
+  const previousActiveRoomId = useRef(activeRoomId);
   const queryInput = useRef<HTMLInputElement>(null);
   const jumpDisclosureAcknowledged = useRef(false);
   const roomNames = useMemo(
@@ -68,7 +69,9 @@ export function MessageSearchDialog({
 
   useEffect(() => {
     const opening = open && !wasOpen.current;
+    const activeRoomChanged = activeRoomId !== previousActiveRoomId.current;
     wasOpen.current = open;
+    previousActiveRoomId.current = activeRoomId;
     // Every close/open or active-room reset starts a new dialog request
     // generation. A response from the previous visible session must not be
     // able to repopulate the freshly reset dialog after it reopens.
@@ -76,16 +79,17 @@ export function MessageSearchDialog({
     setLoading(false);
     if (!open) return;
     // A room disappearing while this dialog is open must fail closed. Keep
-    // the stale room selection until the user explicitly widens the scope;
-    // only a fresh open or another joined active room selects a default.
-    if (opening || joinedActiveRoomId) {
+    // the stale room selection until the user explicitly widens the scope.
+    // The same room returning must not overwrite that explicit choice; only
+    // a fresh open or an actual active-room navigation selects a default.
+    if (opening || activeRoomChanged) {
       setScope(joinedActiveRoomId ? "room" : "all");
     }
     setPage(null);
     setError(null);
     setPendingResult(null);
     queryInput.current?.focus();
-  }, [open, joinedActiveRoomId]);
+  }, [open, activeRoomId, joinedActiveRoomId]);
 
   function navigateToResult(result: SearchResult) {
     onSelectResult(result);
