@@ -53,6 +53,7 @@ interface ChatShellProps {
   currentUserId: string;
   onBack?: () => void;
   onNavigateToRoom?: (roomIdentifier: string) => void;
+  onNavigateToProfileRoom?: (roomId: string) => void;
   /**
    * An event id to scroll to as soon as it's loaded in this room's timeline
    * (Spec 12's Saved Messages "jump to message"). Set by the caller after
@@ -207,6 +208,7 @@ export function ChatShell({
   currentUserId,
   onBack,
   onNavigateToRoom,
+  onNavigateToProfileRoom,
   jumpToEventId = null,
   onJumpHandled,
 }: ChatShellProps) {
@@ -1156,9 +1158,10 @@ export function ChatShell({
       <MessagePillProfileDialog
         profile={pillProfile}
         accountId={currentUserId}
+        currentUserId={currentUserId}
         roomId={roomId}
         detailed={userProfileCardsEnabled}
-        onNavigateToRoom={onNavigateToRoom}
+        onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />
     </div>

@@ -108,12 +108,28 @@ export function installMockTauri(seed: {
   loginChoices?: boolean;
   /** Enable the deterministic email-link password-reset journey. */
   passwordRecovery?: boolean;
+  /** Enable Spec 28 and search the seeded room's initial messages. */
+  messageSearch?: boolean;
+  /** Enable Spec 55's room/DM/space quick switcher. */
+  quickSwitcher?: boolean;
 }) {
-  if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
+  if (
+    seed.registrationUia ||
+    seed.loginChoices ||
+    seed.passwordRecovery ||
+    seed.messageSearch ||
+    seed.quickSwitcher
+  ) {
+    const overrides: Record<string, boolean> = {};
+    if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
+      overrides.registration_and_recovery = true;
+    }
+    if (seed.messageSearch) overrides.encrypted_local_message_search = true;
+    if (seed.quickSwitcher) overrides.quick_switcher = true;
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
-        state: { overrides: { registration_and_recovery: true } },
+        state: { overrides },
         updatedAt: Date.now(),
       }),
     );
@@ -358,6 +374,10 @@ export function installMockTauri(seed: {
       attempt_id: "e2e-password-reset",
       requires_token: false,
     }),
+    resend_password_reset: () => ({
+      attempt_id: "e2e-password-reset",
+      requires_token: false,
+    }),
     confirm_password_reset: () => null,
     cancel_password_reset: () => null,
     begin_registration: () => {
@@ -491,6 +511,9 @@ export function installMockTauri(seed: {
         is_direct: Boolean(candidate.is_direct),
         is_space: Boolean(candidate.is_space),
       })),
+    start_direct_message: () =>
+      allRooms.find((candidate) => candidate.is_direct)?.room_id ?? room.room_id,
+    set_room_profile: () => undefined,
     get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
     set_account_data: (args) => {
       accountData.set(args.eventType as string, args.content);
@@ -515,6 +538,29 @@ export function installMockTauri(seed: {
       messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
+    search_messages: (args) => {
+      const query = typeof args.query === "string" ? args.query.toLocaleLowerCase() : "";
+      const scopedRoomId = typeof args.roomId === "string" ? args.roomId : null;
+      const results = [...messagesByRoom.entries()].flatMap(([roomId, messages]) => {
+        if (scopedRoomId && scopedRoomId !== roomId) return [];
+        return messages.flatMap((message) => {
+          const body = typeof message.body === "string" ? message.body : "";
+          const start = body.toLocaleLowerCase().indexOf(query);
+          if (start < 0) return [];
+          return [
+            {
+              room_id: roomId,
+              event_id: String(message.event_id),
+              sender: String(message.sender),
+              origin_server_ts: Number(message.timestamp_ms),
+              snippet: body,
+              match_ranges: [{ start, end: start + query.length }],
+            },
+          ];
+        });
+      });
+      return { results, next_cursor: null, incomplete: false };
+    },
     // Mirrors the real `mark_room_read` Rust command, which only sends a read
     // receipt + fully-read marker — it does NOT touch the separate MSC2867
     // `m.marked_unread` flag (that's `set_room_marked_unread`'s job). So this

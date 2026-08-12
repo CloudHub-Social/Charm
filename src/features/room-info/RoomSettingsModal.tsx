@@ -25,6 +25,7 @@ interface RoomSettingsModalProps {
   currentUserId: string;
   rooms?: RoomSummary[];
   onSpaceChildrenChanged?: () => void;
+  onNavigateToRoom?: (roomId: string) => void;
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
@@ -42,6 +43,7 @@ export function RoomSettingsModal({
   currentUserId,
   rooms = EMPTY_ROOMS,
   onSpaceChildrenChanged,
+  onNavigateToRoom,
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
@@ -194,7 +196,11 @@ export function RoomSettingsModal({
                   <RoomSettingsForm details={details} isSpace={target.kind === "space"} />
                 </TabsContent>
                 <TabsContent value="members">
-                  <MemberList details={details} currentUserId={currentUserId} />
+                  <MemberList
+                    details={details}
+                    currentUserId={currentUserId}
+                    onNavigateToRoom={onNavigateToRoom}
+                  />
                 </TabsContent>
                 <TabsContent
                   value="permissions"

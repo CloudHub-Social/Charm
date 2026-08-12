@@ -56,7 +56,14 @@ vi.mock("@/features/settings/SettingsScreen", () => ({
 }));
 
 vi.mock("@/features/room-info/MembersDrawer", () => ({
-  MembersDrawer: () => <div>members-drawer</div>,
+  MembersDrawer: ({ onNavigateToRoom }: { onNavigateToRoom: (roomId: string) => void }) => (
+    <div>
+      members-drawer
+      <button type="button" onClick={() => onNavigateToRoom("!new-dm:example.org")}>
+        navigate-to-new-dm
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/features/room-info/RoomSettingsModal", () => ({
@@ -84,12 +91,14 @@ vi.mock("./ChatShell", () => ({
     room: activeRoom,
     onBack,
     onNavigateToRoom,
+    onNavigateToProfileRoom,
     jumpToEventId,
     onJumpHandled,
   }: {
     room: RoomSummary | null;
     onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
+    onNavigateToProfileRoom: (roomId: string) => void;
     jumpToEventId?: string | null;
     onJumpHandled?: () => void;
   }) => (
@@ -104,6 +113,9 @@ vi.mock("./ChatShell", () => ({
       </button>
       <button type="button" onClick={() => onNavigateToRoom("#b:example.org")}>
         alias-room-pill
+      </button>
+      <button type="button" onClick={() => onNavigateToProfileRoom("!new-dm:example.org")}>
+        timeline-profile-new-dm
       </button>
       {onJumpHandled && (
         <button type="button" onClick={onJumpHandled}>
@@ -161,19 +173,49 @@ vi.mock("./CreateJoinSpaceDialog", () => ({
     ) : null,
 }));
 
+vi.mock("./QuickSwitcherDialog", () => ({
+  QuickSwitcherDialog: ({
+    open,
+    rooms,
+    onSelectRoom,
+  }: {
+    open: boolean;
+    rooms: RoomSummary[];
+    onSelectRoom: (room: RoomSummary) => void;
+  }) =>
+    open ? (
+      <button
+        type="button"
+        onClick={() => {
+          const space = rooms.find((candidate) => candidate.is_space);
+          if (space) onSelectRoom(space);
+        }}
+      >
+        quick-switch-to-space
+      </button>
+    ) : null,
+}));
+
 vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
     onSelectRoom,
     onAcceptInvite,
     onDeclineInvite,
+    onOpenQuickSwitcher,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
     onAcceptInvite: (id: string) => Promise<void>;
     onDeclineInvite: (id: string) => Promise<void>;
+    onOpenQuickSwitcher?: () => void;
   }) => (
     <div>
+      {onOpenQuickSwitcher && (
+        <button type="button" onClick={onOpenQuickSwitcher}>
+          open-quick-switcher
+        </button>
+      )}
       {rooms.map((r) => (
         <div key={r.room_id}>
           <button type="button" onClick={() => onSelectRoom(r.room_id)}>
@@ -246,6 +288,23 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("keeps an explicitly quick-switched space selected without auto-selecting a room", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Space", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!room:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "open-quick-switcher" }));
+    fireEvent.click(screen.getByRole("button", { name: "quick-switch-to-space" }));
+
+    expect(screen.getByText("space-rail:space:!space:example.org")).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("chat-content:none")).toBeInTheDocument());
+  });
+
   it("opens the shared room-settings shell in space mode from the rail", async () => {
     const store = createStore();
     render(
@@ -1033,6 +1092,36 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
   });
 
+  it("lets invite acceptance replace an older pending profile DM", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joinedInvite = room({ room_id: invite.room_id, membership: "join" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom, invite])
+      .mockResolvedValueOnce([firstRoom, invite])
+      .mockResolvedValueOnce([firstRoom, invite]);
+
+    renderRoomsScreen();
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: `accept:${invite.room_id}` }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(3));
+
+    const roomListListener = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => roomListListener([firstRoom, joinedInvite, newDm]));
+
+    expect(await screen.findByText(`chat-content:${joinedInvite.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
+  });
+
   it("uses the refreshed snapshot when an accepted room belongs to a space", async () => {
     const invite = room({
       room_id: "!invite:example.org",
@@ -1121,6 +1210,193 @@ describe("RoomsScreen", () => {
     await act(async () => finishAliasResolution?.("!b:example.org"));
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("refreshes a newly-created DM before navigating from a profile card", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, newDm]);
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText("space-rail:dms:none")).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the pending-room path for a newly-created DM from a timeline profile card", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, newDm]);
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
+
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the current chat visible until a newly-created DM reaches the room-list stream", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms.mockReset().mockResolvedValue([firstRoom]);
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(`chat-content:${firstRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText("chat-content:none")).not.toBeInTheDocument();
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, newDm]));
+    expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+  });
+
+  it("does not apply delayed DM navigation after the user selects another room", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const otherRoom = room({ room_id: "!b:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    listRooms.mockReset().mockResolvedValue([firstRoom, otherRoom]);
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: otherRoom.room_id }));
+    await screen.findByText(`chat-content:${otherRoom.room_id}`);
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, otherRoom, newDm]));
+    expect(screen.getByText(`chat-content:${otherRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
+  });
+
+  it("does not arm DM navigation when the user selects another room during refresh", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const otherRoom = room({ room_id: "!b:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    let finishRefresh: ((rooms: RoomSummary[]) => void) | undefined;
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom, otherRoom])
+      .mockImplementationOnce(
+        () =>
+          new Promise<RoomSummary[]>((resolve) => {
+            finishRefresh = resolve;
+          }),
+      );
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: otherRoom.room_id }));
+    await screen.findByText(`chat-content:${otherRoom.room_id}`);
+    await act(async () => finishRefresh?.([firstRoom, otherRoom]));
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, otherRoom, newDm]));
+    expect(screen.getByText(`chat-content:${otherRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${newDm.room_id}`)).not.toBeInTheDocument();
+  });
+
+  it("keeps a newer DM room-list update when an older refresh resolves afterward", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const newDm = room({ room_id: "!new-dm:example.org", is_direct: true });
+    let finishRefresh: ((rooms: RoomSummary[]) => void) | undefined;
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockImplementationOnce(
+        () =>
+          new Promise<RoomSummary[]>((resolve) => {
+            finishRefresh = resolve;
+          }),
+      );
+    const store = createStore();
+    store.set(membersDrawerOpenAtomFamily(firstRoom.room_id), true);
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "navigate-to-new-dm" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, newDm]));
+    await screen.findByText(`chat-content:${newDm.room_id}`);
+
+    await act(async () => finishRefresh?.([firstRoom]));
+    expect(screen.getByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
   });
 
   it("closes the members drawer when the layout narrows to mobile", async () => {

@@ -1,28 +1,42 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-01T16:22:10.979Z",
+  "generatedAt": "2026-08-11T22:46:53.333Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 39,
+    "shipped": 44,
     "follow-up": 2,
-    "in-progress": 7,
+    "in-progress": 2,
     "planned": 29
   },
   "attention": [
     {
       "type": "issue",
-      "number": 382,
-      "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/382",
-      "detail": "follow-up"
+      "number": 429,
+      "title": "Spec 28: keep room-scoped search consistent during room changes",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/429",
+      "detail": "bug · follow-up"
     },
     {
       "type": "issue",
-      "number": 48,
-      "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/48",
-      "detail": "enhancement"
+      "number": 416,
+      "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/416",
+      "detail": "bug · follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 415,
+      "title": "Spec 28: add filesystem-safe search-index lifecycle and backup exclusion",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/415",
+      "detail": "bug · follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 417,
+      "title": "Spec 28: persist kill-switch reconciliation across renderer restarts",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/417",
+      "detail": "bug · follow-up"
     }
   ],
   "workstreams": [
@@ -109,9 +123,9 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 12,
+        "shipped": 17,
         "follow-up": 1,
-        "in-progress": 6,
+        "in-progress": 1,
         "planned": 17
       }
     },
@@ -865,7 +879,7 @@
       "number": 28,
       "title": "Cross-room message search",
       "route": "/specs/day-1/spec-28--cross-room-message-search/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 325,
@@ -877,6 +891,111 @@
         }
       ],
       "issues": [
+        {
+          "number": 419,
+          "title": "Spec 28: add durable search indexing reconciliation checkpoints",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/419",
+          "updatedAt": "2026-08-06T06:24:18Z",
+          "labels": []
+        },
+        {
+          "number": 434,
+          "title": "Spec 28: avoid blocking the web async runtime on the search-index mutex",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/434",
+          "updatedAt": "2026-08-06T05:59:21Z",
+          "labels": []
+        },
+        {
+          "number": 429,
+          "title": "Spec 28: keep room-scoped search consistent during room changes",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/429",
+          "updatedAt": "2026-08-06T05:59:21Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 433,
+          "title": "Spec 28: optimize ignored-sender search reconciliation",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/433",
+          "updatedAt": "2026-08-06T04:11:51Z",
+          "labels": []
+        },
+        {
+          "number": 416,
+          "title": "Spec 28: make logout, deactivation, and restore teardown recoverable",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/416",
+          "updatedAt": "2026-08-05T23:44:35Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 427,
+          "title": "Spec 28: cover web message-search transport serialization",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/427",
+          "updatedAt": "2026-08-05T21:48:34Z",
+          "labels": []
+        },
+        {
+          "number": 426,
+          "title": "Spec 28: keep successful room leave authoritative when local search purge fails",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/426",
+          "updatedAt": "2026-08-05T21:48:21Z",
+          "labels": []
+        },
+        {
+          "number": 423,
+          "title": "Spec 28: make the E2E search mock locale-independent",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/423",
+          "updatedAt": "2026-08-05T17:22:35Z",
+          "labels": [
+            "tech-debt",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 422,
+          "title": "Spec 28: move initial cache backfill off the sync response path",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/422",
+          "updatedAt": "2026-08-05T17:22:34Z",
+          "labels": [
+            "tech-debt",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 415,
+          "title": "Spec 28: add filesystem-safe search-index lifecycle and backup exclusion",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/415",
+          "updatedAt": "2026-08-05T17:22:32Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 417,
+          "title": "Spec 28: persist kill-switch reconciliation across renderer restarts",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/417",
+          "updatedAt": "2026-08-05T14:33:25Z",
+          "labels": [
+            "bug",
+            "follow-up"
+          ]
+        },
+        {
+          "number": 407,
+          "title": "Follow up on Spec 28 storage-path hardening",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/407",
+          "updatedAt": "2026-08-02T20:47:52Z",
+          "labels": [
+            "tech-debt",
+            "follow-up"
+          ]
+        },
         {
           "number": 382,
           "title": "Coordinate Spec 28 search index lifecycle and sensitive-flag precedence",
@@ -985,8 +1104,16 @@
       "number": 33,
       "title": "Space nesting and hierarchy reorganization",
       "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
+        {
+          "number": 441,
+          "title": "test: close Day-1 Spec 33, 39, and 63 live evidence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/441",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-11T16:35:41Z"
+        },
         {
           "number": 393,
           "title": "docs: align Spec 33 child reconciliation contract",
@@ -1098,7 +1225,7 @@
       "number": 36,
       "title": "User profile cards",
       "route": "/specs/day-1/spec-36--user-profile-cards/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 329,
@@ -1178,7 +1305,7 @@
       "number": 39,
       "title": "Timeline state and membership events",
       "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 336,
@@ -1299,46 +1426,6 @@
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
       "status": "in-progress",
       "pullRequests": [
-        {
-          "number": 339,
-          "title": "Add companion registration and recovery",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/339",
-          "state": "merged",
-          "draft": false,
-          "updatedAt": "2026-07-31T18:36:40Z"
-        },
-        {
-          "number": 337,
-          "title": "Add direct email validation to registration UIA",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/337",
-          "state": "merged",
-          "draft": false,
-          "updatedAt": "2026-07-31T18:29:57Z"
-        },
-        {
-          "number": 332,
-          "title": "feat: add email password recovery",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/332",
-          "state": "merged",
-          "draft": false,
-          "updatedAt": "2026-07-31T18:29:13Z"
-        },
-        {
-          "number": 330,
-          "title": "Add typed registration UIA core",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/330",
-          "state": "merged",
-          "draft": false,
-          "updatedAt": "2026-07-31T18:10:13Z"
-        },
-        {
-          "number": 331,
-          "title": "feat: add provider and token login choices",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/331",
-          "state": "merged",
-          "draft": false,
-          "updatedAt": "2026-07-31T18:10:06Z"
-        },
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",
@@ -1496,7 +1583,7 @@
       "number": 55,
       "title": "Command palette and quick switcher",
       "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 326,
@@ -1603,7 +1690,7 @@
       "number": 63,
       "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 335,

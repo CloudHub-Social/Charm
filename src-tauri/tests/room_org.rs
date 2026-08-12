@@ -22,19 +22,22 @@ mod common;
 
 use std::time::Duration;
 
+use charm_lib::matrix::spaces::{create_space_impl, set_space_parent_impl};
 use common::synced_client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::ruma::api::client::room::create_room;
 use matrix_sdk::ruma::api::client::space::get_hierarchy;
+use matrix_sdk::ruma::api::client::state::get_state_event_for_key;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
 use matrix_sdk::ruma::events::tag::TagName;
+use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::room::RoomType;
 use matrix_sdk::Client;
 use tokio::time::timeout;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(15);
-
 async fn create_test_room(client: &Client) -> matrix_sdk::Room {
     let room = client
         .create_room(create_room::v3::Request::new())
@@ -45,6 +48,42 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
         .await
         .expect("sync after room creation");
     room
+}
+
+async fn wait_for_space_child(client: &Client, parent_id: &str, child_id: &str, present: bool) {
+    let parent_id = matrix_sdk::ruma::RoomId::parse(parent_id).expect("parent room id");
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            // Read the authoritative state event directly from Synapse. The
+            // earlier assertion separately proves `/hierarchy`; this proves
+            // the create/reparent commands' reciprocal state writes without
+            // depending on either the SDK's sync cache or that projection.
+            let request = get_state_event_for_key::v3::Request::new(
+                parent_id.clone(),
+                StateEventType::SpaceChild,
+                child_id.to_owned(),
+            );
+            let live = match client.send(request).await {
+                Ok(response) => response
+                    .into_content()
+                    .deserialize_as_unchecked::<SpaceChildEventContent>()
+                    .is_ok_and(|content| !content.via.is_empty()),
+                Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => false,
+                Err(error) => panic!("read m.space.child state: {error}"),
+            };
+            if live == present {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "child {child_id} should {} in parent {parent_id}",
+            if present { "appear" } else { "disappear" }
+        )
+    });
 }
 
 #[tokio::test]
@@ -282,4 +321,44 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .find(|r| r.summary.room_id == room.room_id())
         .expect("child room present in hierarchy response");
     assert_eq!(child.summary.num_joined_members, matrix_sdk::ruma::uint!(1));
+
+    // --- Spec 33/63: Charm's own hierarchy commands round-trip through Synapse ---
+    let nested_space_id = create_space_impl(
+        &client,
+        "Nested by Charm",
+        None,
+        None,
+        false,
+        Some(space.room_id().as_str()),
+    )
+    .await
+    .expect("create a space under an existing parent");
+    wait_for_space_child(&client, space.room_id().as_str(), &nested_space_id, true).await;
+
+    let second_parent_id = create_space_impl(&client, "Second parent", None, None, false, None)
+        .await
+        .expect("create a second top-level parent");
+    client
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync second parent");
+
+    set_space_parent_impl(&client, &nested_space_id, Some(&second_parent_id))
+        .await
+        .expect("reparent nested space");
+    wait_for_space_child(&client, space.room_id().as_str(), &nested_space_id, false).await;
+    wait_for_space_child(&client, &second_parent_id, &nested_space_id, true).await;
+
+    let cycle_error = set_space_parent_impl(&client, &second_parent_id, Some(&nested_space_id))
+        .await
+        .expect_err("nesting a parent below its descendant must be rejected");
+    assert!(
+        cycle_error.contains("cycle"),
+        "cycle rejection should remain explicit: {cycle_error}"
+    );
+
+    set_space_parent_impl(&client, &nested_space_id, None)
+        .await
+        .expect("remove canonical parent");
+    wait_for_space_child(&client, &second_parent_id, &nested_space_id, false).await;
 }

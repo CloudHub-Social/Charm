@@ -39,23 +39,28 @@ The implementation slices have merged in
 [#331](https://github.com/CloudHub-Social/Charm/pull/331),
 [#332](https://github.com/CloudHub-Social/Charm/pull/332),
 [#337](https://github.com/CloudHub-Social/Charm/pull/337), and
-[#339](https://github.com/CloudHub-Social/Charm/pull/339). This does not yet
-complete Spec 45. Real-homeserver verification remains open. Repository and
+[#339](https://github.com/CloudHub-Social/Charm/pull/339). Real-homeserver
+verification remains open. Repository and
 Playwright tests for DTO mapping, stage/session validation, direct email-token
 submission, browser-owner isolation, cancellation, and UI navigation are not
 live-homeserver evidence.
 
-The login-choice slice now also discovers advertised password, token, and SSO
-flows; renders one action per advertised identity provider; revalidates a
-selected provider against a fresh homeserver response before building its SSO
-redirect; and supports one-time token login only when the server advertises it.
-Token values remain request-only and the desktop flow uses the same encrypted
-temporary-store relocation as password and SSO login. The web companion supports
-flow discovery and token login, while browser provider SSO and provider icon
-resolution are explicitly split into
-[issue #338](https://github.com/CloudHub-Social/Charm/issues/338) because the
-server-owned callback needs an operator-configured public URL and a dedicated
-redirect lifecycle. Live verification also remains open.
+The login-choice slice now discovers advertised password, token, and SSO flows;
+renders one action per advertised identity provider; revalidates a selected
+provider against a fresh homeserver response before building its SSO redirect;
+and supports one-time token login only when the server advertises it. Token
+values remain request-only and the desktop flow uses the same encrypted
+temporary-store relocation as password and SSO login. The web companion now
+starts provider SSO through a server-owned, browser-bound pending attempt. Its
+callback authority comes only from `CHARM_WEB_SERVER_PUBLIC_URL`, callback state
+is opaque and single-use, the Matrix login token is exchanged server-side, and
+the originating page polls with its strict pre-auth cookie until the normal
+HttpOnly session cookie can be issued. A pre-auth icon proxy accepts only valid
+MXC inputs, uses the validated homeserver client boundary, caps the response,
+and serves only recognized raster image formats. Browser-owner isolation,
+callback replay, provider allowlisting, polling, and transport/UI behavior have
+repository coverage. Live verification against a real configured SSO provider
+remains open.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
@@ -68,8 +73,11 @@ HTTPS origin. Charm resolves it once, rejects non-public delegated addresses,
 pins the approved addresses, and disables redirects; explicitly configured
 same-origin localhost or literal-IP development servers remain supported.
 Request failures remain deliberately generic in the UI.
-The desktop resend lifecycle remains open: until `resend_password_reset` is
-implemented for Tauri, retrying delivery starts a new superseding reset attempt.
+Desktop and companion password recovery now share the same bounded resend
+lifecycle: the opaque attempt retains the email and client secret in the
+backend, increments Matrix `send_attempt`, enforces a thirty-second delay and a
+three-send cap, and continues using the process/address quota. Neither transport
+returns the Matrix `sid` or client secret.
 
 **Workstream:** three implementation PRs after this decision-ready spec update:
 (1) registration UIA, (2) recovery + provider-aware SSO/token login, and

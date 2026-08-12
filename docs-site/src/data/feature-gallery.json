@@ -4,10 +4,49 @@
     "canary",
     "message_pinning",
     "presence_privacy_controls",
-    "user_profile_cards",
-    "encrypted_local_message_search"
+    "user_profile_cards"
   ],
   "features": [
+    {
+      "slug": "message-search",
+      "title": "Encrypted local message search",
+      "summary": "Find decrypted messages in the current room or across joined rooms without sending the query to the homeserver.",
+      "status": "preview",
+      "spec": "Spec 28",
+      "specLinks": [
+        {
+          "label": "Spec 28",
+          "href": "/specs/day-1/spec-28--cross-room-message-search/"
+        }
+      ],
+      "flag": "encrypted_local_message_search",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "message-search-results",
+        "alt": "Charm message search showing an encrypted local-index result",
+        "caption": "Playwright searches the current room and selects a result through the existing timeline navigation path."
+      }
+    },
+    {
+      "slug": "quick-switcher",
+      "title": "Quick switcher",
+      "summary": "Jump to joined rooms, direct messages, and spaces with fuzzy keyboard search and account-scoped recents.",
+      "status": "preview",
+      "spec": "Spec 55",
+      "specLinks": [
+        {
+          "label": "Spec 55",
+          "href": "/specs/day-1/spec-55--command-palette-and-quick-switcher/"
+        }
+      ],
+      "flag": "quick_switcher",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "quick-switcher-results",
+        "alt": "Charm quick switcher showing a fuzzy room result",
+        "caption": "Playwright opens the launcher from its keyboard binding and fuzzy-matches a joined room before navigating."
+      }
+    },
     {
       "slug": "onboarding",
       "title": "Guided onboarding",

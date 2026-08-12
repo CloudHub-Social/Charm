@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { CommandIcon, MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -80,6 +80,12 @@ interface RoomListProps {
    * cross-scope search (e.g. tests).
    */
   onSelectSearchResult?: (room: RoomSummary) => void;
+  /** Opens Spec 28's decrypted-message search, distinct from this list's room filter. */
+  onOpenMessageSearch?: () => void;
+  /** Whether Spec 55's global Cmd/Ctrl+F integration is active for message search. */
+  messageSearchShortcutEnabled?: boolean;
+  /** Opens Spec 55's account-wide room/DM/space quick switcher. */
+  onOpenQuickSwitcher?: () => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   /**
@@ -131,6 +137,9 @@ export function RoomList({
   onSelectRoom,
   onSelectSpace,
   onSelectSearchResult,
+  onOpenMessageSearch,
+  messageSearchShortcutEnabled = false,
+  onOpenQuickSwitcher,
   mode,
   selectedSpace,
   intendedSpaceId = null,
@@ -776,6 +785,30 @@ export function RoomList({
                   {unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
                 </TooltipContent>
               </Tooltip>
+            )}
+            {onOpenMessageSearch && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Search messages"
+                title={
+                  messageSearchShortcutEnabled ? "Search messages (⌘/Ctrl+F)" : "Search messages"
+                }
+                onClick={onOpenMessageSearch}
+              >
+                <SearchIcon />
+              </Button>
+            )}
+            {onOpenQuickSwitcher && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Open quick switcher"
+                title="Quick switcher (⌘/Ctrl+K)"
+                onClick={onOpenQuickSwitcher}
+              >
+                <CommandIcon />
+              </Button>
             )}
             <Button
               variant="ghost"

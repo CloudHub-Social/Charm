@@ -157,6 +157,8 @@ define_feature_flag_keys!(
         RegistrationAndRecovery,
         /// Spec 28 decrypted-message indexing and local message search.
         EncryptedLocalMessageSearch,
+        /// Spec 55 command palette and quick room/DM/space navigation.
+        QuickSwitcher,
     }
 );
 
@@ -187,6 +189,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => false,
             FeatureFlagKey::RegistrationAndRecovery => false,
             FeatureFlagKey::EncryptedLocalMessageSearch => false,
+            FeatureFlagKey::QuickSwitcher => false,
         }
     }
 
@@ -260,6 +263,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => {
                 "Build and query an encrypted device-local index of decrypted Matrix messages."
             }
+            FeatureFlagKey::QuickSwitcher => {
+                "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher."
+            }
         }
     }
 
@@ -299,6 +305,7 @@ impl FeatureFlagKey {
                 "Spec 45 (registration and password-reset flows)"
             }
             FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
+            FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
         }
     }
 
@@ -328,6 +335,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => "timeline_state_events",
             FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
             FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
+            FeatureFlagKey::QuickSwitcher => "quick_switcher",
         }
     }
 }
@@ -463,12 +471,19 @@ pub fn evaluate(app_data_dir: &Path, key: FeatureFlagKey) -> bool {
 }
 
 /// Pure resolution, separated from disk I/O so precedence is unit-testable:
-/// local override wins, then the remote (OFREP) value, then the static default.
+/// local override normally wins, then the remote (OFREP) value, then the static
+/// default. Sensitive derived-data features may give a trusted remote `false`
+/// hard-veto precedence over a local override.
 pub fn resolve(
     key: FeatureFlagKey,
     overrides: &BTreeMap<String, bool>,
     remote: &BTreeMap<String, bool>,
 ) -> bool {
+    if key == FeatureFlagKey::EncryptedLocalMessageSearch
+        && remote.get(key.as_wire_key()) == Some(&false)
+    {
+        return false;
+    }
     if let Some(&value) = overrides.get(key.as_wire_key()) {
         return value;
     }
@@ -584,6 +599,24 @@ mod tests {
         let override_off = overrides(&[("canary", false)]);
         let remote_on = overrides(&[("canary", true)]);
         assert!(!resolve(FeatureFlagKey::Canary, &override_off, &remote_on));
+    }
+
+    #[test]
+    fn remote_false_vetoes_encrypted_search_override() {
+        let override_on = overrides(&[("encrypted_local_message_search", true)]);
+        let remote_off = overrides(&[("encrypted_local_message_search", false)]);
+        assert!(!resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &override_on,
+            &remote_off
+        ));
+
+        let remote_on = overrides(&[("encrypted_local_message_search", true)]);
+        assert!(resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &override_on,
+            &remote_on
+        ));
     }
 
     #[test]
