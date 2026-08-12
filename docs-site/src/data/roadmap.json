@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-11T22:46:53.333Z",
+  "generatedAt": "2026-08-12T18:55:21.914Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 45,
-    "follow-up": 2,
+    "shipped": 44,
+    "follow-up": 3,
     "in-progress": 2,
     "planned": 28
   },
   "attention": [
     {
-      "type": "issue",
-      "number": 429,
-      "title": "Spec 28: keep room-scoped search consistent during room changes",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/429",
-      "detail": "bug · follow-up"
+      "type": "pull-request",
+      "number": 454,
+      "title": "feat: add full emoji picker",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/454",
+      "detail": "Day-1 Spec 38 · ready for review"
     },
     {
       "type": "issue",
@@ -26,17 +26,24 @@
     },
     {
       "type": "issue",
-      "number": 415,
-      "title": "Spec 28: add filesystem-safe search-index lifecycle and backup exclusion",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/415",
-      "detail": "bug · follow-up"
-    },
-    {
-      "type": "issue",
       "number": 417,
       "title": "Spec 28: persist kill-switch reconciliation across renderer restarts",
       "url": "https://github.com/CloudHub-Social/Charm/issues/417",
       "detail": "bug · follow-up"
+    },
+    {
+      "type": "issue",
+      "number": 419,
+      "title": "Spec 28: add durable search indexing reconciliation checkpoints",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/419",
+      "detail": ""
+    },
+    {
+      "type": "issue",
+      "number": 434,
+      "title": "Spec 28: avoid blocking the web async runtime on the search-index mutex",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/434",
+      "detail": ""
     }
   ],
   "workstreams": [
@@ -123,8 +130,8 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 18,
-        "follow-up": 1,
+        "shipped": 17,
+        "follow-up": 2,
         "in-progress": 1,
         "planned": 16
       }
@@ -906,16 +913,6 @@
           "labels": []
         },
         {
-          "number": 429,
-          "title": "Spec 28: keep room-scoped search consistent during room changes",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/429",
-          "updatedAt": "2026-08-06T05:59:21Z",
-          "labels": [
-            "bug",
-            "follow-up"
-          ]
-        },
-        {
           "number": 433,
           "title": "Spec 28: optimize ignored-sender search reconciliation",
           "url": "https://github.com/CloudHub-Social/Charm/issues/433",
@@ -963,16 +960,6 @@
           "updatedAt": "2026-08-05T17:22:34Z",
           "labels": [
             "tech-debt",
-            "follow-up"
-          ]
-        },
-        {
-          "number": 415,
-          "title": "Spec 28: add filesystem-safe search-index lifecycle and backup exclusion",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/415",
-          "updatedAt": "2026-08-05T17:22:32Z",
-          "labels": [
-            "bug",
             "follow-up"
           ]
         },
@@ -1295,8 +1282,17 @@
       "number": 38,
       "title": "Full emoji picker",
       "route": "/specs/day-1/spec-38--full-emoji-picker/",
-      "status": "shipped",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 454,
+          "title": "feat: add full emoji picker",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/454",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-12T18:53:33Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1585,6 +1581,14 @@
       "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
       "status": "shipped",
       "pullRequests": [
+        {
+          "number": 448,
+          "title": "Add Day-1 Spec 55 quick switcher",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/448",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-12T13:42:04Z"
+        },
         {
           "number": 326,
           "title": "Make Spec 55 quick switcher decision-ready",
