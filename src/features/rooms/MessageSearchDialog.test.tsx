@@ -34,6 +34,33 @@ describe("MessageSearchDialog", () => {
     expect(effectiveMessageSearchRoomId("all", null, [])).toBeNull();
   });
 
+  it("requires an explicit scope change when the active room disappears", () => {
+    const props = {
+      open: true,
+      onOpenChange: vi.fn(),
+      activeRoomId: room.room_id,
+      onSelectResult: vi.fn(),
+    };
+    const { rerender, client } = renderWithProviders(
+      <MessageSearchDialog {...props} rooms={[room]} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message search query"), {
+      target: { value: "security" },
+    });
+    rerender(wrapWithProviders(<MessageSearchDialog {...props} rooms={[]} />, client));
+
+    expect(screen.getByRole("radio", { name: "This room" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "This room" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "All rooms" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
+    fireEvent.submit(screen.getByLabelText("Message search query").closest("form")!);
+    expect(searchMessages).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "All rooms" }));
+    expect(screen.getByRole("button", { name: "Search" })).not.toBeDisabled();
+  });
+
   it("discloses hosted companion memory custody on web", () => {
     isWebBuild.mockReturnValue(true);
     renderWithProviders(

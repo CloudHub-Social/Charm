@@ -58,6 +58,7 @@ export function MessageSearchDialog({
   const [error, setError] = useState<string | null>(null);
   const [pendingResult, setPendingResult] = useState<SearchResult | null>(null);
   const requestId = useRef(0);
+  const wasOpen = useRef(false);
   const queryInput = useRef<HTMLInputElement>(null);
   const jumpDisclosureAcknowledged = useRef(false);
   const roomNames = useMemo(
@@ -66,13 +67,20 @@ export function MessageSearchDialog({
   );
 
   useEffect(() => {
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
     // Every close/open or active-room reset starts a new dialog request
     // generation. A response from the previous visible session must not be
     // able to repopulate the freshly reset dialog after it reopens.
     requestId.current += 1;
     setLoading(false);
     if (!open) return;
-    setScope(joinedActiveRoomId ? "room" : "all");
+    // A room disappearing while this dialog is open must fail closed. Keep
+    // the stale room selection until the user explicitly widens the scope;
+    // only a fresh open or another joined active room selects a default.
+    if (opening || joinedActiveRoomId) {
+      setScope(joinedActiveRoomId ? "room" : "all");
+    }
     setPage(null);
     setError(null);
     setPendingResult(null);
