@@ -49,7 +49,7 @@ describe("EmojiPicker", () => {
     fireEvent.click(await screen.findByRole("button", { name: "React with 👍" }));
 
     expect(onSelect).toHaveBeenCalledWith("👍");
-    expect(screen.queryByRole("button", { name: "React with 👍" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "React with 👍" })).toBeInTheDocument();
   });
 
   it("configures the lazy full picker and forwards custom emoji categories", async () => {

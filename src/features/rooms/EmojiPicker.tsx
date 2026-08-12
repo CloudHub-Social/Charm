@@ -128,7 +128,7 @@ export function EmojiPicker({
 
   function select(emoji: string) {
     onSelect(emoji);
-    setOpen(false);
+    if (fullPickerEnabled) setOpen(false);
   }
 
   return (
