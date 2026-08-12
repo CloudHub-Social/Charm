@@ -34,6 +34,12 @@ describe("QuickSwitcherDialog", () => {
     });
   });
 
+  it("keeps the command field clear of the default dialog close button", () => {
+    renderDialog();
+
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+  });
+
   it("preserves saved recents until the initial room snapshot has loaded", () => {
     recordQuickSwitcherRecent("@me:example.org", "!design:example.org");
 

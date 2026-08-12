@@ -132,6 +132,7 @@ export function QuickSwitcherDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        showCloseButton={false}
         className="flex max-h-[min(38rem,90vh)] max-w-xl flex-col gap-3 p-4"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
