@@ -74,7 +74,7 @@ export function TimelineMessageRow({
           : "flex flex-col pb-1"
       }
       data-message-event-id={message.event_id}
-      data-jump-highlighted={highlightedEventId === message.event_id || undefined}
+      data-jump-highlighted={highlightedEventId === message.event_id ? "true" : undefined}
     >
       {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
