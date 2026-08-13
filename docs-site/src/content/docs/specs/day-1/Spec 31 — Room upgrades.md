@@ -50,8 +50,9 @@ old room are directed to its replacement.
   with a "Go to upgraded room" action using the tombstone's `replacement_room`
   field.
 - The composer is replaced by the persistent read-only explanation in a tombstoned
-  room, so attachments, slash commands, and ordinary messages cannot be sent from
-  the stale conversation surface.
+  room, and its drop, paste, picker, and staged-attachment paths are closed with it,
+  so attachments, slash commands, and ordinary messages cannot be sent from the stale
+  conversation surface.
 
 ## Data flow
 

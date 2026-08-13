@@ -323,6 +323,14 @@ export function ChatShell({
   );
   const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
+  const attachmentsBlocked =
+    Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
+  useEffect(() => {
+    if (!attachmentsBlocked) return;
+    setPendingAttachment(null);
+    setPendingAttachmentCaption("");
+    setFileDragActive(false);
+  }, [attachmentsBlocked]);
   const noticeBuckets = useMemo(
     () =>
       timelineStateEventsEnabled
@@ -597,6 +605,7 @@ export function ChatShell({
   // otherwise (or if the polish flag never lands for this build) they upload
   // immediately, matching pre-Spec-42 behavior.
   function stageOrSendAttachment(file: string | File) {
+    if (attachmentsBlocked) return;
     if (!mediaSendPolishEnabled) {
       handleAttachFile(file);
       return;
@@ -607,7 +616,7 @@ export function ChatShell({
   }
 
   function handleConfirmPendingAttachment() {
-    if (!pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
+    if (attachmentsBlocked || !pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
       setPendingAttachment(null);
       setPendingAttachmentCaption("");
       return;
@@ -709,7 +718,7 @@ export function ChatShell({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {mediaSendPolishEnabled && fileDragActive && (
+      {mediaSendPolishEnabled && !attachmentsBlocked && fileDragActive && (
         <output
           aria-live="polite"
           className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-solid bg-background/90 text-center shadow-lg backdrop-blur-sm"
@@ -948,7 +957,7 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && visiblePendingAttachment && (
+      {mediaSendPolishEnabled && !attachmentsBlocked && visiblePendingAttachment && (
         <div className="flex flex-col gap-2 px-4 pb-2">
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
             <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>

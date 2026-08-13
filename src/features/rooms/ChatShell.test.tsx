@@ -526,6 +526,31 @@ describe("ChatShell", () => {
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
   });
 
+  it("blocks attachment drops after authoritative tombstone state closes the room", async () => {
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const shell = await screen.findByTestId("chat-shell");
+    const file = new File(["fake"], "stale-room.png", { type: "image/png" });
+    Object.defineProperty(file, "path", { value: "/Users/me/stale-room.png" });
+    fireEvent.drop(shell, {
+      dataTransfer: { files: [file], types: ["Files"], dropEffect: "none" },
+    });
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("keeps sending unavailable until authoritative room state has loaded", async () => {
     render(
       <JotaiProvider store={createStore()}>
