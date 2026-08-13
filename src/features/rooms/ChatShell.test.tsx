@@ -526,6 +526,52 @@ describe("ChatShell", () => {
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
   });
 
+  it("disables server-mutating message actions in a tombstoned room", async () => {
+    getRoomDetails.mockResolvedValue({
+      room_id: room.room_id,
+      is_encrypted: false,
+      pinned_event_ids: [],
+      can: { set_pinned_events: true },
+    });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$old:localhost",
+          sender: "@alice:localhost",
+          body: "old room message",
+          reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
+        }),
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const reaction = await screen.findByRole("button", { name: /👍/, pressed: false });
+    expect(reaction).toBeDisabled();
+    fireEvent.click(reaction);
+    expect(toggleReaction).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(await screen.findByText("Reply")).toHaveAttribute("data-disabled");
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+  });
+
   it("blocks attachment drops after authoritative tombstone state closes the room", async () => {
     render(
       <JotaiProvider store={createStore()}>

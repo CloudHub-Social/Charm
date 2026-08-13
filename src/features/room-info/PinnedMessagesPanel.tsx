@@ -99,7 +99,7 @@ export function PinnedMessagesPanel({
     [pinnedEventIdsKey],
   );
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
-  const canUnpin = details?.can.set_pinned_events ?? false;
+  const canUnpin = (details?.can.set_pinned_events ?? false) && !details?.tombstone;
   const queryClient = useQueryClient();
 
   // Review fix: `usePinnedMessages`'s query key only covers the pinned id

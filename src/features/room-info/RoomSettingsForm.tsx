@@ -372,6 +372,7 @@ export function RoomSettingsForm({
                             setConfirmingUpgrade(false);
                             onRoomUpgraded?.(replacementRoomId);
                           },
+                          onError: () => setConfirmingUpgrade(false),
                         });
                       }}
                     >

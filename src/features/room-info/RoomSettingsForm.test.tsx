@@ -73,7 +73,7 @@ vi.mock("@/lib/matrix", () => ({
 beforeEach(() => {
   featureFlagMocks.roomAliasManagement = false;
   featureFlagMocks.roomUpgrades = false;
-  upgradeRoom.mockClear();
+  upgradeRoom.mockReset().mockResolvedValue("!replacement:example.org");
 });
 
 describe("RoomSettingsForm", () => {
@@ -198,6 +198,19 @@ describe("RoomSettingsForm", () => {
       expect(upgradeRoom).toHaveBeenCalledWith(details.room_id);
       expect(onRoomUpgraded).toHaveBeenCalledWith("!replacement:example.org");
     });
+  });
+
+  it("closes the confirmation so an upgrade failure is visible", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    upgradeRoom.mockRejectedValueOnce(new Error("upgrade failed"));
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("upgrade failed");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("disables the room upgrade action without tombstone permission", () => {

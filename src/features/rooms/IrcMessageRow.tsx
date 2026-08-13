@@ -46,6 +46,7 @@ export function IrcMessageRow({
   isPending,
   isError,
   disableRelationActions,
+  mutationsDisabled = false,
   isUndecrypted,
   rowKey,
   onForward,
@@ -179,6 +180,7 @@ export function IrcMessageRow({
             canPin={canPin}
             isPinned={isPinned}
             disableRelationActions={disableRelationActions}
+            mutationsDisabled={mutationsDisabled}
             isUndecrypted={isUndecrypted}
             isError={isError}
             className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"

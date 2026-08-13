@@ -52,7 +52,10 @@ old room are directed to its replacement.
 - The composer is replaced by the persistent read-only explanation in a tombstoned
   room, and its drop, paste, picker, and staged-attachment paths are closed with it,
   so attachments, slash commands, and ordinary messages cannot be sent from the stale
-  conversation surface.
+  conversation surface. Server-mutating message actions are closed too: reactions,
+  edits, redactions, retries, reports, and room pin/unpin actions cannot target the
+  tombstoned room, while read-only and local actions such as copy and bookmarks remain
+  available.
 
 ## Data flow
 
@@ -81,7 +84,8 @@ refreshes the room list, and retains a pending selection until sync publishes it
 ## Testing strategy
 
 - Frontend coverage verifies the tombstone banner, read-only composer replacement,
-  replacement-room navigation, confirmation dialog, and power-level gating.
+  replacement-room navigation, confirmation/error dialog behavior, message-mutation
+  gating, and power-level gating.
 - Rust integration coverage upgrades a deliberately older-version room against the
   CI homeserver and rejects a low-power member before issuing the endpoint request.
 - Remote GitHub Actions remains the verification authority; local Charm checks are

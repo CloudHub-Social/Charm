@@ -82,6 +82,8 @@ export interface MessageActionsProps {
    * needs the body text.
    */
   disableRelationActions?: boolean;
+  /** Disables server mutations not already covered by relation-action gating. */
+  mutationsDisabled?: boolean;
   /**
    * Set when the message's `body` is still the fixed "Unable to decrypt
    * message" placeholder (see `UNABLE_TO_DECRYPT_BODY` in
@@ -160,6 +162,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDiscard,
       className,
       disableRelationActions = false,
+      mutationsDisabled = false,
       isUndecrypted = false,
       isError = false,
       onForward,
@@ -395,7 +398,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                     )
                   ))}
                 {messageActionParityEnabled && isError && onResend && (
-                  <DropdownMenuItem onSelect={onResend}>
+                  <DropdownMenuItem onSelect={onResend} disabled={mutationsDisabled}>
                     <RotateCw />
                     Resend
                   </DropdownMenuItem>
@@ -409,7 +412,11 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               </>
             )}
             {messageActionParityEnabled && !isOwn && onReport && !isError && (
-              <DropdownMenuItem variant="destructive" onSelect={onReport}>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={onReport}
+                disabled={mutationsDisabled}
+              >
                 <Flag />
                 Report
               </DropdownMenuItem>

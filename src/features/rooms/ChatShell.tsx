@@ -323,14 +323,14 @@ export function ChatShell({
   );
   const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
-  const attachmentsBlocked =
+  const roomMutationsBlocked =
     Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
   useEffect(() => {
-    if (!attachmentsBlocked) return;
+    if (!roomMutationsBlocked) return;
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
     setFileDragActive(false);
-  }, [attachmentsBlocked]);
+  }, [roomMutationsBlocked]);
   const noticeBuckets = useMemo(
     () =>
       timelineStateEventsEnabled
@@ -553,6 +553,7 @@ export function ChatShell({
     currentUserId,
     setReplyTarget,
     setEditingEventId,
+    mutationsDisabled: roomMutationsBlocked,
   });
 
   // No `send_queue:update` listener here: the live `Timeline` (Spec 14)
@@ -605,7 +606,7 @@ export function ChatShell({
   // otherwise (or if the polish flag never lands for this build) they upload
   // immediately, matching pre-Spec-42 behavior.
   function stageOrSendAttachment(file: string | File) {
-    if (attachmentsBlocked) return;
+    if (roomMutationsBlocked) return;
     if (!mediaSendPolishEnabled) {
       handleAttachFile(file);
       return;
@@ -616,7 +617,7 @@ export function ChatShell({
   }
 
   function handleConfirmPendingAttachment() {
-    if (attachmentsBlocked || !pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
+    if (roomMutationsBlocked || !pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
       setPendingAttachment(null);
       setPendingAttachmentCaption("");
       return;
@@ -718,7 +719,7 @@ export function ChatShell({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {mediaSendPolishEnabled && !attachmentsBlocked && fileDragActive && (
+      {mediaSendPolishEnabled && !roomMutationsBlocked && fileDragActive && (
         <output
           aria-live="polite"
           className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-solid bg-background/90 text-center shadow-lg backdrop-blur-sm"
@@ -868,14 +869,17 @@ export function ChatShell({
                     roomId={room.room_id}
                     currentUserId={currentUserId}
                     unreadStartIndex={unreadStartIdx}
-                    canRedact={canRedactBySender[message.sender] ?? false}
-                    canPin={canPinMessages}
+                    canRedact={
+                      !roomMutationsBlocked && (canRedactBySender[message.sender] ?? false)
+                    }
+                    canPin={!roomMutationsBlocked && canPinMessages}
                     isPinned={pinnedEventIds.includes(message.event_id)}
                     readers={readers}
                     senderNameByUserId={senderNameByUserId}
                     newMessageKeys={newMessageKeys}
                     highlightedEventId={highlightedEventId}
                     controller={messageActionController}
+                    mutationsDisabled={roomMutationsBlocked}
                     onJumpToMessage={handleJumpToMessage}
                     onSenderClick={
                       userProfileCardsEnabled
@@ -957,7 +961,7 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && !attachmentsBlocked && visiblePendingAttachment && (
+      {mediaSendPolishEnabled && !roomMutationsBlocked && visiblePendingAttachment && (
         <div className="flex flex-col gap-2 px-4 pb-2">
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
             <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>
