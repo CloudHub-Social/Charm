@@ -454,6 +454,39 @@ describe("ChatShell", () => {
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
   });
 
+  it("makes a tombstoned room read-only and navigates to its replacement", async () => {
+    const onNavigateToRoom = vi.fn();
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [
+        {
+          kind: "state",
+          event_id: "$tombstone",
+          sender: "@admin:localhost",
+          timestamp_ms: 1,
+          state_key: "",
+          change: {
+            type: "tombstone",
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" onNavigateToRoom={onNavigateToRoom} />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText("This room has been upgraded")).toBeVisible();
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to upgraded room" }));
+    expect(onNavigateToRoom).toHaveBeenCalledWith("!replacement:localhost");
+  });
+
   it("renders mobile chat navigation, compact formatting, and room actions", async () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const onBack = vi.fn();

@@ -26,6 +26,7 @@ interface RoomSettingsModalProps {
   rooms?: RoomSummary[];
   onSpaceChildrenChanged?: () => void;
   onNavigateToRoom?: (roomId: string) => void;
+  onRoomUpgraded?: (replacementRoomId: string) => void;
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
@@ -44,6 +45,7 @@ export function RoomSettingsModal({
   rooms = EMPTY_ROOMS,
   onSpaceChildrenChanged,
   onNavigateToRoom,
+  onRoomUpgraded,
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
@@ -193,7 +195,14 @@ export function RoomSettingsModal({
                     Permissions would fetch the full member roster before
                     the user ever asks for it. */}
                 <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
-                  <RoomSettingsForm details={details} isSpace={target.kind === "space"} />
+                  <RoomSettingsForm
+                    details={details}
+                    isSpace={target.kind === "space"}
+                    onRoomUpgraded={(replacementRoomId) => {
+                      setTarget(null);
+                      onRoomUpgraded?.(replacementRoomId);
+                    }}
+                  />
                 </TabsContent>
                 <TabsContent value="members">
                   <MemberList

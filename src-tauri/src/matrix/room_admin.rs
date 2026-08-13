@@ -5,7 +5,7 @@
 //! duplicates — see [`super::members::RoomMemberSummary`]).
 
 use matrix_sdk::room::power_levels::RoomPowerLevelChanges;
-use matrix_sdk::ruma::api::client::room::aliases;
+use matrix_sdk::ruma::api::client::room::{aliases, upgrade_room};
 use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
 use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
@@ -211,6 +211,10 @@ pub struct RoomPermissions {
     pub set_space_child: bool,
     /// Gates reparenting a space by sending `m.space.parent` in this room.
     pub set_space_parent: bool,
+    /// Gates Spec 31's disruptive room-upgrade action. The Matrix endpoint
+    /// sends an `m.room.tombstone`, so this is the authoritative power-level
+    /// check rather than a hard-coded administrator threshold.
+    pub upgrade_room: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -313,6 +317,7 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         set_space_child: power_levels.user_can_send_state(own_user_id, StateEventType::SpaceChild),
         set_space_parent: power_levels
             .user_can_send_state(own_user_id, StateEventType::SpaceParent),
+        upgrade_room: power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone),
     };
 
     let is_encrypted = room
@@ -550,6 +555,45 @@ pub async fn enable_room_encryption_impl(client: &Client, room_id: &str) -> Resu
     let room = require_room(client, room_id)?;
     room.enable_encryption().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Upgrades a joined room to the homeserver's advertised default room
+/// version and returns the replacement room id. Matrix performs the copy and
+/// tombstone operation atomically at the endpoint; Charm never tries to
+/// reproduce that protocol operation with a sequence of state-event writes.
+#[tauri::command]
+pub async fn upgrade_room(
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    upgrade_room_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`upgrade_room`].
+pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
+    let room = require_room(client, room_id)?;
+    let own_user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
+    if !power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone) {
+        return Err("You do not have permission to upgrade this room.".to_string());
+    }
+
+    let room_versions = client
+        .homeserver_capabilities()
+        .room_versions()
+        .await
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .send(upgrade_room::v3::Request::new(
+            room.room_id().to_owned(),
+            room_versions.default,
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response.replacement_room.to_string())
 }
 
 #[tauri::command]

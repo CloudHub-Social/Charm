@@ -1533,6 +1533,7 @@ pub fn run() {
             matrix::room_admin::set_room_join_rule,
             matrix::room_admin::set_room_history_visibility,
             matrix::room_admin::enable_room_encryption,
+            matrix::room_admin::upgrade_room,
             matrix::room_admin::set_member_power_level,
             matrix::room_admin::set_room_power_level_thresholds,
             matrix::room_admin::get_room_local_aliases,

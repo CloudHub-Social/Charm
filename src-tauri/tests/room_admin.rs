@@ -13,7 +13,8 @@ mod common;
 use std::time::Duration;
 
 use charm_lib::matrix::room_admin::{
-    build_room_details, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
+    build_room_details, upgrade_room_impl, HistoryVisibilityKind, JoinRuleKind,
+    PowerLevelThresholds,
 };
 use charm_lib::matrix::timeline::{
     items_to_timeline_items, TimelineItemSummary, TimelineMembershipChange, TimelineStateChange,
@@ -28,7 +29,7 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
-use matrix_sdk::ruma::{int, Int};
+use matrix_sdk::ruma::{int, Int, RoomVersionId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::RoomExt as _;
 use tokio::time::timeout;
@@ -411,6 +412,13 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
     assert!(!details.can.set_power_levels);
     assert!(!details.can.kick);
     assert!(!details.can.ban);
+    assert!(!details.can.upgrade_room);
+
+    let upgrade_result = upgrade_room_impl(&second, room.room_id().as_str()).await;
+    assert!(
+        upgrade_result.is_err(),
+        "a low-PL user's room-upgrade attempt should be rejected"
+    );
 
     let result = second_room
         .set_name(format!("renamed by {}", test_username_2()))
@@ -419,4 +427,22 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
         result.is_err(),
         "a low-PL user's rename attempt should be rejected"
     );
+}
+
+#[tokio::test]
+async fn room_upgrade_uses_the_homeserver_default_version() {
+    let admin = synced_client().await;
+    let mut request = create_room::v3::Request::new();
+    request.room_version = Some(RoomVersionId::V9);
+    let room = admin.create_room(request).await.expect("create v9 room");
+    admin
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync before room upgrade");
+
+    let replacement_room_id = upgrade_room_impl(&admin, room.room_id().as_str())
+        .await
+        .expect("upgrade room");
+
+    assert_ne!(replacement_room_id, room.room_id().as_str());
 }

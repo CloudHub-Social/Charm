@@ -54,6 +54,7 @@ const ALL_ALLOWED: RoomPermissions = {
   set_pinned_events: true,
   set_space_child: true,
   set_space_parent: true,
+  upgrade_room: true,
 };
 
 describe("MemberRow", () => {

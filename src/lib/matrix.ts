@@ -1161,6 +1161,11 @@ export function enableRoomEncryption(roomId: string): Promise<void> {
   return invoke("enable_room_encryption", { roomId });
 }
 
+/** Upgrades a room to the homeserver's recommended version and returns the replacement room id. */
+export function upgradeRoom(roomId: string): Promise<string> {
+  return invoke("upgrade_room", { roomId });
+}
+
 export function setMemberPowerLevel(
   roomId: string,
   userId: string,

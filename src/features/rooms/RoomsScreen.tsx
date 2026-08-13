@@ -777,6 +777,7 @@ export function RoomsScreen({
         currentUserId={currentUserId}
         rooms={joinedRooms}
         onNavigateToRoom={navigateToProfileRoom}
+        onRoomUpgraded={navigateToProfileRoom}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

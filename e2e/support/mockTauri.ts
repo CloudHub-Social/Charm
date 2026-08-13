@@ -314,6 +314,7 @@ export function installMockTauri(seed: {
       set_canonical_alias: true,
       set_space_child: true,
       set_space_parent: true,
+      upgrade_room: true,
     },
     canonical_alias: null,
     alt_aliases: [],
@@ -805,6 +806,7 @@ export function installMockTauri(seed: {
       pushRoomListUpdate();
       return undefined;
     },
+    upgrade_room: () => "!upgraded-room:e2e",
     join_room: (args) => {
       const target = args.roomIdOrAlias as string;
       const existing = findRoom(target);

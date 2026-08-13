@@ -218,6 +218,7 @@ export function ChatShell({
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
+  const roomUpgradesEnabled = useFlag("room_upgrades");
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
   const messageLayout = useAtomValue(messageLayoutAtom);
@@ -328,10 +329,21 @@ export function ChatShell({
     room,
     roomSettingsOpen,
     activeJumpToEventId !== null,
-    timelineStateEventsEnabled,
+    timelineStateEventsEnabled || roomUpgradesEnabled,
     hideMembershipEvents,
     showHiddenEvents,
   );
+  const tombstone = useMemo(() => {
+    if (!roomUpgradesEnabled) return null;
+    for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
+      const item = timelineItems[index];
+      if (item.kind === "state" && item.change.type === "tombstone") {
+        return item.change;
+      }
+    }
+    return null;
+  }, [roomUpgradesEnabled, timelineItems]);
+  const replacementRoomId = tombstone?.replacement_room_id ?? null;
   const noticeBuckets = useMemo(
     () =>
       timelineStateEventsEnabled
@@ -1069,94 +1081,117 @@ export function ChatShell({
           )}
         </button>
       )}
-      <div
-        data-testid="composer-shell"
-        className={cn(
-          "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
-          mobile ? "px-2" : "px-3",
-        )}
-      >
-        <input
-          ref={attachmentInputRef}
-          type="file"
-          className="hidden"
-          onChange={handleAttachmentInputChange}
-        />
+      {tombstone ? (
         <div
-          className={cn(
-            "flex items-end border border-border bg-card",
-            mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
-          )}
-          onPaste={handlePaste}
+          role="status"
+          className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3"
         >
-          <button
-            aria-label="Attach"
-            onClick={handleAttachClick}
-            className={cn(
-              "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
-              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-            )}
-          >
-            <Paperclip size={18} />
-          </button>
-          <Composer
-            accountId={currentUserId}
-            key={`${room.room_id}-${editingEventId ?? "new"}`}
-            ref={composerRef}
-            roomId={room.room_id}
-            mode={composerMode}
-            initialHtml={
-              editingMessage
-                ? editingMessage.formatted_body
-                  ? sanitizeMatrixHtml(editingMessage.formatted_body)
-                  : escapeHtmlText(editingMessage.body)
-                : undefined
-            }
-            placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
-            onSubmit={handleComposerSubmitAndScroll}
-            onSlashCommand={handleSlashCommandAndScroll}
-            onEscape={() => {
-              if (editingEventId) setEditingEventId(null);
-              else if (replyTarget) setReplyTarget(null);
-            }}
-            onTypingInput={handleTypingInput}
-            onBlur={stopTyping}
-            onEmptyChange={setIsComposerEmpty}
-            showFormattingToolbar={!mobile || showMobileFormatting}
-          />
-          {mobile && (
+          <div>
+            <p className="text-sm font-semibold text-foreground">This room has been upgraded</p>
+            <p className="text-xs text-muted-foreground">
+              This room is read-only. Continue the conversation in the replacement room.
+            </p>
+          </div>
+          {replacementRoomId && (
             <button
               type="button"
-              aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
-              aria-pressed={showMobileFormatting}
-              onClick={() => setShowMobileFormatting((visible) => !visible)}
-              className={cn(
-                "flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent",
-                showMobileFormatting && "bg-accent text-accent-foreground",
-              )}
+              onClick={() => onNavigateToRoom?.(replacementRoomId)}
+              className="rounded-md bg-primary-solid px-3 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
             >
-              <Type className="size-5" />
+              Go to upgraded room
             </button>
           )}
-          {/* `bg-primary-solid` (not `bg-primary`): solid fill under
+        </div>
+      ) : (
+        <div
+          data-testid="composer-shell"
+          className={cn(
+            "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+            mobile ? "px-2" : "px-3",
+          )}
+        >
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleAttachmentInputChange}
+          />
+          <div
+            className={cn(
+              "flex items-end border border-border bg-card",
+              mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+            )}
+            onPaste={handlePaste}
+          >
+            <button
+              aria-label="Attach"
+              onClick={handleAttachClick}
+              className={cn(
+                "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
+                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+              )}
+            >
+              <Paperclip size={18} />
+            </button>
+            <Composer
+              accountId={currentUserId}
+              key={`${room.room_id}-${editingEventId ?? "new"}`}
+              ref={composerRef}
+              roomId={room.room_id}
+              mode={composerMode}
+              initialHtml={
+                editingMessage
+                  ? editingMessage.formatted_body
+                    ? sanitizeMatrixHtml(editingMessage.formatted_body)
+                    : escapeHtmlText(editingMessage.body)
+                  : undefined
+              }
+              placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
+              onSubmit={handleComposerSubmitAndScroll}
+              onSlashCommand={handleSlashCommandAndScroll}
+              onEscape={() => {
+                if (editingEventId) setEditingEventId(null);
+                else if (replyTarget) setReplyTarget(null);
+              }}
+              onTypingInput={handleTypingInput}
+              onBlur={stopTyping}
+              onEmptyChange={setIsComposerEmpty}
+              showFormattingToolbar={!mobile || showMobileFormatting}
+            />
+            {mobile && (
+              <button
+                type="button"
+                aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
+                aria-pressed={showMobileFormatting}
+                onClick={() => setShowMobileFormatting((visible) => !visible)}
+                className={cn(
+                  "flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent",
+                  showMobileFormatting && "bg-accent text-accent-foreground",
+                )}
+              >
+                <Type className="size-5" />
+              </button>
+            )}
+            {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css.
               Disabled while there's no text to send — this composer has no
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
-          <button
-            type="button"
-            aria-label="Send"
-            onClick={() => composerRef.current?.submit()}
-            disabled={isComposerEmpty}
-            className={cn(
-              "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
-              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-            )}
-          >
-            <Send size={16} />
-          </button>
+            <button
+              type="button"
+              aria-label="Send"
+              onClick={() => composerRef.current?.submit()}
+              disabled={isComposerEmpty}
+              className={cn(
+                "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
+                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+              )}
+            >
+              <Send size={16} />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
       {!mobile && participants.length > 0 && (
         <button
           type="button"

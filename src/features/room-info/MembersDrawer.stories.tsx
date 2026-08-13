@@ -42,6 +42,7 @@ const DETAILS: RoomDetails = {
     set_pinned_events: true,
     set_space_child: true,
     set_space_parent: true,
+    upgrade_room: true,
   },
   canonical_alias: null,
   alt_aliases: [],

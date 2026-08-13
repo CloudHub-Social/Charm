@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import * as Sentry from "@sentry/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,15 +80,22 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
 interface RoomSettingsFormProps {
   details: RoomDetails;
   isSpace?: boolean;
+  onRoomUpgraded?: (replacementRoomId: string) => void;
 }
 
-export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormProps) {
+export function RoomSettingsForm({
+  details,
+  isSpace = false,
+  onRoomUpgraded,
+}: RoomSettingsFormProps) {
   const actions = useRoomAdminActions(details.room_id);
   const [name, setName] = useState(details.name ?? "");
   const [topic, setTopic] = useState(details.topic ?? "");
   const [confirmingEncryption, setConfirmingEncryption] = useState(false);
+  const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const roomAliasManagementEnabled = useFlag("room_alias_management");
+  const roomUpgradesEnabled = useFlag("room_upgrades");
 
   useEffect(() => {
     setName(details.name ?? "");
@@ -312,6 +320,68 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
               </DialogContent>
             </Dialog>
           </div>
+          {roomUpgradesEnabled && !isWebBuild() && (
+            <div className="flex flex-col gap-2">
+              <Label>Room version</Label>
+              <p className="text-sm text-muted-foreground">
+                Move this room to the homeserver's recommended version.
+              </p>
+              <PermissionGate allowed={details.can.upgrade_room}>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!details.can.upgrade_room}
+                  onClick={() => setConfirmingUpgrade(true)}
+                >
+                  Upgrade room
+                </Button>
+              </PermissionGate>
+              {actions.upgrade.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {actions.upgrade.error.message}
+                </p>
+              )}
+              <Dialog open={confirmingUpgrade} onOpenChange={setConfirmingUpgrade}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Upgrade this room?</DialogTitle>
+                    <DialogDescription>
+                      Matrix will create a replacement room and make this room read-only. Members
+                      will need to continue the conversation in the replacement room.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      disabled={actions.upgrade.isPending}
+                      onClick={() => setConfirmingUpgrade(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={actions.upgrade.isPending}
+                      onClick={() => {
+                        Sentry.addBreadcrumb({
+                          category: "ui.room-upgrade",
+                          level: "info",
+                          message: "Room upgrade confirmed",
+                        });
+                        actions.upgrade.mutate(undefined, {
+                          onSuccess: (replacementRoomId) => {
+                            setConfirmingUpgrade(false);
+                            onRoomUpgraded?.(replacementRoomId);
+                          },
+                        });
+                      }}
+                    >
+                      {actions.upgrade.isPending ? "Upgrading…" : "Upgrade room"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+          )}
         </section>
       )}
     </div>

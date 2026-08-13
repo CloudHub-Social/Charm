@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Room upgrades
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
 
 **Workstream:** one PR / one agent. Moderation-adjacent, sits next to Spec 07's
@@ -15,10 +15,10 @@ Matrix rooms occasionally need a "room upgrade" — a protocol-level operation t
 creates a new room on a newer room version and tombstones the old one
 (`m.room.tombstone` + `m.room.create` with `predecessor`), used when a room's
 version needs bumping for a feature or security fix the server/spec requires.
-Charm 1.0 has a `RoomUpgrade.tsx` flow for this (surfaced to room admins). Charm 2.0
-has no UI for it at all — an admin hitting a room that needs upgrading currently has
-no in-client path to do it, and any Charm 2.0 user landing in an already-tombstoned
-room has no "continue to the new room" affordance either.
+Charm 1.0 has a `RoomUpgrade.tsx` flow for this (surfaced to room admins). Charm now
+provides the same essential path behind the default-off `room_upgrades` feature
+flag: authorized admins can explicitly upgrade a room, and members landing in the
+old room are directed to its replacement.
 
 ## Non-goals
 
@@ -34,15 +34,12 @@ room has no "continue to the new room" affordance either.
 
 - In room settings (Spec 07/17's IA), an admin-only "Upgrade room" action, gated by
   the same power-level check Spec 07 already uses for other admin-only actions.
-- Confirmation dialog explains the consequence: a new room is created, this room
-  becomes read-only with a pointer to the new one, and members need to manually (or
-  automatically, depending on client behavior — clarify against current Matrix spec
-  behavior for auto-join-on-tombstone-follow) join the new room.
-- On confirm: call the SDK's room-upgrade operation (matrix-rust-sdk should expose
-  this — confirm the exact API surface before implementing; if the SDK doesn't
-  expose a high-level helper, this may need to be composed from lower-level
-  send-state calls) targeting a specified new room version (default: the server's
-  recommended/latest stable version).
+- Confirmation dialog explains the consequence: Matrix creates a replacement room,
+  tombstones the old room, and members continue manually through the replacement
+  link.
+- On confirm, Charm calls ruma's typed Matrix room-upgrade endpoint through
+  matrix-rust-sdk's `Client::send`, targeting the homeserver capability's default
+  room version. Charm does not reproduce the upgrade with custom state-event writes.
 
 ### Landing in a tombstoned room
 
@@ -52,16 +49,16 @@ room has no "continue to the new room" affordance either.
   if one already exists from that work, otherwise this spec introduces it first)
   with a "Go to upgraded room" action using the tombstone's `replacement_room`
   field.
-- Composer is disabled (or hidden) in a tombstoned room, matching the semantics
-  that the room is now read-only history — sending into a tombstoned room is
-  pointless since active conversation has moved.
+- The composer is replaced by the persistent read-only explanation in a tombstoned
+  room, so attachments, slash commands, and ordinary messages cannot be sent from
+  the stale conversation surface.
 
 ## Data flow
 
-New IPC command, e.g. `upgrade_room(room_id, new_version) -> new_room_id`, plus
-reading existing `m.room.tombstone` state (already synced, no new sync-side work,
-just new frontend handling of an event type that currently probably renders as an
-unhandled/generic state event or not at all).
+The new `upgrade_room(room_id) -> replacement_room_id` IPC command resolves the
+server-recommended room version from `/capabilities`, verifies the current user's
+`m.room.tombstone` power level, and invokes Matrix's typed upgrade endpoint. Existing
+timeline state parsing supplies the tombstone and replacement room id to the UI.
 
 ## API/contract changes
 
@@ -73,22 +70,26 @@ unhandled/generic state event or not at all).
 
 ## Testing strategy
 
-- Frontend: tombstone banner renders when room state includes `m.room.tombstone`,
-  composer is disabled, "Go to upgraded room" navigates to `replacement_room`.
-- Frontend: upgrade action only visible/enabled for sufficient power level (reuse
-  Spec 07's existing power-level-gating test pattern).
-- Rust/IPC: `upgrade_room` command test against a mocked SDK response, including
-  the failure path (insufficient permission server-side, room version unsupported).
-- Manual: perform a real upgrade against a test homeserver room, confirm both the
-  initiating client and a second client (as a regular member) see the tombstone
-  banner and can follow it.
+- Frontend coverage verifies the tombstone banner, read-only composer replacement,
+  replacement-room navigation, confirmation dialog, and power-level gating.
+- Rust integration coverage upgrades a deliberately older-version room against the
+  CI homeserver and rejects a low-power member before issuing the endpoint request.
+- Remote GitHub Actions remains the verification authority; local Charm checks are
+  intentionally not run under the repository policy.
 
 ## Trade-offs
 
-- **Composer disabled vs hidden in tombstoned room**: disabled-with-explanation
-  chosen over fully hidden so the room doesn't look broken — a grayed-out composer
-  with the banner above it communicates "this room is closed, here's why" more
-  clearly than an empty space where the composer used to be.
+- **Composer disabled vs replaced in tombstoned room**: replaced-with-explanation
+  was chosen so every sending path is absent while the old room still clearly says
+  why it is closed and where the conversation moved.
+
+## Shipped implementation
+
+- Default-off `room_upgrades` feature flag for staged rollout.
+- Permission-gated, confirmed room-settings action using the server's recommended
+  room version.
+- Persistent tombstone handling with replacement-room navigation and a read-only
+  old-room surface.
 
 ## What I'd revisit as this grows
 
