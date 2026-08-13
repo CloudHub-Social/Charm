@@ -192,14 +192,17 @@ pub async fn get_user_profile(
     state: State<'_, MatrixState>,
     user_id: String,
     room_id: Option<String>,
+    avatar_presence_visuals_enabled: Option<bool>,
 ) -> Result<UserProfile, String> {
     let client = state.require_client().await?;
     let media_cache = state.require_media_cache(&app).await.ok();
-    let avatar_presence_visuals_enabled = app.path().app_data_dir().is_ok_and(|dir| {
-        crate::feature_flags::flag(
-            &dir,
-            crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
-        )
+    let avatar_presence_visuals_enabled = avatar_presence_visuals_enabled.unwrap_or_else(|| {
+        app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
+            )
+        })
     });
     get_user_profile_impl(
         &client,

@@ -471,9 +471,13 @@ describe("matrix web transport", () => {
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
     [
       "get_user_profile",
-      { userId: "@alice:example.org", roomId: "!room:example.org" },
+      {
+        userId: "@alice:example.org",
+        roomId: "!room:example.org",
+        avatarPresenceVisualsEnabled: true,
+      },
       "GET",
-      "/api/users/%40alice%3Aexample.org/profile?room_id=!room%3Aexample.org",
+      "/api/users/%40alice%3Aexample.org/profile?room_id=%21room%3Aexample.org&avatar_presence_visuals_enabled=true",
       undefined,
     ],
     [

@@ -740,11 +740,15 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "get_own_profile":
       return requestJson<T>("GET", "/api/profile/me");
     case "get_user_profile": {
-      const roomId =
-        typeof args.roomId === "string" ? `?room_id=${encodeURIComponent(args.roomId)}` : "";
+      const query = new URLSearchParams();
+      if (typeof args.roomId === "string") query.set("room_id", args.roomId);
+      if (typeof args.avatarPresenceVisualsEnabled === "boolean") {
+        query.set("avatar_presence_visuals_enabled", String(args.avatarPresenceVisualsEnabled));
+      }
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
       return requestJson<T>(
         "GET",
-        `/api/users/${encodeSegment(String(args.userId))}/profile${roomId}`,
+        `/api/users/${encodeSegment(String(args.userId))}/profile${suffix}`,
       );
     }
     case "get_mutual_rooms":

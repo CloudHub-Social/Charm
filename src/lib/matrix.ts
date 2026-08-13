@@ -846,8 +846,12 @@ export function getOwnProfile(): Promise<OwnProfile> {
   return invoke("get_own_profile");
 }
 
-export function getUserProfile(userId: string, roomId?: string): Promise<UserProfile> {
-  return invoke("get_user_profile", { userId, roomId });
+export function getUserProfile(
+  userId: string,
+  roomId?: string,
+  avatarPresenceVisualsEnabled?: boolean,
+): Promise<UserProfile> {
+  return invoke("get_user_profile", { userId, roomId, avatarPresenceVisualsEnabled });
 }
 
 export function getMutualRooms(userId: string): Promise<MutualRoomSummary[]> {

@@ -4287,6 +4287,8 @@ async fn get_own_profile(
 #[derive(Deserialize)]
 struct UserProfileQuery {
     room_id: Option<String>,
+    #[serde(default)]
+    avatar_presence_visuals_enabled: bool,
 }
 
 async fn get_user_profile(
@@ -4302,7 +4304,7 @@ async fn get_user_profile(
         None,
         &user_id,
         query.room_id.as_deref(),
-        false,
+        query.avatar_presence_visuals_enabled,
     )
     .await
     .map_err(ApiError::bad_request)?;

@@ -142,10 +142,16 @@ export function MessagePillProfileDialog({
     presenceRevisionRef.current += 1;
   }
   const profileQuery = useQuery({
-    queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
+    queryKey: [
+      "user-profile",
+      accountId ?? null,
+      userId,
+      roomId ?? null,
+      avatarPresenceVisualsEnabled,
+    ],
     queryFn: async () => {
       const requestPresenceRevision = presenceRevisionRef.current;
-      const result = await getUserProfile(userId, roomId);
+      const result = await getUserProfile(userId, roomId, avatarPresenceVisualsEnabled);
       profileRequestPresenceRevisionRef.current = requestPresenceRevision;
       return result;
     },
