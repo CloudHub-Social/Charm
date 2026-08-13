@@ -30,7 +30,11 @@ import {
 import { useReadReceipts } from "./useReadReceipts";
 import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
+import {
+  attachmentUploadPayload,
+  hasDraggedFiles,
+  useAttachmentUploads,
+} from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
 import { useChatTyping } from "./useChatTyping";
 import { useMessageSend } from "./useMessageSend";
@@ -51,31 +55,7 @@ import { JumpToDateDialog } from "./JumpToDateDialog";
 import { RoomUpgradeBanner, RoomUpgradeStatePending } from "./RoomUpgradeBanner";
 import { useRoomTombstone } from "./useRoomTombstone";
 import type { ChatShellProps } from "./ChatShellProps";
-
-/** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
- * Virtuoso's `context` prop rather than closing over component state, so it's
- * a stable reference across renders instead of being redefined on every one. */
-function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean; hasMore: boolean } }) {
-  if (context?.loadingMore) {
-    return (
-      <p className="pb-2 text-center text-xs text-muted-foreground">Loading older messages…</p>
-    );
-  }
-  if (context && !context.hasMore) {
-    return (
-      <div className="flex items-center gap-3 pb-3 text-[11px] font-medium text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        <span>You're all caught up</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-    );
-  }
-  return null;
-}
-
-function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
-  return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
-}
+import { LoadingOlderHeader } from "./LoadingOlderHeader";
 
 /**
  * Per-message affordance state: whether the current user sent it, and

@@ -20,6 +20,10 @@ export function attachmentUploadPayload(file: File & { path?: string }): string 
   return file.path ?? null;
 }
 
+export function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
+  return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
+}
+
 function formatMebibytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
