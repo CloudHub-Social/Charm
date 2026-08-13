@@ -354,6 +354,10 @@ async fn emit_room_updates(
     for (room_id, result) in detail_updates {
         match result {
             Ok(details) => {
+                if !authoritative_tombstone {
+                    let _ = app.emit("room_details:update", details);
+                    continue;
+                }
                 let read_only = details.tombstone.is_some();
                 let barrier_result = super::actions::set_room_send_queue_read_only_impl(
                     client,

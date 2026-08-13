@@ -133,7 +133,9 @@ that retry remains visible after the tombstone refresh hides the original upgrad
   disabled by an unrelated send failure remains blocked during verification and is not
   incorrectly re-enabled when the room barrier opens.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
-  direct invoke cannot bypass the rollout kill switch.
+  direct invoke cannot bypass the rollout kill switch. Native sync likewise skips all
+  queue barrier and drain transitions while the flag is disabled, while continuing to
+  publish ordinary non-authoritative room details.
 - `RoomDetails` exposes the current tombstone body and replacement room id so the
   composer gate does not depend on a bounded timeline page.
 
