@@ -3785,6 +3785,12 @@ describe("ChatShell", () => {
     );
 
     await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" onJumpHandled={onJumpHandled} />
+      </JotaiProvider>,
+    );
+    expect(loadTimelineAroundEvent).toHaveBeenCalledOnce();
     await act(async () => {
       resolveDateJump?.({ found: false, installed_focused_view: false });
       await Promise.resolve();

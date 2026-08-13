@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use imbl::Vector;
+use matrix_sdk::ruma::api::client::context::get_context::v3 as get_context;
 use matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1 as get_event_by_timestamp;
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
-use matrix_sdk::ruma::events::StateEventContentChange;
+use matrix_sdk::ruma::events::{AnyTimelineEvent, StateEventContentChange};
+use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, RoomId, UInt, UserId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
@@ -1562,8 +1564,18 @@ pub struct JumpToEventResult {
     pub installed_focused_view: bool,
 }
 
-/// Resolves the closest room event in the requested direction using Matrix's
-/// stable `/timestamp_to_event` endpoint (Client-Server API v1.6).
+fn renderable_message_event_id(event: &Raw<AnyTimelineEvent>) -> Option<String> {
+    let event_type = event.get_field::<String>("type").ok().flatten()?;
+    if !matches!(event_type.as_str(), "m.room.message" | "m.room.encrypted") {
+        return None;
+    }
+    event.get_field::<String>("event_id").ok().flatten()
+}
+
+/// Resolves the closest renderable room message in the requested direction.
+/// Matrix's stable `/timestamp_to_event` endpoint may return any timeline
+/// event, so a filtered `/context` lookup converts that anchor into an event
+/// Charm can actually scroll to (a plain or encrypted room message).
 pub async fn get_event_at_timestamp_impl(
     client: &Client,
     room_id: &RoomId,
@@ -1573,9 +1585,9 @@ pub async fn get_event_at_timestamp_impl(
     let timestamp = UInt::try_from(timestamp_ms)
         .map(MilliSecondsSinceUnixEpoch)
         .map_err(|_| "timestamp is outside the Matrix-supported range".to_string())?;
-    let direction = match direction {
-        "forward" => Direction::Forward,
-        "backward" => Direction::Backward,
+    let (direction, search_forward) = match direction {
+        "forward" => (Direction::Forward, true),
+        "backward" => (Direction::Backward, false),
         _ => return Err("direction must be 'forward' or 'backward'".to_string()),
     };
     let response = client
@@ -1586,7 +1598,36 @@ pub async fn get_event_at_timestamp_impl(
         ))
         .await
         .map_err(|_| "No event was found near that date.".to_string())?;
-    Ok(response.event_id.to_string())
+
+    let mut request = get_context::Request::new(room_id.to_owned(), response.event_id);
+    request.limit = UInt::from(100_u8);
+    request.filter.types = Some(vec![
+        "m.room.message".to_string(),
+        "m.room.encrypted".to_string(),
+    ]);
+    let context = client
+        .send(request)
+        .await
+        .map_err(|_| "No message was found near that date.".to_string())?;
+
+    context
+        .event
+        .as_ref()
+        .and_then(renderable_message_event_id)
+        .or_else(|| {
+            if search_forward {
+                context
+                    .events_after
+                    .iter()
+                    .find_map(renderable_message_event_id)
+            } else {
+                context
+                    .events_before
+                    .iter()
+                    .find_map(renderable_message_event_id)
+            }
+        })
+        .ok_or_else(|| "No message was found near that date.".to_string())
 }
 
 /// Finds the event nearest to a timestamp in a joined room. Only the event ID
@@ -1918,12 +1959,75 @@ mod mapping_tests {
             })))
             .mount(server.server())
             .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/(r0|v3)/rooms/.*/context/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event": {
+                    "type": "m.room.message",
+                    "event_id": "$on-date:example.org",
+                    "sender": "@alice:example.org",
+                    "origin_server_ts": 1704067201000_u64,
+                    "content": { "msgtype": "m.text", "body": "On date" }
+                },
+                "events_before": [],
+                "events_after": [],
+                "state": []
+            })))
+            .mount(server.server())
+            .await;
 
         let event_id = get_event_at_timestamp_impl(&client, room_id, 1_704_067_200_000, "forward")
             .await
             .expect("a matching event should be returned");
 
         assert_eq!(event_id, "$on-date:example.org");
+    }
+
+    #[tokio::test]
+    async fn get_event_at_timestamp_skips_a_non_message_anchor() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.sync_joined_room(&client, room_id).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/_matrix/client/(v1|unstable/org\.matrix\.msc3030)/rooms/.*/timestamp_to_event$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event_id": "$membership:example.org",
+                "origin_server_ts": 1704067201000_u64,
+            })))
+            .mount(server.server())
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/(r0|v3)/rooms/.*/context/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event": {
+                    "type": "m.room.member",
+                    "event_id": "$membership:example.org",
+                    "sender": "@alice:example.org",
+                    "state_key": "@alice:example.org",
+                    "origin_server_ts": 1704067201000_u64,
+                    "content": { "membership": "join" }
+                },
+                "events_before": [],
+                "events_after": [{
+                    "type": "m.room.message",
+                    "event_id": "$first-message:example.org",
+                    "sender": "@alice:example.org",
+                    "origin_server_ts": 1704067202000_u64,
+                    "content": { "msgtype": "m.text", "body": "First message" }
+                }],
+                "state": []
+            })))
+            .mount(server.server())
+            .await;
+
+        let event_id = get_event_at_timestamp_impl(&client, room_id, 1_704_067_200_000, "forward")
+            .await
+            .expect("the first renderable message should be returned");
+
+        assert_eq!(event_id, "$first-message:example.org");
     }
 
     #[tokio::test]
