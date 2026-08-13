@@ -445,4 +445,19 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
         .expect("upgrade room");
 
     assert_ne!(replacement_room_id, room.room_id().as_str());
+
+    admin
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync tombstone after room upgrade");
+    let details = build_room_details(&admin, room.room_id().as_str())
+        .await
+        .expect("build upgraded room details");
+    assert_eq!(
+        details
+            .tombstone
+            .as_ref()
+            .map(|tombstone| tombstone.replacement_room_id.as_str()),
+        Some(replacement_room_id.as_str())
+    );
 }

@@ -47,6 +47,7 @@ const DETAILS: RoomDetails = {
   canonical_alias: null,
   alt_aliases: [],
   pinned_event_ids: [],
+  tombstone: null,
 };
 
 const MEMBERS: RoomMemberSummary[] = [

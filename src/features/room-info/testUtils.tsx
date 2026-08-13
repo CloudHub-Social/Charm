@@ -52,6 +52,7 @@ export function makeRoomDetails(overrides: Partial<RoomDetails> = {}): RoomDetai
     canonical_alias: null,
     alt_aliases: [],
     pinned_event_ids: [],
+    tombstone: null,
     ...overrides,
   };
 }

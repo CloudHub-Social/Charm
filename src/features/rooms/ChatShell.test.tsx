@@ -455,7 +455,7 @@ describe("ChatShell", () => {
   });
 
   it("makes a tombstoned room read-only and navigates to its replacement", async () => {
-    const onNavigateToRoom = vi.fn();
+    const onFollowRoomUpgrade = vi.fn().mockResolvedValue(undefined);
     getTimelinePage.mockResolvedValueOnce({
       messages: [],
       items: [
@@ -477,14 +477,79 @@ describe("ChatShell", () => {
 
     render(
       <JotaiProvider store={createStore()}>
-        <ChatShell room={room} currentUserId="@me:localhost" onNavigateToRoom={onNavigateToRoom} />
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          onFollowRoomUpgrade={onFollowRoomUpgrade}
+        />
       </JotaiProvider>,
     );
 
     expect(await screen.findByText("This room has been upgraded")).toBeVisible();
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Go to upgraded room" }));
-    expect(onNavigateToRoom).toHaveBeenCalledWith("!replacement:localhost");
+    expect(onFollowRoomUpgrade).toHaveBeenCalledWith("!replacement:localhost");
+  });
+
+  it("uses authoritative current tombstone state when the timeline window omits it", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$newer", body: "after upgrade" })],
+      items: [{ kind: "message", message: summary({ event_id: "$newer", body: "after upgrade" }) }],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText("This room has been upgraded")).toBeVisible();
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+  });
+
+  it("keeps sending unavailable until authoritative room state has loaded", async () => {
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentRoomStateResolved={false}
+        />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText(/Checking whether this room is still active/)).toBeVisible();
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+  });
+
+  it("reports a replacement-room access failure instead of silently doing nothing", async () => {
+    const onFollowRoomUpgrade = vi.fn().mockRejectedValue(new Error("forbidden"));
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+          onFollowRoomUpgrade={onFollowRoomUpgrade}
+        />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Go to upgraded room" }));
+    expect(
+      await screen.findByText("Couldn't open the upgraded room. Check your access and try again."),
+    ).toBeVisible();
   });
 
   it("renders mobile chat navigation, compact formatting, and room actions", async () => {

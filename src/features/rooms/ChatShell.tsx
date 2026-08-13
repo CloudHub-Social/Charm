@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
+import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
@@ -48,25 +48,9 @@ import {
 } from "@/features/appearance/atoms";
 import { bucketTimelineNotices, TimelineNoticeList } from "./TimelineNotices";
 import { JumpToDateDialog } from "./JumpToDateDialog";
-import { RoomUpgradeBanner } from "./RoomUpgradeBanner";
-
-interface ChatShellProps {
-  room: RoomSummary | null;
-  currentUserId: string;
-  onBack?: () => void;
-  onNavigateToRoom?: (roomIdentifier: string) => void;
-  onNavigateToProfileRoom?: (roomId: string) => void;
-  /**
-   * An event id to scroll to as soon as it's loaded in this room's timeline
-   * (Spec 12's Saved Messages "jump to message"). Set by the caller after
-   * selecting the bookmark's room; cleared via `onJumpHandled` once the jump
-   * completes (found and scrolled to) or definitively fails (not reachable
-   * even after `loadTimelineAroundEvent`), so a stale target doesn't
-   * re-trigger a jump on some unrelated later render.
-   */
-  jumpToEventId?: string | null;
-  onJumpHandled?: () => void;
-}
+import { RoomUpgradeBanner, RoomUpgradeStatePending } from "./RoomUpgradeBanner";
+import { useRoomTombstone } from "./useRoomTombstone";
+import type { ChatShellProps } from "./ChatShellProps";
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
  * Virtuoso's `context` prop rather than closing over component state, so it's
@@ -211,6 +195,9 @@ export function ChatShell({
   onBack,
   onNavigateToRoom,
   onNavigateToProfileRoom,
+  currentTombstone = null,
+  currentRoomStateResolved = true,
+  onFollowRoomUpgrade,
   jumpToEventId = null,
   onJumpHandled,
 }: ChatShellProps) {
@@ -334,16 +321,7 @@ export function ChatShell({
     hideMembershipEvents,
     showHiddenEvents,
   );
-  const tombstone = useMemo(() => {
-    if (!roomUpgradesEnabled) return null;
-    for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
-      const item = timelineItems[index];
-      if (item.kind === "state" && item.change.type === "tombstone") {
-        return item.change;
-      }
-    }
-    return null;
-  }, [roomUpgradesEnabled, timelineItems]);
+  const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
   const noticeBuckets = useMemo(
     () =>
@@ -1085,8 +1063,10 @@ export function ChatShell({
       {tombstone ? (
         <RoomUpgradeBanner
           replacementRoomId={replacementRoomId}
-          onNavigateToRoom={onNavigateToRoom}
+          onFollowUpgrade={onFollowRoomUpgrade}
         />
+      ) : roomUpgradesEnabled && !currentRoomStateResolved ? (
+        <RoomUpgradeStatePending />
       ) : (
         <div
           data-testid="composer-shell"

@@ -14,6 +14,7 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
+use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
 use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
@@ -252,6 +253,17 @@ pub struct RoomDetails {
     /// push every other `RoomDetails` field already relies on — no new
     /// sync-side plumbing needed (Spec day-2/04's stated data flow).
     pub pinned_event_ids: Vec<String>,
+    /// Authoritative current `m.room.tombstone` state. Unlike a timeline
+    /// window, room state retains this after newer events arrive and when the
+    /// original tombstone falls outside the loaded history.
+    pub tombstone: Option<RoomTombstoneDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RoomTombstoneDetails {
+    pub body: String,
+    pub replacement_room_id: String,
 }
 
 /// Room v12+ creators have an "infinite" power level (see [`UserPowerLevel::Infinite`]),
@@ -327,6 +339,20 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         .unwrap_or(false);
 
     let join_rule = room.join_rule().unwrap_or(JoinRule::Invite);
+    let tombstone = room
+        .get_state_event_static::<RoomTombstoneEventContent>()
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|raw| raw.deserialize().ok())
+        .and_then(|event| match event {
+            matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                matrix_sdk::ruma::events::SyncStateEvent::Original(event),
+            ) => Some(RoomTombstoneDetails {
+                body: event.content.body,
+                replacement_room_id: event.content.replacement_room.to_string(),
+            }),
+            _ => None,
+        });
 
     Ok(RoomDetails {
         room_id: room.room_id().to_string(),
@@ -352,6 +378,7 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
             .into_iter()
             .map(|id| id.to_string())
             .collect(),
+        tombstone,
     })
 }
 

@@ -21,10 +21,12 @@ const resolveRoomAlias = vi.fn();
 const setFocusedRoom = vi.fn();
 const acceptInvite = vi.fn();
 const declineInvite = vi.fn();
+const joinRoom = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   acceptInvite: (...args: unknown[]) => acceptInvite(...args),
   declineInvite: (...args: unknown[]) => declineInvite(...args),
+  joinRoom: (...args: unknown[]) => joinRoom(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   onRoomListUpdate: (...args: unknown[]) => onRoomListUpdate(...args),
   resolveRoomAlias: (...args: unknown[]) => resolveRoomAlias(...args),
@@ -92,6 +94,7 @@ vi.mock("./ChatShell", () => ({
     onBack,
     onNavigateToRoom,
     onNavigateToProfileRoom,
+    onFollowRoomUpgrade,
     jumpToEventId,
     onJumpHandled,
   }: {
@@ -99,6 +102,7 @@ vi.mock("./ChatShell", () => ({
     onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
     onNavigateToProfileRoom: (roomId: string) => void;
+    onFollowRoomUpgrade: (roomId: string) => Promise<void>;
     jumpToEventId?: string | null;
     onJumpHandled?: () => void;
   }) => (
@@ -116,6 +120,9 @@ vi.mock("./ChatShell", () => ({
       </button>
       <button type="button" onClick={() => onNavigateToProfileRoom("!new-dm:example.org")}>
         timeline-profile-new-dm
+      </button>
+      <button type="button" onClick={() => onFollowRoomUpgrade("!upgraded:example.org")}>
+        follow-room-upgrade
       </button>
       {onJumpHandled && (
         <button type="button" onClick={onJumpHandled}>
@@ -275,6 +282,7 @@ beforeEach(() => {
   setFocusedRoom.mockReset().mockResolvedValue(undefined);
   acceptInvite.mockReset().mockResolvedValue(undefined);
   declineInvite.mockReset().mockResolvedValue(undefined);
+  joinRoom.mockReset().mockResolvedValue({ room_id: "!upgraded:example.org", is_space: false });
 });
 
 function renderRoomsScreen() {
@@ -1261,6 +1269,23 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
 
     expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins and refreshes a replacement room before following an upgrade", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const replacement = room({ room_id: "!upgraded:example.org" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, replacement]);
+
+    renderRoomsScreen();
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "follow-room-upgrade" }));
+
+    await waitFor(() => expect(joinRoom).toHaveBeenCalledWith(replacement.room_id));
+    expect(await screen.findByText(`chat-content:${replacement.room_id}`)).toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
   });
 

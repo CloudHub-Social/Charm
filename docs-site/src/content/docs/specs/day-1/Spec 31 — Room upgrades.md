@@ -58,15 +58,17 @@ old room are directed to its replacement.
 The new `upgrade_room(room_id) -> replacement_room_id` IPC command resolves the
 server-recommended room version from `/capabilities`, verifies the current user's
 `m.room.tombstone` power level, and invokes Matrix's typed upgrade endpoint. Existing
-timeline state parsing supplies the tombstone and replacement room id to the UI.
+timeline state parsing remains useful for in-context notices, while the read-only
+decision comes from the room's authoritative current `m.room.tombstone` state in
+`RoomDetails`; it therefore remains correct when the tombstone is outside the loaded
+timeline window. Following the replacement explicitly joins it when necessary,
+refreshes the room list, and retains a pending selection until sync publishes it.
 
 ## API/contract changes
 
 - New IPC command for initiating an upgrade (admin action).
-- No changes needed for reading tombstone state if room state events already flow
-  through the existing timeline/room-state IPC surface — just add explicit handling
-  for `m.room.tombstone` type in the state-event renderer, and a check for its
-  presence in `ChatShell`'s composer-enablement logic.
+- `RoomDetails` exposes the current tombstone body and replacement room id so the
+  composer gate does not depend on a bounded timeline page.
 
 ## Testing strategy
 
@@ -89,7 +91,8 @@ timeline state parsing supplies the tombstone and replacement room id to the UI.
 - Permission-gated, confirmed room-settings action using the server's recommended
   room version.
 - Persistent tombstone handling with replacement-room navigation and a read-only
-  old-room surface.
+  old-room surface. The replacement action joins or refreshes before selection and
+  reports access failures rather than silently doing nothing.
 
 ## What I'd revisit as this grows
 

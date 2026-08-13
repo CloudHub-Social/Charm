@@ -21,6 +21,7 @@ import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
   acceptInvite,
   declineInvite,
+  joinRoom,
   listRooms,
   onRoomListUpdate,
   resolveRoomAlias,
@@ -244,6 +245,16 @@ export function RoomsScreen({
     }
     // If the immediate SDK snapshot is also behind, retain the already-armed
     // intent until the normal room-list stream publishes this specific target.
+  }
+
+  async function followRoomUpgrade(roomId: string) {
+    const alreadyJoined = roomsRef.current.some(
+      (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+    );
+    if (!alreadyJoined) {
+      await joinRoom(roomId);
+    }
+    await navigateToProfileRoom(roomId);
   }
 
   function selectHome() {
@@ -598,7 +609,9 @@ export function RoomsScreen({
   // while visible, so without this always-on subscription here a remote
   // membership change while both are closed would go un-invalidated,
   // leaving `useRoomMembers`' cache stale until it naturally expires.
-  useRoomDetails(activeRoom?.room_id ?? null);
+  const { data: activeRoomDetails, isSuccess: activeRoomStateResolved } = useRoomDetails(
+    activeRoom?.room_id ?? null,
+  );
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
   );
@@ -703,6 +716,9 @@ export function RoomsScreen({
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
             onNavigateToProfileRoom={navigateToProfileRoom}
+            currentTombstone={activeRoomDetails?.tombstone ?? null}
+            currentRoomStateResolved={activeRoomStateResolved}
+            onFollowRoomUpgrade={followRoomUpgrade}
             jumpToEventId={
               jumpTarget && activeRoom?.room_id === jumpTarget.roomId ? jumpTarget.eventId : null
             }
@@ -777,7 +793,9 @@ export function RoomsScreen({
         currentUserId={currentUserId}
         rooms={joinedRooms}
         onNavigateToRoom={navigateToProfileRoom}
-        onRoomUpgraded={navigateToProfileRoom}
+        onRoomUpgraded={(roomId) => {
+          followRoomUpgrade(roomId).catch(logAndIgnore);
+        }}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

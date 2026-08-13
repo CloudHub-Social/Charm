@@ -318,6 +318,8 @@ export function installMockTauri(seed: {
     },
     canonical_alias: null,
     alt_aliases: [],
+    pinned_event_ids: [],
+    tombstone: null,
     ...seed.roomDetails,
   };
 
@@ -806,7 +808,14 @@ export function installMockTauri(seed: {
       pushRoomListUpdate();
       return undefined;
     },
-    upgrade_room: () => "!upgraded-room:e2e",
+    upgrade_room: () => {
+      roomDetails.tombstone = {
+        body: "This room has been upgraded",
+        replacement_room_id: "!upgraded-room:e2e",
+      };
+      pushRoomDetailsUpdate();
+      return "!upgraded-room:e2e";
+    },
     join_room: (args) => {
       const target = args.roomIdOrAlias as string;
       const existing = findRoom(target);
