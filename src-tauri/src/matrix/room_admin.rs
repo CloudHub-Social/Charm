@@ -495,6 +495,7 @@ pub async fn set_room_name(
     room_id: String,
     name: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_name_impl(&client, &room_id, name).await
 }
@@ -516,6 +517,7 @@ pub async fn set_room_topic(
     room_id: String,
     topic: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_topic_impl(&client, &room_id, &topic).await
 }
@@ -539,6 +541,7 @@ pub async fn set_room_avatar(
     room_id: String,
     file_path: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_avatar_impl(&client, &room_id, &file_path).await
 }
@@ -570,6 +573,7 @@ pub async fn remove_room_avatar(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     remove_room_avatar_impl(&client, &room_id).await
 }
@@ -589,6 +593,7 @@ pub async fn set_room_join_rule(
     room_id: String,
     join_rule: JoinRuleKind,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_join_rule_impl(&client, &room_id, join_rule).await
 }
@@ -612,6 +617,7 @@ pub async fn set_room_history_visibility(
     room_id: String,
     visibility: HistoryVisibilityKind,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_history_visibility_impl(&client, &room_id, visibility).await
 }
@@ -637,6 +643,7 @@ pub async fn enable_room_encryption(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     enable_room_encryption_impl(&client, &room_id).await
 }
@@ -731,6 +738,7 @@ pub async fn set_member_power_level(
     user_id: String,
     power_level: i64,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_member_power_level_impl(&client, &room_id, &user_id, power_level).await
 }
@@ -757,6 +765,7 @@ pub async fn set_room_power_level_thresholds(
     room_id: String,
     changes: PowerLevelThresholds,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_power_level_thresholds_impl(&client, &room_id, changes).await
 }
@@ -780,6 +789,7 @@ pub async fn invite_member(
     room_id: String,
     user_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     invite_member_impl(&client, &room_id, &user_id).await
 }
@@ -805,6 +815,7 @@ pub async fn kick_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     kick_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -831,6 +842,7 @@ pub async fn ban_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     ban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -857,6 +869,7 @@ pub async fn unban_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     unban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -1209,6 +1222,7 @@ pub async fn pin_event(
     room_id: String,
     event_id: String,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     // Review fix: captured before this command's own network send below —
     // if a logout/re-login/account-switch happens while that send is still
@@ -1363,6 +1377,7 @@ pub async fn unpin_event(
     room_id: String,
     event_id: String,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     // Review fix: same session-generation guard as `pin_event` — see that
     // command's own comment.
@@ -1618,6 +1633,7 @@ pub async fn add_room_alias(
     room_id: String,
     alias: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     add_room_alias_impl(&client, &room_id, &alias).await
 }
@@ -1645,6 +1661,12 @@ pub async fn add_room_alias_impl(
 #[tauri::command]
 pub async fn remove_room_alias(state: State<'_, MatrixState>, alias: String) -> Result<(), String> {
     let client = state.require_client().await?;
+    let parsed_alias = RoomAliasId::parse(&alias).map_err(|e| e.to_string())?;
+    let resolved = client
+        .resolve_room_alias(&parsed_alias)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _guard = super::actions::lock_room_mutation(resolved.room_id.as_str()).await?;
     remove_room_alias_impl(&client, &alias).await
 }
 
@@ -1668,6 +1690,7 @@ pub async fn set_canonical_alias(
     room_id: String,
     alias: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_canonical_alias_impl(&client, &room_id, alias.as_deref()).await
 }
@@ -1708,6 +1731,7 @@ pub async fn remove_alt_alias(
     room_id: String,
     alias: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     remove_alt_alias_impl(&client, &room_id, &alias).await
 }
@@ -1744,6 +1768,7 @@ pub async fn leave_room(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let (client, search_generation) = state.require_client_with_search_generation().await?;
     leave_room_impl(&client, &room_id).await?;
     let purge_result =

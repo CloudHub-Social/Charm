@@ -132,6 +132,9 @@ that retry remains visible after the tombstone refresh hides the original upgrad
   cleanup. Barrier enforcement is tracked separately from queue ownership, so a queue
   disabled by an unrelated send failure remains blocked during verification and is not
   incorrectly re-enabled when the room barrier opens.
+- Native message, room-state, membership, pinning, alias, reporting, and slash-command
+  mutations share the same serialized admission guard, so a stale webview cannot bypass
+  a sync-installed barrier while the frontend catches up.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch. Native sync likewise skips all
   queue barrier and drain transitions while the flag is disabled, while continuing to

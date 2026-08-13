@@ -43,6 +43,17 @@ pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
     ROOM_UPGRADE_BARRIER_ROOMS.lock().await.contains(room_id)
 }
 
+pub(super) async fn lock_room_mutation(
+    room_id: &str,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    if room_upgrade_queue_is_paused(&parsed_room_id).await {
+        return Err("This room is read-only while its current state is verified.".to_string());
+    }
+    Ok(guard)
+}
+
 pub(super) async fn resume_all_room_upgrade_queues(client: &Client) {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
@@ -239,6 +250,7 @@ pub async fn redact_event(
     event_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     redact_event_impl(&client, &room_id, &event_id, reason.as_deref()).await
 }
@@ -428,6 +440,7 @@ pub async fn toggle_reaction_impl(
     }
 
     if let Some(reaction_event_id) = existing_reaction_event_id {
+        let _guard = lock_room_mutation(room_id).await?;
         room.redact(&reaction_event_id, None, None)
             .await
             .map_err(|e| e.to_string())?;
@@ -835,6 +848,7 @@ pub async fn report_event(
     reason: Option<String>,
     score: Option<i32>,
 ) -> Result<(), String> {
+    let _guard = lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     report_event_impl(&client, &room_id, &event_id, reason, score).await
 }
