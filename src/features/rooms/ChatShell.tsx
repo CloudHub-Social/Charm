@@ -308,12 +308,7 @@ export function ChatShell({
     Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
   const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
   roomMutationsBlockedRef.current = roomMutationsBlocked;
-  useRoomSendQueueBarrier(
-    activeRoomId,
-    roomUpgradesEnabled,
-    roomMutationsBlocked,
-    Boolean(tombstone),
-  );
+  useRoomSendQueueBarrier(activeRoomId, roomUpgradesEnabled, roomMutationsBlocked, !!tombstone);
   useEffect(() => {
     if (!roomMutationsBlocked) return;
     setPendingAttachment(null);
