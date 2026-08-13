@@ -90,7 +90,9 @@ current-state guarantees as the Tauri path.
   send already entering the SDK cannot slip in after the confirmed-tombstone drain.
   Failed authoritative refreshes remain in the sync task's session-scoped retry set and
   are retried after the next successful sync instead of leaving an inactive room paused
-  indefinitely.
+  indefinitely. Starting or enabling the feature seeds an authoritative scan of every
+  joined room, covering tombstones already present in persisted SDK state; confirmed
+  tombstone drains also remain retry-owned until the native queue transition succeeds.
 
 ## Data flow
 

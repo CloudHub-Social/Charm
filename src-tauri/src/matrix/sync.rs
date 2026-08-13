@@ -24,6 +24,10 @@ pub enum SyncStateEvent {
     Error { message: String },
 }
 
+fn should_seed_room_upgrade_scan(enabled: bool, was_enabled: bool) -> bool {
+    enabled && !was_enabled
+}
+
 // Spec 14 removed `spawn_send_queue_listener` (and the `send_queue:update`
 // event/`SendQueueUpdateEvent` DTO it fed): a room's live `matrix-sdk-ui`
 // `Timeline` now surfaces the same pending -> sent -> error transitions as
@@ -117,6 +121,7 @@ async fn emit_room_updates(
     response: &matrix_sdk::sync::SyncResponse,
     seq_before_response: &std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>,
     room_detail_retries: &mut std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    room_upgrades_was_enabled: &mut bool,
 ) {
     const ROOM_DETAILS_CONCURRENCY: usize = 8;
     let state = app.state::<MatrixState>();
@@ -129,6 +134,15 @@ async fn emit_room_updates(
         room_detail_retries.clear();
     }
     let mut room_details_room_ids = std::collections::HashSet::new();
+    if should_seed_room_upgrade_scan(authoritative_tombstone, *room_upgrades_was_enabled) {
+        room_details_room_ids.extend(
+            client
+                .joined_rooms()
+                .into_iter()
+                .map(|room| room.room_id().to_owned()),
+        );
+    }
+    *room_upgrades_was_enabled = authoritative_tombstone;
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
@@ -340,9 +354,8 @@ async fn emit_room_updates(
     for (room_id, result) in detail_updates {
         match result {
             Ok(details) => {
-                room_detail_retries.remove(&room_id);
                 let read_only = details.tombstone.is_some();
-                let _ = super::actions::set_room_send_queue_read_only_impl(
+                let barrier_result = super::actions::set_room_send_queue_read_only_impl(
                     client,
                     Some(&state),
                     room_id.as_str(),
@@ -350,7 +363,20 @@ async fn emit_room_updates(
                     read_only,
                 )
                 .await;
-                let _ = app.emit("room_details:update", details);
+                match barrier_result {
+                    Ok(_) => {
+                        room_detail_retries.remove(&room_id);
+                        let _ = app.emit("room_details:update", details);
+                    }
+                    Err(error) => {
+                        room_detail_retries.insert(room_id.clone());
+                        tracing::warn!(
+                            %error,
+                            room_id = %room_id,
+                            "room queue barrier transition failed; retrying after next sync"
+                        );
+                    }
+                }
             }
             Err(error) if authoritative_tombstone => {
                 room_detail_retries.insert(room_id.clone());
@@ -719,6 +745,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
         let mut room_detail_retries = std::collections::HashSet::new();
+        let mut room_upgrades_was_enabled = false;
 
         // Review fix: this used to unconditionally call
         // `set_presence_online`, ignoring a persisted `appear_offline`
@@ -820,6 +847,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             &initial_response,
             &seq_before_response,
             &mut room_detail_retries,
+            &mut room_upgrades_was_enabled,
         )
         .await;
 
@@ -915,6 +943,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                         &response,
                         &seq_before_response,
                         &mut room_detail_retries,
+                        &mut room_upgrades_was_enabled,
                     )
                     .await;
                     notify_unopened_room_messages(&app, &client, &response).await;
@@ -969,6 +998,19 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         .replace(handle);
     if let Some(previous) = previous {
         previous.abort();
+    }
+}
+
+#[cfg(test)]
+mod room_upgrade_scan_tests {
+    use super::should_seed_room_upgrade_scan;
+
+    #[test]
+    fn seeds_on_startup_or_transition_to_enabled_only() {
+        assert!(should_seed_room_upgrade_scan(true, false));
+        assert!(!should_seed_room_upgrade_scan(true, true));
+        assert!(!should_seed_room_upgrade_scan(false, true));
+        assert!(!should_seed_room_upgrade_scan(false, false));
     }
 }
 
