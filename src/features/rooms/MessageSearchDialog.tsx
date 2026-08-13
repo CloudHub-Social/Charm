@@ -83,6 +83,7 @@ export function MessageSearchDialog({
     // The same room returning must not overwrite that explicit choice; only
     // a fresh open or an actual active-room navigation selects a default.
     if (opening || activeRoomChanged) {
+      setQuery("");
       setScope(joinedActiveRoomId ? "room" : "all");
       setPage(null);
       setError(null);

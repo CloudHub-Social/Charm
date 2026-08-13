@@ -26,7 +26,9 @@ and delete the derived index; the companion does the same on session logout.
 
 The feature UI adds a distinct message-search button and `Cmd/Ctrl+F`, scoped/all-
 room selection, keyboard-accessible results, incomplete-index disclosure, and
-navigation through the existing load-around-event/highlight path. Repository
+navigation through the existing load-around-event/highlight path. Search sessions
+are intentionally ephemeral: closing and reopening the dialog resets both the query
+and its results so the input never describes an empty result pane. Repository
 evidence includes SQLCipher marker scans, no-follow filesystem tests, edit/redaction/
 cursor/query tests, component coverage, workspace compilation, and a Playwright
 search-navigation journey. Real-homeserver verification remains operational
