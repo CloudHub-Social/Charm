@@ -34,7 +34,7 @@ test("jumps from the room calendar to the first message on a date", async ({ pag
   await page.goto("/");
   await page.getByRole("button", { name: "Project History" }).click();
   await page.getByRole("button", { name: "Jump to date" }).click();
-  await page.getByLabel("Date").fill("2025-02-03");
+  await page.getByRole("textbox", { name: "Date", exact: true }).fill("2025-02-03");
   await captureSnapshot(page, "jump-to-date-picker");
   await page.getByRole("button", { name: "Jump", exact: true }).click();
 
