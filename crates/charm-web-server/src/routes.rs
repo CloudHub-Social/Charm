@@ -4238,14 +4238,23 @@ async fn get_presence(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
+    Query(query): Query<PresenceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // The web companion has no feature-flag store yet, so preserve the
-    // compiled-in default and normalize custom busy states as Offline.
-    let presence = get_presence_impl(&session.client, &user_id, false)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let presence = get_presence_impl(
+        &session.client,
+        &user_id,
+        query.avatar_presence_visuals_enabled,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(presence))
+}
+
+#[derive(Deserialize, Default)]
+struct PresenceQuery {
+    #[serde(default)]
+    avatar_presence_visuals_enabled: bool,
 }
 
 async fn get_own_profile(

@@ -461,6 +461,13 @@ describe("matrix web transport", () => {
       "/api/presence/%40alice%3Aexample.org",
       undefined,
     ],
+    [
+      "get_presence",
+      { userId: "@alice:example.org", avatarPresenceVisualsEnabled: true },
+      "GET",
+      "/api/presence/%40alice%3Aexample.org?avatar_presence_visuals_enabled=true",
+      undefined,
+    ],
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
     [
       "get_user_profile",
