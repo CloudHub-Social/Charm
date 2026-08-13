@@ -93,6 +93,7 @@ export function RoomsScreen({
   // two definitions in sync avoids it becoming one the next time either
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
+  const roomUpgradesEnabled = useFlag("room_upgrades");
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
   const messageSearchEnabled = useFlag("encrypted_local_message_search");
   const quickSwitcherEnabled = useFlag("quick_switcher");

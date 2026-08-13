@@ -14,7 +14,7 @@ import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
 import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
 import { withRoomMutationsDisabled } from "./roomMutationBarrier";
-import type { RoomDetails, RoomSummary } from "@/lib/matrix";
+import type { RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
   { value: "general", label: "General" },
