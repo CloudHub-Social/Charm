@@ -160,7 +160,8 @@ that retry remains visible after the tombstone refresh hides the original upgrad
 
 - Default-off `room_upgrades` feature flag for staged rollout.
 - Permission-gated, confirmed room-settings action using the server's recommended
-  room version.
+  room version. A successful upgrade response immediately closes and drains the old
+  room instead of waiting for a later sync response.
 - Persistent tombstone handling with replacement-room navigation and a read-only
   old-room surface. The replacement action joins or refreshes before selection and
   reports access failures rather than silently doing nothing.

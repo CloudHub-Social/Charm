@@ -105,6 +105,19 @@ pub async fn run_command_impl(
     args: Vec<String>,
 ) -> Result<CommandResult, String> {
     let room = get_room(client, room_id)?;
+    // `/me` already goes through the serialized send helper below. Every
+    // other command mutates room state or membership directly, so keep the
+    // same admission lock across its homeserver action: either the command
+    // starts first or a sync-driven room barrier rejects it.
+    let _mutation_guard = if command == SlashCommand::Me {
+        None
+    } else {
+        let guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+        if super::actions::room_upgrade_queue_is_paused(room.room_id()).await {
+            return Err("This room is read-only while its current state is verified.".to_string());
+        }
+        Some(guard)
+    };
 
     match command {
         SlashCommand::Me => {

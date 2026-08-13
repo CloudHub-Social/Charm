@@ -665,7 +665,12 @@ pub async fn upgrade_room(
         return Err("Room upgrades are not enabled.".to_string());
     }
     let client = state.require_client().await?;
-    upgrade_room_impl(&client, &room_id).await
+    let replacement_room_id = upgrade_room_impl(&client, &room_id).await?;
+    // The successful endpoint response is authoritative: close the old room
+    // immediately instead of waiting for a later sync to publish its tombstone.
+    super::actions::set_room_send_queue_read_only_impl(&client, Some(&state), &room_id, true, true)
+        .await?;
+    Ok(replacement_room_id)
 }
 
 /// Core logic behind [`upgrade_room`].

@@ -541,6 +541,7 @@ export function ChatShell({
       setEditingEventId,
       setReplyTarget,
       stopTyping,
+      mutationsBlockedRef: roomMutationsBlockedRef,
     });
   const messageActionController = useMessageActionController({
     roomId: activeRoomId,
