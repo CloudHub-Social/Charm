@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FEATURE_FLAG_CATALOG, FEATURE_FLAG_KEYS } from "./catalog";
 import { resolveFlag } from "./resolve";
@@ -356,6 +356,7 @@ describe("feature-flag client", () => {
       update = mod.setFeatureFlagOverride("canary", true);
     });
     expect(settled.result.current).toBe(false);
+    await waitFor(() => expect(resolveSave).toBeDefined());
 
     await act(async () => {
       resolveSave?.();
