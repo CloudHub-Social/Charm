@@ -65,6 +65,30 @@ describe("JumpToDateDialog", () => {
     expect(onResolved).not.toHaveBeenCalled();
   });
 
+  it("ignores a lookup that resolves after the dialog unmounts", async () => {
+    let resolveLookup: ((eventId: string) => void) | undefined;
+    getEventAtTimestamp.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLookup = resolve;
+      }),
+    );
+    const onResolved = vi.fn();
+    const { unmount } = renderWithProviders(
+      <JumpToDateDialog
+        open
+        roomId="!room:example.org"
+        onOpenChange={vi.fn()}
+        onResolved={onResolved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump" }));
+    unmount();
+    await act(async () => resolveLookup?.("$late:example.org"));
+
+    expect(onResolved).not.toHaveBeenCalled();
+  });
+
   it("shows a bounded error when the server has no event near the date", async () => {
     getEventAtTimestamp.mockRejectedValue(new Error("server detail"));
     renderWithProviders(

@@ -51,6 +51,13 @@ export function JumpToDateDialog({
     if (open) setDate(localDateValue(new Date()));
   }, [open, roomId]);
 
+  useEffect(
+    () => () => {
+      requestId.current += 1;
+    },
+    [],
+  );
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const timestamp = new Date(`${date}T00:00:00`).getTime();
