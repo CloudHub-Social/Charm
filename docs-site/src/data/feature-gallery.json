@@ -25,7 +25,8 @@
         "name": "jump-to-date-picker",
         "alt": "Charm room timeline with the jump-to-date calendar open",
         "caption": "Playwright chooses a date, resolves the first later Matrix event, and highlights the target in the existing virtualized timeline."
-      }
+      },
+      "maxDiffPixels": 1500
     },
     {
       "slug": "message-search",

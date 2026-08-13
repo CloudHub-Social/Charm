@@ -7,6 +7,7 @@ import path from "node:path";
 type Feature = {
   slug: string;
   snapshot: { suite: "e2e"; name: string };
+  maxDiffPixels?: number;
 };
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -29,10 +30,11 @@ test.describe("committed feature documentation", () => {
       // maxDiffPixels is applied rather than a byte-for-byte buffer comparison.
       // Two hundred fifty pixels is 0.027% of a 1280x720 snapshot: enough for
       // repeatable SVG-edge antialiasing drift across otherwise identical Linux
-      // captures, but far below a visible UI change.
+      // captures, but far below a visible UI change. A feature can raise this
+      // narrowly when a native browser control has a larger measured floor.
       expect(actual).toMatchSnapshot({
         name: `${feature.slug}.png`,
-        maxDiffPixels: 250,
+        maxDiffPixels: feature.maxDiffPixels ?? 250,
       });
     });
   }
