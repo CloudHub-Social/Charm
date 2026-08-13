@@ -243,6 +243,31 @@ describe("RoomSettingsForm", () => {
     });
   });
 
+  it("disables an open upgrade confirmation when room state becomes unresolved", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails();
+    const mutationsBlockedRef = { current: false };
+    const rendered = renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    mutationsBlockedRef.current = true;
+    rendered.rerender(
+      wrapWithProviders(
+        <RoomSettingsForm
+          details={{ ...details, can: { ...details.can, upgrade_room: false } }}
+          mutationsBlockedRef={mutationsBlockedRef}
+        />,
+        rendered.client,
+      ),
+    );
+
+    expect(within(dialog).getByRole("button", { name: "Upgrade room" })).toBeDisabled();
+    expect(upgradeRoom).not.toHaveBeenCalled();
+  });
+
   it("keeps settings open and reports a replacement-room navigation failure", async () => {
     featureFlagMocks.roomUpgrades = true;
     const onRoomUpgraded = vi.fn().mockRejectedValueOnce(new Error("join denied"));

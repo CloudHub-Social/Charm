@@ -81,9 +81,11 @@ current-state guarantees as the Tauri path.
   connectivity returns without discarding them during an ordinary refresh. That queue
   ownership survives navigation remounts within one
   account, but logout clears it and invalidates pending transitions so it cannot affect
-  a later signed-in session. Failed native queue transitions restore their prior
-  ownership state and retry, since an IPC error alone cannot prove whether the SDK queue
-  changed.
+  a later signed-in session. Failed native queue transitions retain safety ownership
+  and retry, since an IPC error alone cannot prove whether the SDK queue changed. Native
+  sync applies the same barrier to every affected room, including rooms
+  that are not currently open, and serializes barrier changes with queue insertion so a
+  send already entering the SDK cannot slip in after the confirmed-tombstone drain.
 
 ## Data flow
 

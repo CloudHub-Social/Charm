@@ -42,7 +42,19 @@ export function useRoomSendQueueBarrier(
     const desiredDiscard = desiredReadOnly && discardPending;
     const requestedBarrier = `${desiredReadOnly}:${desiredDiscard}`;
     if (!desiredReadOnly && !pausedRoomIds.has(roomId) && !commandChains.has(roomId)) return;
-    if (requestedBarriers.get(roomId) === requestedBarrier) return;
+    if (requestedBarriers.get(roomId) === requestedBarrier) {
+      const pending = commandChains.get(roomId);
+      if (!pending) return;
+      let subscribed = true;
+      void pending.finally(() => {
+        if (subscribed && requestedBarriers.get(roomId) !== requestedBarrier) {
+          setRetryRevision((revision) => revision + 1);
+        }
+      });
+      return () => {
+        subscribed = false;
+      };
+    }
     requestedBarriers.set(roomId, requestedBarrier);
     const generation = queueBarrierGeneration;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;

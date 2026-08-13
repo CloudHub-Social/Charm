@@ -226,7 +226,7 @@ pub struct UploadProgress {
 /// global lock (rather than per-room) is a deliberately blunt fix: this path
 /// isn't hot enough (interactive, human-paced sends) for cross-room
 /// serialization to matter, and it avoids maintaining a per-room lock map.
-static SEND_CAPTURE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+pub(super) static SEND_CAPTURE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Queues `content` on `room`'s send queue and returns the SDK-generated
@@ -250,6 +250,10 @@ pub async fn send_and_capture_transaction_id(
     content: AnyMessageLikeEventContent,
 ) -> Result<String, String> {
     let _guard = SEND_CAPTURE_LOCK.lock().await;
+
+    if super::actions::room_upgrade_queue_is_paused(room.room_id()).await {
+        return Err("Room sending is paused while its current state is verified.".to_string());
+    }
 
     let mut updates = client.send_queue().subscribe();
     let target_room_id = room.room_id().to_owned();

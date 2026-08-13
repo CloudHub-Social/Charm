@@ -392,8 +392,14 @@ export function RoomSettingsForm({
                     </Button>
                     <Button
                       variant="destructive"
-                      disabled={actions.upgrade.isPending || followingUpgrade}
+                      disabled={
+                        !details.can.upgrade_room || actions.upgrade.isPending || followingUpgrade
+                      }
                       onClick={() => {
+                        if (liveMutationsBlockedRef.current || !details.can.upgrade_room) {
+                          setConfirmingUpgrade(false);
+                          return;
+                        }
                         Sentry.addBreadcrumb({
                           category: "ui.room-upgrade",
                           level: "info",

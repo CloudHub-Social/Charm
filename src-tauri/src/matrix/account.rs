@@ -259,6 +259,7 @@ async fn clear_local_session(
     // teardown window would let the signed-out account keep sending/fetching
     // until the next launch.
     *state.client.lock().await = None;
+    super::actions::clear_room_upgrade_queue_barriers().await;
     super::search::reset_index_lifecycle(state);
 
     // The sync loop drives the native dock/taskbar/tray badge from its own

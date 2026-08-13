@@ -759,6 +759,33 @@ describe("ChatShell", () => {
     );
   });
 
+  it("transfers a pending queue retry to a remounted room", async () => {
+    let rejectPause: ((error: Error) => void) | undefined;
+    setRoomSendQueueReadOnly.mockImplementationOnce(
+      () =>
+        new Promise<number>((_resolve, reject) => {
+          rejectPause = reject;
+        }),
+    );
+    const firstView = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledTimes(1));
+    firstView.unmount();
+
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await act(async () => rejectPause?.(new Error("pause failed")));
+
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledTimes(2));
+  });
+
   it("reports a replacement-room access failure instead of silently doing nothing", async () => {
     const onFollowRoomUpgrade = vi.fn().mockRejectedValue(new Error("forbidden"));
     render(

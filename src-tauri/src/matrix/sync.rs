@@ -123,6 +123,9 @@ async fn emit_room_updates(
     let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
     });
+    if !authoritative_tombstone {
+        super::actions::resume_all_room_upgrade_queues(client).await;
+    }
     let mut room_details_room_ids = Vec::new();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -308,6 +311,13 @@ async fn emit_room_updates(
         // member mutations open throughout the request window.
         for room_id in &room_details_room_ids {
             let _ = app.emit("room_details:unresolved", room_id.to_string());
+            let _ = super::actions::set_room_send_queue_read_only_impl(
+                client,
+                room_id.as_str(),
+                true,
+                false,
+            )
+            .await;
         }
     }
     let detail_updates = futures_util::stream::iter(room_details_room_ids)
@@ -320,8 +330,16 @@ async fn emit_room_updates(
         .buffer_unordered(ROOM_DETAILS_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
-    for (_, result) in detail_updates {
+    for (room_id, result) in detail_updates {
         if let Ok(details) = result {
+            let read_only = details.tombstone.is_some();
+            let _ = super::actions::set_room_send_queue_read_only_impl(
+                client,
+                room_id.as_str(),
+                read_only,
+                read_only,
+            )
+            .await;
             let _ = app.emit("room_details:update", details);
         }
     }
