@@ -546,7 +546,11 @@ async fn resolve_room_identity(
 
     let raw_avatar_url = room.avatar_url();
 
-    let heroes = is_direct.then(|| room.heroes()).unwrap_or_default();
+    let heroes = if is_direct {
+        room.heroes()
+    } else {
+        Default::default()
+    };
     let dm_peer = match heroes.as_slice() {
         [hero] => Some(hero.clone()),
         _ => None,
