@@ -79,6 +79,8 @@ export function IrcMessageRow({
           aria-label={`Open profile for ${nick}`}
           onTouchStart={(event) => event.stopPropagation()}
           onTouchEnd={(event) => event.stopPropagation()}
+          onTouchCancel={(event) => event.stopPropagation()}
+          onTouchMove={(event) => event.stopPropagation()}
           onClick={() => onSenderClick(message.sender, nick)}
         >
           &lt;{nick}&gt;
