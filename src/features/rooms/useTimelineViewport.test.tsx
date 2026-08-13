@@ -203,4 +203,55 @@ describe("useTimelineViewport", () => {
     );
     expect(onJumpHandled).toHaveBeenCalledOnce();
   });
+
+  it("does not accept an intermediate page that is still newer than the selected date", async () => {
+    let resolveLoad:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoad = resolve;
+      }),
+    );
+    const onJumpHandled = vi.fn();
+    const initialProps = props({
+      jumpToEventId: "$state-anchor",
+      jumpToTimestampMs: 100,
+      onJumpHandled,
+      messages: [message("$live-tail", "@other:localhost", 300)],
+    });
+    const { result, rerender } = renderHook((currentProps) => useTimelineViewport(currentProps), {
+      initialProps,
+    });
+    const scrollToIndex = vi.fn();
+    result.current.virtuosoRef.current = { scrollToIndex } as never;
+
+    rerender({ ...initialProps, loading: false });
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledOnce());
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [message("$intermediate", "@other:localhost", 200)],
+    });
+    resolveLoad?.({ found: true, installed_focused_view: true });
+    await waitFor(() => expect(result.current.hasFocusedView).toBe(true));
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(onJumpHandled).not.toHaveBeenCalled();
+
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [
+        message("$before", "@other:localhost", 50),
+        message("$focused", "@other:localhost", 120),
+      ],
+    });
+
+    await waitFor(() =>
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, align: "center" }),
+      ),
+    );
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+  });
 });
