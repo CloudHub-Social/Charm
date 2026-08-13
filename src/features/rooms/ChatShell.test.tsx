@@ -97,6 +97,7 @@ const getPrivacySettings = vi.fn().mockResolvedValue({
 const listBookmarks = vi.fn().mockResolvedValue([]);
 const addBookmark = vi.fn().mockResolvedValue(undefined);
 const removeBookmark = vi.fn().mockResolvedValue(undefined);
+const getEventAtTimestamp = vi.fn().mockResolvedValue("$date-target");
 const loadTimelineAroundEvent = vi.fn().mockResolvedValue(false);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
@@ -264,6 +265,7 @@ vi.mock("@/lib/matrix", () => ({
   listBookmarks: (...args: unknown[]) => listBookmarks(...args),
   addBookmark: (...args: unknown[]) => addBookmark(...args),
   removeBookmark: (...args: unknown[]) => removeBookmark(...args),
+  getEventAtTimestamp: (...args: unknown[]) => getEventAtTimestamp(...args),
   loadTimelineAroundEvent: (...args: unknown[]) => loadTimelineAroundEvent(...args),
 }));
 
@@ -426,6 +428,7 @@ describe("ChatShell", () => {
     listBookmarks.mockReset().mockResolvedValue([]);
     addBookmark.mockReset().mockResolvedValue(undefined);
     removeBookmark.mockReset().mockResolvedValue(undefined);
+    getEventAtTimestamp.mockReset().mockResolvedValue("$date-target");
     loadTimelineAroundEvent.mockReset().mockResolvedValue(false);
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
@@ -3736,6 +3739,56 @@ describe("ChatShell", () => {
     expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
       expect.objectContaining({ index: 0, align: "center" }),
     );
+  });
+
+  it("notifies the parent when an external jump supersedes a pending date jump", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$external-target", sender: "@alice:localhost", body: "external" }),
+      ],
+      next_cursor: null,
+    });
+    let resolveDateJump:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDateJump = resolve;
+        }),
+    );
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" onJumpHandled={onJumpHandled} />
+      </JotaiProvider>,
+    );
+    await screen.findByText("external");
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2025-02-03" } });
+    fireEvent.click(screen.getByRole("button", { name: "Jump", exact: true }));
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$date-target"),
+    );
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$external-target"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+    await act(async () => {
+      resolveDateJump?.({ found: false, installed_focused_view: false });
+      await Promise.resolve();
+    });
   });
 
   it("does not mark the room read on open while a bookmark jump to older history is pending (Codex review fix)", async () => {

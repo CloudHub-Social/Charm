@@ -263,8 +263,8 @@ export function ChatShell({
   }, [roomId]);
   const activeJumpToEventId = jumpToEventId ?? dateJumpEventId;
   const handleJumpHandled = () => {
-    if (dateJumpEventId !== null) setDateJumpEventId(null);
-    else onJumpHandled?.();
+    if (jumpToEventId !== null) onJumpHandled?.();
+    else setDateJumpEventId(null);
   };
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
