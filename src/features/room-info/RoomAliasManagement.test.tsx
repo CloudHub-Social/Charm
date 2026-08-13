@@ -265,6 +265,24 @@ describe("RoomAliasManagement", () => {
     });
   });
 
+  it("does not submit an already-open canonical menu after the room becomes read-only", async () => {
+    setCanonicalAlias.mockClear();
+    getRoomLocalAliases.mockResolvedValue(["#general:example.org"]);
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement details={makeRoomDetails()} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    await screen.findByText("#general:example.org");
+    openDropdownMenu("None");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(
+      await screen.findByText("#general:example.org", { selector: "[role=menuitemradio]" }),
+    );
+
+    expect(setCanonicalAlias).not.toHaveBeenCalled();
+  });
+
   it("clears the canonical alias via the None option", async () => {
     getRoomLocalAliases.mockResolvedValue(["#general:example.org"]);
     const details = makeRoomDetails({ canonical_alias: "#general:example.org" });

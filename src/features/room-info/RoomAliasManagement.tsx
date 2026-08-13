@@ -162,6 +162,7 @@ export function RoomAliasManagement({ details, mutationsBlockedRef }: RoomAliasM
               <DropdownMenuRadioGroup
                 value={details.canonical_alias ?? NONE_VALUE}
                 onValueChange={(value) => {
+                  if (mutationsBlockedRef?.current) return;
                   // Disabling the trigger while a mutation is pending (above)
                   // prevents overlapping calls from racing on stale
                   // `alt_aliases` state server-side — see room_admin.rs.

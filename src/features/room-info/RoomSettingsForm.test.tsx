@@ -177,6 +177,29 @@ describe("RoomSettingsForm", () => {
     });
   });
 
+  it("does not submit an already-open options menu after the room becomes read-only", async () => {
+    setRoomJoinRule.mockClear();
+    setRoomHistoryVisibility.mockClear();
+    const mutationsBlockedRef = { current: false };
+    const details = makeRoomDetails({ join_rule: "invite", history_visibility: "shared" });
+    renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    openDropdownMenu("Invite only");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(await screen.findByText("Public — anyone can join"));
+
+    expect(setRoomJoinRule).not.toHaveBeenCalled();
+
+    mutationsBlockedRef.current = false;
+    openDropdownMenu("Members, including before they joined");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(await screen.findByText("Members, from when they joined"));
+
+    expect(setRoomHistoryVisibility).not.toHaveBeenCalled();
+  });
+
   it("hides the Addresses section when room_alias_management is off", () => {
     featureFlagMocks.roomAliasManagement = false;
     renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);

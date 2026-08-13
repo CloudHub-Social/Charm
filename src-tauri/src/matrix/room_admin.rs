@@ -657,12 +657,6 @@ pub async fn upgrade_room(
 /// Core logic behind [`upgrade_room`].
 pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
     let room = require_room(client, room_id)?;
-    if fetch_current_tombstone(client, room.room_id())
-        .await?
-        .is_some()
-    {
-        return Err("This room has already been upgraded.".to_string());
-    }
     let own_user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?;
@@ -676,6 +670,15 @@ pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String,
         .room_versions()
         .await
         .map_err(|e| e.to_string())?;
+    // Keep this authoritative guard immediately next to the upgrade write.
+    // Capabilities and power-level reads above may await the network long
+    // enough for another administrator to upgrade the room first.
+    if fetch_current_tombstone(client, room.room_id())
+        .await?
+        .is_some()
+    {
+        return Err("This room has already been upgraded.".to_string());
+    }
     let response = client
         .send(upgrade_room::v3::Request::new(
             room.room_id().to_owned(),

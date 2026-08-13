@@ -246,7 +246,10 @@ export function RoomSettingsForm({
               <DropdownMenuContent>
                 <DropdownMenuRadioGroup
                   value={details.join_rule}
-                  onValueChange={(value) => actions.setJoinRule.mutate(value as JoinRuleKind)}
+                  onValueChange={(value) => {
+                    if (liveMutationsBlockedRef.current) return;
+                    actions.setJoinRule.mutate(value as JoinRuleKind);
+                  }}
                 >
                   {SELECTABLE_JOIN_RULES.map((rule) => (
                     <DropdownMenuRadioItem key={rule} value={rule}>
@@ -271,9 +274,10 @@ export function RoomSettingsForm({
               <DropdownMenuContent>
                 <DropdownMenuRadioGroup
                   value={details.history_visibility}
-                  onValueChange={(value) =>
-                    actions.setHistoryVisibility.mutate(value as HistoryVisibilityKind)
-                  }
+                  onValueChange={(value) => {
+                    if (liveMutationsBlockedRef.current) return;
+                    actions.setHistoryVisibility.mutate(value as HistoryVisibilityKind);
+                  }}
                 >
                   {(Object.keys(HISTORY_VISIBILITY_LABELS) as HistoryVisibilityKind[]).map(
                     (visibility) => (
