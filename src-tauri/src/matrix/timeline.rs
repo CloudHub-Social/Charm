@@ -22,10 +22,7 @@ fn timeline_items_enabled(app: &AppHandle) -> bool {
         crate::feature_flags::flag(
             &dir,
             crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
-        ) || crate::feature_flags::flag(
-            &dir,
-            crate::feature_flags::FeatureFlagKey::RoomUpgrades,
-        )
+        ) || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
     })
 }
 
