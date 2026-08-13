@@ -491,6 +491,32 @@ describe("ChatShell", () => {
     expect(onFollowRoomUpgrade).toHaveBeenCalledWith("!replacement:localhost");
   });
 
+  it("ignores tombstone-shaped timeline state with a non-empty state key", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [
+        {
+          kind: "state",
+          event_id: "$not-the-room-tombstone",
+          sender: "@admin:localhost",
+          timestamp_ms: 1,
+          state_key: "unrelated",
+          change: {
+            type: "tombstone",
+            body: "Not the canonical room upgrade",
+            replacement_room_id: "!unrelated:localhost",
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+
+    expect(await screen.findByTestId("composer-shell")).toBeInTheDocument();
+    expect(screen.queryByText("This room has been upgraded")).not.toBeInTheDocument();
+  });
+
   it("uses authoritative current tombstone state when the timeline window omits it", async () => {
     getTimelinePage.mockResolvedValueOnce({
       messages: [

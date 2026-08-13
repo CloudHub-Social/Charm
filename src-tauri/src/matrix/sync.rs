@@ -292,11 +292,20 @@ async fn emit_room_updates(
             let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
                 crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
             });
-            if let Ok(details) =
-                room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
-                    .await
+            match room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
+                .await
             {
-                let _ = app.emit("room_details:update", details);
+                Ok(details) => {
+                    let _ = app.emit("room_details:update", details);
+                }
+                Err(_) if authoritative_tombstone => {
+                    // The current-state request is the write barrier for a
+                    // remotely-upgraded room. Tell active consumers to drop
+                    // their previously-writable snapshot and refetch; if the
+                    // retry also fails they remain unresolved/read-only.
+                    let _ = app.emit("room_details:unresolved", room_id.to_string());
+                }
+                Err(_) => {}
             }
         }
     }

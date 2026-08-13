@@ -20,6 +20,7 @@ vi.mock("@/lib/matrix", () => ({
     roomDetailsUpdateCallbacks.push(callback);
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   getPinnedMessages: (...args: unknown[]) => getPinnedMessages(...args),
   unpinEvent: (...args: unknown[]) => unpinEvent(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {

@@ -1274,6 +1274,11 @@ export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): P
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
 }
 
+/** Fires when an enabled authoritative room-state refresh fails, so mutation surfaces can fail closed while retrying. */
+export function onRoomDetailsUnresolved(callback: (roomId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("room_details:unresolved", (e) => callback(e.payload));
+}
+
 /** Fires only when a joined space receives an m.space.child state update. */
 export function onSpaceChildrenUpdate(callback: (spaceId: string) => void): Promise<UnlistenFn> {
   return listen<string>("space_children:update", (e) => callback(e.payload));

@@ -12,6 +12,7 @@ vi.mock("@/lib/matrix", () => ({
   getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
   getRoomMemberList: (...args: unknown[]) => getRoomMemberList(...args),
   onRoomDetailsUpdate: vi.fn().mockResolvedValue(() => {}),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   inviteMember: vi.fn().mockResolvedValue(undefined),
   kickMember: vi.fn().mockResolvedValue(undefined),
   banMember: vi.fn().mockResolvedValue(undefined),

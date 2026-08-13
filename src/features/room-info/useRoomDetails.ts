@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRoomDetails, onRoomDetailsUpdate } from "@/lib/matrix";
+import { getRoomDetails, onRoomDetailsUnresolved, onRoomDetailsUpdate } from "@/lib/matrix";
 import { roomMembersQueryKey } from "./useRoomMembers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
@@ -22,9 +22,10 @@ export const ROOM_DETAILS_STALE_TIME_MS = 5 * 60 * 1000;
  * `RoomDetails` for the right panel's Info tab — seeded by `get_room_details`,
  * kept fresh by `room_details:update` (emitted from the sync loop whenever a
  * batch of state events lands for this room; see `mod.rs`'s
- * `emit_room_updates`). No polling: the event listener writes straight into
- * the query cache via `setQueryData` rather than invalidating + refetching,
- * since the event payload already *is* the fresh `RoomDetails`.
+ * `emit_room_updates`). No polling: the update listener writes straight into
+ * the query cache via `setQueryData`, while `room_details:unresolved` resets
+ * the cache and retries so a failed authoritative tombstone read cannot leave
+ * stale writable permissions active.
  *
  * Also invalidates the room-members query here (not just in `useRoomMembers`):
  * this hook runs at the always-mounted `RoomInfoPanel` level, while
@@ -39,7 +40,7 @@ export function useRoomDetails(roomId: string | null, refetchOnMount = false) {
 
   useEffect(() => {
     if (!roomId) return undefined;
-    const unlisten = onRoomDetailsUpdate((details) => {
+    const unlistenUpdate = onRoomDetailsUpdate((details) => {
       if (details.room_id !== roomId) return;
       // Prevent a slower mount refetch from publishing an older permission
       // snapshot after this authoritative sync push.
@@ -47,8 +48,16 @@ export function useRoomDetails(roomId: string | null, refetchOnMount = false) {
       queryClient.setQueryData(roomDetailsQueryKey(roomId), details);
       queryClient.invalidateQueries({ queryKey: roomMembersQueryKey(roomId) });
     });
+    const unlistenUnresolved = onRoomDetailsUnresolved((unresolvedRoomId) => {
+      if (unresolvedRoomId !== roomId) return;
+      // Reset removes the last writable snapshot immediately and refetches an
+      // active observer. A failed retry therefore stays unresolved/read-only
+      // instead of silently retaining stale permissions.
+      void queryClient.resetQueries({ queryKey: roomDetailsQueryKey(roomId), exact: true });
+    });
     return () => {
-      unlisten.then((fn) => fn()).catch(logAndIgnore);
+      unlistenUpdate.then((fn) => fn()).catch(logAndIgnore);
+      unlistenUnresolved.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [roomId, queryClient]);
 

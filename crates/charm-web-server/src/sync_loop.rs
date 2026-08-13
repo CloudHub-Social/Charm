@@ -1263,7 +1263,10 @@ async fn emit_room_updates(
             if room_update_contains_space_child(update) {
                 let _ = events.send(ServerEvent::SpaceChildren(room_id.to_string()));
             }
-            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
+            // Spec 31 is native-only until the web transport grows feature flags.
+            if let Ok(details) =
+                room_admin::build_room_details(client, room_id.as_str(), false).await
+            {
                 let event = ServerEvent::RoomDetails(details);
                 room_details_snapshots
                     .lock()

@@ -338,7 +338,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 {messageActionParityEnabled && (
                   <DropdownMenuItem
                     onSelect={onCopyLink}
-                    disabled={disableRelationActions || isUndecrypted}
+                    disabled={disableStableEventActions || isUndecrypted}
                   >
                     <Link2 />
                     Copy link
@@ -347,14 +347,14 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 {messageActionParityEnabled && onForward && !isError && (
                   <DropdownMenuItem
                     onSelect={onForward}
-                    disabled={disableRelationActions || isUndecrypted}
+                    disabled={disableStableEventActions || isUndecrypted}
                   >
                     <Forward />
                     Forward
                   </DropdownMenuItem>
                 )}
                 {messageActionParityEnabled && onViewSource && (
-                  <DropdownMenuItem onSelect={onViewSource} disabled={disableRelationActions}>
+                  <DropdownMenuItem onSelect={onViewSource} disabled={disableStableEventActions}>
                     <FileJson />
                     View source
                   </DropdownMenuItem>
