@@ -4,8 +4,7 @@
     "canary",
     "message_pinning",
     "presence_privacy_controls",
-    "user_profile_cards",
-    "avatar_presence_visuals"
+    "user_profile_cards"
   ],
   "features": [
     {
@@ -249,6 +248,26 @@
         "name": "feature-full-emoji-picker",
         "alt": "Charm conversation with the searchable full Unicode emoji picker open above the composer",
         "caption": "The E2E fixture opens the shared picker from the composer and verifies its searchable Unicode surface."
+      }
+    },
+    {
+      "slug": "avatar-presence-visuals",
+      "title": "Group avatars and presence visuals",
+      "summary": "Recognize group DMs by their member-face mosaic, see aggregate availability at a glance, and display real avatars and presence in the member list.",
+      "status": "preview",
+      "spec": "Spec 53",
+      "specLinks": [
+        {
+          "label": "Spec 53",
+          "href": "/specs/day-1/spec-53--avatars-and-presence-visuals/"
+        }
+      ],
+      "flag": "avatar_presence_visuals",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "avatar-presence-group-dm",
+        "alt": "Charm direct-message list showing a three-face group avatar with a green aggregate presence ring",
+        "caption": "The E2E fixture opens Direct messages, emits live presence for a group member, and captures the composite avatar with its default aggregate ring."
       }
     },
     {
