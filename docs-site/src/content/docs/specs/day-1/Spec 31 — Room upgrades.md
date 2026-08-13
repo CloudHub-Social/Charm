@@ -42,7 +42,7 @@ old room are directed to its replacement.
   room version. Charm does not reproduce the upgrade with custom state-event writes.
   Both the settings surface and native command reject an already-tombstoned room,
   preventing a second replacement from superseding the original upgrade path. The
-  native guard reads current homeserver state immediately before `/upgrade`, rather
+  native guard and `RoomDetails` refresh both read current homeserver state rather
   than trusting an SDK state cache that may not have received another admin's upgrade.
 
 ### Landing in a tombstoned room
@@ -54,8 +54,10 @@ old room are directed to its replacement.
   with a "Go to upgraded room" action using the tombstone's `replacement_room`
   field.
 - The composer is replaced by the persistent read-only explanation in a tombstoned
-  room, and its drop, paste, picker, and staged-attachment paths are closed with it,
-  so attachments, slash commands, and ordinary messages cannot be sent from the stale
+  room, and its drop, paste, picker, and staged-attachment paths are closed with it.
+  The asynchronous native picker rechecks the write barrier after its dialog returns,
+  so a tombstone received while it is open cannot stage a stale-room upload. Attachments,
+  slash commands, and ordinary messages therefore cannot be sent from the stale
   conversation surface. Server-mutating message actions are closed too: reactions,
   edits, redactions, retries, reports, and room pin/unpin actions cannot target the
   tombstoned room, while read-only and local actions such as copy and bookmarks remain

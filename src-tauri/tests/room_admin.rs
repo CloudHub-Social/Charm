@@ -456,13 +456,11 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
         "an existing tombstone must prevent creating a second replacement room"
     );
 
-    admin
-        .sync_once(SyncSettings::default())
-        .await
-        .expect("sync tombstone after room upgrade");
+    // RoomDetails uses the same authoritative server-state read, so the UI's
+    // write barrier must also close before the next sync reaches this client.
     let details = build_room_details(&admin, room.room_id().as_str())
         .await
-        .expect("build upgraded room details");
+        .expect("build upgraded room details before syncing the tombstone");
     assert_eq!(
         details
             .tombstone
@@ -470,4 +468,9 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
             .map(|tombstone| tombstone.replacement_room_id.as_str()),
         Some(replacement_room_id.as_str())
     );
+
+    admin
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync tombstone after room upgrade");
 }

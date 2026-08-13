@@ -325,6 +325,8 @@ export function ChatShell({
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
   const roomMutationsBlocked =
     Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
+  const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
+  roomMutationsBlockedRef.current = roomMutationsBlocked;
   useEffect(() => {
     if (!roomMutationsBlocked) return;
     setPendingAttachment(null);
@@ -606,7 +608,10 @@ export function ChatShell({
   // otherwise (or if the polish flag never lands for this build) they upload
   // immediately, matching pre-Spec-42 behavior.
   function stageOrSendAttachment(file: string | File) {
-    if (roomMutationsBlocked) return;
+    // The native picker resolves asynchronously. Re-read the current gate so
+    // a tombstone received while the dialog was open cannot stage or send a
+    // file through the stale click handler closure.
+    if (roomMutationsBlockedRef.current) return;
     if (!mediaSendPolishEnabled) {
       handleAttachFile(file);
       return;

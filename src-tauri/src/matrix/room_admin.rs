@@ -17,8 +17,7 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
-use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
-use matrix_sdk::ruma::events::{AnyStateEvent, StateEventType};
+use matrix_sdk::ruma::events::{AnyStateEvent, StateEvent, StateEventType};
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
@@ -294,9 +293,48 @@ pub(crate) fn require_room(client: &Client, room_id: &str) -> Result<Room, Strin
         .ok_or_else(|| format!("room {room_id} not found"))
 }
 
+/// Reads the homeserver's current room state instead of the SDK's eventually
+/// consistent sync cache. A tombstone is a permanent write barrier in Charm,
+/// so briefly treating an already-upgraded room as writable is worse than the
+/// extra request made when details are refreshed.
+async fn fetch_current_tombstone(
+    client: &Client,
+    room_id: &RoomId,
+) -> Result<Option<RoomTombstoneDetails>, String> {
+    let response = client
+        .send(get_state_events::v3::Request::new(room_id.to_owned()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for raw in response.room_state {
+        match raw.deserialize() {
+            Ok(AnyStateEvent::RoomTombstone(StateEvent::Original(event))) => {
+                return Ok(Some(RoomTombstoneDetails {
+                    body: event.content.body,
+                    replacement_room_id: event.content.replacement_room.to_string(),
+                }));
+            }
+            Ok(AnyStateEvent::RoomTombstone(StateEvent::Redacted(_))) => {
+                // Redaction removes the replacement-room fields but not the
+                // fact that this room was upgraded. Keep it read-only while
+                // omitting a navigation target the server no longer exposes.
+                return Ok(Some(RoomTombstoneDetails {
+                    body: "Room upgraded".to_string(),
+                    replacement_room_id: String::new(),
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(None)
+}
+
 /// Builds the full [`RoomDetails`] snapshot for `room_id` — shared by
 /// [`get_room_details`] and the sync loop's `room_details:update` emission in
-/// `mod.rs`, so both read the identical fields off the identical live `Room`.
+/// `mod.rs`. Most fields come from the live SDK `Room`; the tombstone comes
+/// from the homeserver's current state so a delayed sync cannot reopen a room
+/// that another client has already upgraded.
 ///
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/room_admin.rs` rather than the `--lib` unit-test target CI runs
@@ -342,20 +380,7 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         .unwrap_or(false);
 
     let join_rule = room.join_rule().unwrap_or(JoinRule::Invite);
-    let tombstone = room
-        .get_state_event_static::<RoomTombstoneEventContent>()
-        .await
-        .map_err(|e| e.to_string())?
-        .and_then(|raw| raw.deserialize().ok())
-        .and_then(|event| match event {
-            matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
-                matrix_sdk::ruma::events::SyncStateEvent::Original(event),
-            ) => Some(RoomTombstoneDetails {
-                body: event.content.body,
-                replacement_room_id: event.content.replacement_room.to_string(),
-            }),
-            _ => None,
-        });
+    let tombstone = fetch_current_tombstone(client, room.room_id()).await?;
 
     Ok(RoomDetails {
         room_id: room.room_id().to_string(),
@@ -610,16 +635,9 @@ pub async fn upgrade_room(
 /// Core logic behind [`upgrade_room`].
 pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
     let room = require_room(client, room_id)?;
-    let current_state = client
-        .send(get_state_events::v3::Request::new(
-            room.room_id().to_owned(),
-        ))
-        .await
-        .map_err(|e| e.to_string())?;
-    if current_state
-        .room_state
-        .iter()
-        .any(|raw| matches!(raw.deserialize(), Ok(AnyStateEvent::RoomTombstone(_))))
+    if fetch_current_tombstone(client, room.room_id())
+        .await?
+        .is_some()
     {
         return Err("This room has already been upgraded.".to_string());
     }

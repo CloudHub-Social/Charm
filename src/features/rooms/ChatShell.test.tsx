@@ -4957,6 +4957,40 @@ describe("ChatShell", () => {
     );
   });
 
+  it("does not stage a native-picker result after the room becomes tombstoned", async () => {
+    let resolveDialog: ((value: string) => void) | undefined;
+    openFileDialog.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveDialog = resolve)),
+    );
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    await act(async () => {
+      resolveDialog?.("/Users/me/stale-room.png");
+    });
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("shows an upload progress bar that reacts to upload:progress and clears on completion", async () => {
     sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test
     openFileDialog.mockResolvedValue("/Users/me/video.mp4");
