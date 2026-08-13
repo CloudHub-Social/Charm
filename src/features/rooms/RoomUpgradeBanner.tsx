@@ -13,10 +13,7 @@ export function RoomUpgradeStatePending() {
   );
 }
 
-export function RoomUpgradeBanner({
-  replacementRoomId,
-  onFollowUpgrade,
-}: RoomUpgradeBannerProps) {
+export function RoomUpgradeBanner({ replacementRoomId, onFollowUpgrade }: RoomUpgradeBannerProps) {
   const [following, setFollowing] = useState(false);
   const [followError, setFollowError] = useState<string | null>(null);
 

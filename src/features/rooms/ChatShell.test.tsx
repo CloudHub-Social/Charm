@@ -529,11 +529,7 @@ describe("ChatShell", () => {
   it("keeps sending unavailable until authoritative room state has loaded", async () => {
     render(
       <JotaiProvider store={createStore()}>
-        <ChatShell
-          room={room}
-          currentUserId="@me:localhost"
-          currentRoomStateResolved={false}
-        />
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
       </JotaiProvider>,
     );
 
