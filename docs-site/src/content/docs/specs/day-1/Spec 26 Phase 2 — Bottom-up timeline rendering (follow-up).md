@@ -19,6 +19,12 @@ practice" — this is that spec.
 merged implementation uses the bottom-anchored, virtualized timeline model scoped
 here, including pagination and jump-to-present behavior.
 
+**2026-08-13 hardening:** issue #399 identified a narrow race between Virtuoso's
+bottom-state callback and a live timeline commit. The callback now updates the
+viewport ref synchronously before scheduling React state, ensuring an arrival in
+that gap still produces the expected jump-to-present count while preserving the
+reader's off-bottom anchor.
+
 :::note[Historical baseline]
 The remainder of this section records how the proposal was revised before
 implementation. It is retained as design history.
