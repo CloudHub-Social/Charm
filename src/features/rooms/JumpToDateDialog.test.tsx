@@ -33,8 +33,36 @@ describe("JumpToDateDialog", () => {
       new Date("2025-02-03T00:00:00").getTime(),
       "forward",
     );
-    expect(onResolved).toHaveBeenCalledWith("$target:example.org");
+    expect(onResolved).toHaveBeenCalledWith({
+      eventId: "$target:example.org",
+      timestampMs: new Date("2025-02-03T00:00:00").getTime(),
+    });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("ignores a lookup that resolves after the dialog closes", async () => {
+    let resolveLookup: ((eventId: string) => void) | undefined;
+    getEventAtTimestamp.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLookup = resolve;
+      }),
+    );
+    const onResolved = vi.fn();
+    const onOpenChange = vi.fn();
+    renderWithProviders(
+      <JumpToDateDialog
+        open
+        roomId="!room:example.org"
+        onOpenChange={onOpenChange}
+        onResolved={onResolved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => resolveLookup?.("$late:example.org"));
+
+    expect(onResolved).not.toHaveBeenCalled();
   });
 
   it("shows a bounded error when the server has no event near the date", async () => {

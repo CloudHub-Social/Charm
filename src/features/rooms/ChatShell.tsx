@@ -227,7 +227,10 @@ export function ChatShell({
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
-  const [dateJumpEventId, setDateJumpEventId] = useState<string | null>(null);
+  const [dateJumpTarget, setDateJumpTarget] = useState<{
+    eventId: string;
+    timestampMs: number;
+  } | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const fileDragLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -259,11 +262,11 @@ export function ChatShell({
   useEffect(() => {
     setPillProfile(null);
     setJumpToDateOpen(false);
-    setDateJumpEventId(null);
+    setDateJumpTarget(null);
   }, [roomId]);
-  const activeJumpToEventId = jumpToEventId ?? dateJumpEventId;
+  const activeJumpToEventId = jumpToEventId ?? dateJumpTarget?.eventId ?? null;
   const handleJumpHandled = () => {
-    setDateJumpEventId(null);
+    setDateJumpTarget(null);
     if (jumpToEventId !== null) onJumpHandled?.();
   };
   const activeRoomId = room?.room_id ?? null;
@@ -408,6 +411,7 @@ export function ChatShell({
     prependedCount,
     awaitingEmptyPagePagination,
     jumpToEventId: activeJumpToEventId,
+    jumpToTimestampMs: jumpToEventId === null ? (dateJumpTarget?.timestampMs ?? null) : null,
     onJumpHandled: handleJumpHandled,
     handleAtBottomStateChange,
     resetToLive,
@@ -929,7 +933,7 @@ export function ChatShell({
           open={jumpToDateOpen}
           roomId={room.room_id}
           onOpenChange={setJumpToDateOpen}
-          onResolved={setDateJumpEventId}
+          onResolved={setDateJumpTarget}
         />
       )}
 

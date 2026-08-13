@@ -3099,6 +3099,12 @@ async fn get_event_at_timestamp(
     )
     .await
     .map_err(ApiError::bad_request)?;
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::unauthorized("session closed"));
+    }
     Ok(Json(event_id))
 }
 

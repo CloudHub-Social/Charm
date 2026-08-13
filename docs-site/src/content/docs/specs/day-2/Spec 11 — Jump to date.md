@@ -56,12 +56,10 @@ into it is a worse experience than a shorter one). Including it as a genuine
   endpoint (MSC3030, spec-stable) which returns the nearest event ID at/after a
   given timestamp — avoids the client having to locally binary-search sync history,
   which it likely doesn't fully have anyway for older dates.
-- Because that endpoint may anchor on a membership or other non-message event, a
-  filtered `/context` lookup resolves the nearest plain or encrypted room message
-  in the requested direction before the target crosses the transport boundary.
-  If the context window contains no renderable message, bounded filtered
-  `/messages` pagination continues from its directional token until a message or
-  the accessible-history boundary is reached.
+- Because that endpoint may anchor on a membership, encrypted relation, or other
+  non-rendered event, Charm loads around the anchor through the existing
+  session-guarded, decrypted timeline path and then chooses the first emitted
+  message row at/after the selected timestamp.
 - Once the target event ID is resolved, the timeline needs to paginate/load around
   that point and scroll to it — this is the part that must integrate carefully with
   Spec 26's bottom-up virtualization rebuild: "jump to an arbitrary point mid-
@@ -79,11 +77,11 @@ into it is a worse experience than a shorter one). Including it as a genuine
 
 ## Data flow
 
-The typed transport command wrapping `/timestamp_to_event` plus the filtered
-`/context` lookup is `get_event_at_timestamp(room_id, timestamp_ms, direction) ->
-event_id`; the returned ID is always a message Charm can render. Timeline
-loading/pagination around that event reuses whatever pagination primitives Spec
-26/14 already expose (e.g. a
+The typed transport command wrapping `/timestamp_to_event` is
+`get_event_at_timestamp(room_id, timestamp_ms, direction) -> event_id`; the
+returned ID is an anchor, not a promise that the event itself renders. Timeline
+loading/pagination around that anchor reuses the session-guarded Spec 26/14
+primitive, and the viewport selects from decrypted `RoomMessageSummary` rows (e.g. a
 "paginate around event ID" capability — confirm matrix-sdk-ui's `Timeline` exposes
 this, since jump-to-message-in-the-middle-of-history is a common enough need that
 it likely does).
@@ -95,10 +93,9 @@ underlying SDK already supports paginating around an arbitrary event.
 
 ## Testing strategy
 
-- Rust CI: `get_event_at_timestamp` correctness against mocked
-  `/timestamp_to_event`, `/context`, and `/messages` responses, including
-  non-message anchors, filtered pagination, and the "no event before/after this
-  date" edge case (room created after the requested date, or date in the future).
+- Rust CI: `get_event_at_timestamp` correctness against a mocked
+  `/timestamp_to_event` response, including the "no event before/after this date"
+  edge case (room created after the requested date, or date in the future).
 - Frontend CI: date picker → jump → correct message scrolled-to-and-highlighted,
   using a fixture timeline; "back to live" returns to the actual bottom, not a
   stale cached position.

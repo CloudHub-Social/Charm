@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import type { RoomMessageSummary } from "@/lib/matrix";
@@ -48,6 +48,7 @@ function props(overrides: Partial<Parameters<typeof useTimelineViewport>[0]> = {
     prependedCount: 0,
     awaitingEmptyPagePagination: false,
     jumpToEventId: null,
+    jumpToTimestampMs: null,
     handleAtBottomStateChange: vi.fn(),
     resetToLive: vi.fn().mockResolvedValue(true),
     ...overrides,
@@ -115,5 +116,53 @@ describe("useTimelineViewport", () => {
     expect(result.current.atBottom).toBe(true);
     expect(result.current.newMessageCount).toBe(0);
     expect(result.current.hasFocusedView).toBe(false);
+  });
+
+  it("loads around a date anchor and scrolls to the first decrypted message after it", async () => {
+    let resolveLoad:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoad = resolve;
+      }),
+    );
+    const onJumpHandled = vi.fn();
+    const initialProps = props({
+      jumpToEventId: "$state-anchor",
+      jumpToTimestampMs: 100,
+      onJumpHandled,
+      messages: [message("$latest", "@other:localhost", 200)],
+    });
+    const { result, rerender } = renderHook((currentProps) => useTimelineViewport(currentProps), {
+      initialProps,
+    });
+    const scrollToIndex = vi.fn();
+    result.current.virtuosoRef.current = { scrollToIndex } as never;
+
+    rerender({ ...initialProps, loading: false });
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(
+        initialProps.room.room_id,
+        "$state-anchor",
+      ),
+    );
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [
+        message("$before", "@other:localhost", 50),
+        message("$first-visible", "@other:localhost", 120),
+        message("$latest", "@other:localhost", 200),
+      ],
+    });
+    resolveLoad?.({ found: true, installed_focused_view: true });
+
+    await waitFor(() =>
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, align: "center" }),
+      ),
+    );
+    expect(onJumpHandled).toHaveBeenCalledOnce();
   });
 });

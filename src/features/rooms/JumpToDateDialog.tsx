@@ -16,7 +16,7 @@ interface JumpToDateDialogProps {
   open: boolean;
   roomId: string;
   onOpenChange: (open: boolean) => void;
-  onResolved: (eventId: string) => void;
+  onResolved: (target: { eventId: string; timestampMs: number }) => void;
 }
 
 function localDateValue(date: Date): string {
@@ -36,6 +36,13 @@ export function JumpToDateDialog({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
+  const currentRoomId = useRef(roomId);
+  currentRoomId.current = roomId;
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) requestId.current += 1;
+    onOpenChange(nextOpen);
+  }
 
   useEffect(() => {
     requestId.current += 1;
@@ -56,9 +63,9 @@ export function JumpToDateDialog({
     setError(null);
     try {
       const eventId = await getEventAtTimestamp(roomId, timestamp, "forward");
-      if (requestId.current !== id) return;
-      onResolved(eventId);
-      onOpenChange(false);
+      if (requestId.current !== id || currentRoomId.current !== roomId) return;
+      onResolved({ eventId, timestampMs: timestamp });
+      handleOpenChange(false);
     } catch {
       if (requestId.current === id) {
         setError("No message was found on or after that date.");
@@ -69,7 +76,7 @@ export function JumpToDateDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>Jump to date</DialogTitle>

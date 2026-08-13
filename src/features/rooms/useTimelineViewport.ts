@@ -21,6 +21,7 @@ interface UseTimelineViewportArgs {
   prependedCount: number;
   awaitingEmptyPagePagination: boolean;
   jumpToEventId: string | null;
+  jumpToTimestampMs: number | null;
   onJumpHandled?: () => void;
   handleAtBottomStateChange: (bottom: boolean) => void;
   resetToLive: () => Promise<boolean>;
@@ -45,6 +46,7 @@ export function useTimelineViewport({
   prependedCount,
   awaitingEmptyPagePagination,
   jumpToEventId,
+  jumpToTimestampMs,
   onJumpHandled,
   handleAtBottomStateChange,
   resetToLive,
@@ -168,14 +170,20 @@ export function useTimelineViewport({
 
   useEffect(() => {
     if (!jumpToEventId || !room) return;
-    const requestKey = `${room.room_id}:${jumpToEventId}`;
-    const index = messages.findIndex((message) => message.event_id === jumpToEventId);
-    if (index >= 0) {
+    const requestKey = `${room.room_id}:${jumpToEventId}:${jumpToTimestampMs ?? "event"}`;
+    const visibleTarget =
+      jumpToTimestampMs === null
+        ? messages.find((message) => message.event_id === jumpToEventId)
+        : messages.find((message) => message.timestamp_ms >= jumpToTimestampMs);
+    const canHandleVisibleTarget =
+      visibleTarget !== undefined &&
+      (jumpToTimestampMs === null || loadRequestedForRef.current === requestKey);
+    if (canHandleVisibleTarget) {
       // Prop-driven jumps (bookmarks, pins, search, and date navigation) get
       // an explicit return-to-live affordance even when the target was
       // already loaded and no focused server timeline had to be installed.
       setHasFocusedView(true);
-      handleJumpToMessage(jumpToEventId);
+      handleJumpToMessage(visibleTarget.event_id);
       if (loadRequestedForRef.current === requestKey) {
         handledAwaitingFocusedViewRef.current = requestKey;
       }
@@ -213,6 +221,16 @@ export function useTimelineViewport({
           onJumpHandled?.();
           return;
         }
+        const currentVisibleTarget =
+          jumpToTimestampMs === null
+            ? messages.find((message) => message.event_id === jumpToEventId)
+            : messages.find((message) => message.timestamp_ms >= jumpToTimestampMs);
+        if (currentVisibleTarget) {
+          loadRequestedForRef.current = null;
+          handleJumpToMessage(currentVisibleTarget.event_id);
+          onJumpHandled?.();
+          return;
+        }
         if (jumpFallbackTimeoutRef.current !== null) {
           clearTimeout(jumpFallbackTimeoutRef.current);
         }
@@ -233,7 +251,7 @@ export function useTimelineViewport({
       });
     // The request is intentionally keyed to committed timeline/load changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jumpToEventId, room?.room_id, messages, loading, activeRoomId]);
+  }, [jumpToEventId, jumpToTimestampMs, room?.room_id, messages, loading, activeRoomId]);
 
   useEffect(() => {
     return () => {
