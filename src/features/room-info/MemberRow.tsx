@@ -38,6 +38,7 @@ export function MemberRow({
   const avatarSrc = useResolvedAvatarSrc(avatarPresenceVisualsEnabled ? member.avatar_url : null);
   const presence = usePresence(
     avatarPresenceVisualsEnabled && member.membership === "join" ? member.user_id : null,
+    { fetchInitial: false },
   );
   const [powerLevelDialogOpen, setPowerLevelDialogOpen] = useState(false);
   const label = member.display_name ?? member.user_id;

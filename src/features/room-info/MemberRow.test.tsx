@@ -5,18 +5,21 @@ import { openDropdownMenu } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
 import type { RoomMemberSummary, RoomPermissions } from "@/lib/matrix";
 import { featureFlagTestHooks } from "@/featureFlags";
+import { usePresence } from "@/features/presence/usePresence";
 
 const kickMember = vi.fn().mockResolvedValue(undefined);
 const banMember = vi.fn().mockResolvedValue(undefined);
 const unbanMember = vi.fn().mockResolvedValue(undefined);
 const setMemberPowerLevel = vi.fn().mockResolvedValue(undefined);
 const resolveAvatar = vi.fn().mockResolvedValue("/tmp/alice-avatar.png");
-const getPresence = vi.fn().mockResolvedValue({
-  user_id: "@alice:example.org",
-  presence: "dnd",
-  status_msg: null,
-  last_active_ago_ms: null,
-});
+vi.mock("@/features/presence/usePresence", () => ({
+  usePresence: vi.fn(() => ({
+    user_id: "@alice:example.org",
+    presence: "dnd",
+    status_msg: null,
+    last_active_ago_ms: null,
+  })),
+}));
 
 vi.mock("@/lib/matrix", () => ({
   kickMember: (...args: unknown[]) => kickMember(...args),
@@ -24,7 +27,6 @@ vi.mock("@/lib/matrix", () => ({
   unbanMember: (...args: unknown[]) => unbanMember(...args),
   setMemberPowerLevel: (...args: unknown[]) => setMemberPowerLevel(...args),
   resolveAvatar: (...args: unknown[]) => resolveAvatar(...args),
-  getPresence: (...args: unknown[]) => getPresence(...args),
 }));
 
 const MEMBER: RoomMemberSummary = {
@@ -75,6 +77,7 @@ describe("MemberRow", () => {
     await waitFor(() => {
       expect(resolveAvatar).toHaveBeenCalledWith("mxc://example.org/alice");
       expect(screen.getByText("Busy")).toBeInTheDocument();
+      expect(usePresence).toHaveBeenCalledWith("@alice:example.org", { fetchInitial: false });
     });
   });
 
