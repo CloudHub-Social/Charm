@@ -189,6 +189,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "get_event_at_timestamp",
+      { roomId: "!r:example.org", timestampMs: 1704067200000, direction: "forward" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/timestamp-event?timestamp_ms=1704067200000&direction=forward",
+      undefined,
+    ],
+    [
       "list_space_hierarchy",
       { spaceId: "!space:example.org" },
       "GET",

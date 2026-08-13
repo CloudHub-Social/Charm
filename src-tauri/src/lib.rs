@@ -1462,6 +1462,7 @@ pub fn run() {
             matrix::rooms::decline_invite,
             matrix::rooms::resolve_room_alias,
             matrix::timeline::get_timeline_page,
+            matrix::timeline::get_event_at_timestamp,
             matrix::timeline::load_timeline_around_event,
             matrix::search::search_messages,
             matrix::send::send_message,

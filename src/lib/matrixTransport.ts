@@ -435,6 +435,11 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           event_id: String(args.eventId),
         })}`,
       );
+    case "get_event_at_timestamp":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/timestamp-event?timestamp_ms=${encodeURIComponent(String(args.timestampMs))}&direction=${encodeURIComponent(String(args.direction))}`,
+      );
     case "search_messages":
       return requestJson<T>("POST", "/api/search/messages", {
         query: args.query,

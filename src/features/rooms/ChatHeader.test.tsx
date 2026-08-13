@@ -15,6 +15,8 @@ function renderHeader(overrides: Partial<React.ComponentProps<typeof ChatHeader>
     pinnedMessageCount: 2,
     onTogglePinnedMessages: vi.fn(),
     onOpenRoomSettings: vi.fn(),
+    jumpToDateEnabled: true,
+    onJumpToDate: vi.fn(),
     ...overrides,
   };
 
@@ -32,10 +34,12 @@ describe("ChatHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show members" }));
     fireEvent.click(screen.getByRole("button", { name: "Show pinned messages" }));
     fireEvent.click(screen.getByRole("button", { name: "Room settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
 
     expect(props.onToggleMembers).toHaveBeenCalledOnce();
     expect(props.onTogglePinnedMessages).toHaveBeenCalledOnce();
     expect(props.onOpenRoomSettings).toHaveBeenCalledOnce();
+    expect(props.onJumpToDate).toHaveBeenCalledOnce();
   });
 
   it("keeps all pinning affordances dark while the feature is disabled", () => {
@@ -43,6 +47,12 @@ describe("ChatHeader", () => {
 
     expect(screen.queryByRole("button", { name: /pinned messages/i })).not.toBeInTheDocument();
     expect(screen.queryByText("3")).not.toBeInTheDocument();
+  });
+
+  it("keeps jump-to-date dark while its feature flag is disabled", () => {
+    renderHeader({ jumpToDateEnabled: false });
+
+    expect(screen.queryByRole("button", { name: "Jump to date" })).not.toBeInTheDocument();
   });
 
   it("renders mobile navigation and delegates room-menu actions", async () => {
@@ -73,6 +83,14 @@ describe("ChatHeader", () => {
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Hide pinned messages (2)" }));
     expect(props.onTogglePinnedMessages).toHaveBeenCalledOnce();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Jump to date" }));
+    expect(props.onJumpToDate).toHaveBeenCalledOnce();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
       button: 0,

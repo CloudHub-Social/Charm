@@ -1,5 +1,5 @@
 import type { PresenceUpdate, RoomSummary } from "@/lib/matrix";
-import { ArrowLeft, Info, MoreVertical, Pin, Settings } from "lucide-react";
+import { ArrowLeft, CalendarDays, Info, MoreVertical, Pin, Settings } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -23,6 +23,8 @@ interface ChatHeaderProps {
   pinnedMessageCount: number;
   onTogglePinnedMessages: () => void;
   onOpenRoomSettings: () => void;
+  jumpToDateEnabled: boolean;
+  onJumpToDate: () => void;
 }
 
 export function ChatHeader({
@@ -37,6 +39,8 @@ export function ChatHeader({
   pinnedMessageCount,
   onTogglePinnedMessages,
   onOpenRoomSettings,
+  jumpToDateEnabled,
+  onJumpToDate,
 }: ChatHeaderProps) {
   return (
     <div
@@ -98,6 +102,12 @@ export function ChatHeader({
                 {pinnedMessageCount > 0 && ` (${pinnedMessageCount})`}
               </DropdownMenuItem>
             )}
+            {jumpToDateEnabled && (
+              <DropdownMenuItem className="min-h-11" onSelect={onJumpToDate}>
+                <CalendarDays />
+                Jump to date
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem className="min-h-11" onSelect={onOpenRoomSettings}>
               <Settings />
               Room settings
@@ -137,6 +147,16 @@ export function ChatHeader({
                   {pinnedMessageCount}
                 </span>
               )}
+            </button>
+          )}
+          {jumpToDateEnabled && (
+            <button
+              type="button"
+              aria-label="Jump to date"
+              onClick={onJumpToDate}
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              <CalendarDays className="size-4" />
             </button>
           )}
           <button

@@ -148,5 +148,11 @@
     "default": false,
     "description": "Show composite group-DM avatars and richer avatar/presence indicators in room and member lists.",
     "owner": "Spec 53 (avatars and presence visuals)"
+  },
+  {
+    "key": "jump_to_date",
+    "default": false,
+    "description": "Open a calendar from the room header and jump to the first event on that date.",
+    "owner": "Day-2 Spec 11 (jump to date)"
   }
 ]

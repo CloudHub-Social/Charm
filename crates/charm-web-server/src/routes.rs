@@ -158,6 +158,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
         .route(
+            "/api/rooms/{room_id}/timestamp-event",
+            get(get_event_at_timestamp),
+        )
+        .route(
             "/api/rooms/{room_id}/timeline/around",
             get(load_timeline_around_event),
         )
@@ -3063,6 +3067,41 @@ async fn get_timeline_page(
 #[derive(Deserialize)]
 struct TimelineAroundQuery {
     event_id: String,
+}
+
+#[derive(Deserialize)]
+struct TimestampEventQuery {
+    timestamp_ms: u64,
+    direction: String,
+}
+
+async fn get_event_at_timestamp(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(room_id): Path<String>,
+    Query(query): Query<TimestampEventQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_web_transport_header(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let parsed_room_id =
+        RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    require_room_still_joined(&room)?;
+    require_session_still_open(&session)?;
+    let event_id = charm_lib::matrix::timeline::get_event_at_timestamp_impl(
+        &session.client,
+        &parsed_room_id,
+        query.timestamp_ms,
+        &query.direction,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    require_session_still_open(&session)?;
+    Ok(Json(event_id))
 }
 
 const MAX_WEB_LOAD_AROUND_ITERATIONS: usize = 20;

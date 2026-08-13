@@ -28,7 +28,7 @@ already contain a settled architecture and detailed acceptance criteria.
 | 08 | [Image editing before send](/specs/day-2/spec-08--image-editing-before-send/) | **Planned** | Crop, annotate, and blur before upload |
 | 09 | [Multi-account switcher](/specs/day-2/spec-09--multi-account-switcher-ui/) | **Planned** | Builds on shipped Day-1 Spec 15 store isolation |
 | 10 | [Export chat history](/specs/day-2/spec-10--export-chat-history/) | **Planned** | Per-room text, HTML, and JSON export |
-| 11 | [Jump to date](/specs/day-2/spec-11--jump-to-date/) | **Planned** | Must preserve Day-1 Spec 26 timeline anchoring |
+| 11 | [Jump to date](/specs/day-2/spec-11--jump-to-date/) | **Shipped** | Reuses Day-1 Spec 26 anchoring and Spec 12's load-around-event path |
 | 12 | [Bookmarks and saved messages](/specs/day-2/spec-12--bookmarks-and-saved-messages/) | **Shipped** | Private saves, distinct from shared room pins |
 | 13 | [Scheduled and delayed send](/specs/day-2/spec-13--scheduled-and-delayed-send/) | **Planned** | Prefer server-side MSC4140 delayed events |
 | 14 | [Guest room previews](/specs/day-2/spec-14--guest-room-previews/) | **Planned** | Read-only summary or ephemeral guest-token history preview, split from Day-1 Spec 45 |
@@ -36,12 +36,10 @@ already contain a settled architecture and detailed acceptance criteria.
 ## Shared implementation seams
 
 Message pinning, jump-to-date, and bookmarks all need to load a timeline around an
-event outside the current window. Bookmarks (Spec 12) shipped with its own
-minimal version of this (`load_timeline_around_event`, a plain repeated
-`paginate_backwards` loop — see `src-tauri/src/matrix/timeline.rs`), deliberately
-not built as a shared abstraction per that spec's own scope. Whichever of
-pinning or jump-to-date implements next should evaluate reusing or generalizing
-that command rather than writing a third competing loader from scratch.
+event outside the current window. Bookmarks (Spec 12) introduced the shared
+`load_timeline_around_event` path; jump-to-date now resolves a timestamp to an event
+ID and deliberately reuses that loader and its focused-timeline fallback rather than
+adding a competing pagination mechanism.
 
 Calling must begin with [widget support](/specs/day-1/spec-49--widget-support/).
 The Sable Call decision is already made; a new native-WebRTC-versus-iframe spike is

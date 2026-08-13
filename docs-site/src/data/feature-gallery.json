@@ -8,6 +8,27 @@
   ],
   "features": [
     {
+      "slug": "jump-to-date",
+      "title": "Jump to date",
+      "summary": "Open a room calendar and move directly to the first available message on or after a chosen date.",
+      "status": "preview",
+      "spec": "Day-2 Spec 11",
+      "specLinks": [
+        {
+          "label": "Day-2 Spec 11",
+          "href": "/specs/day-2/spec-11--jump-to-date/"
+        }
+      ],
+      "flag": "jump_to_date",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "jump-to-date-picker",
+        "alt": "Charm room timeline with the jump-to-date calendar open",
+        "caption": "Playwright chooses a date, resolves the first later Matrix event, and highlights the target in the existing virtualized timeline."
+      },
+      "maxDiffPixels": 1500
+    },
+    {
       "slug": "message-search",
       "title": "Encrypted local message search",
       "summary": "Find decrypted messages in the current room or across joined rooms without sending the query to the homeserver.",

@@ -20,6 +20,7 @@ interface TimelineMessageRowProps {
   readers: string[];
   senderNameByUserId: Map<string, string>;
   newMessageKeys: Set<string>;
+  highlightedEventId?: string | null;
   controller: MessageActionController;
   onJumpToMessage: (eventId: string) => void;
   onSenderClick?: (userId: string, label: string) => void;
@@ -43,6 +44,7 @@ export function TimelineMessageRow({
   readers,
   senderNameByUserId,
   newMessageKeys,
+  highlightedEventId = null,
   controller,
   onJumpToMessage,
   onSenderClick,
@@ -65,7 +67,15 @@ export function TimelineMessageRow({
   return (
     // Flex containment keeps layout-row top margins inside Virtuoso's measured
     // item box, preserving bottom detection and prepend anchoring.
-    <div className="flex flex-col pb-1" data-message-event-id={message.event_id}>
+    <div
+      className={
+        highlightedEventId === message.event_id
+          ? "flex flex-col rounded-md bg-primary/10 pb-1 ring-2 ring-primary/60 transition-colors"
+          : "flex flex-col pb-1"
+      }
+      data-message-event-id={message.event_id}
+      data-jump-highlighted={highlightedEventId === message.event_id || undefined}
+    >
       {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
           {formatDateDividerLabel(message.timestamp_ms)}
