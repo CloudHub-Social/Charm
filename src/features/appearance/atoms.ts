@@ -32,6 +32,10 @@ export interface AppearanceState {
   hideMembershipEvents: boolean;
   /** Reveal unknown/custom state events that are hidden by default. */
   showHiddenEvents: boolean;
+  /** Spec 53: render an aggregate presence ring around group-DM composite
+   * avatars. When off, the same aggregate state uses the ordinary corner
+   * dot. */
+  groupPresenceRing: boolean;
 }
 
 /**
@@ -70,6 +74,7 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
   stripExifOnUpload: true,
   hideMembershipEvents: false,
   showHiddenEvents: false,
+  groupPresenceRing: true,
 };
 
 /**
@@ -89,3 +94,4 @@ export const autoplayGifsAtom = atom<boolean>(DEFAULT_APPEARANCE.autoplayGifs);
 export const stripExifOnUploadAtom = atom<boolean>(DEFAULT_APPEARANCE.stripExifOnUpload);
 export const hideMembershipEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.hideMembershipEvents);
 export const showHiddenEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.showHiddenEvents);
+export const groupPresenceRingAtom = atom<boolean>(DEFAULT_APPEARANCE.groupPresenceRing);

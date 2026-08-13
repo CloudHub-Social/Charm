@@ -44,6 +44,7 @@ describe("local mirror", () => {
       stripExifOnUpload: true,
       hideMembershipEvents: false,
       showHiddenEvents: false,
+      groupPresenceRing: true,
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -180,6 +181,7 @@ describe("mergeAppearance", () => {
       stripExifOnUpload: false,
       hideMembershipEvents: false,
       showHiddenEvents: false,
+      groupPresenceRing: false,
     };
     expect(mergeAppearance(full)).toEqual(full);
   });

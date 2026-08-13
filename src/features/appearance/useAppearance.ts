@@ -4,6 +4,7 @@ import {
   autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
+  groupPresenceRingAtom,
   hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
@@ -48,6 +49,7 @@ export function useAppearance() {
   const [stripExifOnUpload, setStripExifOnUploadAtom] = useAtom(stripExifOnUploadAtom);
   const [hideMembershipEvents, setHideMembershipEventsAtom] = useAtom(hideMembershipEventsAtom);
   const [showHiddenEvents, setShowHiddenEventsAtom] = useAtom(showHiddenEventsAtom);
+  const [groupPresenceRing, setGroupPresenceRingAtom] = useAtom(groupPresenceRingAtom);
 
   const commit = useCallback(
     (patch: Partial<AppearanceState>) => {
@@ -63,6 +65,7 @@ export function useAppearance() {
         stripExifOnUpload: store.get(stripExifOnUploadAtom),
         hideMembershipEvents: store.get(hideMembershipEventsAtom),
         showHiddenEvents: store.get(showHiddenEventsAtom),
+        groupPresenceRing: store.get(groupPresenceRingAtom),
         ...patch,
       };
       applyAppearanceToDom(next);
@@ -159,6 +162,14 @@ export function useAppearance() {
     [commit, setShowHiddenEventsAtom],
   );
 
+  const setGroupPresenceRing = useCallback(
+    (next: boolean) => {
+      setGroupPresenceRingAtom(next);
+      commit({ groupPresenceRing: next });
+    },
+    [commit, setGroupPresenceRingAtom],
+  );
+
   return {
     theme,
     fontSize,
@@ -171,6 +182,7 @@ export function useAppearance() {
     stripExifOnUpload,
     hideMembershipEvents,
     showHiddenEvents,
+    groupPresenceRing,
     setTheme,
     setFontSize,
     setDensity,
@@ -182,5 +194,6 @@ export function useAppearance() {
     setStripExifOnUpload,
     setHideMembershipEvents,
     setShowHiddenEvents,
+    setGroupPresenceRing,
   };
 }

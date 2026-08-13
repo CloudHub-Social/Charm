@@ -10,15 +10,16 @@ use ts_rs::TS;
 use super::MatrixState;
 
 /// Mirrors ruma's `PresenceState` for the frontend. `PresenceState` itself has
-/// a hidden `_Custom` variant for forward-compat, which isn't meaningful to
-/// surface as a DTO — anything that isn't one of the three known states is
-/// mapped to `Offline` (see `presence_state_to_dto`).
+/// a hidden `_Custom` variant for forward-compat. Spec 53 recognizes the
+/// de-facto `dnd` / `busy` values as one visual state; every other custom
+/// value remains fail-closed as `Offline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStateDto {
     Online,
     Unavailable,
+    Dnd,
     Offline,
 }
 
@@ -35,6 +36,7 @@ impl From<PresenceStateDto> for PresenceState {
         match dto {
             PresenceStateDto::Online => PresenceState::Online,
             PresenceStateDto::Unavailable => PresenceState::Unavailable,
+            PresenceStateDto::Dnd => PresenceState::from("dnd"),
             PresenceStateDto::Offline => PresenceState::Offline,
         }
     }
@@ -60,11 +62,13 @@ pub struct PresenceUpdate {
 
 /// Maps a raw `PresenceState` to the DTO, treating any unrecognized custom
 /// state as `Offline` — the frontend only needs to distinguish "reachable now"
-/// (Online), "reachable but idle" (Unavailable), and everything else.
+/// (Online), "reachable but idle" (Unavailable), explicitly busy (Dnd),
+/// and everything else.
 fn presence_state_to_dto(state: &PresenceState) -> PresenceStateDto {
     match state {
         PresenceState::Online => PresenceStateDto::Online,
         PresenceState::Unavailable => PresenceStateDto::Unavailable,
+        state if matches!(state.as_str(), "dnd" | "busy") => PresenceStateDto::Dnd,
         _ => PresenceStateDto::Offline,
     }
 }
@@ -188,7 +192,7 @@ pub async fn set_presence(
 /// pulled out of [`set_presence`] as a pure function so the "Appear offline
 /// wins over a stale idle write" logic (that command's own review-fix
 /// comment) is unit-testable without a live `Client`/`AppHandle`. `Offline`
-/// itself is always allowed; only `Online`/`Unavailable` get suppressed
+/// itself is always allowed; every non-offline state gets suppressed
 /// while `appear_offline` is on, matching `appear_offline_transition` in
 /// `privacy_settings.rs`, which is the only thing that's ever meant to send
 /// `Offline` in the first place.
@@ -309,6 +313,14 @@ mod tests {
     }
 
     #[test]
+    fn maps_dnd_and_busy_custom_presence_events() {
+        for state in [PresenceState::from("dnd"), PresenceState::from("busy")] {
+            let update = presence_event_to_update(&make_event(state, None));
+            assert!(matches!(update.presence, PresenceStateDto::Dnd));
+        }
+    }
+
+    #[test]
     fn dto_round_trips_into_ruma_presence_state() {
         assert_eq!(
             PresenceState::from(PresenceStateDto::Online),
@@ -318,17 +330,12 @@ mod tests {
             PresenceState::from(PresenceStateDto::Unavailable),
             PresenceState::Unavailable
         );
+        assert_eq!(PresenceState::from(PresenceStateDto::Dnd).as_str(), "dnd");
         assert_eq!(
             PresenceState::from(PresenceStateDto::Offline),
             PresenceState::Offline
         );
     }
-
-    // Kept out of the ts-rs-annotated PresenceStateDto -> PresenceState `From`
-    // impl by using a plain match arm, verified above; nothing further to
-    // assert about the "unknown custom state" branch of
-    // `presence_state_to_dto` here since ruma's `PresenceState::_Custom` is a
-    // private variant this crate cannot construct.
 
     // --- Spec 40 review fix: Appear offline wins over a stale idle write ---
 
@@ -343,6 +350,11 @@ mod tests {
             PresenceStateDto::Unavailable,
             true
         ));
+    }
+
+    #[test]
+    fn presence_update_allowed_blocks_dnd_while_appear_offline_is_on() {
+        assert!(!presence_update_allowed(PresenceStateDto::Dnd, true));
     }
 
     #[test]

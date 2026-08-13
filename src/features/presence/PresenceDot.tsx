@@ -8,14 +8,24 @@ import { useFlag } from "@/featureFlags";
 const PRESENCE_COLORS: Record<PresenceStateDto, string> = {
   online: "var(--color-success)",
   unavailable: "var(--color-warning)",
+  dnd: "var(--color-destructive-solid)",
   offline: "var(--color-text-muted)",
 };
 
 const PRESENCE_LABELS: Record<PresenceStateDto, string> = {
   online: "Online",
   unavailable: "Away",
+  dnd: "Busy",
   offline: "Offline",
 };
+
+export function presenceColor(presence: PresenceStateDto): string {
+  return PRESENCE_COLORS[presence];
+}
+
+export function presenceLabel(presence: PresenceStateDto): string {
+  return PRESENCE_LABELS[presence];
+}
 
 /**
  * Formats `last_active_ago_ms` (Spec 40 item 6 — the `PresenceUpdate` DTO

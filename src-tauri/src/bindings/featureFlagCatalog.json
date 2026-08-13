@@ -142,5 +142,11 @@
     "default": false,
     "description": "Use the searchable full-Unicode emoji picker for reactions and composer insertion.",
     "owner": "Spec 38 (full emoji picker)"
+  },
+  {
+    "key": "avatar_presence_visuals",
+    "default": false,
+    "description": "Show composite group-DM avatars and richer avatar/presence indicators in room and member lists.",
+    "owner": "Spec 53 (avatars and presence visuals)"
   }
 ]

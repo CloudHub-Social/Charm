@@ -68,6 +68,27 @@ describe("RoomListItem", () => {
     expect(screen.getByText("general")).toBeInTheDocument();
   });
 
+  it("renders the feature-flagged group DM composite avatar", () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    const { container } = render(
+      <RoomListItem
+        room={makeRoomSummary({
+          is_direct: true,
+          group_dm_members: [
+            { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+            { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+            { user_id: "@carol:example.org", display_name: "Carol", avatar_url: null },
+          ],
+        })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(container.querySelector("[data-group-dm-avatar]")).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-slot='avatar'] [data-slot='avatar']")).toHaveLength(3);
+  });
+
   it("shows an unread badge when there are unread messages", () => {
     render(
       <RoomListItem
@@ -507,6 +528,16 @@ describe("roomListItemPropsEqual", () => {
   ] as const)("treats a changed room.%s as unequal", (_field, override) => {
     const prev = { ...baseProps, room: { ...room, ...override } };
     const next = { ...baseProps, room: { ...room } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("treats changed group-DM heroes as unequal", () => {
+    const member = { user_id: "@alice:localhost", display_name: "Alice", avatar_url: null };
+    const prev = { ...baseProps, room: { ...room, group_dm_members: [member] } };
+    const next = {
+      ...baseProps,
+      room: { ...room, group_dm_members: [{ ...member, display_name: "Alicia" }] },
+    };
     expect(roomListItemPropsEqual(prev, next)).toBe(false);
   });
 

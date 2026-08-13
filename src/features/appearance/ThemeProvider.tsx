@@ -4,6 +4,7 @@ import {
   autoplayGifsAtom,
   densityAtom,
   fontSizeAtom,
+  groupPresenceRingAtom,
   hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
   messageLayoutAtom,
@@ -50,6 +51,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setStripExifOnUpload = useSetAtom(stripExifOnUploadAtom);
   const setHideMembershipEvents = useSetAtom(hideMembershipEventsAtom);
   const setShowHiddenEvents = useSetAtom(showHiddenEventsAtom);
+  const setGroupPresenceRing = useSetAtom(groupPresenceRingAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +78,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setStripExifOnUpload(state.stripExifOnUpload);
       setHideMembershipEvents(state.hideMembershipEvents);
       setShowHiddenEvents(state.showHiddenEvents);
+      setGroupPresenceRing(state.groupPresenceRing);
       applyAppearanceToDom(state);
     }
 
@@ -87,6 +90,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setAutoplayGifs,
     setDensity,
     setFontSize,
+    setGroupPresenceRing,
     setHideMembershipEvents,
     setJumboEmojiSize,
     setMessageLayout,

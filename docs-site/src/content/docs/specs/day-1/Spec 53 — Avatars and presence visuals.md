@@ -3,8 +3,29 @@ title: Charm 2.0 Spec — Avatars and presence visuals
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+Charm now ships the avatar and presence parity work behind the default-off
+`avatar_presence_visuals` flag. Group DMs use Matrix room-summary heroes to render
+a three-face composite in the room list, while presence is aggregated across all
+heroes returned by the SDK (up to five). The default appearance uses a colored
+presence ring; users can switch group composites to the ordinary corner dot with
+the persisted **Group DM presence rings** setting.
+
+Room member rows now resolve and render their Matrix avatar alongside initials
+fallbacks and show presence for joined members. The shared presence contract also
+accepts the custom Matrix `dnd` and `busy` values, normalizes them to `dnd`, and
+labels the red visual as **Busy**. One-to-one DM dots and every pre-existing avatar
+remain unchanged while the flag is disabled.
+
+The room summary carries a bounded `group_dm_members` DTO populated from the SDK's
+cached `Room::heroes()` data, so the room list needs no per-row member request.
+Frontend component coverage, Rust mapping coverage, a Storybook-compatible
+component surface, and a deterministic Playwright journey cover the mosaic,
+aggregate state, ring/dot preference, member avatar resolution, and busy state.
 
 **Workstream:** one PR / one agent. New spec from the UI-parity deep-dive
 (2026-07-13); two independent agents confirmed these. Owner explicitly flagged
@@ -52,20 +73,16 @@ but never renders:
 
 ### Group-DM composite avatar
 
-- A `GroupAvatar` component that, for a room that is a group DM (direct + >2 members),
-  fetches up to 3 joined non-bot members (sorted by recent activity, matching
-  `useGroupDMMembers`) and lays their avatars out in the triangular arrangement, each
-  with its own image+initials fallback. Used in the room list row (and anywhere a
-  group DM's avatar shows). Needs a Rust read for the member subset (or reuse
-  whatever member data the room summary can carry) — confirm the cheapest path
-  (ideally the room summary already resolves DM peers; extend to top-N members).
+- `GroupDmAvatar` receives the Matrix SDK's room-summary heroes from `RoomSummary`.
+  It lays out up to three image+initial faces while retaining all returned heroes
+  for presence aggregation. `Room::heroes()` is cached, excludes the signed-in
+  user, and caps the data at five, avoiding another member-list query per row.
 
 ### Presence dot vs ring + group presence
 
 - Add a **ring** presence variant alongside the existing dot: a colored ring around
-  the avatar. Apply per Charm 1.0's rule — **dots for 1:1, always rings for group
-  DMs** — with a user toggle (`groupPresenceRing`-equivalent, default on) in
-  appearance settings (Spec 47's surface).
+  the avatar. Apply per Charm 1.0's rule — **dots for 1:1, rings for group DMs by
+  default** — with the persisted `groupPresenceRing` toggle in appearance settings.
 - **Group presence aggregation**: compute an aggregate presence for a group DM
   (e.g. "most-present member") to color the ring, matching `useGroupPresence`.
 - Ring colors follow the presence-state palette (green online / amber away / red
@@ -87,8 +104,8 @@ but never renders:
 
 ## Data flow
 
-- Group-DM member subset: new/extended room-summary field or a small IPC read
-  (`get_group_dm_members(room_id, limit=3)`).
+- Group-DM member subset: additive `RoomSummary.group_dm_members`, populated from
+  `Room::heroes()` during the existing room snapshot.
 - Member avatar images: reuse Spec 02 media resolver; no new data (DTO already has
   `avatar_url`).
 - Presence: extend the presence DTO enum (Rust) + the presence stream already in
@@ -97,7 +114,7 @@ but never renders:
 ## API/contract changes
 
 - `PresenceStateDto` gains a DND/busy variant (ts-rs regen).
-- Possibly a group-DM-members read (or extend room summary).
+- `RoomSummary` gains `group_dm_members: GroupDmAvatarMember[]`.
 - No change to the media resolver (reused).
 
 ## Testing strategy
@@ -108,15 +125,15 @@ but never renders:
   dots; DND state renders the red color.
 - Storybook + axe: avatar/presence variants (1:1 dot, group ring, DND, member row
   with image) through the a11y gate.
-- Rust: presence enum includes DND and maps correctly; group-DM member read returns
-  the right subset.
+- Rust: presence enum includes DND and maps both `dnd` and `busy`; room snapshots
+  expose the SDK's bounded hero subset.
 - Manual: a real group DM shows member faces; a member with an avatar shows their
   photo in the member list.
 
 ## Trade-offs
 
-- **Composite avatar cost**: fetching top-N members per group-DM row adds reads;
-  cache per room and cap at 3 faces (matching 1.0) to keep the room list cheap.
+- **Composite avatar cost**: using `Room::heroes()` adds no per-row member request;
+  render only three faces (matching 1.0) and aggregate at most five cached heroes.
 - **Ring vs dot default**: follow Charm 1.0 exactly (dot for 1:1, ring for group,
   toggle default-on) rather than inventing new rules — users migrating expect it.
 

@@ -169,6 +169,7 @@ export function AppearancePanel() {
   const roomListEnrichmentEnabled = useFlag("room_list_unread_filter");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const {
     theme,
     fontSize,
@@ -181,6 +182,7 @@ export function AppearancePanel() {
     stripExifOnUpload,
     hideMembershipEvents,
     showHiddenEvents,
+    groupPresenceRing,
     setTheme,
     setFontSize,
     setDensity,
@@ -192,6 +194,7 @@ export function AppearancePanel() {
     setStripExifOnUpload,
     setHideMembershipEvents,
     setShowHiddenEvents,
+    setGroupPresenceRing,
   } = useAppearance();
 
   return (
@@ -310,6 +313,19 @@ export function AppearancePanel() {
               }
             />
           </>
+        )}
+        {avatarPresenceVisualsEnabled && (
+          <SettingTile
+            title="Group DM presence rings"
+            description="Outline composite group avatars with the most available member's presence. Turn this off to use a corner dot instead."
+            control={
+              <Switch
+                aria-label="Show group DM presence rings"
+                checked={groupPresenceRing}
+                onCheckedChange={setGroupPresenceRing}
+              />
+            }
+          />
         )}
         {mediaSendPolishEnabled && (
           <SettingTile

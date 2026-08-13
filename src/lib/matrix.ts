@@ -8,6 +8,7 @@ import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverRes
 import type { EditHistoryEntry } from "@bindings/EditHistoryEntry";
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
+import type { GroupDmAvatarMember } from "@bindings/GroupDmAvatarMember";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
@@ -152,6 +153,7 @@ export type {
   DiscoverHomeserverResponse,
   EmojiPair,
   EventReceipt,
+  GroupDmAvatarMember,
   HistoryVisibilityKind,
   JoinRuleKind,
   JumpToEventResult,

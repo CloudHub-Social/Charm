@@ -1,13 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toLoadableMediaUrl } from "@/lib/mediaUrl";
 import {
   getAccountDeactivateUrl,
   getProfile,
   removeAvatar,
-  resolveAvatar,
   setAvatar,
   setDisplayName,
 } from "@/lib/matrix";
+export { useResolvedAvatarSrc } from "@/features/profile/useResolvedAvatarSrc";
 
 const PROFILE_QUERY_KEY = ["profile"] as const;
 
@@ -24,26 +23,6 @@ export function useAccountDeactivateUrl() {
     queryKey: ["accountDeactivateUrl"],
     queryFn: getAccountDeactivateUrl,
   });
-}
-
-/**
- * Resolves a profile's `avatar_url` (a bare `mxc://` URI) to a
- * webview-loadable source, same pattern as `rooms/media/useMediaSource`.
- * `undefined` while resolving or when there's no avatar to resolve.
- */
-export function useResolvedAvatarSrc(mxcUrl: string | null | undefined) {
-  const { data } = useQuery({
-    queryKey: ["avatar", mxcUrl],
-    queryFn: async () => {
-      if (!mxcUrl) return null;
-      const path = await resolveAvatar(mxcUrl);
-      return path ? (toLoadableMediaUrl(path) ?? null) : null;
-    },
-    enabled: Boolean(mxcUrl),
-    staleTime: 5 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
-  });
-  return data ?? undefined;
 }
 
 export function useUpdateProfile() {

@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useFlag } from "@/featureFlags";
+import { PresenceDot } from "@/features/presence/PresenceDot";
+import { usePresence } from "@/features/presence/usePresence";
+import { useResolvedAvatarSrc } from "@/features/profile/useResolvedAvatarSrc";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +34,11 @@ export function MemberRow({
   onOpenProfile,
 }: MemberRowProps) {
   const actions = useRoomAdminActions(roomId);
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
+  const avatarSrc = useResolvedAvatarSrc(avatarPresenceVisualsEnabled ? member.avatar_url : null);
+  const presence = usePresence(
+    avatarPresenceVisualsEnabled && member.membership === "join" ? member.user_id : null,
+  );
   const [powerLevelDialogOpen, setPowerLevelDialogOpen] = useState(false);
   const label = member.display_name ?? member.user_id;
   const isSelf = member.user_id === currentUserId;
@@ -65,6 +74,7 @@ export function MemberRow({
         onClick={onOpenProfile}
       >
         <Avatar size="sm">
+          {avatarPresenceVisualsEnabled && <AvatarImage src={avatarSrc} alt="" />}
           {/* `text-white`: AvatarFallback's default is `text-muted-foreground`
             (meant for the no-color placeholder state) — without an explicit
             override it renders muted-gray text on the colorful
@@ -75,6 +85,15 @@ export function MemberRow({
           >
             {initials(member.user_id, member.display_name)}
           </AvatarFallback>
+          {avatarPresenceVisualsEnabled && (
+            <PresenceDot
+              presence={presence?.presence}
+              statusMsg={presence?.status_msg}
+              lastActiveAgoMs={presence?.last_active_ago_ms}
+              updateToken={presence}
+              insideInteractiveParent
+            />
+          )}
         </Avatar>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-sm font-medium text-foreground">{label}</span>
