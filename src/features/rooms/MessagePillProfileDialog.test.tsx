@@ -116,7 +116,7 @@ describe("MessagePillProfileDialog", () => {
 
     expect(await screen.findByRole("heading", { name: "Alice Here" })).toBeInTheDocument();
     expect(screen.getByText("Global profile: Alice Global")).toBeInTheDocument();
-    expect(screen.getByText("online · Writing tests")).toBeInTheDocument();
+    expect(screen.getByText("Online · Writing tests")).toBeInTheDocument();
     expect(screen.getByText("Active 5m ago")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
@@ -128,7 +128,11 @@ describe("MessagePillProfileDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mutual Room" }));
     expect(onNavigateToRoom).toHaveBeenCalledWith("!mutual:example.org");
     expect(onClose).toHaveBeenCalledOnce();
-    expect(getUserProfile).toHaveBeenCalledWith("@alice:example.org", "!current:example.org");
+    expect(getUserProfile).toHaveBeenCalledWith(
+      "@alice:example.org",
+      "!current:example.org",
+      false,
+    );
   });
 
   it("opens a direct message and blocks another user from the card", async () => {
@@ -361,12 +365,37 @@ describe("MessagePillProfileDialog", () => {
 
     renderDialog({ detailed: true });
 
-    expect(await screen.findByText("away")).toBeInTheDocument();
+    expect(await screen.findByText("Away")).toBeInTheDocument();
     expect(screen.queryByText(/Global profile:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Private status/)).not.toBeInTheDocument();
     expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent(
       "Mutual rooms could not be loaded.",
     );
+  });
+
+  it("shows the normalized Busy label for feature-enabled profile presence", async () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: null,
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: {
+        user_id: "@alice:example.org",
+        presence: "dnd",
+        status_msg: null,
+        last_active_ago_ms: null,
+      },
+    });
+    vi.mocked(getMutualRooms).mockRejectedValue(new Error("offline"));
+
+    renderDialog({ detailed: true });
+
+    expect(await screen.findByText("Busy")).toBeInTheDocument();
+    expect(screen.queryByText("dnd")).not.toBeInTheDocument();
   });
 
   it("refreshes an open room profile after a membership-state update", async () => {

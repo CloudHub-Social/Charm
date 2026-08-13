@@ -110,6 +110,22 @@ describe("AppearancePanel", () => {
     );
   });
 
+  it("persists the group DM presence-ring preference", async () => {
+    renderPanel();
+    const toggle = screen.getByRole("switch", { name: "Show group DM presence rings" });
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).not.toBeChecked();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ groupPresenceRing: false }) }),
+      ),
+    );
+  });
+
   it("persists timeline membership and hidden-event visibility controls", async () => {
     renderPanel();
     const membership = screen.getByRole("switch", { name: "Show membership events" });

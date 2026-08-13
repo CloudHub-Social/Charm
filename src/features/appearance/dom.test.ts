@@ -95,6 +95,7 @@ describe("applyAppearanceToDom", () => {
       stripExifOnUpload: true,
       hideMembershipEvents: false,
       showHiddenEvents: false,
+      groupPresenceRing: true,
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");

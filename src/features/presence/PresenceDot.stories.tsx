@@ -28,6 +28,10 @@ export const Away: Story = {
   args: { presence: "unavailable" },
 };
 
+export const Busy: Story = {
+  args: { presence: "dnd" },
+};
+
 export const Offline: Story = {
   args: { presence: "offline" },
 };

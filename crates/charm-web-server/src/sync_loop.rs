@@ -1308,7 +1308,12 @@ fn register_presence_handler(
         let presence_snapshots = presence_snapshots.clone();
         async move {
             let sender = ev.sender.clone();
-            let event = ServerEvent::Presence(presence_event_to_update(&ev));
+            // Preserve custom busy state in the shared web snapshot. The web
+            // server broadcasts one event to clients that may have different
+            // remote/Labs flag decisions, so it cannot normalize per client
+            // here. Flag-off consumers normalize DND to Offline at render
+            // time; flag-on consumers retain the raw state immediately.
+            let event = ServerEvent::Presence(presence_event_to_update(&ev, true));
             presence_snapshots
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

@@ -1,10 +1,12 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoomListItem, roomListItemPropsEqual } from "./RoomListItem";
 import { makeRoomSummary } from "./testFixtures";
-import { showUnreadCountsAtom } from "@/features/appearance/atoms";
+import { groupPresenceRingAtom, showUnreadCountsAtom } from "@/features/appearance/atoms";
 import { featureFlagTestHooks } from "@/featureFlags";
+import { presenceAtomFamily } from "@/features/presence/presenceAtoms";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
@@ -66,6 +68,87 @@ describe("RoomListItem", () => {
   it("renders the room name", () => {
     render(<RoomListItem room={room} active={false} onSelect={() => {}} />);
     expect(screen.getByText("general")).toBeInTheDocument();
+  });
+
+  it("renders the feature-flagged group DM composite avatar", () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <RoomListItem
+          room={makeRoomSummary({
+            is_direct: true,
+            group_dm_members: [
+              { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+              { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+              { user_id: "@carol:example.org", display_name: "Carol", avatar_url: null },
+            ],
+          })}
+          active={false}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(container.querySelector("[data-group-dm-avatar]")).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-slot='avatar'] [data-slot='avatar']")).toHaveLength(3);
+  });
+
+  it("preserves an explicit room avatar instead of replacing it with a group DM composite", () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createStore();
+    store.set(groupPresenceRingAtom, true);
+    store.set(presenceAtomFamily("@alice:example.org"), {
+      user_id: "@alice:example.org",
+      presence: "online",
+      status_msg: null,
+      last_active_ago_ms: null,
+    });
+    const { container } = render(
+      <Provider store={store}>
+        <QueryClientProvider client={queryClient}>
+          <RoomListItem
+            room={makeRoomSummary({
+              is_direct: true,
+              avatar_path: "/tmp/custom-group-avatar.png",
+              group_dm_members: [
+                { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+                { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+              ],
+            })}
+            active={false}
+            onSelect={() => {}}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    );
+
+    expect(container.querySelector("[data-group-dm-avatar]")).not.toBeInTheDocument();
+    expect(screen.getByText("Online group presence")).toBeInTheDocument();
+  });
+
+  it("preserves an unresolved explicit room avatar URL instead of replacing it with a group DM composite", () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <RoomListItem
+          room={makeRoomSummary({
+            is_direct: true,
+            avatar_url: "mxc://example.org/custom-group-avatar",
+            group_dm_members: [
+              { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+              { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+            ],
+          })}
+          active={false}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(container.querySelector("[data-group-dm-avatar]")).not.toBeInTheDocument();
   });
 
   it("shows an unread badge when there are unread messages", () => {
@@ -507,6 +590,16 @@ describe("roomListItemPropsEqual", () => {
   ] as const)("treats a changed room.%s as unequal", (_field, override) => {
     const prev = { ...baseProps, room: { ...room, ...override } };
     const next = { ...baseProps, room: { ...room } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("treats changed group-DM heroes as unequal", () => {
+    const member = { user_id: "@alice:localhost", display_name: "Alice", avatar_url: null };
+    const prev = { ...baseProps, room: { ...room, group_dm_members: [member] } };
+    const next = {
+      ...baseProps,
+      room: { ...room, group_dm_members: [{ ...member, display_name: "Alicia" }] },
+    };
     expect(roomListItemPropsEqual(prev, next)).toBe(false);
   });
 

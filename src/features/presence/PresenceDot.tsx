@@ -8,14 +8,24 @@ import { useFlag } from "@/featureFlags";
 const PRESENCE_COLORS: Record<PresenceStateDto, string> = {
   online: "var(--color-success)",
   unavailable: "var(--color-warning)",
+  dnd: "var(--color-destructive-solid)",
   offline: "var(--color-text-muted)",
 };
 
 const PRESENCE_LABELS: Record<PresenceStateDto, string> = {
   online: "Online",
   unavailable: "Away",
+  dnd: "Busy",
   offline: "Offline",
 };
+
+export function presenceColor(presence: PresenceStateDto): string {
+  return PRESENCE_COLORS[presence];
+}
+
+export function presenceLabel(presence: PresenceStateDto): string {
+  return PRESENCE_LABELS[presence];
+}
 
 /**
  * Formats `last_active_ago_ms` (Spec 40 item 6 — the `PresenceUpdate` DTO
@@ -163,6 +173,7 @@ export function PresenceDot({
   // call sites (`ChatShell`, `RoomListItem`) pass these fields unconditionally,
   // so gating has to happen here, not at each caller.
   const detailEnabled = useFlag("presence_privacy_controls");
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   // Called unconditionally, before the early `return null` below, per the
   // rules of hooks — the anchor itself is cheap to maintain even when
   // there's no `presence` to render yet.
@@ -180,7 +191,13 @@ export function PresenceDot({
   );
   if (!presence) return null;
 
-  const label = PRESENCE_LABELS[presence];
+  // A cached DND update can outlive a Labs toggle. Normalize at render time
+  // as well as at the Rust ingestion boundary so disabling the rollout flag
+  // restores the old Offline visual immediately, without waiting for another
+  // homeserver presence event.
+  const displayedPresence =
+    presence === "dnd" && !avatarPresenceVisualsEnabled ? "offline" : presence;
+  const label = PRESENCE_LABELS[displayedPresence];
   const tooltipLines = [
     detailEnabled && statusMsg ? `${label} — ${statusMsg}` : label,
     detailEnabled && anchoredLastActiveAgoMs != null
@@ -191,7 +208,7 @@ export function PresenceDot({
   const dot = (
     <AvatarBadge
       aria-hidden="true"
-      style={{ background: PRESENCE_COLORS[presence] }}
+      style={{ background: PRESENCE_COLORS[displayedPresence] }}
       className={cn(className)}
     />
   );

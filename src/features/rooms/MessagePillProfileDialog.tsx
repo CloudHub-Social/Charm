@@ -21,7 +21,7 @@ import {
   startDirectMessage,
 } from "@/lib/matrix";
 import { usePresence } from "@/features/presence/usePresence";
-import { formatLastActiveAgo } from "@/features/presence/PresenceDot";
+import { formatLastActiveAgo, presenceLabel } from "@/features/presence/PresenceDot";
 import { Input } from "@/components/ui/input";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
@@ -66,6 +66,8 @@ export function MessagePillProfileDialog({
 }) {
   const userId = profile?.userId ?? "";
   const queryClient = useQueryClient();
+  const presenceDetailsEnabled = useFlag("presence_privacy_controls");
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const roomListSignatureRef = useRef<string | null>(null);
   const pendingProfileRefreshRef = useRef(false);
   const pendingMutualRoomsRefreshRef = useRef(false);
@@ -93,7 +95,13 @@ export function MessagePillProfileDialog({
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
       if (details.room_id === roomId) {
-        const profileKey = ["user-profile", accountId ?? null, userId, roomId] as const;
+        const profileKey = [
+          "user-profile",
+          accountId ?? null,
+          userId,
+          roomId,
+          avatarPresenceVisualsEnabled,
+        ] as const;
         if (queryClient.isFetching({ queryKey: profileKey, exact: true }) > 0) {
           pendingProfileRefreshRef.current = true;
         } else {
@@ -105,7 +113,15 @@ export function MessagePillProfileDialog({
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
     };
-  }, [accountId, detailed, queryClient, refreshMutualRooms, roomId, userId]);
+  }, [
+    accountId,
+    avatarPresenceVisualsEnabled,
+    detailed,
+    queryClient,
+    refreshMutualRooms,
+    roomId,
+    userId,
+  ]);
   useEffect(() => {
     if (!detailed || !userId) return undefined;
     const unlisten = onRoomListUpdate((rooms) => {
@@ -127,7 +143,6 @@ export function MessagePillProfileDialog({
       unlisten.then((stop) => stop()).catch(() => {});
     };
   }, [detailed, refreshMutualRooms, userId]);
-  const presenceDetailsEnabled = useFlag("presence_privacy_controls");
   // getUserProfile already includes the initial presence snapshot. This hook
   // only needs to observe newer pushes while the card stays open.
   const livePresence = usePresence(detailed && userId !== "" ? userId : null, {
@@ -141,10 +156,16 @@ export function MessagePillProfileDialog({
     presenceRevisionRef.current += 1;
   }
   const profileQuery = useQuery({
-    queryKey: ["user-profile", accountId ?? null, userId, roomId ?? null],
+    queryKey: [
+      "user-profile",
+      accountId ?? null,
+      userId,
+      roomId ?? null,
+      avatarPresenceVisualsEnabled,
+    ],
     queryFn: async () => {
       const requestPresenceRevision = presenceRevisionRef.current;
-      const result = await getUserProfile(userId, roomId);
+      const result = await getUserProfile(userId, roomId, avatarPresenceVisualsEnabled);
       profileRequestPresenceRevisionRef.current = requestPresenceRevision;
       return result;
     },
@@ -284,7 +305,11 @@ export function MessagePillProfileDialog({
             {detailed && presence && (
               <div className="max-w-full min-w-0 text-sm text-muted-foreground">
                 <p className="break-words">
-                  {presence.presence === "unavailable" ? "away" : presence.presence}
+                  {presenceLabel(
+                    presence.presence === "dnd" && !avatarPresenceVisualsEnabled
+                      ? "offline"
+                      : presence.presence,
+                  )}
                   {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
                 </p>
                 {presenceDetailsEnabled && presence.last_active_ago_ms != null && (

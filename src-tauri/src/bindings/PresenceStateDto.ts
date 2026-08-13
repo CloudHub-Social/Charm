@@ -2,8 +2,8 @@
 
 /**
  * Mirrors ruma's `PresenceState` for the frontend. `PresenceState` itself has
- * a hidden `_Custom` variant for forward-compat, which isn't meaningful to
- * surface as a DTO — anything that isn't one of the three known states is
- * mapped to `Offline` (see `presence_state_to_dto`).
+ * a hidden `_Custom` variant for forward-compat. Spec 53 recognizes the
+ * de-facto `dnd` / `busy` values as one visual state; every other custom
+ * value remains fail-closed as `Offline`.
  */
-export type PresenceStateDto = "online" | "unavailable" | "offline";
+export type PresenceStateDto = "online" | "unavailable" | "dnd" | "offline";

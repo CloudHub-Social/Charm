@@ -162,6 +162,9 @@ define_feature_flag_keys!(
         /// Spec 38 shared searchable Unicode emoji picker for reactions and
         /// composer insertion.
         FullEmojiPicker,
+        /// Spec 53 composite group-DM avatars, presence rings, real member
+        /// avatars, and member presence indicators.
+        AvatarPresenceVisuals,
     }
 );
 
@@ -194,6 +197,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => false,
             FeatureFlagKey::QuickSwitcher => false,
             FeatureFlagKey::FullEmojiPicker => false,
+            FeatureFlagKey::AvatarPresenceVisuals => false,
         }
     }
 
@@ -273,6 +277,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::FullEmojiPicker => {
                 "Use the searchable full-Unicode emoji picker for reactions and composer insertion."
             }
+            FeatureFlagKey::AvatarPresenceVisuals => {
+                "Show composite group-DM avatars and richer avatar/presence indicators in room and member lists."
+            }
         }
     }
 
@@ -314,6 +321,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
             FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
             FeatureFlagKey::FullEmojiPicker => "Spec 38 (full emoji picker)",
+            FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
         }
     }
 
@@ -345,6 +353,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
             FeatureFlagKey::QuickSwitcher => "quick_switcher",
             FeatureFlagKey::FullEmojiPicker => "full_emoji_picker",
+            FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
         }
     }
 }

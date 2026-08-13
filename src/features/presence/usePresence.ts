@@ -3,6 +3,7 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { getPresence, onPresenceUpdate, type PresenceUpdate } from "@/lib/matrix";
 import { presenceAtomFamily } from "./presenceAtoms";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 /**
  * Subscribes to `presence:update` once per app (mount this near the root —
@@ -37,9 +38,18 @@ export function usePresence(
   const store = useStore();
   const presence = useAtomValue(presenceAtomFamily(userId ?? ""));
   const setPresenceAtom = useSetAtom(presenceAtomFamily(userId ?? ""));
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
 
   useEffect(() => {
-    if (!userId || !fetchInitial || presence) return undefined;
+    // Presence fetched while avatar visuals are disabled deliberately maps
+    // custom `dnd`/`busy` values to Offline in Rust. Fetch once more whenever
+    // the flag becomes enabled so an already-cached Offline value can recover
+    // the richer state immediately instead of waiting for another homeserver
+    // event. With the flag disabled, cached values still retain the original
+    // one-shot behavior.
+    if (!userId || !fetchInitial || (presence && !avatarPresenceVisualsEnabled)) {
+      return undefined;
+    }
     let cancelled = false;
     // A `presence:update` push (via `usePresenceListener`) can set this
     // user's atom directly while this one-shot fetch is still in flight —
@@ -53,7 +63,7 @@ export function usePresence(
     const unsubscribe = store.sub(presenceAtomFamily(userId), () => {
       pushedWhileFetching = true;
     });
-    getPresence(userId)
+    getPresence(userId, avatarPresenceVisualsEnabled)
       .then((update) => {
         if (!cancelled && !pushedWhileFetching && update) setPresenceAtom(update);
       })
@@ -64,8 +74,8 @@ export function usePresence(
       cancelled = true;
       unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `store`/`setPresenceAtom` are stable refs from jotai's useStore/useSetAtom; `presence` is deliberately excluded so this one-shot fetch only re-runs on `userId` change, not on every atom update
-  }, [fetchInitial, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `store`/`setPresenceAtom` are stable refs from jotai's useStore/useSetAtom; `presence` is deliberately excluded so atom updates do not refetch. The feature flag is included intentionally: enabling it refreshes any cached value that Rust normalized while the flag was off.
+  }, [avatarPresenceVisualsEnabled, fetchInitial, userId]);
 
   return userId ? presence : null;
 }

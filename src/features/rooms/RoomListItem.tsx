@@ -10,12 +10,13 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { PresenceDot } from "@/features/presence/PresenceDot";
-import { showUnreadCountsAtom } from "@/features/appearance/atoms";
+import { groupPresenceRingAtom, showUnreadCountsAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import type { RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { GroupDmAvatar, GroupDmPresenceAvatar } from "./GroupDmAvatar";
 
 interface RoomListItemProps {
   room: RoomSummary;
@@ -76,6 +77,8 @@ function RoomListItemImpl({
 }: RoomListItemProps) {
   const unread = room.has_unread;
   const showUnreadCounts = useAtomValue(showUnreadCountsAtom);
+  const groupPresenceRing = useAtomValue(groupPresenceRingAtom);
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const ambientUnreadCountEnabled = useFlag("room_list_unread_filter") && showUnreadCounts;
   const showNotificationCount = room.unread_count > 0;
   const showAmbientUnreadCount =
@@ -96,24 +99,43 @@ function RoomListItemImpl({
       )}
       {...dragHandleProps}
     >
-      <Avatar>
-        <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
-        <AvatarFallback
-          style={{ background: avatarColor(room.room_id) }}
-          className="font-bold text-white"
-        >
-          {initials(room.room_id, room.name)}
-        </AvatarFallback>
-        {room.is_direct && (
-          <PresenceDot
-            presence={presence?.presence}
-            statusMsg={presence?.status_msg}
-            lastActiveAgoMs={presence?.last_active_ago_ms}
-            updateToken={presence}
-            insideInteractiveParent
-          />
-        )}
-      </Avatar>
+      {avatarPresenceVisualsEnabled && room.group_dm_members.length > 1 ? (
+        !room.avatar_path && !room.avatar_url ? (
+          <GroupDmAvatar members={room.group_dm_members} showPresenceRing={groupPresenceRing} />
+        ) : (
+          <GroupDmPresenceAvatar
+            members={room.group_dm_members}
+            showPresenceRing={groupPresenceRing}
+          >
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
+            <AvatarFallback
+              style={{ background: avatarColor(room.room_id) }}
+              className="font-bold text-white"
+            >
+              {initials(room.room_id, room.name)}
+            </AvatarFallback>
+          </GroupDmPresenceAvatar>
+        )
+      ) : (
+        <Avatar>
+          <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
+          <AvatarFallback
+            style={{ background: avatarColor(room.room_id) }}
+            className="font-bold text-white"
+          >
+            {initials(room.room_id, room.name)}
+          </AvatarFallback>
+          {room.is_direct && (
+            <PresenceDot
+              presence={presence?.presence}
+              statusMsg={presence?.status_msg}
+              lastActiveAgoMs={presence?.last_active_ago_ms}
+              updateToken={presence}
+              insideInteractiveParent
+            />
+          )}
+        </Avatar>
+      )}
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <div className="flex min-w-0 items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -287,6 +309,15 @@ export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListIt
     a.avatar_url === b.avatar_url &&
     a.is_direct === b.is_direct &&
     a.dm_peer_user_id === b.dm_peer_user_id &&
+    a.group_dm_members.length === b.group_dm_members.length &&
+    a.group_dm_members.every((member, index) => {
+      const other = b.group_dm_members[index];
+      return (
+        member.user_id === other?.user_id &&
+        member.display_name === other.display_name &&
+        member.avatar_url === other.avatar_url
+      );
+    }) &&
     a.is_marked_unread === b.is_marked_unread &&
     a.has_unread === b.has_unread &&
     a.unread_count === b.unread_count &&

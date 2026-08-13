@@ -4238,17 +4238,29 @@ async fn get_presence(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(user_id): Path<String>,
+    Query(query): Query<PresenceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let presence = get_presence_impl(&session.client, &user_id)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let presence = get_presence_impl(
+        &session.client,
+        &user_id,
+        query.avatar_presence_visuals_enabled,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(presence))
+}
+
+#[derive(Deserialize, Default)]
+struct PresenceQuery {
+    #[serde(default)]
+    avatar_presence_visuals_enabled: bool,
 }
 
 async fn get_own_profile(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(query): Query<PresenceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     // Unlike desktop's `MatrixState::sync_presence` (updated by the
@@ -4257,12 +4269,16 @@ async fn get_own_profile(
     // homeserver directly for the actual current value instead of
     // hardcoding `PresenceStateDto::default()` (always `Online`), which
     // would misreport `unavailable`/`offline` accounts.
-    let presence = get_presence_impl(&session.client, &session.user_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|update| update.presence)
-        .unwrap_or_default();
+    let presence = get_presence_impl(
+        &session.client,
+        &session.user_id,
+        query.avatar_presence_visuals_enabled,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|update| update.presence)
+    .unwrap_or_default();
     let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;
@@ -4275,6 +4291,8 @@ async fn get_own_profile(
 #[derive(Deserialize)]
 struct UserProfileQuery {
     room_id: Option<String>,
+    #[serde(default)]
+    avatar_presence_visuals_enabled: bool,
 }
 
 async fn get_user_profile(
@@ -4284,9 +4302,16 @@ async fn get_user_profile(
     Query(query): Query<UserProfileQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let profile = get_user_profile_impl(&session.client, None, &user_id, query.room_id.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    // Match the default-off presence lookup above until web flags exist.
+    let profile = get_user_profile_impl(
+        &session.client,
+        None,
+        &user_id,
+        query.room_id.as_deref(),
+        query.avatar_presence_visuals_enabled,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(profile))
 }
 

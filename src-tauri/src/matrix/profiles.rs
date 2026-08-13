@@ -25,7 +25,7 @@ use matrix_sdk::ruma::events::SyncStateEvent;
 use matrix_sdk::ruma::{OwnedMxcUri, RoomId, UserId};
 use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::media;
@@ -192,10 +192,26 @@ pub async fn get_user_profile(
     state: State<'_, MatrixState>,
     user_id: String,
     room_id: Option<String>,
+    avatar_presence_visuals_enabled: Option<bool>,
 ) -> Result<UserProfile, String> {
     let client = state.require_client().await?;
     let media_cache = state.require_media_cache(&app).await.ok();
-    get_user_profile_impl(&client, media_cache, &user_id, room_id.as_deref()).await
+    let avatar_presence_visuals_enabled = avatar_presence_visuals_enabled.unwrap_or_else(|| {
+        app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
+            )
+        })
+    });
+    get_user_profile_impl(
+        &client,
+        media_cache,
+        &user_id,
+        room_id.as_deref(),
+        avatar_presence_visuals_enabled,
+    )
+    .await
 }
 
 /// Core logic behind [`get_user_profile`], shared with the web companion.
@@ -204,6 +220,7 @@ pub async fn get_user_profile_impl(
     media_cache: Option<&media::MediaCache>,
     user_id: &str,
     room_id: Option<&str>,
+    avatar_presence_visuals_enabled: bool,
 ) -> Result<UserProfile, String> {
     let user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
 
@@ -261,7 +278,7 @@ pub async fn get_user_profile_impl(
                 None => None,
             }
         },
-        get_presence_impl(client, user_id.as_str())
+        get_presence_impl(client, user_id.as_str(), avatar_presence_visuals_enabled)
     );
     let room_avatar_path = match room_avatar_url.as_deref() {
         Some(mxc) if Some(mxc) == avatar_url.as_deref() => avatar_path.clone(),
@@ -622,7 +639,7 @@ mod self_profile_update_tests {
             .mount(server.server())
             .await;
 
-        let profile = get_user_profile_impl(&client, None, "@alice:example.org", None)
+        let profile = get_user_profile_impl(&client, None, "@alice:example.org", None, false)
             .await
             .expect("profile lookup succeeds");
 

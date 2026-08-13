@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * Substitute for the spec's native Playwright+tauri-driver boot-flash test
@@ -69,6 +70,66 @@ test("defaults to dark when no appearance has been persisted", async ({ page }) 
   await page.goto("/");
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("group DMs use composite avatars and the persisted ring-or-dot preference", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { avatar_presence_visuals: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+    extraRooms: [
+      {
+        room_id: "!group-dm:localhost",
+        name: "Alice, Bob, Carol",
+        is_direct: true,
+        group_dm_members: [
+          { user_id: "@alice:localhost", display_name: "Alice", avatar_url: null },
+          { user_id: "@bob:localhost", display_name: "Bob", avatar_url: null },
+          { user_id: "@carol:localhost", display_name: "Carol", avatar_url: null },
+        ],
+      },
+    ],
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Direct messages" }).click();
+  const groupRow = page.getByRole("button", { name: /Alice, Bob, Carol/ });
+  await expect(groupRow.locator("[data-group-dm-avatar]")).toBeVisible();
+  await expect(groupRow.locator("[data-group-dm-avatar] [data-slot='avatar']")).toHaveCount(3);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eListenerCount("presence:update")))
+    .toBeGreaterThan(0);
+  await page.evaluate(() => {
+    window.__e2eEmit("presence:update", {
+      user_id: "@alice:localhost",
+      presence: "online",
+      status_msg: null,
+      last_active_ago_ms: null,
+    });
+  });
+  await expect(groupRow.getByText("Online group presence")).toBeVisible();
+  await captureSnapshot(page, "avatar-presence-group-dm");
+
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  const ringToggle = page.getByRole("switch", { name: "Show group DM presence rings" });
+  await expect(ringToggle).toBeChecked();
+  await ringToggle.click();
+  await expect(ringToggle).not.toBeChecked();
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(groupRow.getByText("Online", { exact: true })).toBeVisible();
 });
 
 test("boot script falls back to defaults for a corrupted-but-parseable persisted value", async ({

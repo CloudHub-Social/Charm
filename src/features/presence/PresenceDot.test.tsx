@@ -38,6 +38,19 @@ describe("PresenceDot", () => {
     expect(screen.getByText("Online")).toBeInTheDocument();
   });
 
+  it("renders custom dnd presence as Busy", () => {
+    renderWithProviders(<PresenceDot presence="dnd" />);
+    expect(screen.getByText("Busy")).toBeInTheDocument();
+  });
+
+  it("renders a cached dnd presence as Offline when avatar visuals are disabled", async () => {
+    const { useFlag } = await import("@/featureFlags");
+    vi.mocked(useFlag).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    renderWithProviders(<PresenceDot presence="dnd" />);
+    expect(screen.getByText("Offline")).toBeInTheDocument();
+    expect(screen.queryByText("Busy")).not.toBeInTheDocument();
+  });
+
   it("includes the status message and last-active-ago in the accessible text when provided", () => {
     renderWithProviders(
       <PresenceDot presence="online" statusMsg="Making cupcakes" lastActiveAgoMs={5 * 60_000} />,

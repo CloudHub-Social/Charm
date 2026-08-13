@@ -730,16 +730,33 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         presence: args.presence,
         status_msg: args.statusMsg,
       });
-    case "get_presence":
-      return requestJson<T>("GET", `/api/presence/${encodeSegment(String(args.userId))}`);
-    case "get_own_profile":
-      return requestJson<T>("GET", "/api/profile/me");
+    case "get_presence": {
+      const visuals =
+        typeof args.avatarPresenceVisualsEnabled === "boolean"
+          ? `?avatar_presence_visuals_enabled=${String(args.avatarPresenceVisualsEnabled)}`
+          : "";
+      return requestJson<T>("GET", `/api/presence/${encodeSegment(String(args.userId))}${visuals}`);
+    }
+    case "get_own_profile": {
+      const visuals =
+        typeof args.avatarPresenceVisualsEnabled === "boolean"
+          ? `?avatar_presence_visuals_enabled=${String(args.avatarPresenceVisualsEnabled)}`
+          : "";
+      return requestJson<T>("GET", `/api/profile/me${visuals}`);
+    }
     case "get_user_profile": {
-      const roomId =
-        typeof args.roomId === "string" ? `?room_id=${encodeURIComponent(args.roomId)}` : "";
+      const searchParams = new URLSearchParams();
+      if (typeof args.roomId === "string") searchParams.set("room_id", args.roomId);
+      if (typeof args.avatarPresenceVisualsEnabled === "boolean") {
+        searchParams.set(
+          "avatar_presence_visuals_enabled",
+          String(args.avatarPresenceVisualsEnabled),
+        );
+      }
+      const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : "";
       return requestJson<T>(
         "GET",
-        `/api/users/${encodeSegment(String(args.userId))}/profile${roomId}`,
+        `/api/users/${encodeSegment(String(args.userId))}/profile${suffix}`,
       );
     }
     case "get_mutual_rooms":

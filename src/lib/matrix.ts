@@ -8,6 +8,7 @@ import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverRes
 import type { EditHistoryEntry } from "@bindings/EditHistoryEntry";
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
+import type { GroupDmAvatarMember } from "@bindings/GroupDmAvatarMember";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
@@ -152,6 +153,7 @@ export type {
   DiscoverHomeserverResponse,
   EmojiPair,
   EventReceipt,
+  GroupDmAvatarMember,
   HistoryVisibilityKind,
   JoinRuleKind,
   JumpToEventResult,
@@ -821,8 +823,11 @@ export function setPresence(presence: PresenceStateDto, statusMsg?: string): Pro
   return invoke("set_presence", { presence, statusMsg });
 }
 
-export function getPresence(userId: string): Promise<PresenceUpdate | null> {
-  return invoke("get_presence", { userId });
+export function getPresence(
+  userId: string,
+  avatarPresenceVisualsEnabled?: boolean,
+): Promise<PresenceUpdate | null> {
+  return invoke("get_presence", { userId, avatarPresenceVisualsEnabled });
 }
 
 export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
@@ -837,12 +842,16 @@ export function setPrivacySettings(settings: PrivacySettings): Promise<void> {
   return invoke("set_privacy_settings", { settings });
 }
 
-export function getOwnProfile(): Promise<OwnProfile> {
-  return invoke("get_own_profile");
+export function getOwnProfile(avatarPresenceVisualsEnabled?: boolean): Promise<OwnProfile> {
+  return invoke("get_own_profile", { avatarPresenceVisualsEnabled });
 }
 
-export function getUserProfile(userId: string, roomId?: string): Promise<UserProfile> {
-  return invoke("get_user_profile", { userId, roomId });
+export function getUserProfile(
+  userId: string,
+  roomId?: string,
+  avatarPresenceVisualsEnabled?: boolean,
+): Promise<UserProfile> {
+  return invoke("get_user_profile", { userId, roomId, avatarPresenceVisualsEnabled });
 }
 
 export function getMutualRooms(userId: string): Promise<MutualRoomSummary[]> {

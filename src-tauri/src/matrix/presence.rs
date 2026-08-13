@@ -4,21 +4,23 @@ use matrix_sdk::ruma::presence::PresenceState;
 use matrix_sdk::ruma::UserId;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
 use super::MatrixState;
 
 /// Mirrors ruma's `PresenceState` for the frontend. `PresenceState` itself has
-/// a hidden `_Custom` variant for forward-compat, which isn't meaningful to
-/// surface as a DTO — anything that isn't one of the three known states is
-/// mapped to `Offline` (see `presence_state_to_dto`).
+/// a hidden `_Custom` variant for forward-compat. Spec 53 recognizes the
+/// de-facto `dnd` / `busy` values as one visual state; every other custom
+/// value remains fail-closed as `Offline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStateDto {
     Online,
     Unavailable,
+    Dnd,
     Offline,
 }
 
@@ -35,6 +37,7 @@ impl From<PresenceStateDto> for PresenceState {
         match dto {
             PresenceStateDto::Online => PresenceState::Online,
             PresenceStateDto::Unavailable => PresenceState::Unavailable,
+            PresenceStateDto::Dnd => PresenceState::from("dnd"),
             PresenceStateDto::Offline => PresenceState::Offline,
         }
     }
@@ -60,20 +63,30 @@ pub struct PresenceUpdate {
 
 /// Maps a raw `PresenceState` to the DTO, treating any unrecognized custom
 /// state as `Offline` — the frontend only needs to distinguish "reachable now"
-/// (Online), "reachable but idle" (Unavailable), and everything else.
-fn presence_state_to_dto(state: &PresenceState) -> PresenceStateDto {
+/// (Online), "reachable but idle" (Unavailable), explicitly busy (Dnd),
+/// and everything else.
+fn presence_state_to_dto(
+    state: &PresenceState,
+    avatar_presence_visuals_enabled: bool,
+) -> PresenceStateDto {
     match state {
         PresenceState::Online => PresenceStateDto::Online,
         PresenceState::Unavailable => PresenceStateDto::Unavailable,
+        state if avatar_presence_visuals_enabled && matches!(state.as_str(), "dnd" | "busy") => {
+            PresenceStateDto::Dnd
+        }
         _ => PresenceStateDto::Offline,
     }
 }
 
 /// Maps an incoming `m.presence` event to the DTO pushed to the frontend.
-pub fn presence_event_to_update(event: &PresenceEvent) -> PresenceUpdate {
+pub fn presence_event_to_update(
+    event: &PresenceEvent,
+    avatar_presence_visuals_enabled: bool,
+) -> PresenceUpdate {
     PresenceUpdate {
         user_id: event.sender.to_string(),
-        presence: presence_state_to_dto(&event.content.presence),
+        presence: presence_state_to_dto(&event.content.presence, avatar_presence_visuals_enabled),
         status_msg: event.content.status_msg.clone(),
         // `js_int::UInt` only has a `From` impl into `i64`/`i128`, not `u64` directly —
         // safe here since this is always a non-negative millisecond duration.
@@ -93,7 +106,12 @@ pub fn register_presence_handler(app: AppHandle, client: &Client) {
     client.add_event_handler(move |ev: PresenceEvent| {
         let app = app.clone();
         async move {
-            let _ = app.emit("presence:update", presence_event_to_update(&ev));
+            // Preserve the raw custom busy state in live events. A Labs
+            // toggle updates the frontend before its durable file write, so
+            // normalizing here could race that write and overwrite a
+            // flag-aware refresh with Offline. Flag-off consumers normalize
+            // DND at render time; flag-on consumers can use it immediately.
+            let _ = app.emit("presence:update", presence_event_to_update(&ev, true));
         }
     });
 }
@@ -188,7 +206,7 @@ pub async fn set_presence(
 /// pulled out of [`set_presence`] as a pure function so the "Appear offline
 /// wins over a stale idle write" logic (that command's own review-fix
 /// comment) is unit-testable without a live `Client`/`AppHandle`. `Offline`
-/// itself is always allowed; only `Online`/`Unavailable` get suppressed
+/// itself is always allowed; every non-offline state gets suppressed
 /// while `appear_offline` is on, matching `appear_offline_transition` in
 /// `privacy_settings.rs`, which is the only thing that's ever meant to send
 /// `Offline` in the first place.
@@ -235,17 +253,33 @@ pub async fn set_presence_online(client: &matrix_sdk::Client) -> Result<(), Stri
 /// failure (per spec's non-goals/risks section).
 #[tauri::command]
 pub async fn get_presence(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     user_id: String,
+    avatar_presence_visuals_enabled: Option<bool>,
 ) -> Result<Option<PresenceUpdate>, String> {
     let client = state.require_client().await?;
-    get_presence_impl(&client, &user_id).await
+    // A Labs toggle updates the frontend store optimistically before its
+    // durable feature-flags file write completes. Let that caller carry the
+    // exact decision into this refresh so a just-enabled DND value is not
+    // normalized using the stale file. Other callers retain the persisted
+    // flag lookup as their source of truth.
+    let flag_enabled = avatar_presence_visuals_enabled.unwrap_or_else(|| {
+        app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
+            )
+        })
+    });
+    get_presence_impl(&client, &user_id, flag_enabled).await
 }
 
 /// Core logic behind [`get_presence`].
 pub async fn get_presence_impl(
     client: &matrix_sdk::Client,
     user_id: &str,
+    avatar_presence_visuals_enabled: bool,
 ) -> Result<Option<PresenceUpdate>, String> {
     let Ok(parsed_user_id) = UserId::parse(user_id) else {
         return Ok(None);
@@ -258,7 +292,7 @@ pub async fn get_presence_impl(
 
     Ok(Some(PresenceUpdate {
         user_id: parsed_user_id.to_string(),
-        presence: presence_state_to_dto(&response.presence),
+        presence: presence_state_to_dto(&response.presence, avatar_presence_visuals_enabled),
         status_msg: response.status_msg,
         last_active_ago_ms: response.last_active_ago.map(|d| d.as_millis() as u64),
     }))
@@ -283,7 +317,7 @@ mod tests {
     #[test]
     fn maps_online_presence_event() {
         let event = make_event(PresenceState::Online, Some("Making cupcakes"));
-        let update = presence_event_to_update(&event);
+        let update = presence_event_to_update(&event, false);
 
         assert_eq!(update.user_id, "@alice:example.com");
         assert!(matches!(update.presence, PresenceStateDto::Online));
@@ -294,7 +328,7 @@ mod tests {
     #[test]
     fn maps_unavailable_presence_event() {
         let event = make_event(PresenceState::Unavailable, None);
-        let update = presence_event_to_update(&event);
+        let update = presence_event_to_update(&event, false);
 
         assert!(matches!(update.presence, PresenceStateDto::Unavailable));
         assert_eq!(update.status_msg, None);
@@ -303,9 +337,25 @@ mod tests {
     #[test]
     fn maps_offline_presence_event() {
         let event = make_event(PresenceState::Offline, None);
-        let update = presence_event_to_update(&event);
+        let update = presence_event_to_update(&event, false);
 
         assert!(matches!(update.presence, PresenceStateDto::Offline));
+    }
+
+    #[test]
+    fn maps_dnd_and_busy_custom_presence_events() {
+        for state in [PresenceState::from("dnd"), PresenceState::from("busy")] {
+            let update = presence_event_to_update(&make_event(state, None), true);
+            assert!(matches!(update.presence, PresenceStateDto::Dnd));
+        }
+    }
+
+    #[test]
+    fn keeps_custom_busy_presence_offline_when_visuals_are_disabled() {
+        for state in [PresenceState::from("dnd"), PresenceState::from("busy")] {
+            let update = presence_event_to_update(&make_event(state, None), false);
+            assert!(matches!(update.presence, PresenceStateDto::Offline));
+        }
     }
 
     #[test]
@@ -318,17 +368,12 @@ mod tests {
             PresenceState::from(PresenceStateDto::Unavailable),
             PresenceState::Unavailable
         );
+        assert_eq!(PresenceState::from(PresenceStateDto::Dnd).as_str(), "dnd");
         assert_eq!(
             PresenceState::from(PresenceStateDto::Offline),
             PresenceState::Offline
         );
     }
-
-    // Kept out of the ts-rs-annotated PresenceStateDto -> PresenceState `From`
-    // impl by using a plain match arm, verified above; nothing further to
-    // assert about the "unknown custom state" branch of
-    // `presence_state_to_dto` here since ruma's `PresenceState::_Custom` is a
-    // private variant this crate cannot construct.
 
     // --- Spec 40 review fix: Appear offline wins over a stale idle write ---
 
@@ -343,6 +388,11 @@ mod tests {
             PresenceStateDto::Unavailable,
             true
         ));
+    }
+
+    #[test]
+    fn presence_update_allowed_blocks_dnd_while_appear_offline_is_on() {
+        assert!(!presence_update_allowed(PresenceStateDto::Dnd, true));
     }
 
     #[test]

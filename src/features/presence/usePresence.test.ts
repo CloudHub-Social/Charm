@@ -1,10 +1,11 @@
 import { createElement, type PropsWithChildren } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePresence } from "./usePresence";
 import { presenceAtomFamily } from "./presenceAtoms";
 import type { PresenceUpdate } from "@/lib/matrix";
+import { featureFlagTestHooks } from "@/featureFlags";
 
 const getPresence = vi.fn();
 
@@ -28,6 +29,11 @@ function presenceUpdate(overrides: Partial<PresenceUpdate>): PresenceUpdate {
   };
 }
 
+afterEach(() => {
+  featureFlagTestHooks.reset();
+  getPresence.mockReset();
+});
+
 describe("usePresence", () => {
   it("returns null before anything is known", () => {
     getPresence.mockReturnValue(new Promise(() => {}));
@@ -40,6 +46,22 @@ describe("usePresence", () => {
     const { result } = renderWithStore("@alice:localhost");
 
     await waitFor(() => expect(result.current?.presence).toBe("online"));
+  });
+
+  it("refreshes presence cached while avatar visuals were disabled when the flag is enabled", async () => {
+    featureFlagTestHooks.setCache({ avatar_presence_visuals: false });
+    getPresence
+      .mockResolvedValueOnce(presenceUpdate({ presence: "offline" }))
+      .mockResolvedValueOnce(presenceUpdate({ presence: "dnd" }));
+    const { result } = renderWithStore("@alice:localhost");
+
+    await waitFor(() => expect(result.current?.presence).toBe("offline"));
+
+    act(() => featureFlagTestHooks.setCache({ avatar_presence_visuals: true }));
+
+    await waitFor(() => expect(result.current?.presence).toBe("dnd"));
+    expect(getPresence).toHaveBeenCalledTimes(2);
+    expect(getPresence).toHaveBeenLastCalledWith("@alice:localhost", true);
   });
 
   it("does not let a stale in-flight fetch clobber a presence push that arrived first", async () => {

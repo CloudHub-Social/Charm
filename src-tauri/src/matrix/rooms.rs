@@ -224,6 +224,17 @@ pub enum RoomMembershipKind {
     Invite,
 }
 
+/// One Matrix room hero exposed for Spec 53's group-DM composite avatar and
+/// aggregate presence ring. `Room::heroes()` already excludes the signed-in
+/// user and follows the homeserver/SDK's stable room-summary ordering.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct GroupDmAvatarMember {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
 /// Flat room summary for the room list. No message preview yet — that needs
 /// the timeline/event-cache API, which is Phase 1 timeline-rendering scope,
 /// not this first sync-wiring cut.
@@ -297,6 +308,11 @@ pub struct RoomSummary {
     /// rooms matrix-rust-sdk can't resolve a single hero for (e.g. the peer
     /// hasn't been synced yet).
     pub dm_peer_user_id: Option<String>,
+    /// Other members selected by Matrix's room-summary hero algorithm for a
+    /// direct room with multiple peers. Empty for 1:1 and non-direct rooms.
+    /// The frontend renders at most three faces but may use every returned
+    /// hero (Matrix caps this at five) when aggregating presence.
+    pub group_dm_members: Vec<GroupDmAvatarMember>,
     /// Whether this is a normal joined room or a pending invitation. Left,
     /// knocked, and banned rooms are deliberately excluded from snapshots.
     pub membership: RoomMembershipKind,
@@ -478,6 +494,7 @@ struct RoomIdentity {
     avatar_url: Option<String>,
     avatar_path: Option<String>,
     dm_peer_user_id: Option<String>,
+    group_dm_members: Vec<GroupDmAvatarMember>,
 }
 
 /// Resolves a room's display name and avatar. The name uses matrix-rust-sdk's
@@ -529,12 +546,27 @@ async fn resolve_room_identity(
 
     let raw_avatar_url = room.avatar_url();
 
-    let dm_peer = is_direct
-        .then(|| room.heroes())
-        .and_then(|heroes| match heroes.as_slice() {
-            [hero] => Some(hero.clone()),
-            _ => None,
-        });
+    let heroes = if is_direct {
+        room.heroes()
+    } else {
+        Default::default()
+    };
+    let dm_peer = match heroes.as_slice() {
+        [hero] => Some(hero.clone()),
+        _ => None,
+    };
+    let group_dm_members = if heroes.len() > 1 {
+        heroes
+            .iter()
+            .map(|hero| GroupDmAvatarMember {
+                user_id: hero.user_id.to_string(),
+                display_name: hero.display_name.clone(),
+                avatar_url: hero.avatar_url.as_ref().map(ToString::to_string),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let avatar_url = raw_avatar_url.map(|url| url.to_string()).or_else(|| {
         dm_peer
@@ -553,6 +585,7 @@ async fn resolve_room_identity(
         avatar_url,
         avatar_path,
         dm_peer_user_id: dm_peer.map(|hero| hero.user_id.to_string()),
+        group_dm_members,
     }
 }
 
@@ -727,6 +760,7 @@ pub async fn snapshot_rooms(
                     avatar_url: identity.avatar_url,
                     avatar_path: identity.avatar_path,
                     dm_peer_user_id: identity.dm_peer_user_id,
+                    group_dm_members: identity.group_dm_members,
                     membership,
                     inviter_user_id,
                     inviter_display_name,

@@ -221,5 +221,9 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
       typeof partial.showHiddenEvents === "boolean"
         ? partial.showHiddenEvents
         : DEFAULT_APPEARANCE.showHiddenEvents,
+    groupPresenceRing:
+      typeof partial.groupPresenceRing === "boolean"
+        ? partial.groupPresenceRing
+        : DEFAULT_APPEARANCE.groupPresenceRing,
   };
 }

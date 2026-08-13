@@ -461,12 +461,30 @@ describe("matrix web transport", () => {
       "/api/presence/%40alice%3Aexample.org",
       undefined,
     ],
+    [
+      "get_presence",
+      { userId: "@alice:example.org", avatarPresenceVisualsEnabled: true },
+      "GET",
+      "/api/presence/%40alice%3Aexample.org?avatar_presence_visuals_enabled=true",
+      undefined,
+    ],
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
     [
-      "get_user_profile",
-      { userId: "@alice:example.org", roomId: "!room:example.org" },
+      "get_own_profile",
+      { avatarPresenceVisualsEnabled: true },
       "GET",
-      "/api/users/%40alice%3Aexample.org/profile?room_id=!room%3Aexample.org",
+      "/api/profile/me?avatar_presence_visuals_enabled=true",
+      undefined,
+    ],
+    [
+      "get_user_profile",
+      {
+        userId: "@alice:example.org",
+        roomId: "!room:example.org",
+        avatarPresenceVisualsEnabled: true,
+      },
+      "GET",
+      "/api/users/%40alice%3Aexample.org/profile?room_id=%21room%3Aexample.org&avatar_presence_visuals_enabled=true",
       undefined,
     ],
     [
