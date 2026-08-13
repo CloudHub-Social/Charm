@@ -1047,8 +1047,17 @@
       "number": 31,
       "title": "Room upgrades",
       "route": "/specs/day-1/spec-31--room-upgrades/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 457,
+          "title": "feat: add avatar and presence visuals",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/457",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-13T02:31:26Z"
+        }
+      ],
       "issues": []
     },
     {
