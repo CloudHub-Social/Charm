@@ -142,10 +142,7 @@ describe("useTimelineViewport", () => {
 
     rerender({ ...initialProps, loading: false });
     await waitFor(() =>
-      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(
-        "!general:localhost",
-        "$state-anchor",
-      ),
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith("!general:localhost", "$state-anchor"),
     );
     rerender({
       ...initialProps,
