@@ -320,12 +320,9 @@ async fn emit_room_updates(
         .buffer_unordered(ROOM_DETAILS_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
-    for (room_id, result) in detail_updates {
-        match result {
-            Ok(details) => {
-                let _ = app.emit("room_details:update", details);
-            }
-            Err(_) => {}
+    for (_, result) in detail_updates {
+        if let Ok(details) = result {
+            let _ = app.emit("room_details:update", details);
         }
     }
 }
