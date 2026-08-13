@@ -133,6 +133,26 @@ describe("RoomSettingsForm", () => {
     });
   });
 
+  it("does not upload a picked avatar after the room becomes read-only", async () => {
+    setRoomAvatar.mockClear();
+    let resolveDialog: ((value: string) => void) | undefined;
+    openFileDialog.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveDialog = resolve)),
+    );
+    const mutationsBlockedRef = { current: false };
+    const details = makeRoomDetails();
+    renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload new avatar" }));
+    await waitFor(() => expect(openFileDialog).toHaveBeenCalled());
+    mutationsBlockedRef.current = true;
+    resolveDialog?.("/tmp/stale-avatar.png");
+
+    expect(setRoomAvatar).not.toHaveBeenCalled();
+  });
+
   it("changes the join rule via the dropdown", async () => {
     const details = makeRoomDetails({ join_rule: "invite" });
     renderWithProviders(<RoomSettingsForm details={details} />);

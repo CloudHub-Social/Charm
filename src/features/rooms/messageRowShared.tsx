@@ -86,6 +86,8 @@ export interface MessageRowLayoutProps {
   isPending: boolean;
   isError: boolean;
   disableRelationActions: boolean;
+  /** Disables local actions that still require a stable Matrix event id. */
+  disableStableEventActions?: boolean;
   isUndecrypted: boolean;
   rowKey: string;
   /** Forwards this message to another room. */

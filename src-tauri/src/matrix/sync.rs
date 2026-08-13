@@ -289,7 +289,13 @@ async fn emit_room_updates(
             // caught up — leaving the panel showing a stale pinned list
             // until some unrelated later refresh. Reconciling first means
             // any refetch this event triggers already sees the fresh cache.
-            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
+            let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
+                crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+            });
+            if let Ok(details) =
+                room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
+                    .await
+            {
                 let _ = app.emit("room_details:update", details);
             }
         }

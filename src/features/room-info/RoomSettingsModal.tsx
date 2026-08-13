@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -97,6 +97,8 @@ export function RoomSettingsModal({
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
   const roomMutationsBlocked =
     target?.kind !== "space" && (isFetching || isRefetchError || Boolean(details?.tombstone));
+  const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
+  roomMutationsBlockedRef.current = roomMutationsBlocked;
   const renderedDetails =
     details && roomMutationsBlocked ? withMutationsDisabled(details) : details;
 
@@ -198,7 +200,9 @@ export function RoomSettingsModal({
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {roomMutationsBlocked && (
                   <output className="m-4 block rounded-md border border-border bg-secondary px-3 py-2 text-sm text-muted-foreground">
-                    This room is read-only. Settings changes are unavailable here.
+                    {isFetching && !details?.tombstone
+                      ? "Checking current room state. Settings changes are temporarily unavailable."
+                      : "This room is read-only. Settings changes are unavailable here."}
                   </output>
                 )}
                 {/* `forceMount` + `data-[state=inactive]:hidden` keeps
@@ -217,6 +221,7 @@ export function RoomSettingsModal({
                   <RoomSettingsForm
                     details={renderedDetails}
                     isSpace={target.kind === "space"}
+                    mutationsBlockedRef={roomMutationsBlockedRef}
                     onRoomUpgraded={async (replacementRoomId) => {
                       await onRoomUpgraded?.(replacementRoomId);
                       setTarget(null);

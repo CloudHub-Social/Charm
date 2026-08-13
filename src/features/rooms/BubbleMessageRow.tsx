@@ -49,6 +49,7 @@ export function BubbleMessageRow({
   isPending,
   isError,
   disableRelationActions,
+  disableStableEventActions,
   mutationsDisabled = false,
   isUndecrypted,
   rowKey,
@@ -184,6 +185,7 @@ export function BubbleMessageRow({
               canPin={canPin}
               isPinned={isPinned}
               disableRelationActions={disableRelationActions}
+              disableStableEventActions={disableStableEventActions}
               mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}

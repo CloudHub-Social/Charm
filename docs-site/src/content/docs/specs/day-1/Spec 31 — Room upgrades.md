@@ -63,7 +63,8 @@ old room are directed to its replacement.
   tombstoned room, while read-only and local actions such as copy and bookmarks remain
   available. Room settings follows the same boundary: profile, access, membership,
   alias, encryption, and power-level mutations are disabled while state is unresolved
-  and after a tombstone is present.
+  and after a tombstone is present. Native avatar picking and alias-availability checks
+  recheck that live write barrier after their asynchronous work completes.
 
 ## Data flow
 
@@ -76,6 +77,8 @@ decision comes from the room's authoritative current `m.room.tombstone` state in
 timeline window. Room activation always refetches those details and keeps the
 composer and room-state mutations fail-closed until the current-state request succeeds;
 a failed refetch cannot trust a still-fresh cache entry from before a remote upgrade.
+The live homeserver tombstone read is enabled only with `room_upgrades`, preserving the
+existing cached/offline room-details behavior while this default-off feature is disabled.
 The backend includes
 timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains

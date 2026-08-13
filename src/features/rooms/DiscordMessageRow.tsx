@@ -51,6 +51,7 @@ export function DiscordMessageRow({
   isPending,
   isError,
   disableRelationActions,
+  disableStableEventActions,
   mutationsDisabled = false,
   isUndecrypted,
   rowKey,
@@ -192,6 +193,7 @@ export function DiscordMessageRow({
               canPin={canPin}
               isPinned={isPinned}
               disableRelationActions={disableRelationActions}
+              disableStableEventActions={disableStableEventActions}
               mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}

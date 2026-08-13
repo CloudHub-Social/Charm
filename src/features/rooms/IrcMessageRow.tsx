@@ -46,6 +46,7 @@ export function IrcMessageRow({
   isPending,
   isError,
   disableRelationActions,
+  disableStableEventActions,
   mutationsDisabled = false,
   isUndecrypted,
   rowKey,
@@ -180,6 +181,7 @@ export function IrcMessageRow({
             canPin={canPin}
             isPinned={isPinned}
             disableRelationActions={disableRelationActions}
+            disableStableEventActions={disableStableEventActions}
             mutationsDisabled={mutationsDisabled}
             isUndecrypted={isUndecrypted}
             isError={isError}

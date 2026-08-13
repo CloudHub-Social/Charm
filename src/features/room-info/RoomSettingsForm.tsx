@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import * as Sentry from "@sentry/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
@@ -81,12 +81,14 @@ interface RoomSettingsFormProps {
   details: RoomDetails;
   isSpace?: boolean;
   onRoomUpgraded?: (replacementRoomId: string) => void | Promise<void>;
+  mutationsBlockedRef?: RefObject<boolean>;
 }
 
 export function RoomSettingsForm({
   details,
   isSpace = false,
   onRoomUpgraded,
+  mutationsBlockedRef,
 }: RoomSettingsFormProps) {
   const actions = useRoomAdminActions(details.room_id);
   const [name, setName] = useState(details.name ?? "");
@@ -96,6 +98,8 @@ export function RoomSettingsForm({
   const [followingUpgrade, setFollowingUpgrade] = useState(false);
   const [followUpgradeError, setFollowUpgradeError] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const fallbackMutationsBlockedRef = useRef(false);
+  const liveMutationsBlockedRef = mutationsBlockedRef ?? fallbackMutationsBlockedRef;
   const roomAliasManagementEnabled = useFlag("room_alias_management");
   const roomUpgradesEnabled = useFlag("room_upgrades");
 
@@ -116,7 +120,7 @@ export function RoomSettingsForm({
       multiple: false,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
     }).then((selected) => {
-      if (typeof selected === "string") {
+      if (typeof selected === "string" && !liveMutationsBlockedRef.current) {
         actions.setAvatar.mutate(selected);
       }
     });
@@ -125,7 +129,7 @@ export function RoomSettingsForm({
   function handleAvatarInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (file) {
+    if (file && !liveMutationsBlockedRef.current) {
       actions.setAvatar.mutate(file);
     }
   }
@@ -271,7 +275,7 @@ export function RoomSettingsForm({
       {roomAliasManagementEnabled && !isWebBuild() && (
         <section className="flex flex-col gap-6">
           <h3 className="text-sm font-semibold text-foreground">Addresses</h3>
-          <RoomAliasManagement details={details} />
+          <RoomAliasManagement details={details} mutationsBlockedRef={liveMutationsBlockedRef} />
         </section>
       )}
 

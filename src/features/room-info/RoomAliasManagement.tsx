@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,7 @@ const NONE_VALUE = "__none__";
 
 interface RoomAliasManagementProps {
   details: RoomDetails;
+  mutationsBlockedRef?: RefObject<boolean>;
 }
 
 /**
@@ -55,7 +56,7 @@ interface RoomAliasManagementProps {
  * check — see that field's doc comment in `room_admin.rs` for why Matrix has
  * no distinct power-level requirement for directory publish/unpublish.
  */
-export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
+export function RoomAliasManagement({ details, mutationsBlockedRef }: RoomAliasManagementProps) {
   const actions = useRoomAdminActions(details.room_id);
   const { data: aliases, isLoading, isError } = useRoomAliases(details.room_id);
   const { data: profile } = useProfile();
@@ -90,6 +91,10 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
       return;
     }
     setCheckingAvailability(false);
+    if (mutationsBlockedRef?.current) {
+      setAddError("This room became read-only before the alias could be added");
+      return;
+    }
     if (!available) {
       setAddError("That alias is already in use");
       return;

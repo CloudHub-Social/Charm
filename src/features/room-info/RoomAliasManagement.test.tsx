@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomAliasManagement } from "./RoomAliasManagement";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
@@ -81,6 +81,33 @@ describe("RoomAliasManagement", () => {
     await waitFor(() => {
       expect(addRoomAlias).toHaveBeenCalledWith(details.room_id, "#team-room:example.org");
     });
+  });
+
+  it("does not add an alias after the room becomes read-only during availability checking", async () => {
+    addRoomAlias.mockClear();
+    let resolveAvailability: ((value: boolean) => void) | undefined;
+    checkRoomAliasAvailable.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => (resolveAvailability = resolve)),
+    );
+    getRoomLocalAliases.mockResolvedValue([]);
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement
+        details={makeRoomDetails({ room_id: "!test:example.org" })}
+        mutationsBlockedRef={mutationsBlockedRef}
+      />,
+    );
+
+    await screen.findByText("No published addresses yet.");
+    fireEvent.change(screen.getByLabelText("New alias local part"), {
+      target: { value: "team-room" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    mutationsBlockedRef.current = true;
+    await act(async () => resolveAvailability?.(true));
+
+    expect(await screen.findByText(/became read-only/)).toBeInTheDocument();
+    expect(addRoomAlias).not.toHaveBeenCalled();
   });
 
   it("uses the signed-in user's homeserver, not the room's, for federated rooms", async () => {

@@ -82,6 +82,8 @@ export interface MessageActionsProps {
    * needs the body text.
    */
   disableRelationActions?: boolean;
+  /** Disables local actions that require a stable server event id. */
+  disableStableEventActions?: boolean;
   /** Disables server mutations not already covered by relation-action gating. */
   mutationsDisabled?: boolean;
   /**
@@ -162,6 +164,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDiscard,
       className,
       disableRelationActions = false,
+      disableStableEventActions = disableRelationActions,
       mutationsDisabled = false,
       isUndecrypted = false,
       isError = false,
@@ -381,7 +384,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                   (isBookmarked && onUnbookmark ? (
                     <DropdownMenuItem
                       onSelect={onUnbookmark}
-                      disabled={disableRelationActions || isUndecrypted}
+                      disabled={disableStableEventActions || isUndecrypted}
                     >
                       <BookmarkX />
                       Remove bookmark
@@ -390,7 +393,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                     onBookmark && (
                       <DropdownMenuItem
                         onSelect={onBookmark}
-                        disabled={disableRelationActions || isUndecrypted}
+                        disabled={disableStableEventActions || isUndecrypted}
                       >
                         <Bookmark />
                         Bookmark

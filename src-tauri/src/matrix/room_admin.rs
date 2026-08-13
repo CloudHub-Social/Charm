@@ -17,6 +17,7 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
+use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
 use matrix_sdk::ruma::events::{AnyStateEvent, StateEvent, StateEventType};
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
@@ -339,7 +340,11 @@ async fn fetch_current_tombstone(
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/room_admin.rs` rather than the `--lib` unit-test target CI runs
 /// without a local Synapse available — same rationale as [`super::resolve_alias`].
-pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDetails, String> {
+pub async fn build_room_details(
+    client: &Client,
+    room_id: &str,
+    authoritative_tombstone: bool,
+) -> Result<RoomDetails, String> {
     let room = require_room(client, room_id)?;
     let own_user_id = client
         .user_id()
@@ -380,7 +385,23 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         .unwrap_or(false);
 
     let join_rule = room.join_rule().unwrap_or(JoinRule::Invite);
-    let tombstone = fetch_current_tombstone(client, room.room_id()).await?;
+    let tombstone = if authoritative_tombstone {
+        fetch_current_tombstone(client, room.room_id()).await?
+    } else {
+        room.get_state_event_static::<RoomTombstoneEventContent>()
+            .await
+            .map_err(|e| e.to_string())?
+            .and_then(|raw| raw.deserialize().ok())
+            .and_then(|event| match event {
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(event),
+                ) => Some(RoomTombstoneDetails {
+                    body: event.content.body,
+                    replacement_room_id: event.content.replacement_room.to_string(),
+                }),
+                _ => None,
+            })
+    };
 
     Ok(RoomDetails {
         room_id: room.room_id().to_string(),
@@ -412,11 +433,15 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
 
 #[tauri::command]
 pub async fn get_room_details(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<RoomDetails, String> {
     let client = state.require_client().await?;
-    build_room_details(&client, &room_id).await
+    let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    build_room_details(&client, &room_id, authoritative_tombstone).await
 }
 
 /// Active + banned memberships, unlike [`members::get_room_members`]'s

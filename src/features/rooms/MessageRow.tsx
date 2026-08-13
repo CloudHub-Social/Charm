@@ -95,6 +95,7 @@ export function MessageRow(props: MessageRowProps) {
   // reliable way to tell the two apart without depending on send_state timing.
   const hasRealEventId = message.event_id.startsWith("$");
   const disableRelationActions = mutationsDisabled || isPending || !hasRealEventId;
+  const disableStableEventActions = isPending || !hasRealEventId;
   // `is_undecrypted` is the authoritative signal, set server-side only for a
   // `MsgLikeKind::UnableToDecrypt` timeline item — never derive this from
   // `body` text (a real decrypted message can legitimately contain the
@@ -111,6 +112,7 @@ export function MessageRow(props: MessageRowProps) {
     isPending,
     isError,
     disableRelationActions,
+    disableStableEventActions,
     isUndecrypted,
     rowKey,
   };

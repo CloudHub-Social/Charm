@@ -570,6 +570,10 @@ describe("ChatShell", () => {
     });
     expect(await screen.findByText("Reply")).toHaveAttribute("data-disabled");
     expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+    const bookmark = screen.getByText("Bookmark").closest("[role=menuitem]");
+    expect(bookmark).not.toHaveAttribute("data-disabled");
+    fireEvent.click(bookmark!);
+    await waitFor(() => expect(addBookmark).toHaveBeenCalledWith(room.room_id, "$old:localhost"));
   });
 
   it("blocks attachment drops after authoritative tombstone state closes the room", async () => {

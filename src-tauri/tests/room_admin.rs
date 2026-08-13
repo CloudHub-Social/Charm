@@ -240,7 +240,7 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
     .expect("power level thresholds observed");
 
     // --- RoomDetails/RoomPermissions as the admin sees them ---
-    let details = build_room_details(&admin, room.room_id().as_str())
+    let details = build_room_details(&admin, room.room_id().as_str(), false)
         .await
         .expect("build room details as admin");
     assert!(
@@ -404,7 +404,7 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
         .get_room(room.room_id())
         .expect("room known to second client");
 
-    let details = build_room_details(&second, room.room_id().as_str())
+    let details = build_room_details(&second, room.room_id().as_str(), false)
         .await
         .expect("build room details as low-PL member");
     assert!(!details.can.set_name);
@@ -458,7 +458,7 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
 
     // RoomDetails uses the same authoritative server-state read, so the UI's
     // write barrier must also close before the next sync reaches this client.
-    let details = build_room_details(&admin, room.room_id().as_str())
+    let details = build_room_details(&admin, room.room_id().as_str(), true)
         .await
         .expect("build upgraded room details before syncing the tombstone");
     assert_eq!(
