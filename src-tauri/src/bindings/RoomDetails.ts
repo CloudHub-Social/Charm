@@ -30,7 +30,7 @@ alt_aliases: Array<string>,
  * push every other `RoomDetails` field already relies on — no new
  * sync-side plumbing needed (Spec day-2/04's stated data flow).
  */
-pinned_event_ids: Array<string>,
+pinned_event_ids: Array<string>, 
 /**
  * Authoritative current `m.room.tombstone` state. Unlike a timeline
  * window, room state retains this after newer events arrive and when the
