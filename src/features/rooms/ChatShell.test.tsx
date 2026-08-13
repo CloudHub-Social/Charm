@@ -3768,7 +3768,7 @@ describe("ChatShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Jump to date" }));
     fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2025-02-03" } });
-    fireEvent.click(screen.getByRole("button", { name: "Jump", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Jump" }));
     await waitFor(() =>
       expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$date-target"),
     );
