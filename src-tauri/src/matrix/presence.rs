@@ -106,16 +106,12 @@ pub fn register_presence_handler(app: AppHandle, client: &Client) {
     client.add_event_handler(move |ev: PresenceEvent| {
         let app = app.clone();
         async move {
-            let flag_enabled = app.path().app_data_dir().is_ok_and(|dir| {
-                crate::feature_flags::flag(
-                    &dir,
-                    crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
-                )
-            });
-            let _ = app.emit(
-                "presence:update",
-                presence_event_to_update(&ev, flag_enabled),
-            );
+            // Preserve the raw custom busy state in live events. A Labs
+            // toggle updates the frontend before its durable file write, so
+            // normalizing here could race that write and overwrite a
+            // flag-aware refresh with Offline. Flag-off consumers normalize
+            // DND at render time; flag-on consumers can use it immediately.
+            let _ = app.emit("presence:update", presence_event_to_update(&ev, true));
         }
     });
 }
