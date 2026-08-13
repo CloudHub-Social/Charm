@@ -100,7 +100,8 @@ function RoomListItemImpl({
       {...dragHandleProps}
     >
       {avatarPresenceVisualsEnabled &&
-      !resolveAvatar(room.avatar_path, room.avatar_url) &&
+      !room.avatar_path &&
+      !room.avatar_url &&
       room.group_dm_members.length > 1 ? (
         <GroupDmAvatar members={room.group_dm_members} showPresenceRing={groupPresenceRing} />
       ) : (
