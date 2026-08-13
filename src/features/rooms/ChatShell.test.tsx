@@ -663,14 +663,28 @@ describe("ChatShell", () => {
       expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true),
     );
 
+    setRoomSendQueueReadOnly.mockRejectedValueOnce(new Error("resume failed"));
     view.unmount();
-    render(
+    const writableView = render(
       <JotaiProvider store={store}>
         <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
       </JotaiProvider>,
     );
     await waitFor(() =>
       expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, false),
+    );
+
+    writableView.unmount();
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => !readOnly)).toHaveLength(
+        2,
+      ),
     );
   });
 

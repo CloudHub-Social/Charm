@@ -48,7 +48,8 @@ current-state guarantees as the Tauri path.
   than trusting an SDK state cache that may not have received another admin's upgrade.
   Charm also compares the room's current version with the advertised target: rooms
   already at that version hide the action, and the command rejects a stale direct
-  invocation with a no-upgrade-needed error.
+  invocation with a no-upgrade-needed error. If the SDK cannot resolve the room's
+  create content, both paths fail closed instead of disagreeing about eligibility.
 
 ### Landing in a tombstoned room
 

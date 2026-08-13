@@ -31,7 +31,15 @@ export function useRoomSendQueueBarrier(
       .catch(logAndIgnore)
       .then(() => setRoomSendQueueReadOnly(roomId, desiredReadOnly))
       .then(() => undefined)
-      .catch(logAndIgnore);
+      .catch((error: unknown) => {
+        // A pause failure is conservatively still treated as owned: the
+        // backend disables the queue before it drains local echoes, so an
+        // abort error can leave the queue safely paused. A resume failure,
+        // however, must restore ownership so the next mount/transition
+        // retries instead of permanently believing the queue is writable.
+        if (!desiredReadOnly && !pausedRoomIds.has(roomId)) pausedRoomIds.add(roomId);
+        logAndIgnore(error);
+      });
     commandChains.set(roomId, next);
     void next.finally(() => {
       if (commandChains.get(roomId) === next) commandChains.delete(roomId);

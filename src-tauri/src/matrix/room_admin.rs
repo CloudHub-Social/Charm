@@ -684,10 +684,11 @@ pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String,
         .room_versions()
         .await
         .map_err(|e| e.to_string())?;
-    if room
+    let current_room_version = room
         .create_content()
-        .is_some_and(|content| content.room_version == room_versions.default)
-    {
+        .map(|content| content.room_version)
+        .ok_or_else(|| "Unable to determine the room's current version.".to_string())?;
+    if current_room_version == room_versions.default {
         return Err("This room already uses the homeserver's default room version.".to_string());
     }
     // Keep this authoritative guard immediately next to the upgrade write.
