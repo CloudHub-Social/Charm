@@ -162,4 +162,45 @@ describe("useTimelineViewport", () => {
     );
     expect(onJumpHandled).toHaveBeenCalledOnce();
   });
+
+  it("waits for a focused timeline update instead of selecting from the live tail", async () => {
+    loadTimelineAroundEvent.mockResolvedValue({
+      found: true,
+      installed_focused_view: true,
+    });
+    const onJumpHandled = vi.fn();
+    const initialProps = props({
+      jumpToEventId: "$state-anchor",
+      jumpToTimestampMs: 100,
+      onJumpHandled,
+      messages: [message("$live-tail", "@other:localhost", 200)],
+    });
+    const { result, rerender } = renderHook((currentProps) => useTimelineViewport(currentProps), {
+      initialProps,
+    });
+    const scrollToIndex = vi.fn();
+    result.current.virtuosoRef.current = { scrollToIndex } as never;
+
+    rerender({ ...initialProps, loading: false });
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.current.hasFocusedView).toBe(true));
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(onJumpHandled).not.toHaveBeenCalled();
+
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [
+        message("$before", "@other:localhost", 50),
+        message("$focused", "@other:localhost", 120),
+      ],
+    });
+
+    await waitFor(() =>
+      expect(scrollToIndex).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, align: "center" }),
+      ),
+    );
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+  });
 });

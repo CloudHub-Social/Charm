@@ -221,11 +221,28 @@ export function useTimelineViewport({
           onJumpHandled?.();
           return;
         }
+        // A focused server view is delivered by the timeline listener after
+        // this IPC response. Do not resolve a timestamp against the captured
+        // live-tail messages while that replacement is still in flight.
+        if (installed_focused_view) {
+          if (jumpFallbackTimeoutRef.current !== null) {
+            clearTimeout(jumpFallbackTimeoutRef.current);
+          }
+          jumpFallbackTimeoutRef.current = setTimeout(() => {
+            jumpFallbackTimeoutRef.current = null;
+            if (loadRequestedForRef.current === requestKey) {
+              loadRequestedForRef.current = null;
+              onJumpHandled?.();
+            }
+          }, JUMP_FALLBACK_TIMEOUT_MS);
+          return;
+        }
         const currentVisibleTarget =
           jumpToTimestampMs === null
             ? messages.find((message) => message.event_id === jumpToEventId)
             : messages.find((message) => message.timestamp_ms >= jumpToTimestampMs);
         if (currentVisibleTarget) {
+          setHasFocusedView(true);
           loadRequestedForRef.current = null;
           handleJumpToMessage(currentVisibleTarget.event_id);
           onJumpHandled?.();
