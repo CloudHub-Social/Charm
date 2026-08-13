@@ -460,4 +460,11 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
             .map(|tombstone| tombstone.replacement_room_id.as_str()),
         Some(replacement_room_id.as_str())
     );
+
+    let repeated_upgrade = upgrade_room_impl(&admin, room.room_id().as_str()).await;
+    assert_eq!(
+        repeated_upgrade.as_deref(),
+        Err("This room has already been upgraded."),
+        "an existing tombstone must prevent creating a second replacement room"
+    );
 }

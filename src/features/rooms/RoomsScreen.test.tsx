@@ -14,6 +14,7 @@ const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false)
     data: undefined,
     isSuccess: false,
     isFetching: false,
+    isRefetchError: false,
   };
 });
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
@@ -293,6 +294,7 @@ beforeEach(() => {
     data: undefined,
     isSuccess: false,
     isFetching: false,
+    isRefetchError: false,
   });
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
@@ -320,12 +322,27 @@ describe("RoomsScreen", () => {
       data: undefined,
       isSuccess: true,
       isFetching: true,
+      isRefetchError: false,
     });
 
     renderRoomsScreen();
 
     await screen.findByText("chat-content:!a:example.org");
     expect(mockUseRoomDetails).toHaveBeenLastCalledWith("!a:example.org", true);
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+  });
+
+  it("stays fail-closed when an activation refetch fails over cached state", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: true,
+    });
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!a:example.org");
     expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
   });
 

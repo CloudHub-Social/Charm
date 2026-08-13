@@ -613,8 +613,10 @@ export function RoomsScreen({
     data: activeRoomDetails,
     isSuccess: activeRoomStateLoaded,
     isFetching: activeRoomStateFetching,
+    isRefetchError: activeRoomStateRefetchFailed,
   } = useRoomDetails(activeRoom?.room_id ?? null, true);
-  const activeRoomStateResolved = activeRoomStateLoaded && !activeRoomStateFetching;
+  const activeRoomStateResolved =
+    activeRoomStateLoaded && !activeRoomStateFetching && !activeRoomStateRefetchFailed;
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
   );
@@ -732,6 +734,7 @@ export function RoomsScreen({
           activeRoom && messagePinningEnabled && pinnedMessagesDrawerOpen ? (
             <PinnedMessagesPanel
               roomId={activeRoom.room_id}
+              roomStateResolved={activeRoomStateResolved}
               onClose={() => setPinnedMessagesDrawerOpen(false)}
               // Review fix: this used to call `ChatShell`'s own imperative
               // `scrollToMessage` (a plain in-loaded-window `scrollToIndex`,

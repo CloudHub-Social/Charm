@@ -607,6 +607,14 @@ pub async fn upgrade_room(
 /// Core logic behind [`upgrade_room`].
 pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
     let room = require_room(client, room_id)?;
+    if room
+        .get_state_event_static::<RoomTombstoneEventContent>()
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err("This room has already been upgraded.".to_string());
+    }
     let own_user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?;

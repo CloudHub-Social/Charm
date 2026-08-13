@@ -110,6 +110,24 @@ describe("PinnedMessagesPanel", () => {
     expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
   });
 
+  it("hides the unpin mutation while authoritative room state is unresolved", async () => {
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([pinnedMessage({ event_id: "$1" })]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        roomStateResolved={false}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    await screen.findByText("Read the room rules before posting");
+    expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
+  });
+
   it("shows an error message when the fetch fails", async () => {
     const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
     getRoomDetails.mockResolvedValue(details);

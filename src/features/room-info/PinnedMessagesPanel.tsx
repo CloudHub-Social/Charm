@@ -38,6 +38,8 @@ function timelineMessageSignature(message: RoomMessageSummary): string {
 
 interface PinnedMessagesPanelProps {
   roomId: string;
+  /** False while the active room's authoritative state is unresolved or its refetch failed. */
+  roomStateResolved?: boolean;
   onClose: () => void;
   /** Reuses `ChatShell`'s `handleJumpToMessage` — the same loaded-messages
    * scroll-to mechanism the reply-preview "jump to source" click and
@@ -73,6 +75,7 @@ function formatTimestamp(timestampMs: number): string {
  */
 export function PinnedMessagesPanel({
   roomId,
+  roomStateResolved = true,
   onClose,
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
@@ -99,7 +102,8 @@ export function PinnedMessagesPanel({
     [pinnedEventIdsKey],
   );
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
-  const canUnpin = (details?.can.set_pinned_events ?? false) && !details?.tombstone;
+  const canUnpin =
+    roomStateResolved && (details?.can.set_pinned_events ?? false) && !details?.tombstone;
   const queryClient = useQueryClient();
 
   // Review fix: `usePinnedMessages`'s query key only covers the pinned id

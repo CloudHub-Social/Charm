@@ -222,4 +222,18 @@ describe("RoomSettingsForm", () => {
 
     expect(screen.getByRole("button", { name: "Upgrade room" })).toBeDisabled();
   });
+
+  it("hides the room upgrade action after the room is tombstoned", () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails({
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+
+    renderWithProviders(<RoomSettingsForm details={details} />);
+
+    expect(screen.queryByRole("button", { name: "Upgrade room" })).not.toBeInTheDocument();
+  });
 });

@@ -40,6 +40,8 @@ old room are directed to its replacement.
 - On confirm, Charm calls ruma's typed Matrix room-upgrade endpoint through
   matrix-rust-sdk's `Client::send`, targeting the homeserver capability's default
   room version. Charm does not reproduce the upgrade with custom state-event writes.
+  Both the settings surface and native command reject an already-tombstoned room,
+  preventing a second replacement from superseding the original upgrade path.
 
 ### Landing in a tombstoned room
 
@@ -66,8 +68,9 @@ timeline state parsing remains useful for in-context notices, while the read-onl
 decision comes from the room's authoritative current `m.room.tombstone` state in
 `RoomDetails`; it therefore remains correct when the tombstone is outside the loaded
 timeline window. Room activation always refetches those details and keeps the
-composer fail-closed until the current-state request settles, so a still-fresh cache
-entry from before a remote upgrade cannot reopen the old room. The backend includes
+composer and room-state mutations fail-closed until the current-state request succeeds;
+a failed refetch cannot trust a still-fresh cache entry from before a remote upgrade.
+The backend includes
 timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains
 self-contained. Following the replacement explicitly joins it when necessary,

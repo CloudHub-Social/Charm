@@ -320,7 +320,7 @@ export function RoomSettingsForm({
               </DialogContent>
             </Dialog>
           </div>
-          {roomUpgradesEnabled && !isWebBuild() && (
+          {roomUpgradesEnabled && !isWebBuild() && !details.tombstone && (
             <div className="flex flex-col gap-2">
               <Label>Room version</Label>
               <p className="text-sm text-muted-foreground">
