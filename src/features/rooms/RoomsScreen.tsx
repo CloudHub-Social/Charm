@@ -653,7 +653,7 @@ export function RoomsScreen({
   const authoritativeRoomStateResolved =
     !roomUpgradesEnabled ||
     (authoritativeRoomState?.roomId === activeRoom?.room_id &&
-      authoritativeRoomState.persistenceVersion === roomUpgradesPersistenceVersion);
+      authoritativeRoomState?.persistenceVersion === roomUpgradesPersistenceVersion);
   const activeRoomStateResolved =
     activeRoomStateLoaded &&
     !activeRoomStateFetching &&

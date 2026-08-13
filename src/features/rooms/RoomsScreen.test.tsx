@@ -17,7 +17,6 @@ const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false)
     isSuccess: false,
     isFetching: false,
     isRefetchError: false,
-    refetch: mockRefetchRoomDetails,
   };
 });
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
@@ -92,8 +91,8 @@ vi.mock("@/features/room-info/RoomSettingsModal", () => ({
 // `QueryClientProvider` in the tree.
 vi.mock("@/features/room-info/useRoomDetails", () => ({
   useRoomDetails: (roomId: string | null, refetchOnMount?: boolean) => ({
-    refetch: mockRefetchRoomDetails,
     ...mockUseRoomDetails(roomId, refetchOnMount),
+    refetch: mockRefetchRoomDetails,
   }),
 }));
 
