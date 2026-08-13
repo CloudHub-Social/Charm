@@ -66,6 +66,8 @@ export function MessagePillProfileDialog({
 }) {
   const userId = profile?.userId ?? "";
   const queryClient = useQueryClient();
+  const presenceDetailsEnabled = useFlag("presence_privacy_controls");
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const roomListSignatureRef = useRef<string | null>(null);
   const pendingProfileRefreshRef = useRef(false);
   const pendingMutualRoomsRefreshRef = useRef(false);
@@ -93,7 +95,13 @@ export function MessagePillProfileDialog({
     if (!detailed || !roomId || !userId) return undefined;
     const unlisten = onRoomDetailsUpdate((details) => {
       if (details.room_id === roomId) {
-        const profileKey = ["user-profile", accountId ?? null, userId, roomId] as const;
+        const profileKey = [
+          "user-profile",
+          accountId ?? null,
+          userId,
+          roomId,
+          avatarPresenceVisualsEnabled,
+        ] as const;
         if (queryClient.isFetching({ queryKey: profileKey, exact: true }) > 0) {
           pendingProfileRefreshRef.current = true;
         } else {
@@ -105,7 +113,15 @@ export function MessagePillProfileDialog({
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
     };
-  }, [accountId, detailed, queryClient, refreshMutualRooms, roomId, userId]);
+  }, [
+    accountId,
+    avatarPresenceVisualsEnabled,
+    detailed,
+    queryClient,
+    refreshMutualRooms,
+    roomId,
+    userId,
+  ]);
   useEffect(() => {
     if (!detailed || !userId) return undefined;
     const unlisten = onRoomListUpdate((rooms) => {
@@ -127,8 +143,6 @@ export function MessagePillProfileDialog({
       unlisten.then((stop) => stop()).catch(() => {});
     };
   }, [detailed, refreshMutualRooms, userId]);
-  const presenceDetailsEnabled = useFlag("presence_privacy_controls");
-  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   // getUserProfile already includes the initial presence snapshot. This hook
   // only needs to observe newer pushes while the card stays open.
   const livePresence = usePresence(detailed && userId !== "" ? userId : null, {

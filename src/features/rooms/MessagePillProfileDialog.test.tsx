@@ -128,7 +128,11 @@ describe("MessagePillProfileDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mutual Room" }));
     expect(onNavigateToRoom).toHaveBeenCalledWith("!mutual:example.org");
     expect(onClose).toHaveBeenCalledOnce();
-    expect(getUserProfile).toHaveBeenCalledWith("@alice:example.org", "!current:example.org");
+    expect(getUserProfile).toHaveBeenCalledWith(
+      "@alice:example.org",
+      "!current:example.org",
+      false,
+    );
   });
 
   it("opens a direct message and blocks another user from the card", async () => {
