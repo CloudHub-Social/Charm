@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use imbl::Vector;
 use matrix_sdk::ruma::api::client::context::get_context::v3 as get_context;
+use matrix_sdk::ruma::api::client::filter::RoomEventFilter;
+use matrix_sdk::ruma::api::client::message::get_message_events::v3 as get_message_events;
 use matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1 as get_event_by_timestamp;
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
@@ -1572,6 +1574,18 @@ fn renderable_message_event_id(event: &Raw<AnyTimelineEvent>) -> Option<String> 
     event.get_field::<String>("event_id").ok().flatten()
 }
 
+fn renderable_message_filter() -> RoomEventFilter {
+    RoomEventFilter {
+        types: Some(vec![
+            "m.room.message".to_string(),
+            "m.room.encrypted".to_string(),
+        ]),
+        ..Default::default()
+    }
+}
+
+const MAX_TIMESTAMP_MESSAGE_PAGES: usize = 20;
+
 /// Resolves the closest renderable room message in the requested direction.
 /// Matrix's stable `/timestamp_to_event` endpoint may return any timeline
 /// event, so a filtered `/context` lookup converts that anchor into an event
@@ -1601,16 +1615,13 @@ pub async fn get_event_at_timestamp_impl(
 
     let mut request = get_context::Request::new(room_id.to_owned(), response.event_id);
     request.limit = UInt::from(100_u8);
-    request.filter.types = Some(vec![
-        "m.room.message".to_string(),
-        "m.room.encrypted".to_string(),
-    ]);
+    request.filter = renderable_message_filter();
     let context = client
         .send(request)
         .await
         .map_err(|_| "No message was found near that date.".to_string())?;
 
-    context
+    if let Some(event_id) = context
         .event
         .as_ref()
         .and_then(renderable_message_event_id)
@@ -1627,7 +1638,41 @@ pub async fn get_event_at_timestamp_impl(
                     .find_map(renderable_message_event_id)
             }
         })
-        .ok_or_else(|| "No message was found near that date.".to_string())
+    {
+        return Ok(event_id);
+    }
+
+    let mut token = if search_forward {
+        context.end
+    } else {
+        context.start
+    };
+    for _ in 0..MAX_TIMESTAMP_MESSAGE_PAGES {
+        let Some(from) = token else {
+            break;
+        };
+        let mut request = get_message_events::Request::new(
+            room_id.to_owned(),
+            if search_forward {
+                Direction::Forward
+            } else {
+                Direction::Backward
+            },
+        );
+        request.from = Some(from.clone());
+        request.limit = UInt::from(100_u8);
+        request.filter = renderable_message_filter();
+        let page = client
+            .send(request)
+            .await
+            .map_err(|_| "No message was found near that date.".to_string())?;
+        if let Some(event_id) = page.chunk.iter().find_map(renderable_message_event_id) {
+            return Ok(event_id);
+        }
+        token = page.end.filter(|next| next != &from);
+    }
+
+    Err("No message was found near that date.".to_string())
 }
 
 /// Finds the event nearest to a timestamp in a joined room. Only the event ID
@@ -2028,6 +2073,65 @@ mod mapping_tests {
             .expect("the first renderable message should be returned");
 
         assert_eq!(event_id, "$first-message:example.org");
+    }
+
+    #[tokio::test]
+    async fn get_event_at_timestamp_pages_past_an_empty_filtered_context() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.sync_joined_room(&client, room_id).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/_matrix/client/(v1|unstable/org\.matrix\.msc3030)/rooms/.*/timestamp_to_event$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event_id": "$membership:example.org",
+                "origin_server_ts": 1704067201000_u64,
+            })))
+            .mount(server.server())
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/(r0|v3)/rooms/.*/context/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event": {
+                    "type": "m.room.member",
+                    "event_id": "$membership:example.org",
+                    "sender": "@alice:example.org",
+                    "state_key": "@alice:example.org",
+                    "origin_server_ts": 1704067201000_u64,
+                    "content": { "membership": "join" }
+                },
+                "events_before": [],
+                "events_after": [],
+                "end": "next-page",
+                "state": []
+            })))
+            .mount(server.server())
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/(r0|v3)/rooms/.*/messages$"))
+            .and(query_param("from", "next-page"))
+            .and(query_param("dir", "f"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "start": "next-page",
+                "chunk": [{
+                    "type": "m.room.message",
+                    "event_id": "$paged-message:example.org",
+                    "sender": "@alice:example.org",
+                    "origin_server_ts": 1704067202000_u64,
+                    "content": { "msgtype": "m.text", "body": "Paged message" }
+                }],
+                "state": []
+            })))
+            .mount(server.server())
+            .await;
+
+        let event_id = get_event_at_timestamp_impl(&client, room_id, 1_704_067_200_000, "forward")
+            .await
+            .expect("pagination should find a renderable message");
+
+        assert_eq!(event_id, "$paged-message:example.org");
     }
 
     #[tokio::test]

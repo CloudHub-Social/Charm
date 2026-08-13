@@ -59,6 +59,9 @@ into it is a worse experience than a shorter one). Including it as a genuine
 - Because that endpoint may anchor on a membership or other non-message event, a
   filtered `/context` lookup resolves the nearest plain or encrypted room message
   in the requested direction before the target crosses the transport boundary.
+  If the context window contains no renderable message, bounded filtered
+  `/messages` pagination continues from its directional token until a message or
+  the accessible-history boundary is reached.
 - Once the target event ID is resolved, the timeline needs to paginate/load around
   that point and scroll to it — this is the part that must integrate carefully with
   Spec 26's bottom-up virtualization rebuild: "jump to an arbitrary point mid-
@@ -93,9 +96,9 @@ underlying SDK already supports paginating around an arbitrary event.
 ## Testing strategy
 
 - Rust CI: `get_event_at_timestamp` correctness against mocked
-  `/timestamp_to_event` and `/context` responses, including non-message anchors
-  and the "no event before/after this date" edge case (room created after the
-  requested date, or date in the future).
+  `/timestamp_to_event`, `/context`, and `/messages` responses, including
+  non-message anchors, filtered pagination, and the "no event before/after this
+  date" edge case (room created after the requested date, or date in the future).
 - Frontend CI: date picker → jump → correct message scrolled-to-and-highlighted,
   using a fixture timeline; "back to live" returns to the actual bottom, not a
   stale cached position.
