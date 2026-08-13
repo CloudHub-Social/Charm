@@ -673,7 +673,10 @@ pub async fn upgrade_room(
     }
     let client = state.require_client().await?;
     // Serialize the authoritative upgrade and immediate old-room drain with
-    // every message, upload, slash mutation, and sync-driven barrier admission.
+    // mutations and sync-driven barrier admission for this room. The global
+    // send-capture lock remains narrower so an unrelated room's network
+    // mutation cannot delay publication of this room's tombstone barrier.
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let replacement_room_id = upgrade_room_impl(&client, &room_id).await?;
     // The successful endpoint response is authoritative: close the old room

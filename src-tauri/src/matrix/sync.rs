@@ -28,6 +28,12 @@ fn should_seed_room_upgrade_scan(enabled: bool, was_enabled: bool) -> bool {
     enabled && !was_enabled
 }
 
+fn room_upgrades_enabled(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    })
+}
+
 // Spec 14 removed `spawn_send_queue_listener` (and the `send_queue:update`
 // event/`SendQueueUpdateEvent` DTO it fed): a room's live `matrix-sdk-ui`
 // `Timeline` now surfaces the same pending -> sent -> error transitions as
@@ -126,9 +132,7 @@ async fn emit_room_updates(
     const ROOM_DETAILS_CONCURRENCY: usize = 8;
     let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
-    let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
-        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
-    });
+    let authoritative_tombstone = room_upgrades_enabled(app);
     if !authoritative_tombstone {
         super::actions::resume_all_room_upgrade_queues(client).await;
         room_detail_retries.clear();
@@ -331,7 +335,8 @@ async fn emit_room_updates(
         // member mutations open throughout the request window.
         for room_id in &room_details_room_ids {
             let _ = app.emit("room_details:unresolved", room_id.to_string());
-            let _ = super::actions::set_room_send_queue_read_only_impl(
+            let _ = super::actions::set_room_send_queue_read_only_if_enabled(
+                app,
                 client,
                 Some(&state),
                 room_id.as_str(),
@@ -359,17 +364,38 @@ async fn emit_room_updates(
                     continue;
                 }
                 let read_only = details.tombstone.is_some();
-                let barrier_result = super::actions::set_room_send_queue_read_only_impl(
-                    client,
-                    Some(&state),
-                    room_id.as_str(),
-                    read_only,
-                    read_only,
-                )
-                .await;
+                // The refresh above may have crossed a kill-switch change.
+                // The gated transition rechecks under the same room/global
+                // admission locks used for the destructive drain.
+                let barrier_result = if read_only {
+                    super::actions::set_room_send_queue_read_only_if_enabled(
+                        app,
+                        client,
+                        Some(&state),
+                        room_id.as_str(),
+                        true,
+                        true,
+                    )
+                    .await
+                } else {
+                    super::actions::set_room_send_queue_read_only_impl(
+                        client,
+                        Some(&state),
+                        room_id.as_str(),
+                        false,
+                        false,
+                    )
+                    .await
+                    .map(Some)
+                };
                 match barrier_result {
-                    Ok(_) => {
+                    Ok(Some(_)) => {
                         room_detail_retries.remove(&room_id);
+                        let _ = app.emit("room_details:update", details);
+                    }
+                    Ok(None) => {
+                        super::actions::resume_all_room_upgrade_queues(client).await;
+                        room_detail_retries.clear();
                         let _ = app.emit("room_details:update", details);
                     }
                     Err(error) => {
@@ -382,13 +408,17 @@ async fn emit_room_updates(
                     }
                 }
             }
-            Err(error) if authoritative_tombstone => {
+            Err(error) if authoritative_tombstone && room_upgrades_enabled(app) => {
                 room_detail_retries.insert(room_id.clone());
                 tracing::warn!(
                     %error,
                     room_id = %room_id,
                     "authoritative room details refresh failed; retrying after next sync"
                 );
+            }
+            Err(_) if authoritative_tombstone => {
+                super::actions::resume_all_room_upgrade_queues(client).await;
+                room_detail_retries.clear();
             }
             Err(_) => {}
         }

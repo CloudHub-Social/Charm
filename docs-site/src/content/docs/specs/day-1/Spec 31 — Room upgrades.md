@@ -82,12 +82,16 @@ current-state guarantees as the Tauri path.
   tombstone is confirmed. This prevents queued messages from reaching the old room after
   connectivity returns without discarding them during an ordinary refresh. That queue
   ownership survives navigation remounts within one
-  account, but logout clears it and invalidates pending transitions so it cannot affect
-  a later signed-in session. Failed native queue transitions retain safety ownership
+  account, but every successful client adoption (password, registration, SSO, QR, or
+  restored session) clears it and invalidates pending transitions so it cannot affect
+  a replacement signed-in session. Failed native queue transitions retain safety ownership
   and retry, since an IPC error alone cannot prove whether the SDK queue changed. Native
   sync applies the same barrier to every affected room, including rooms
-  that are not currently open, and serializes barrier changes with queue insertion so a
-  send already entering the SDK cannot slip in after the confirmed-tombstone drain.
+  that are not currently open. Barrier publication and direct mutations share a
+  room-scoped admission lock, so an unrelated room's network request cannot delay a
+  tombstone boundary; queue insertion keeps its narrower global transaction-capture
+  serialization so a send already entering the SDK cannot slip in after the
+  confirmed-tombstone drain.
   Failed authoritative refreshes remain in the sync task's session-scoped retry set and
   are retried after the next successful sync instead of leaving an inactive room paused
   indefinitely. Starting or enabling the feature seeds an authoritative scan of every
@@ -133,11 +137,13 @@ that retry remains visible after the tombstone refresh hides the original upgrad
   disabled by an unrelated send failure remains blocked during verification and is not
   incorrectly re-enabled when the room barrier opens.
 - Native message, room-state, membership, pinning, alias, reporting, and slash-command
-  mutations share the same serialized admission guard, so a stale webview cannot bypass
-  a sync-installed barrier while the frontend catches up.
+  mutations share the same room-scoped admission guard, so a stale webview cannot bypass
+  a sync-installed barrier while the frontend catches up without unrelated rooms
+  blocking one another.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch. Native sync likewise skips all
-  queue barrier and drain transitions while the flag is disabled, while continuing to
+  queue barrier and drain transitions while the flag is disabled and rechecks the
+  persisted flag immediately before a confirmed-tombstone drain, while continuing to
   publish ordinary non-authoritative room details.
 - `RoomDetails` exposes the current tombstone body and replacement room id so the
   composer gate does not depend on a bounded timeline page.

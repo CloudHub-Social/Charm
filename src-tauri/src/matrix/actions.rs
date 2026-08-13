@@ -8,8 +8,8 @@
 //! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
 //! `resend_message`/`discard_failed_message`.
 
-use std::collections::HashSet;
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
@@ -23,7 +23,7 @@ use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedRoomId, OwnedTransactionId, R
 use matrix_sdk::send_queue::{LocalEchoContent, SendHandle};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 use super::MatrixState;
@@ -32,11 +32,15 @@ static ROOM_UPGRADE_BARRIER_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoom
     LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
 static ROOM_UPGRADE_RESUME_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
+static ROOM_MUTATION_LOCKS: LazyLock<
+    tokio::sync::Mutex<HashMap<OwnedRoomId, Arc<tokio::sync::Mutex<()>>>>,
+> = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 pub(super) async fn clear_room_upgrade_queue_barriers() {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
     ROOM_UPGRADE_RESUME_ROOMS.lock().await.clear();
+    ROOM_MUTATION_LOCKS.lock().await.clear();
 }
 
 pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
@@ -45,13 +49,23 @@ pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
 
 pub(super) async fn lock_room_mutation(
     room_id: &str,
-) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
-    let guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    let lock = room_mutation_lock(&parsed_room_id).await;
+    let guard = lock.lock_owned().await;
     if room_upgrade_queue_is_paused(&parsed_room_id).await {
         return Err("This room is read-only while its current state is verified.".to_string());
     }
     Ok(guard)
+}
+
+async fn room_mutation_lock(room_id: &RoomId) -> Arc<tokio::sync::Mutex<()>> {
+    ROOM_MUTATION_LOCKS
+        .lock()
+        .await
+        .entry(room_id.to_owned())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 pub(super) async fn resume_all_room_upgrade_queues(client: &Client) {
@@ -576,18 +590,44 @@ pub async fn set_room_send_queue_read_only(
     discard_pending: bool,
 ) -> Result<u64, String> {
     if read_only {
-        use tauri::Manager;
-
-        let enabled = app.path().app_data_dir().is_ok_and(|dir| {
-            crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
-        });
-        if !enabled {
-            return Err("Room upgrades are not enabled.".to_string());
-        }
+        let client = state.require_client().await?;
+        return set_room_send_queue_read_only_if_enabled(
+            &app,
+            &client,
+            Some(&state),
+            &room_id,
+            true,
+            discard_pending,
+        )
+        .await?
+        .ok_or_else(|| "Room upgrades are not enabled.".to_string());
     }
     let client = state.require_client().await?;
     set_room_send_queue_read_only_impl(&client, Some(&state), &room_id, read_only, discard_pending)
         .await
+}
+
+pub(super) async fn set_room_send_queue_read_only_if_enabled(
+    app: &tauri::AppHandle,
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<Option<u64>, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let mutation_lock = room_mutation_lock(&parsed_room_id).await;
+    let _mutation_guard = mutation_lock.lock_owned().await;
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    if !enabled {
+        return Ok(None);
+    }
+    set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
+        .await
+        .map(Some)
 }
 
 pub async fn set_room_send_queue_read_only_impl(
@@ -597,6 +637,9 @@ pub async fn set_room_send_queue_read_only_impl(
     read_only: bool,
     discard_pending: bool,
 ) -> Result<u64, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let mutation_lock = room_mutation_lock(&parsed_room_id).await;
+    let _mutation_guard = mutation_lock.lock_owned().await;
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
         .await
