@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T13:03:41.603Z",
+  "generatedAt": "2026-08-13T16:15:53.096Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 46,
-    "follow-up": 3,
+    "shipped": 47,
+    "follow-up": 2,
     "in-progress": 2,
     "planned": 26
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 460,
-      "title": "Day-2 Spec 11: jump to date",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/460",
-      "detail": "Day-2 Spec 11 · ready for review"
-    },
     {
       "type": "issue",
       "number": 416,
@@ -157,8 +150,8 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 2,
-        "follow-up": 1,
+        "shipped": 3,
+        "follow-up": 0,
         "in-progress": 0,
         "planned": 11
       }
@@ -1879,15 +1872,15 @@
       "number": 11,
       "title": "Jump to date",
       "route": "/specs/day-2/spec-11--jump-to-date/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 460,
           "title": "Day-2 Spec 11: jump to date",
           "url": "https://github.com/CloudHub-Social/Charm/pull/460",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-08-13T13:03:38Z"
+          "updatedAt": "2026-08-13T16:15:12Z"
         }
       ],
       "issues": []
