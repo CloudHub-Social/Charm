@@ -143,7 +143,7 @@ describe("useTimelineViewport", () => {
     rerender({ ...initialProps, loading: false });
     await waitFor(() =>
       expect(loadTimelineAroundEvent).toHaveBeenCalledWith(
-        initialProps.room.room_id,
+        "!general:localhost",
         "$state-anchor",
       ),
     );
