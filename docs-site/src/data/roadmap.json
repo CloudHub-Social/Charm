@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-12T18:55:21.914Z",
+  "generatedAt": "2026-08-13T01:47:04.554Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 44,
-    "follow-up": 3,
+    "shipped": 45,
+    "follow-up": 2,
     "in-progress": 2,
     "planned": 28
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 454,
-      "title": "feat: add full emoji picker",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/454",
-      "detail": "Day-1 Spec 38 · ready for review"
-    },
     {
       "type": "issue",
       "number": 416,
@@ -130,8 +123,8 @@
         "day-1-63"
       ],
       "counts": {
-        "shipped": 17,
-        "follow-up": 2,
+        "shipped": 18,
+        "follow-up": 1,
         "in-progress": 1,
         "planned": 16
       }
@@ -1282,15 +1275,15 @@
       "number": 38,
       "title": "Full emoji picker",
       "route": "/specs/day-1/spec-38--full-emoji-picker/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 454,
           "title": "feat: add full emoji picker",
           "url": "https://github.com/CloudHub-Social/Charm/pull/454",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-08-12T18:53:33Z"
+          "updatedAt": "2026-08-12T21:10:11Z"
         }
       ],
       "issues": []
