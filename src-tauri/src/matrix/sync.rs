@@ -302,6 +302,14 @@ async fn emit_room_updates(
     // Authoritative tombstone reads may hit the homeserver once per room.
     // Bound them outside the serial response loop so a multi-room state
     // batch costs a small number of network rounds instead of one per room.
+    if authoritative_tombstone {
+        // Drop cached writable permissions before any homeserver request
+        // begins. Otherwise a slow successful refresh leaves settings and
+        // member mutations open throughout the request window.
+        for room_id in &room_details_room_ids {
+            let _ = app.emit("room_details:unresolved", room_id.to_string());
+        }
+    }
     let detail_updates = futures_util::stream::iter(room_details_room_ids)
         .map(|room_id| async move {
             let result =
@@ -316,13 +324,6 @@ async fn emit_room_updates(
         match result {
             Ok(details) => {
                 let _ = app.emit("room_details:update", details);
-            }
-            Err(_) if authoritative_tombstone => {
-                // The current-state request is the write barrier for a
-                // remotely-upgraded room. Tell active consumers to drop
-                // their previously-writable snapshot and refetch; if the
-                // retry also fails they remain unresolved/read-only.
-                let _ = app.emit("room_details:unresolved", room_id.to_string());
             }
             Err(_) => {}
         }

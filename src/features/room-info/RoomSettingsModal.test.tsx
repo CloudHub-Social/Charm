@@ -16,9 +16,13 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
 const featureFlagMocks = vi.hoisted(() => ({
   roomAliasManagement: false,
   roomUpgrades: false,
+  roomUpgradesPersistenceSettled: true,
+  roomUpgradesPersistenceVersion: 0,
   spaceHierarchy: true,
 }));
 vi.mock("@/featureFlags", () => ({
+  useFeatureFlagPersistenceSettled: () => featureFlagMocks.roomUpgradesPersistenceSettled,
+  useFeatureFlagPersistenceVersion: () => featureFlagMocks.roomUpgradesPersistenceVersion,
   useFlag: (key: string) =>
     key === "room_alias_management"
       ? featureFlagMocks.roomAliasManagement
@@ -79,6 +83,7 @@ function renderModal(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     store,
+    client,
     ...render(
       <AppProviders client={client} store={store}>
         <TooltipProvider>
@@ -93,6 +98,8 @@ describe("RoomSettingsModal", () => {
   beforeEach(() => {
     featureFlagMocks.roomAliasManagement = false;
     featureFlagMocks.roomUpgrades = false;
+    featureFlagMocks.roomUpgradesPersistenceSettled = true;
+    featureFlagMocks.roomUpgradesPersistenceVersion = 0;
     featureFlagMocks.spaceHierarchy = true;
   });
 
@@ -173,6 +180,29 @@ describe("RoomSettingsModal", () => {
     membersTab.focus();
     fireEvent.click(membersTab);
     expect(await screen.findByRole("button", { name: "Invite" })).toBeDisabled();
+  });
+
+  it("keeps room mutations blocked until native flag persistence and authoritative refresh settle", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    featureFlagMocks.roomUpgradesPersistenceSettled = false;
+    const details = makeRoomDetails({ name: "Upgrade candidate" });
+    getRoomDetails.mockResolvedValue(details);
+    const rendered = renderModal({ roomId: details.room_id, section: "general" });
+
+    expect(await screen.findByLabelText("Room name")).toBeDisabled();
+
+    featureFlagMocks.roomUpgradesPersistenceSettled = true;
+    featureFlagMocks.roomUpgradesPersistenceVersion = 1;
+    rendered.rerender(
+      <AppProviders client={rendered.client} store={rendered.store}>
+        <TooltipProvider>
+          <RoomSettingsModal currentUserId="@evie:localhost" />
+        </TooltipProvider>
+      </AppProviders>,
+    );
+
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Room name")).toBeEnabled());
   });
 
   it("reuses the shell with space labels and without the room-only encryption control", async () => {

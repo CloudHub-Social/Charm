@@ -4,7 +4,11 @@ import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useFlag } from "@/featureFlags";
+import {
+  useFeatureFlagPersistenceSettled,
+  useFeatureFlagPersistenceVersion,
+  useFlag,
+} from "@/featureFlags";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { cn } from "@/lib/utils";
 import { isWebBuild } from "@/lib/platform";
@@ -52,13 +56,20 @@ export function RoomSettingsModal({
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
+  const roomUpgradesPersistenceVersion = useFeatureFlagPersistenceVersion("room_upgrades");
+  const roomUpgradesPersistenceSettled = useFeatureFlagPersistenceSettled("room_upgrades");
   const {
     data: details,
     isLoading,
     isError,
     isFetching,
     isRefetchError,
+    refetch,
   } = useRoomDetails(targetRoomId, target?.kind === "space" || roomUpgradesEnabled);
+  const [authoritativeRoomDetails, setAuthoritativeRoomDetails] = useState<{
+    roomId: string;
+    persistenceVersion: number;
+  } | null>(null);
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -88,11 +99,44 @@ export function RoomSettingsModal({
     }
   }, [setTarget, spaceHierarchyEnabled, target?.kind]);
 
+  useEffect(() => {
+    if (
+      !roomUpgradesEnabled ||
+      !roomUpgradesPersistenceSettled ||
+      !targetRoomId ||
+      target?.kind === "space"
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const persistenceVersion = roomUpgradesPersistenceVersion;
+    void refetch().then((result) => {
+      if (!cancelled && result.isSuccess) {
+        setAuthoritativeRoomDetails({ roomId: targetRoomId, persistenceVersion });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    refetch,
+    roomUpgradesEnabled,
+    roomUpgradesPersistenceSettled,
+    roomUpgradesPersistenceVersion,
+    target?.kind,
+    targetRoomId,
+  ]);
+
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
   const roomMutationsBlocked =
     roomUpgradesEnabled &&
     target?.kind !== "space" &&
-    (isFetching || isRefetchError || Boolean(details?.tombstone));
+    (!roomUpgradesPersistenceSettled ||
+      authoritativeRoomDetails?.roomId !== targetRoomId ||
+      authoritativeRoomDetails.persistenceVersion !== roomUpgradesPersistenceVersion ||
+      isFetching ||
+      isRefetchError ||
+      Boolean(details?.tombstone));
   const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
   roomMutationsBlockedRef.current = roomMutationsBlocked;
   const renderedDetails =

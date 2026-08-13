@@ -79,7 +79,9 @@ current-state guarantees as the Tauri path.
   echoes, preventing messages queued while offline from reaching the old room after
   connectivity returns. That queue ownership survives navigation remounts within one
   account, but logout clears it and invalidates pending transitions so it cannot affect
-  a later signed-in session.
+  a later signed-in session. Failed native queue transitions restore their prior
+  ownership state and retry, since an IPC error alone cannot prove whether the SDK queue
+  changed.
 
 ## Data flow
 
@@ -97,7 +99,10 @@ has triggered and completed a fresh authoritative room-details read. The live ho
 tombstone read is enabled only with `room_upgrades` and uses the keyed tombstone state
 endpoint rather than downloading the room's full state on every sync update, preserving
 the existing cached/offline behavior while the default-off feature is disabled without
-serially amplifying busy sync batches.
+serially amplifying busy sync batches. Sync-driven authoritative refreshes publish the
+unresolved barrier before their homeserver requests, and room settings remain blocked
+while native feature-flag persistence or the matching authoritative refresh is
+outstanding.
 The backend includes
 timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains

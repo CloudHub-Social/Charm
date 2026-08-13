@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { setRoomSendQueueReadOnly } from "@/lib/matrix";
 import { isWebBuild } from "@/lib/platform";
@@ -31,6 +31,8 @@ export function useRoomSendQueueBarrier(
   enabled: boolean,
   readOnly: boolean,
 ): void {
+  const [retryRevision, setRetryRevision] = useState(0);
+
   useEffect(() => {
     if (!roomId || isWebBuild()) return;
     const desiredReadOnly = enabled && readOnly;
@@ -38,6 +40,8 @@ export function useRoomSendQueueBarrier(
     if (desiredReadOnly) pausedRoomIds.add(roomId);
     else pausedRoomIds.delete(roomId);
     const generation = queueBarrierGeneration;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let active = true;
 
     const previous = commandChains.get(roomId) ?? Promise.resolve();
     const next = previous
@@ -49,13 +53,21 @@ export function useRoomSendQueueBarrier(
       .then(() => undefined)
       .catch((error: unknown) => {
         if (generation !== queueBarrierGeneration) return;
-        // A pause failure is conservatively still treated as owned: the
-        // backend disables the queue before it drains local echoes, so an
-        // abort error can leave the queue safely paused. A resume failure,
-        // however, must restore ownership so the next mount/transition
-        // retries instead of permanently believing the queue is writable.
-        if (!desiredReadOnly && !pausedRoomIds.has(roomId)) pausedRoomIds.add(roomId);
+        // IPC can fail either before or after Rust changes the SDK queue.
+        // Restore the pre-command ownership state and retry: both queue
+        // enable/disable operations are idempotent, while assuming either
+        // outcome could leave a tombstoned room writable (or a live room
+        // permanently paused).
+        if (desiredReadOnly) pausedRoomIds.delete(roomId);
+        else pausedRoomIds.add(roomId);
         logAndIgnore(error);
+        if (active) {
+          retryTimer = setTimeout(() => {
+            if (generation === queueBarrierGeneration) {
+              setRetryRevision((revision) => revision + 1);
+            }
+          }, 1_000);
+        }
       });
     commandChains.set(roomId, next);
     void next.finally(() => {
@@ -63,5 +75,9 @@ export function useRoomSendQueueBarrier(
         commandChains.delete(roomId);
       }
     });
-  }, [enabled, readOnly, roomId]);
+    return () => {
+      active = false;
+      clearTimeout(retryTimer);
+    };
+  }, [enabled, readOnly, retryRevision, roomId]);
 }

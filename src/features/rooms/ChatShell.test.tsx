@@ -729,6 +729,29 @@ describe("ChatShell", () => {
     expect(setRoomSendQueueReadOnly.mock.calls.some(([, readOnly]) => !readOnly)).toBe(false);
   });
 
+  it("retries a failed queue pause when the read-only room remounts", async () => {
+    setRoomSendQueueReadOnly.mockRejectedValueOnce(new Error("client unavailable"));
+    const firstView = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true));
+    firstView.unmount();
+
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => readOnly)).toHaveLength(
+        2,
+      ),
+    );
+  });
+
   it("reports a replacement-room access failure instead of silently doing nothing", async () => {
     const onFollowRoomUpgrade = vi.fn().mockRejectedValue(new Error("forbidden"));
     render(
