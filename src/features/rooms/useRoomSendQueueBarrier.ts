@@ -9,7 +9,11 @@ import { isWebBuild } from "@/lib/platform";
  * state resumes only a queue this hook previously paused, preserving queues
  * disabled by unrelated send failures.
  */
-export function useRoomSendQueueBarrier(roomId: string, enabled: boolean, readOnly: boolean): void {
+export function useRoomSendQueueBarrier(
+  roomId: string | null,
+  enabled: boolean,
+  readOnly: boolean,
+): void {
   const pausedRoomIdsRef = useRef(new Set<string>());
   const commandChainsRef = useRef(new Map<string, Promise<void>>());
 
