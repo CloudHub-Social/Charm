@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render as rtlRender, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { DiscordMessageRow } from "./DiscordMessageRow";
@@ -67,6 +67,39 @@ describe("DiscordMessageRow", () => {
       <DiscordMessageRow {...baseProps({ own: true, sameSenderAsPrev: false })} />,
     );
     expect(container.querySelector('[data-size="sm"]')).toBeInTheDocument();
+  });
+
+  it("keeps sender touch gestures out of the message long-press controller", () => {
+    const startLongPress = vi.fn();
+    const cancelLongPress = vi.fn();
+    const onSenderClick = vi.fn();
+    render(
+      <DiscordMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            sender_display_name: "Bob",
+            body: "hello",
+          }),
+          getActionsHandle: () => ({ startLongPress, cancelLongPress }),
+          onSenderClick,
+        })}
+      />,
+    );
+
+    for (const senderButton of screen.getAllByRole("button", { name: /bob/i })) {
+      fireEvent.touchStart(senderButton);
+      fireEvent.touchMove(senderButton);
+      fireEvent.touchCancel(senderButton);
+      fireEvent.touchEnd(senderButton);
+    }
+
+    expect(startLongPress).not.toHaveBeenCalled();
+    expect(cancelLongPress).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Bob" }));
+    expect(onSenderClick).toHaveBeenCalledOnce();
   });
 
   it("shows the header (name + time) only on the first message of a run", () => {

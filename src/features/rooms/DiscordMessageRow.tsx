@@ -81,6 +81,8 @@ export function DiscordMessageRow({
             aria-label={`Open profile for ${message.sender_display_name ?? message.sender}`}
             onTouchStart={(event) => event.stopPropagation()}
             onTouchEnd={(event) => event.stopPropagation()}
+            onTouchCancel={(event) => event.stopPropagation()}
+            onTouchMove={(event) => event.stopPropagation()}
             onClick={() =>
               onSenderClick(message.sender, message.sender_display_name ?? message.sender)
             }
@@ -129,6 +131,7 @@ export function DiscordMessageRow({
                 onTouchStart={(event) => event.stopPropagation()}
                 onTouchEnd={(event) => event.stopPropagation()}
                 onTouchCancel={(event) => event.stopPropagation()}
+                onTouchMove={(event) => event.stopPropagation()}
                 onClick={() =>
                   onSenderClick(message.sender, message.sender_display_name ?? message.sender)
                 }
