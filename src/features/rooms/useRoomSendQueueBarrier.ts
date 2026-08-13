@@ -7,6 +7,18 @@ import { isWebBuild } from "@/lib/platform";
 // forgetting which SDK room queues this feature paused.
 const pausedRoomIds = new Set<string>();
 const commandChains = new Map<string, Promise<void>>();
+let queueBarrierGeneration = 0;
+
+/**
+ * Drops account-scoped queue ownership on logout and invalidates commands
+ * that were waiting behind another room transition. Already-started IPC is
+ * allowed to settle, but its result cannot mutate the next session's state.
+ */
+export function resetRoomSendQueueBarrier(): void {
+  queueBarrierGeneration += 1;
+  pausedRoomIds.clear();
+  commandChains.clear();
+}
 
 /**
  * Serializes native SDK send-queue barrier transitions per room. A transition
@@ -25,13 +37,18 @@ export function useRoomSendQueueBarrier(
     if (pausedRoomIds.has(roomId) === desiredReadOnly) return;
     if (desiredReadOnly) pausedRoomIds.add(roomId);
     else pausedRoomIds.delete(roomId);
+    const generation = queueBarrierGeneration;
 
     const previous = commandChains.get(roomId) ?? Promise.resolve();
     const next = previous
       .catch(logAndIgnore)
-      .then(() => setRoomSendQueueReadOnly(roomId, desiredReadOnly))
+      .then(() => {
+        if (generation !== queueBarrierGeneration) return;
+        return setRoomSendQueueReadOnly(roomId, desiredReadOnly);
+      })
       .then(() => undefined)
       .catch((error: unknown) => {
+        if (generation !== queueBarrierGeneration) return;
         // A pause failure is conservatively still treated as owned: the
         // backend disables the queue before it drains local echoes, so an
         // abort error can leave the queue safely paused. A resume failure,
@@ -42,7 +59,9 @@ export function useRoomSendQueueBarrier(
       });
     commandChains.set(roomId, next);
     void next.finally(() => {
-      if (commandChains.get(roomId) === next) commandChains.delete(roomId);
+      if (generation === queueBarrierGeneration && commandChains.get(roomId) === next) {
+        commandChains.delete(roomId);
+      }
     });
   }, [enabled, readOnly, roomId]);
 }

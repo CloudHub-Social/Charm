@@ -23,6 +23,7 @@ import {
   showHiddenEventsAtom,
 } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
+import { resetRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 
 // LinkPreviewForMessage (Spec 29) reads the room-details query cache via
 // `useQuery`, which needs a QueryClientProvider ancestor even when its own
@@ -394,6 +395,7 @@ describe("ChatShell", () => {
   });
 
   beforeEach(() => {
+    resetRoomSendQueueBarrier();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWriteText },
@@ -686,6 +688,45 @@ describe("ChatShell", () => {
         2,
       ),
     );
+  });
+
+  it("drops queue ownership and pending transitions between signed-in sessions", async () => {
+    let settlePause: (() => void) | undefined;
+    setRoomSendQueueReadOnly.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          settlePause = () => resolve(0);
+        }),
+    );
+    const store = createStore();
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@first:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true));
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@first:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    resetRoomSendQueueBarrier();
+    view.unmount();
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@second:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => readOnly)).toHaveLength(
+        2,
+      ),
+    );
+    settlePause?.();
+    await act(async () => undefined);
+    expect(setRoomSendQueueReadOnly.mock.calls.some(([, readOnly]) => !readOnly)).toBe(false);
   });
 
   it("reports a replacement-room access failure instead of silently doing nothing", async () => {

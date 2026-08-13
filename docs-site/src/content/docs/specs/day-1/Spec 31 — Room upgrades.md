@@ -77,7 +77,9 @@ current-state guarantees as the Tauri path.
   alias-state cleanup that would otherwise race a completed directory removal. When
   the barrier closes, Charm pauses the SDK room send queue and aborts all pending local
   echoes, preventing messages queued while offline from reaching the old room after
-  connectivity returns.
+  connectivity returns. That queue ownership survives navigation remounts within one
+  account, but logout clears it and invalidates pending transitions so it cannot affect
+  a later signed-in session.
 
 ## Data flow
 
