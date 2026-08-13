@@ -116,7 +116,7 @@ describe("MessagePillProfileDialog", () => {
 
     expect(await screen.findByRole("heading", { name: "Alice Here" })).toBeInTheDocument();
     expect(screen.getByText("Global profile: Alice Global")).toBeInTheDocument();
-    expect(screen.getByText("online · Writing tests")).toBeInTheDocument();
+    expect(screen.getByText("Online · Writing tests")).toBeInTheDocument();
     expect(screen.getByText("Active 5m ago")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
