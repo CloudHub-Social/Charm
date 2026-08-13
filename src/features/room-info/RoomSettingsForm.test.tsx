@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 
 /**
  * Scopes the Save button lookup to whichever field's row it sits in — the
@@ -224,7 +224,7 @@ describe("RoomSettingsForm", () => {
     featureFlagMocks.roomUpgrades = true;
     const onRoomUpgraded = vi.fn().mockRejectedValueOnce(new Error("join denied"));
     const details = makeRoomDetails();
-    const { rerender } = renderWithProviders(
+    const { rerender, client } = renderWithProviders(
       <RoomSettingsForm details={details} onRoomUpgraded={onRoomUpgraded} />,
     );
 
@@ -238,16 +238,19 @@ describe("RoomSettingsForm", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     rerender(
-      <RoomSettingsForm
-        details={{
-          ...details,
-          tombstone: {
-            body: "Room upgraded",
-            replacement_room_id: "!replacement:example.org",
-          },
-        }}
-        onRoomUpgraded={onRoomUpgraded}
-      />,
+      wrapWithProviders(
+        <RoomSettingsForm
+          details={{
+            ...details,
+            tombstone: {
+              body: "Room upgraded",
+              replacement_room_id: "!replacement:example.org",
+            },
+          }}
+          onRoomUpgraded={onRoomUpgraded}
+        />,
+        client,
+      ),
     );
     expect(screen.getByRole("alert")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try upgraded room again" }));

@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomAliasManagement } from "./RoomAliasManagement";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
@@ -42,6 +42,20 @@ vi.mock("@/lib/matrix", () => ({
   removeAltAlias: (...args: unknown[]) => removeAltAlias(...args),
   getProfile: (...args: unknown[]) => getProfile(...args),
 }));
+
+beforeEach(() => {
+  getRoomLocalAliases.mockReset();
+  checkRoomAliasAvailable.mockReset().mockResolvedValue(true);
+  addRoomAlias.mockReset().mockResolvedValue(undefined);
+  removeRoomAlias.mockReset().mockResolvedValue(undefined);
+  setCanonicalAlias.mockReset().mockResolvedValue(undefined);
+  removeAltAlias.mockReset().mockResolvedValue(undefined);
+  getProfile.mockReset().mockResolvedValue({
+    user_id: "@me:example.org",
+    display_name: null,
+    avatar_url: null,
+  });
+});
 
 describe("RoomAliasManagement", () => {
   it("renders the room's published aliases", async () => {
@@ -194,8 +208,7 @@ describe("RoomAliasManagement", () => {
       <RoomAliasManagement details={details} mutationsBlockedRef={mutationsBlockedRef} />,
     );
 
-    await screen.findByText("#general:example.org", { selector: "button" });
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
     await waitFor(() => expect(removeRoomAlias).toHaveBeenCalledWith("#general:example.org"));
     mutationsBlockedRef.current = true;
     await act(async () => resolveRemoval?.());
