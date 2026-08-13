@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T17:31:32.153Z",
+  "generatedAt": "2026-08-13T17:34:30.927Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 47,
@@ -15,7 +15,7 @@
       "number": 463,
       "title": "Day-1 Spec 31: room upgrades",
       "url": "https://github.com/CloudHub-Social/Charm/pull/463",
-      "detail": "Day-1 Spec 31 · draft"
+      "detail": "Day-1 Spec 31 · ready for review"
     },
     {
       "type": "issue",
@@ -1061,8 +1061,8 @@
           "title": "Day-1 Spec 31: room upgrades",
           "url": "https://github.com/CloudHub-Social/Charm/pull/463",
           "state": "open",
-          "draft": true,
-          "updatedAt": "2026-08-13T17:31:22Z"
+          "draft": false,
+          "updatedAt": "2026-08-13T17:33:07Z"
         }
       ],
       "issues": []
