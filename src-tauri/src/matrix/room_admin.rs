@@ -5,7 +5,10 @@
 //! duplicates — see [`super::members::RoomMemberSummary`]).
 
 use matrix_sdk::room::power_levels::RoomPowerLevelChanges;
-use matrix_sdk::ruma::api::client::room::{aliases, upgrade_room};
+use matrix_sdk::ruma::api::client::{
+    room::{aliases, upgrade_room},
+    state::get_state_events,
+};
 use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
 use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
@@ -15,7 +18,7 @@ use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinR
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
 use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
-use matrix_sdk::ruma::events::StateEventType;
+use matrix_sdk::ruma::events::{AnyStateEvent, StateEventType};
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
@@ -607,11 +610,16 @@ pub async fn upgrade_room(
 /// Core logic behind [`upgrade_room`].
 pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
     let room = require_room(client, room_id)?;
-    if room
-        .get_state_event_static::<RoomTombstoneEventContent>()
+    let current_state = client
+        .send(get_state_events::v3::Request::new(
+            room.room_id().to_owned(),
+        ))
         .await
-        .map_err(|e| e.to_string())?
-        .is_some()
+        .map_err(|e| e.to_string())?;
+    if current_state
+        .room_state
+        .iter()
+        .any(|raw| matches!(raw.deserialize(), Ok(AnyStateEvent::RoomTombstone(_))))
     {
         return Err("This room has already been upgraded.".to_string());
     }

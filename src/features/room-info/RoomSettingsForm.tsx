@@ -80,7 +80,7 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
 interface RoomSettingsFormProps {
   details: RoomDetails;
   isSpace?: boolean;
-  onRoomUpgraded?: (replacementRoomId: string) => void;
+  onRoomUpgraded?: (replacementRoomId: string) => void | Promise<void>;
 }
 
 export function RoomSettingsForm({
@@ -93,6 +93,8 @@ export function RoomSettingsForm({
   const [topic, setTopic] = useState(details.topic ?? "");
   const [confirmingEncryption, setConfirmingEncryption] = useState(false);
   const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
+  const [followingUpgrade, setFollowingUpgrade] = useState(false);
+  const [followUpgradeError, setFollowUpgradeError] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const roomAliasManagementEnabled = useFlag("room_alias_management");
   const roomUpgradesEnabled = useFlag("room_upgrades");
@@ -294,7 +296,10 @@ export function RoomSettingsForm({
                 </Button>
               </PermissionGate>
             )}
-            <Dialog open={confirmingEncryption} onOpenChange={setConfirmingEncryption}>
+            <Dialog
+              open={confirmingEncryption && details.can.set_encryption}
+              onOpenChange={setConfirmingEncryption}
+            >
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Enable encryption?</DialogTitle>
@@ -309,7 +314,9 @@ export function RoomSettingsForm({
                   </Button>
                   <Button
                     variant="destructive"
+                    disabled={!details.can.set_encryption}
                     onClick={() => {
+                      if (!details.can.set_encryption) return;
                       actions.enableEncryption.mutate(undefined);
                       setConfirmingEncryption(false);
                     }}
@@ -336,9 +343,9 @@ export function RoomSettingsForm({
                   Upgrade room
                 </Button>
               </PermissionGate>
-              {actions.upgrade.error && (
+              {(actions.upgrade.error || followUpgradeError) && (
                 <p role="alert" className="text-sm text-destructive">
-                  {actions.upgrade.error.message}
+                  {actions.upgrade.error?.message ?? followUpgradeError}
                 </p>
               )}
               <Dialog open={confirmingUpgrade} onOpenChange={setConfirmingUpgrade}>
@@ -353,30 +360,45 @@ export function RoomSettingsForm({
                   <DialogFooter>
                     <Button
                       variant="outline"
-                      disabled={actions.upgrade.isPending}
+                      disabled={actions.upgrade.isPending || followingUpgrade}
                       onClick={() => setConfirmingUpgrade(false)}
                     >
                       Cancel
                     </Button>
                     <Button
                       variant="destructive"
-                      disabled={actions.upgrade.isPending}
+                      disabled={actions.upgrade.isPending || followingUpgrade}
                       onClick={() => {
                         Sentry.addBreadcrumb({
                           category: "ui.room-upgrade",
                           level: "info",
                           message: "Room upgrade confirmed",
                         });
+                        setFollowUpgradeError(null);
                         actions.upgrade.mutate(undefined, {
-                          onSuccess: (replacementRoomId) => {
-                            setConfirmingUpgrade(false);
-                            onRoomUpgraded?.(replacementRoomId);
+                          onSuccess: async (replacementRoomId) => {
+                            setFollowingUpgrade(true);
+                            try {
+                              await onRoomUpgraded?.(replacementRoomId);
+                              setConfirmingUpgrade(false);
+                            } catch {
+                              setConfirmingUpgrade(false);
+                              setFollowUpgradeError(
+                                "Couldn't open the upgraded room. Check your access and try again.",
+                              );
+                            } finally {
+                              setFollowingUpgrade(false);
+                            }
                           },
                           onError: () => setConfirmingUpgrade(false),
                         });
                       }}
                     >
-                      {actions.upgrade.isPending ? "Upgrading…" : "Upgrade room"}
+                      {actions.upgrade.isPending
+                        ? "Upgrading…"
+                        : followingUpgrade
+                          ? "Opening upgraded room…"
+                          : "Upgrade room"}
                     </Button>
                   </DialogFooter>
                 </DialogContent>

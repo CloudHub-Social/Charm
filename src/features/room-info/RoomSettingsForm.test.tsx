@@ -200,6 +200,23 @@ describe("RoomSettingsForm", () => {
     });
   });
 
+  it("keeps settings open and reports a replacement-room navigation failure", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const onRoomUpgraded = vi.fn().mockRejectedValue(new Error("join denied"));
+    renderWithProviders(
+      <RoomSettingsForm details={makeRoomDetails()} onRoomUpgraded={onRoomUpgraded} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't open the upgraded room. Check your access and try again.",
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("closes the confirmation so an upgrade failure is visible", async () => {
     featureFlagMocks.roomUpgrades = true;
     upgradeRoom.mockRejectedValueOnce(new Error("upgrade failed"));

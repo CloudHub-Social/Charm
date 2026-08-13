@@ -799,9 +799,7 @@ export function RoomsScreen({
         currentUserId={currentUserId}
         rooms={joinedRooms}
         onNavigateToRoom={navigateToProfileRoom}
-        onRoomUpgraded={(roomId) => {
-          followRoomUpgrade(roomId).catch(logAndIgnore);
-        }}
+        onRoomUpgraded={followRoomUpgrade}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

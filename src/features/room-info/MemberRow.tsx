@@ -154,7 +154,7 @@ export function MemberRow({
         currentPowerLevel={member.power_level}
         myPowerLevel={myPowerLevel}
         isSelf={isSelf}
-        open={powerLevelDialogOpen}
+        open={powerLevelDialogOpen && setPowerLevelAllowed}
         onOpenChange={setPowerLevelDialogOpen}
       />
     </div>

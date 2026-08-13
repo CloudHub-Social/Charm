@@ -41,7 +41,9 @@ old room are directed to its replacement.
   matrix-rust-sdk's `Client::send`, targeting the homeserver capability's default
   room version. Charm does not reproduce the upgrade with custom state-event writes.
   Both the settings surface and native command reject an already-tombstoned room,
-  preventing a second replacement from superseding the original upgrade path.
+  preventing a second replacement from superseding the original upgrade path. The
+  native guard reads current homeserver state immediately before `/upgrade`, rather
+  than trusting an SDK state cache that may not have received another admin's upgrade.
 
 ### Landing in a tombstoned room
 
@@ -57,7 +59,9 @@ old room are directed to its replacement.
   conversation surface. Server-mutating message actions are closed too: reactions,
   edits, redactions, retries, reports, and room pin/unpin actions cannot target the
   tombstoned room, while read-only and local actions such as copy and bookmarks remain
-  available.
+  available. Room settings follows the same boundary: profile, access, membership,
+  alias, encryption, and power-level mutations are disabled while state is unresolved
+  and after a tombstone is present.
 
 ## Data flow
 
@@ -74,7 +78,9 @@ The backend includes
 timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains
 self-contained. Following the replacement explicitly joins it when necessary,
-refreshes the room list, and retains a pending selection until sync publishes it.
+refreshes the room list, and retains a pending selection until sync publishes it. If
+that follow step fails after the server has upgraded the room, settings stays open and
+shows an actionable access error instead of closing silently.
 
 ## API/contract changes
 

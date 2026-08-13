@@ -141,6 +141,34 @@ describe("RoomSettingsModal", () => {
     expect(screen.getByRole("tab", { name: "Permissions", selected: true })).toBeInTheDocument();
   });
 
+  it("keeps every room mutation disabled after the room is tombstoned", async () => {
+    const details = makeRoomDetails({
+      name: "Old room",
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+
+    expect(
+      await screen.findByText("This room is read-only. Settings changes are unavailable here."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Room name")).toBeDisabled();
+
+    const permissionsTab = screen.getByRole("tab", { name: "Permissions" });
+    permissionsTab.focus();
+    fireEvent.click(permissionsTab);
+    expect(await screen.findByRole("button", { name: "Save thresholds" })).toBeDisabled();
+
+    const membersTab = screen.getByRole("tab", { name: "Members" });
+    membersTab.focus();
+    fireEvent.click(membersTab);
+    expect(await screen.findByRole("button", { name: "Invite" })).toBeDisabled();
+  });
+
   it("reuses the shell with space labels and without the room-only encryption control", async () => {
     const details = makeRoomDetails({ name: "Community" });
     getRoomDetails.mockResolvedValue(details);

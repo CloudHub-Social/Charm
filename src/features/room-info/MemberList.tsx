@@ -200,7 +200,7 @@ export function MemberList({ details, currentUserId, onNavigateToRoom }: MemberL
         }
         onClose={() => setProfile(null)}
       />
-      {powerLevelMember && (
+      {powerLevelMember && details.can.set_power_levels && (
         <MemberPowerLevelDialog
           roomId={details.room_id}
           userId={powerLevelMember.user_id}

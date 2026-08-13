@@ -13,7 +13,7 @@ import { RoomSettingsForm } from "./RoomSettingsForm";
 import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
 import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
-import type { RoomSummary } from "@/lib/matrix";
+import type { RoomDetails, RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
   { value: "general", label: "General" },
@@ -26,10 +26,19 @@ interface RoomSettingsModalProps {
   rooms?: RoomSummary[];
   onSpaceChildrenChanged?: () => void;
   onNavigateToRoom?: (roomId: string) => void;
-  onRoomUpgraded?: (replacementRoomId: string) => void;
+  onRoomUpgraded?: (replacementRoomId: string) => void | Promise<void>;
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
+
+function withMutationsDisabled(details: RoomDetails): RoomDetails {
+  return {
+    ...details,
+    can: Object.fromEntries(
+      Object.keys(details.can).map((key) => [key, false]),
+    ) as RoomDetails["can"],
+  };
+}
 
 /**
  * Room settings as a modal — full-screen on mobile, a centered card on
@@ -54,7 +63,8 @@ export function RoomSettingsModal({
     isLoading,
     isError,
     isFetching,
-  } = useRoomDetails(targetRoomId, target?.kind === "space");
+    isRefetchError,
+  } = useRoomDetails(targetRoomId, Boolean(targetRoomId));
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -85,6 +95,10 @@ export function RoomSettingsModal({
   }, [setTarget, spaceHierarchyEnabled, target?.kind]);
 
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
+  const roomMutationsBlocked =
+    target?.kind !== "space" && (isFetching || isRefetchError || Boolean(details?.tombstone));
+  const renderedDetails =
+    details && roomMutationsBlocked ? withMutationsDisabled(details) : details;
 
   return (
     <Dialog open={visibleTarget !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -128,7 +142,7 @@ export function RoomSettingsModal({
           </div>
         )}
 
-        {details && target && (
+        {renderedDetails && target && (
           <TooltipProvider>
             <Tabs
               orientation={isMobile ? "horizontal" : "vertical"}
@@ -151,9 +165,9 @@ export function RoomSettingsModal({
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <span className="truncate text-base font-bold text-foreground">
                     {/* Prefer the room name, then (behind the room_alias_management flag) a canonical alias (Spec 32), over the raw room id — the id is the least human-readable fallback. */}
-                    {details.name ??
-                      (roomAliasManagementEnabled ? details.canonical_alias : null) ??
-                      details.room_id}
+                    {renderedDetails.name ??
+                      (roomAliasManagementEnabled ? renderedDetails.canonical_alias : null) ??
+                      renderedDetails.room_id}
                   </span>
                   <button
                     type="button"
@@ -182,6 +196,11 @@ export function RoomSettingsModal({
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto">
+                {roomMutationsBlocked && (
+                  <output className="m-4 block rounded-md border border-border bg-secondary px-3 py-2 text-sm text-muted-foreground">
+                    This room is read-only. Settings changes are unavailable here.
+                  </output>
+                )}
                 {/* `forceMount` + `data-[state=inactive]:hidden` keeps
                     General/Permissions mounted rather than letting Radix
                     unmount the inactive `TabsContent` — without this,
@@ -196,17 +215,17 @@ export function RoomSettingsModal({
                     the user ever asks for it. */}
                 <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
                   <RoomSettingsForm
-                    details={details}
+                    details={renderedDetails}
                     isSpace={target.kind === "space"}
-                    onRoomUpgraded={(replacementRoomId) => {
+                    onRoomUpgraded={async (replacementRoomId) => {
+                      await onRoomUpgraded?.(replacementRoomId);
                       setTarget(null);
-                      onRoomUpgraded?.(replacementRoomId);
                     }}
                   />
                 </TabsContent>
                 <TabsContent value="members">
                   <MemberList
-                    details={details}
+                    details={renderedDetails}
                     currentUserId={currentUserId}
                     onNavigateToRoom={onNavigateToRoom}
                   />
@@ -216,15 +235,15 @@ export function RoomSettingsModal({
                   forceMount
                   className="data-[state=inactive]:hidden"
                 >
-                  <PowerLevelThresholdsEditor details={details} />
+                  <PowerLevelThresholdsEditor details={renderedDetails} />
                 </TabsContent>
                 {spaceHierarchyEnabled && target.kind === "space" && (
                   <TabsContent value="children">
                     <SpaceChildrenSettings
-                      spaceId={details.room_id}
-                      spaceName={details.name}
+                      spaceId={renderedDetails.room_id}
+                      spaceName={renderedDetails.name}
                       rooms={rooms}
-                      canEdit={details.can.set_space_child && !isFetching && !isError}
+                      canEdit={renderedDetails.can.set_space_child && !isFetching && !isError}
                       onChanged={onSpaceChildrenChanged}
                     />
                   </TabsContent>

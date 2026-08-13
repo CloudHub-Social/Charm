@@ -446,6 +446,16 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
 
     assert_ne!(replacement_room_id, room.room_id().as_str());
 
+    // Deliberately retry before syncing: the SDK state store is still stale,
+    // so this proves the duplicate-upgrade guard reads current homeserver
+    // state rather than trusting the local room cache.
+    let repeated_upgrade = upgrade_room_impl(&admin, room.room_id().as_str()).await;
+    assert_eq!(
+        repeated_upgrade.expect_err("an existing tombstone must reject a repeat upgrade"),
+        "This room has already been upgraded.",
+        "an existing tombstone must prevent creating a second replacement room"
+    );
+
     admin
         .sync_once(SyncSettings::default())
         .await
@@ -459,12 +469,5 @@ async fn room_upgrade_uses_the_homeserver_default_version() {
             .as_ref()
             .map(|tombstone| tombstone.replacement_room_id.as_str()),
         Some(replacement_room_id.as_str())
-    );
-
-    let repeated_upgrade = upgrade_room_impl(&admin, room.room_id().as_str()).await;
-    assert_eq!(
-        repeated_upgrade.expect_err("an existing tombstone must reject a repeat upgrade"),
-        "This room has already been upgraded.",
-        "an existing tombstone must prevent creating a second replacement room"
     );
 }
