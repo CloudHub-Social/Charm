@@ -61,6 +61,7 @@ describe("usePresence", () => {
 
     await waitFor(() => expect(result.current?.presence).toBe("dnd"));
     expect(getPresence).toHaveBeenCalledTimes(2);
+    expect(getPresence).toHaveBeenLastCalledWith("@alice:localhost", true);
   });
 
   it("does not let a stale in-flight fetch clobber a presence push that arrived first", async () => {

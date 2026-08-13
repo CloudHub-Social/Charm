@@ -260,13 +260,21 @@ pub async fn get_presence(
     app: AppHandle,
     state: State<'_, MatrixState>,
     user_id: String,
+    avatar_presence_visuals_enabled: Option<bool>,
 ) -> Result<Option<PresenceUpdate>, String> {
     let client = state.require_client().await?;
-    let flag_enabled = app.path().app_data_dir().is_ok_and(|dir| {
-        crate::feature_flags::flag(
-            &dir,
-            crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
-        )
+    // A Labs toggle updates the frontend store optimistically before its
+    // durable feature-flags file write completes. Let that caller carry the
+    // exact decision into this refresh so a just-enabled DND value is not
+    // normalized using the stale file. Other callers retain the persisted
+    // flag lookup as their source of truth.
+    let flag_enabled = avatar_presence_visuals_enabled.unwrap_or_else(|| {
+        app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(
+                &dir,
+                crate::feature_flags::FeatureFlagKey::AvatarPresenceVisuals,
+            )
+        })
     });
     get_presence_impl(&client, &user_id, flag_enabled).await
 }

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot, presenceColor, presenceLabel } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
@@ -37,13 +38,17 @@ function GroupFace({ member, className }: { member: GroupDmAvatarMember; classNa
   );
 }
 
-/** Matrix room-summary heroes rendered as the Charm 1.0-style group-DM mosaic. */
-export function GroupDmAvatar({
+/** Adds aggregate group presence around either a mosaic or an explicit room avatar. */
+export function GroupDmPresenceAvatar({
   members,
   showPresenceRing,
+  composite = false,
+  children,
 }: {
   members: GroupDmAvatarMember[];
   showPresenceRing: boolean;
+  composite?: boolean;
+  children: ReactNode;
 }) {
   // Matrix caps room-summary heroes at five. Fixed hook slots preserve the
   // Rules of Hooks while still aggregating every hero the SDK can return.
@@ -59,15 +64,9 @@ export function GroupDmAvatar({
     p3?.presence,
     p4?.presence,
   ]);
-  const faces = members.slice(0, 3);
-  const positions =
-    faces.length === 2
-      ? ["left-0 top-0", "right-0 bottom-0"]
-      : ["left-0 top-0", "right-0 top-0", "bottom-0 left-1/2 -translate-x-1/2"];
-
   return (
     <Avatar
-      data-group-dm-avatar=""
+      data-group-dm-avatar={composite ? "" : undefined}
       className="relative"
       style={
         showPresenceRing && aggregate
@@ -75,9 +74,7 @@ export function GroupDmAvatar({
           : undefined
       }
     >
-      {faces.map((member, index) => (
-        <GroupFace key={member.user_id} member={member} className={positions[index] ?? ""} />
-      ))}
+      {children}
       {aggregate && showPresenceRing && (
         <span className="sr-only">{presenceLabel(aggregate)} group presence</span>
       )}
@@ -85,5 +82,28 @@ export function GroupDmAvatar({
         <PresenceDot presence={aggregate} insideInteractiveParent />
       )}
     </Avatar>
+  );
+}
+
+/** Matrix room-summary heroes rendered as the Charm 1.0-style group-DM mosaic. */
+export function GroupDmAvatar({
+  members,
+  showPresenceRing,
+}: {
+  members: GroupDmAvatarMember[];
+  showPresenceRing: boolean;
+}) {
+  const faces = members.slice(0, 3);
+  const positions =
+    faces.length === 2
+      ? ["left-0 top-0", "right-0 bottom-0"]
+      : ["left-0 top-0", "right-0 top-0", "bottom-0 left-1/2 -translate-x-1/2"];
+
+  return (
+    <GroupDmPresenceAvatar members={members} showPresenceRing={showPresenceRing} composite>
+      {faces.map((member, index) => (
+        <GroupFace key={member.user_id} member={member} className={positions[index] ?? ""} />
+      ))}
+    </GroupDmPresenceAvatar>
   );
 }

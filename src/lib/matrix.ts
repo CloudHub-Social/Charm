@@ -823,8 +823,11 @@ export function setPresence(presence: PresenceStateDto, statusMsg?: string): Pro
   return invoke("set_presence", { presence, statusMsg });
 }
 
-export function getPresence(userId: string): Promise<PresenceUpdate | null> {
-  return invoke("get_presence", { userId });
+export function getPresence(
+  userId: string,
+  avatarPresenceVisualsEnabled?: boolean,
+): Promise<PresenceUpdate | null> {
+  return invoke("get_presence", { userId, avatarPresenceVisualsEnabled });
 }
 
 export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {

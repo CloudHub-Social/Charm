@@ -4,8 +4,9 @@ import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoomListItem, roomListItemPropsEqual } from "./RoomListItem";
 import { makeRoomSummary } from "./testFixtures";
-import { showUnreadCountsAtom } from "@/features/appearance/atoms";
+import { groupPresenceRingAtom, showUnreadCountsAtom } from "@/features/appearance/atoms";
 import { featureFlagTestHooks } from "@/featureFlags";
+import { presenceAtomFamily } from "@/features/presence/presenceAtoms";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
@@ -96,24 +97,35 @@ describe("RoomListItem", () => {
   it("preserves an explicit room avatar instead of replacing it with a group DM composite", () => {
     featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createStore();
+    store.set(groupPresenceRingAtom, true);
+    store.set(presenceAtomFamily("@alice:example.org"), {
+      user_id: "@alice:example.org",
+      presence: "online",
+      status_msg: null,
+      last_active_ago_ms: null,
+    });
     const { container } = render(
-      <QueryClientProvider client={queryClient}>
-        <RoomListItem
-          room={makeRoomSummary({
-            is_direct: true,
-            avatar_path: "/tmp/custom-group-avatar.png",
-            group_dm_members: [
-              { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
-              { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
-            ],
-          })}
-          active={false}
-          onSelect={() => {}}
-        />
-      </QueryClientProvider>,
+      <Provider store={store}>
+        <QueryClientProvider client={queryClient}>
+          <RoomListItem
+            room={makeRoomSummary({
+              is_direct: true,
+              avatar_path: "/tmp/custom-group-avatar.png",
+              group_dm_members: [
+                { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+                { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+              ],
+            })}
+            active={false}
+            onSelect={() => {}}
+          />
+        </QueryClientProvider>
+      </Provider>,
     );
 
     expect(container.querySelector("[data-group-dm-avatar]")).not.toBeInTheDocument();
+    expect(screen.getByText("Online group presence")).toBeInTheDocument();
   });
 
   it("preserves an unresolved explicit room avatar URL instead of replacing it with a group DM composite", () => {

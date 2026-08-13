@@ -63,7 +63,7 @@ export function usePresence(
     const unsubscribe = store.sub(presenceAtomFamily(userId), () => {
       pushedWhileFetching = true;
     });
-    getPresence(userId)
+    getPresence(userId, avatarPresenceVisualsEnabled)
       .then((update) => {
         if (!cancelled && !pushedWhileFetching && update) setPresenceAtom(update);
       })

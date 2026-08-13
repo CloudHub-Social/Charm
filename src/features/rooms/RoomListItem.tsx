@@ -16,7 +16,7 @@ import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import type { RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
-import { GroupDmAvatar } from "./GroupDmAvatar";
+import { GroupDmAvatar, GroupDmPresenceAvatar } from "./GroupDmAvatar";
 
 interface RoomListItemProps {
   room: RoomSummary;
@@ -99,11 +99,23 @@ function RoomListItemImpl({
       )}
       {...dragHandleProps}
     >
-      {avatarPresenceVisualsEnabled &&
-      !room.avatar_path &&
-      !room.avatar_url &&
-      room.group_dm_members.length > 1 ? (
-        <GroupDmAvatar members={room.group_dm_members} showPresenceRing={groupPresenceRing} />
+      {avatarPresenceVisualsEnabled && room.group_dm_members.length > 1 ? (
+        !room.avatar_path && !room.avatar_url ? (
+          <GroupDmAvatar members={room.group_dm_members} showPresenceRing={groupPresenceRing} />
+        ) : (
+          <GroupDmPresenceAvatar
+            members={room.group_dm_members}
+            showPresenceRing={groupPresenceRing}
+          >
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
+            <AvatarFallback
+              style={{ background: avatarColor(room.room_id) }}
+              className="font-bold text-white"
+            >
+              {initials(room.room_id, room.name)}
+            </AvatarFallback>
+          </GroupDmPresenceAvatar>
+        )
       ) : (
         <Avatar>
           <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
