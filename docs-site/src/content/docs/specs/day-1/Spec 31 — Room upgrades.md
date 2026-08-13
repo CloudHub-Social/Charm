@@ -55,9 +55,10 @@ old room are directed to its replacement.
   field.
 - The composer is replaced by the persistent read-only explanation in a tombstoned
   room, and its drop, paste, picker, and staged-attachment paths are closed with it.
-  The asynchronous native picker rechecks the write barrier after its dialog returns,
-  and any upload already in flight is cancelled when the barrier closes, so a tombstone
-  received during either path cannot send into the stale room. Attachments, slash
+  The asynchronous native picker and attachment size/configuration preflight recheck
+  the live write barrier immediately before transport, and any upload already in flight
+  is cancelled when the barrier closes, so a tombstone received during any of those
+  paths cannot send into the stale room. Attachments, slash
   commands, and ordinary messages therefore cannot be sent from the stale
   conversation surface. Server-mutating message actions are closed too: reactions,
   edits, redactions, retries, reports, and room pin/unpin actions cannot target the
@@ -80,8 +81,12 @@ decision comes from the room's authoritative current `m.room.tombstone` state in
 timeline window. Room activation always refetches those details and keeps the
 composer and room-state mutations fail-closed until the current-state request succeeds;
 a failed refetch cannot trust a still-fresh cache entry from before a remote upgrade.
-The live homeserver tombstone read is enabled only with `room_upgrades`, preserving the
-existing cached/offline room-details behavior while this default-off feature is disabled.
+Enabling `room_upgrades` also holds that barrier closed until the persisted flag version
+has triggered and completed a fresh authoritative room-details read. The live homeserver
+tombstone read is enabled only with `room_upgrades` and uses the keyed tombstone state
+endpoint rather than downloading the room's full state on every sync update, preserving
+the existing cached/offline behavior while the default-off feature is disabled without
+serially amplifying busy sync batches.
 The backend includes
 timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains

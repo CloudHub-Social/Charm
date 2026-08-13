@@ -7,8 +7,9 @@
 use matrix_sdk::room::power_levels::RoomPowerLevelChanges;
 use matrix_sdk::ruma::api::client::{
     room::{aliases, upgrade_room},
-    state::get_state_events,
+    state::get_state_event_for_key,
 };
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
 use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
@@ -18,7 +19,7 @@ use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinR
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
 use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
-use matrix_sdk::ruma::events::{AnyStateEvent, StateEvent, StateEventType};
+use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
@@ -294,50 +295,37 @@ pub(crate) fn require_room(client: &Client, room_id: &str) -> Result<Room, Strin
         .ok_or_else(|| format!("room {room_id} not found"))
 }
 
-/// Reads the homeserver's current room state instead of the SDK's eventually
-/// consistent sync cache. A tombstone is a permanent write barrier in Charm,
-/// so briefly treating an already-upgraded room as writable is worse than the
-/// extra request made when details are refreshed.
+/// Reads the homeserver's current tombstone instead of the SDK's eventually
+/// consistent sync cache. The keyed endpoint avoids downloading every state
+/// event for every state-bearing room in the serial sync loop.
 async fn fetch_current_tombstone(
     client: &Client,
     room_id: &RoomId,
 ) -> Result<Option<RoomTombstoneDetails>, String> {
-    let response = client
-        .send(get_state_events::v3::Request::new(room_id.to_owned()))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    for raw in response.room_state {
-        if raw
-            .get_field::<String>("state_key")
-            .ok()
-            .flatten()
-            .as_deref()
-            != Some("")
+    let request = get_state_event_for_key::v3::Request::new(
+        room_id.to_owned(),
+        StateEventType::RoomTombstone,
+        String::new(),
+    );
+    match client.send(request).await {
+        Ok(response) => match response
+            .into_content()
+            .deserialize_as_unchecked::<RoomTombstoneEventContent>()
         {
-            continue;
-        }
-        match raw.deserialize() {
-            Ok(AnyStateEvent::RoomTombstone(StateEvent::Original(event))) => {
-                return Ok(Some(RoomTombstoneDetails {
-                    body: event.content.body,
-                    replacement_room_id: event.content.replacement_room.to_string(),
-                }));
-            }
-            Ok(AnyStateEvent::RoomTombstone(StateEvent::Redacted(_))) => {
-                // Redaction removes the replacement-room fields but not the
-                // fact that this room was upgraded. Keep it read-only while
-                // omitting a navigation target the server no longer exposes.
-                return Ok(Some(RoomTombstoneDetails {
-                    body: "Room upgraded".to_string(),
-                    replacement_room_id: String::new(),
-                }));
-            }
-            _ => {}
-        }
+            Ok(content) => Ok(Some(RoomTombstoneDetails {
+                body: content.body,
+                replacement_room_id: content.replacement_room.to_string(),
+            })),
+            Err(_) => Ok(Some(RoomTombstoneDetails {
+                // A present but redacted/malformed tombstone still proves
+                // the room was upgraded; fail closed without a follow link.
+                body: "Room upgraded".to_string(),
+                replacement_room_id: String::new(),
+            })),
+        },
+        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
-
-    Ok(None)
 }
 
 /// Builds the full [`RoomDetails`] snapshot for `room_id` — shared by

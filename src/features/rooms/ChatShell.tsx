@@ -520,7 +520,10 @@ export function ChatShell({
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
-  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
+  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(
+    activeRoomId,
+    roomMutationsBlockedRef,
+  );
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);

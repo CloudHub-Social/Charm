@@ -5128,6 +5128,37 @@ describe("ChatShell", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not start an upload when the room becomes read-only during preflight", async () => {
+    openFileDialog.mockResolvedValue("/Users/me/preflight-race.mp4");
+    let resolveSize: ((value: number) => void) | undefined;
+    getFileSize.mockImplementation(() => new Promise<number>((resolve) => (resolveSize = resolve)));
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    await waitFor(() => expect(getFileSize).toHaveBeenCalled());
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    await act(async () => resolveSize?.(1024));
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("does not confirm a staged attachment into a newly selected room", async () => {
     openFileDialog.mockResolvedValue("/Users/me/room-a.png");
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });

@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { stripExifOnUploadAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
 import {
@@ -40,7 +40,10 @@ async function fileSize(file: string | File): Promise<number | null> {
   }
 }
 
-export function useAttachmentUploads(roomId: string | null) {
+export function useAttachmentUploads(
+  roomId: string | null,
+  mutationsBlockedRef?: RefObject<boolean>,
+) {
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const stripExifOnUpload = useAtomValue(stripExifOnUploadAtom);
@@ -95,7 +98,7 @@ export function useAttachmentUploads(roomId: string | null) {
   }, []);
 
   async function handleAttachFile(file: string | File, caption?: string) {
-    if (!roomId) return;
+    if (!roomId || mutationsBlockedRef?.current) return;
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -107,9 +110,9 @@ export function useAttachmentUploads(roomId: string | null) {
     const limit = mediaSendPolishEnabled
       ? (maxUploadBytes ?? (await getMediaConfig().catch(() => null)))
       : null;
-    if (roomIdRef.current !== roomId) return;
+    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return;
     const size = limit != null ? await fileSize(file) : null;
-    if (roomIdRef.current !== roomId) return;
+    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return;
     if (limit != null && size != null && size > limit) {
       setUploads((prev) => [
         ...prev,
@@ -125,6 +128,10 @@ export function useAttachmentUploads(roomId: string | null) {
       return;
     }
 
+    // This is the last synchronous point before the upload starts. A
+    // tombstone received during either awaited preflight therefore cannot
+    // create an upload row or reach the native/web transport.
+    if (mutationsBlockedRef?.current) return;
     setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
     const abortController = isWebBuild() ? new AbortController() : undefined;
     if (abortController) uploadAbortControllers.current.set(txnId, abortController);
