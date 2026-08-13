@@ -573,11 +573,13 @@ pub async fn set_room_send_queue_read_only(
         }
     }
     let client = state.require_client().await?;
-    set_room_send_queue_read_only_impl(&client, &room_id, read_only, discard_pending).await
+    set_room_send_queue_read_only_impl(&client, Some(&state), &room_id, read_only, discard_pending)
+        .await
 }
 
 pub async fn set_room_send_queue_read_only_impl(
     client: &Client,
+    state: Option<&MatrixState>,
     room_id: &str,
     read_only: bool,
     discard_pending: bool,
@@ -597,6 +599,9 @@ pub async fn set_room_send_queue_read_only_impl(
     }
 
     barrier_rooms.insert(room.room_id().to_owned());
+    if let Some(state) = state {
+        super::send::cancel_attachment_uploads_for_room(state, room.room_id());
+    }
     if queue.is_enabled() {
         queue.set_enabled(false);
         resume_rooms.insert(room.room_id().to_owned());
@@ -647,7 +652,7 @@ mod room_send_queue_barrier_tests {
             .expect("queue pending message");
 
         assert_eq!(
-            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, false)
+            set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, false)
                 .await
                 .expect("pause unresolved room queue"),
             0
@@ -664,7 +669,7 @@ mod room_send_queue_barrier_tests {
         );
 
         assert_eq!(
-            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, true)
+            set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, true)
                 .await
                 .expect("close room queue"),
             1
@@ -673,7 +678,7 @@ mod room_send_queue_barrier_tests {
         let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
         assert!(local_echoes.is_empty());
 
-        set_room_send_queue_read_only_impl(&client, room_id.as_str(), false, false)
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), false, false)
             .await
             .expect("reopen room queue");
         assert!(!room.send_queue().is_enabled());
@@ -689,7 +694,7 @@ mod room_send_queue_barrier_tests {
         let room = server.sync_joined_room(&client, room_id).await;
         assert!(room.send_queue().is_enabled());
 
-        set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, false)
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, false)
             .await
             .expect("pause room queue");
         assert!(!room.send_queue().is_enabled());
@@ -702,7 +707,7 @@ mod room_send_queue_barrier_tests {
                 .is_err()
         );
 
-        set_room_send_queue_read_only_impl(&client, room_id.as_str(), false, false)
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), false, false)
             .await
             .expect("resume owned room queue");
         assert!(room.send_queue().is_enabled());

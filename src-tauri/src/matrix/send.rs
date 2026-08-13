@@ -699,6 +699,7 @@ pub async fn send_attachment(
     txn_id: String,
     strip_exif_enabled: bool,
 ) -> Result<(), String> {
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let operation_id = ipc_operation_id(&request);
     // Continues a trace started in the webview (see `observability_trace`'s
     // doc comment) — `None` when the frontend build predates this header or
@@ -753,15 +754,25 @@ pub async fn send_attachment(
         .attachment_cancellations
         .lock()
         .expect("attachment_cancellations mutex poisoned")
-        .insert(txn_id_for_cancellation.clone(), cancellation.clone());
+        .insert(
+            txn_id_for_cancellation.clone(),
+            (parsed_room_id.clone(), cancellation.clone()),
+        );
 
     let result = async {
+        // Serialize barrier publication with upload admission. Registering the
+        // room-scoped cancellation token before this await means whichever
+        // side wins the lock either rejects this upload or can cancel it.
+        let _send_guard = SEND_CAPTURE_LOCK.lock().await;
+        if super::actions::room_upgrade_queue_is_paused(&parsed_room_id).await {
+            return Err("This room is read-only while its current state is verified.".to_string());
+        }
         let client = state.require_client().await?;
 
-        let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
         let room = client
             .get_room(&parsed_room_id)
             .ok_or_else(|| format!("room {room_id} not found"))?;
+        drop(_send_guard);
 
         let path = Path::new(&file_path);
         let filename = path
@@ -968,7 +979,7 @@ pub async fn cancel_attachment_upload(
     state: State<'_, MatrixState>,
     txn_id: String,
 ) -> Result<(), String> {
-    if let Some(token) = state
+    if let Some((_room_id, token)) = state
         .attachment_cancellations
         .lock()
         .expect("attachment_cancellations mutex poisoned")
@@ -977,6 +988,19 @@ pub async fn cancel_attachment_upload(
         token.cancel();
     }
     Ok(())
+}
+
+pub(super) fn cancel_attachment_uploads_for_room(state: &MatrixState, room_id: &RoomId) {
+    for (upload_room_id, token) in state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .values()
+    {
+        if upload_room_id == room_id {
+            token.cancel();
+        }
+    }
 }
 
 /// Fetches (and caches, via matrix-rust-sdk's own `OnceCell`) the
@@ -1080,7 +1104,34 @@ pub fn attachment_info_for(mime: &mime::Mime, data: &[u8], size_bytes: u64) -> A
 
 #[cfg(test)]
 mod tests {
+    use matrix_sdk::ruma::room_id;
+
     use super::*;
+
+    #[test]
+    fn room_barrier_cancels_only_uploads_from_that_room() {
+        let state = MatrixState::default();
+        let blocked_room = room_id!("!blocked:example.org");
+        let other_room = room_id!("!other:example.org");
+        let blocked = tokio_util::sync::CancellationToken::new();
+        let other = tokio_util::sync::CancellationToken::new();
+        {
+            let mut uploads = state.attachment_cancellations.lock().unwrap();
+            uploads.insert(
+                "blocked-upload".to_string(),
+                (blocked_room.to_owned(), blocked.clone()),
+            );
+            uploads.insert(
+                "other-upload".to_string(),
+                (other_room.to_owned(), other.clone()),
+            );
+        }
+
+        cancel_attachment_uploads_for_room(&state, blocked_room);
+
+        assert!(blocked.is_cancelled());
+        assert!(!other.is_cancelled());
+    }
 
     #[test]
     fn classifies_image_mime_as_image_attachment_info() {

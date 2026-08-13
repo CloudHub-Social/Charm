@@ -64,7 +64,9 @@ current-state guarantees as the Tauri path.
   The asynchronous native picker and attachment size/configuration preflight recheck
   the live write barrier immediately before transport, and any upload already in flight
   is cancelled when the barrier closes, so a tombstone received during any of those
-  paths cannot send into the stale room. Attachments, slash
+  paths cannot send into the stale room. Native upload cancellation remains owned by
+  its originating room after navigation, allowing sync to cancel an inactive room's
+  upload when that room becomes read-only. Attachments, slash
   commands, and ordinary messages therefore cannot be sent from the stale
   conversation surface. Server-mutating message actions are closed too: reactions,
   edits, redactions, retries, reports, and room pin/unpin actions cannot target the
@@ -86,6 +88,9 @@ current-state guarantees as the Tauri path.
   sync applies the same barrier to every affected room, including rooms
   that are not currently open, and serializes barrier changes with queue insertion so a
   send already entering the SDK cannot slip in after the confirmed-tombstone drain.
+  Failed authoritative refreshes remain in the sync task's session-scoped retry set and
+  are retried after the next successful sync instead of leaving an inactive room paused
+  indefinitely.
 
 ## Data flow
 

@@ -116,6 +116,7 @@ async fn emit_room_updates(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
     seq_before_response: &std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>,
+    room_detail_retries: &mut std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
 ) {
     const ROOM_DETAILS_CONCURRENCY: usize = 8;
     let state = app.state::<MatrixState>();
@@ -125,8 +126,9 @@ async fn emit_room_updates(
     });
     if !authoritative_tombstone {
         super::actions::resume_all_room_upgrade_queues(client).await;
+        room_detail_retries.clear();
     }
-    let mut room_details_room_ids = Vec::new();
+    let mut room_details_room_ids = std::collections::HashSet::new();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
@@ -298,8 +300,12 @@ async fn emit_room_updates(
             // caught up — leaving the panel showing a stale pinned list
             // until some unrelated later refresh. Reconciling first means
             // any refetch this event triggers already sees the fresh cache.
-            room_details_room_ids.push(room_id.to_owned());
+            room_details_room_ids.insert(room_id.to_owned());
         }
+    }
+
+    if authoritative_tombstone {
+        room_details_room_ids.extend(room_detail_retries.iter().cloned());
     }
 
     // Authoritative tombstone reads may hit the homeserver once per room.
@@ -313,6 +319,7 @@ async fn emit_room_updates(
             let _ = app.emit("room_details:unresolved", room_id.to_string());
             let _ = super::actions::set_room_send_queue_read_only_impl(
                 client,
+                Some(&state),
                 room_id.as_str(),
                 true,
                 false,
@@ -331,16 +338,29 @@ async fn emit_room_updates(
         .collect::<Vec<_>>()
         .await;
     for (room_id, result) in detail_updates {
-        if let Ok(details) = result {
-            let read_only = details.tombstone.is_some();
-            let _ = super::actions::set_room_send_queue_read_only_impl(
-                client,
-                room_id.as_str(),
-                read_only,
-                read_only,
-            )
-            .await;
-            let _ = app.emit("room_details:update", details);
+        match result {
+            Ok(details) => {
+                room_detail_retries.remove(&room_id);
+                let read_only = details.tombstone.is_some();
+                let _ = super::actions::set_room_send_queue_read_only_impl(
+                    client,
+                    Some(&state),
+                    room_id.as_str(),
+                    read_only,
+                    read_only,
+                )
+                .await;
+                let _ = app.emit("room_details:update", details);
+            }
+            Err(error) if authoritative_tombstone => {
+                room_detail_retries.insert(room_id.clone());
+                tracing::warn!(
+                    %error,
+                    room_id = %room_id,
+                    "authoritative room details refresh failed; retrying after next sync"
+                );
+            }
+            Err(_) => {}
         }
     }
 }
@@ -698,6 +718,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+        let mut room_detail_retries = std::collections::HashSet::new();
 
         // Review fix: this used to unconditionally call
         // `set_presence_online`, ignoring a persisted `appear_offline`
@@ -793,7 +814,14 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             .await
             .clone();
         emit_room_list_and_badge(&app, &client).await;
-        emit_room_updates(&app, &client, &initial_response, &seq_before_response).await;
+        emit_room_updates(
+            &app,
+            &client,
+            &initial_response,
+            &seq_before_response,
+            &mut room_detail_retries,
+        )
+        .await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
         // the `SyncSettings` passed to its *first* call for the whole
@@ -881,7 +909,14 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                         .await
                         .clone();
                     emit_room_list_and_badge(&app, &client).await;
-                    emit_room_updates(&app, &client, &response, &seq_before_response).await;
+                    emit_room_updates(
+                        &app,
+                        &client,
+                        &response,
+                        &seq_before_response,
+                        &mut room_detail_retries,
+                    )
+                    .await;
                     notify_unopened_room_messages(&app, &client, &response).await;
                     if app.path().app_data_dir().is_ok_and(|dir| {
                         crate::feature_flags::flag(
