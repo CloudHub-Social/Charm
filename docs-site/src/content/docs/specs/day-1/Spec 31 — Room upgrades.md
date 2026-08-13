@@ -75,9 +75,11 @@ current-state guarantees as the Tauri path.
   and after a tombstone is present. Native avatar picking and alias-availability checks
   recheck that live write barrier after their asynchronous work completes, including
   alias-state cleanup that would otherwise race a completed directory removal. When
-  the barrier closes, Charm pauses the SDK room send queue and aborts all pending local
-  echoes, preventing messages queued while offline from reaching the old room after
-  connectivity returns. That queue ownership survives navigation remounts within one
+  the barrier closes, Charm pauses the SDK room send queue while authoritative state is
+  unresolved, preserving offline messages, and aborts pending local echoes only after a
+  tombstone is confirmed. This prevents queued messages from reaching the old room after
+  connectivity returns without discarding them during an ordinary refresh. That queue
+  ownership survives navigation remounts within one
   account, but logout clears it and invalidates pending transitions so it cannot affect
   a later signed-in session. Failed native queue transitions restore their prior
   ownership state and retry, since an IPC error alone cannot prove whether the SDK queue

@@ -492,6 +492,9 @@ describe("ChatShell", () => {
     );
 
     expect(await screen.findByText("This room has been upgraded")).toBeVisible();
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, true),
+    );
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Go to upgraded room" }));
     expect(onFollowRoomUpgrade).toHaveBeenCalledWith("!replacement:localhost");
@@ -662,7 +665,7 @@ describe("ChatShell", () => {
 
     await waitFor(() => expect(sendTyping).toHaveBeenCalledWith(room.room_id, false));
     await waitFor(() =>
-      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true),
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true, false),
     );
 
     setRoomSendQueueReadOnly.mockRejectedValueOnce(new Error("resume failed"));
@@ -673,7 +676,7 @@ describe("ChatShell", () => {
       </JotaiProvider>,
     );
     await waitFor(() =>
-      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, false),
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, false, false),
     );
 
     writableView.unmount();
@@ -704,7 +707,9 @@ describe("ChatShell", () => {
         <ChatShell room={room} currentUserId="@first:localhost" currentRoomStateResolved={false} />
       </JotaiProvider>,
     );
-    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true));
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, false),
+    );
 
     view.rerender(
       <JotaiProvider store={store}>
@@ -736,7 +741,9 @@ describe("ChatShell", () => {
         <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
       </JotaiProvider>,
     );
-    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true));
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, false),
+    );
     firstView.unmount();
 
     setRoomSendQueueReadOnly.mockResolvedValue(0);

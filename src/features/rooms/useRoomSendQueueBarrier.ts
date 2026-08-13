@@ -6,6 +6,7 @@ import { isWebBuild } from "@/lib/platform";
 // Module-owned so mobile navigation can unmount and remount ChatShell without
 // forgetting which SDK room queues this feature paused.
 const pausedRoomIds = new Set<string>();
+const requestedBarriers = new Map<string, string>();
 const commandChains = new Map<string, Promise<void>>();
 let queueBarrierGeneration = 0;
 
@@ -17,28 +18,32 @@ let queueBarrierGeneration = 0;
 export function resetRoomSendQueueBarrier(): void {
   queueBarrierGeneration += 1;
   pausedRoomIds.clear();
+  requestedBarriers.clear();
   commandChains.clear();
 }
 
 /**
- * Serializes native SDK send-queue barrier transitions per room. A transition
- * to read-only drains and pauses the queue; a later authoritative writable
- * state resumes only a queue this hook previously paused, preserving queues
- * disabled by unrelated send failures.
+ * Serializes native SDK send-queue barrier transitions per room. Unresolved
+ * state pauses delivery without message loss; a confirmed tombstone also
+ * drains pending echoes. A later authoritative writable state resumes only a
+ * queue this hook previously paused, preserving unrelated send-failure state.
  */
 export function useRoomSendQueueBarrier(
   roomId: string | null,
   enabled: boolean,
   readOnly: boolean,
+  discardPending: boolean,
 ): void {
   const [retryRevision, setRetryRevision] = useState(0);
 
   useEffect(() => {
     if (!roomId || isWebBuild()) return;
     const desiredReadOnly = enabled && readOnly;
-    if (pausedRoomIds.has(roomId) === desiredReadOnly) return;
-    if (desiredReadOnly) pausedRoomIds.add(roomId);
-    else pausedRoomIds.delete(roomId);
+    const desiredDiscard = desiredReadOnly && discardPending;
+    const requestedBarrier = `${desiredReadOnly}:${desiredDiscard}`;
+    if (!desiredReadOnly && !pausedRoomIds.has(roomId) && !commandChains.has(roomId)) return;
+    if (requestedBarriers.get(roomId) === requestedBarrier) return;
+    requestedBarriers.set(roomId, requestedBarrier);
     const generation = queueBarrierGeneration;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let active = true;
@@ -48,18 +53,24 @@ export function useRoomSendQueueBarrier(
       .catch(logAndIgnore)
       .then(() => {
         if (generation !== queueBarrierGeneration) return;
-        return setRoomSendQueueReadOnly(roomId, desiredReadOnly);
+        return setRoomSendQueueReadOnly(roomId, desiredReadOnly, desiredDiscard);
       })
-      .then(() => undefined)
+      .then(() => {
+        if (generation !== queueBarrierGeneration) return;
+        if (desiredReadOnly) pausedRoomIds.add(roomId);
+        else pausedRoomIds.delete(roomId);
+      })
       .catch((error: unknown) => {
         if (generation !== queueBarrierGeneration) return;
         // IPC can fail either before or after Rust changes the SDK queue.
-        // Restore the pre-command ownership state and retry: both queue
-        // enable/disable operations are idempotent, while assuming either
-        // outcome could leave a tombstoned room writable (or a live room
-        // permanently paused).
-        if (desiredReadOnly) pausedRoomIds.delete(roomId);
-        else pausedRoomIds.add(roomId);
+        // Retain ownership and retry: both queue operations are idempotent,
+        // while an IPC rejection cannot reveal whether Rust changed the SDK
+        // queue before failing. Ownership also ensures a later writable
+        // transition safely issues a resume after an ambiguous pause.
+        pausedRoomIds.add(roomId);
+        if (requestedBarriers.get(roomId) === requestedBarrier) {
+          requestedBarriers.delete(roomId);
+        }
         logAndIgnore(error);
         if (active) {
           retryTimer = setTimeout(() => {
@@ -79,5 +90,5 @@ export function useRoomSendQueueBarrier(
       active = false;
       clearTimeout(retryTimer);
     };
-  }, [enabled, readOnly, retryRevision, roomId]);
+  }, [discardPending, enabled, readOnly, retryRevision, roomId]);
 }

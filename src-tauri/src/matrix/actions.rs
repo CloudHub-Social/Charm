@@ -518,8 +518,9 @@ async fn find_local_echo_send_handle(
 }
 
 /// Makes a room's SDK send queue read-only. Closing the queue first prevents
-/// offline local echoes from being delivered after the room is tombstoned;
-/// every kind of pending send is then aborted while the queue remains paused.
+/// offline local echoes from being delivered while authoritative state is
+/// unresolved. Once a tombstone is confirmed, `discard_pending` aborts every
+/// kind of pending send while the queue remains paused.
 /// Reopening the queue is explicit so an authoritative active-room refresh (or
 /// disabling the feature) can resume normal delivery.
 #[tauri::command]
@@ -528,6 +529,7 @@ pub async fn set_room_send_queue_read_only(
     state: State<'_, MatrixState>,
     room_id: String,
     read_only: bool,
+    discard_pending: bool,
 ) -> Result<u64, String> {
     if read_only {
         use tauri::Manager;
@@ -540,13 +542,14 @@ pub async fn set_room_send_queue_read_only(
         }
     }
     let client = state.require_client().await?;
-    set_room_send_queue_read_only_impl(&client, &room_id, read_only).await
+    set_room_send_queue_read_only_impl(&client, &room_id, read_only, discard_pending).await
 }
 
 pub async fn set_room_send_queue_read_only_impl(
     client: &Client,
     room_id: &str,
     read_only: bool,
+    discard_pending: bool,
 ) -> Result<u64, String> {
     let room = get_room(client, room_id)?;
     let queue = room.send_queue();
@@ -557,6 +560,9 @@ pub async fn set_room_send_queue_read_only_impl(
     }
 
     queue.set_enabled(false);
+    if !discard_pending {
+        return Ok(0);
+    }
     let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
     let mut aborted = 0;
     for echo in local_echoes {
@@ -600,7 +606,16 @@ mod room_send_queue_barrier_tests {
             .expect("queue pending message");
 
         assert_eq!(
-            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true)
+            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, false)
+                .await
+                .expect("pause unresolved room queue"),
+            0
+        );
+        let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
+        assert_eq!(local_echoes.len(), 1);
+
+        assert_eq!(
+            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, true)
                 .await
                 .expect("close room queue"),
             1
@@ -609,7 +624,7 @@ mod room_send_queue_barrier_tests {
         let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
         assert!(local_echoes.is_empty());
 
-        set_room_send_queue_read_only_impl(&client, room_id.as_str(), false)
+        set_room_send_queue_read_only_impl(&client, room_id.as_str(), false, false)
             .await
             .expect("reopen room queue");
         assert!(room.send_queue().is_enabled());
