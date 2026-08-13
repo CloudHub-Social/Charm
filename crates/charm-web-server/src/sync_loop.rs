@@ -1308,7 +1308,9 @@ fn register_presence_handler(
         let presence_snapshots = presence_snapshots.clone();
         async move {
             let sender = ev.sender.clone();
-            let event = ServerEvent::Presence(presence_event_to_update(&ev));
+            // The web companion has no feature-flag store yet; keep custom
+            // busy states on the default Offline fallback.
+            let event = ServerEvent::Presence(presence_event_to_update(&ev, false));
             presence_snapshots
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

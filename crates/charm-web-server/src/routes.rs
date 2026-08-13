@@ -4240,7 +4240,9 @@ async fn get_presence(
     Path(user_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let presence = get_presence_impl(&session.client, &user_id)
+    // The web companion has no feature-flag store yet, so preserve the
+    // compiled-in default and normalize custom busy states as Offline.
+    let presence = get_presence_impl(&session.client, &user_id, false)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(presence))
@@ -4257,7 +4259,8 @@ async fn get_own_profile(
     // homeserver directly for the actual current value instead of
     // hardcoding `PresenceStateDto::default()` (always `Online`), which
     // would misreport `unavailable`/`offline` accounts.
-    let presence = get_presence_impl(&session.client, &session.user_id)
+    // Custom busy states stay behind the desktop-only rollout flag for now.
+    let presence = get_presence_impl(&session.client, &session.user_id, false)
         .await
         .ok()
         .flatten()
@@ -4284,9 +4287,16 @@ async fn get_user_profile(
     Query(query): Query<UserProfileQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let profile = get_user_profile_impl(&session.client, None, &user_id, query.room_id.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    // Match the default-off presence lookup above until web flags exist.
+    let profile = get_user_profile_impl(
+        &session.client,
+        None,
+        &user_id,
+        query.room_id.as_deref(),
+        false,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(Json(profile))
 }
 
