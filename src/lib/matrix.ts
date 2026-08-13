@@ -469,6 +469,15 @@ export function loadTimelineAroundEvent(
   return invoke("load_timeline_around_event", { roomId, eventId });
 }
 
+/** Resolves the nearest event at or after/before a Matrix timestamp. */
+export function getEventAtTimestamp(
+  roomId: string,
+  timestampMs: number,
+  direction: "forward" | "backward" = "forward",
+): Promise<string> {
+  return invoke("get_event_at_timestamp", { roomId, timestampMs, direction });
+}
+
 /** Searches only Charm's encrypted, device-local decrypted-message index. */
 export function searchMessages(
   query: string,

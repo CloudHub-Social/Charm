@@ -8,6 +8,7 @@ import { unreadDividerIndex } from "./timelineDividers";
 // How long a successful load-around request gets to emit its timeline update
 // before the jump is released without scrolling.
 const JUMP_FALLBACK_TIMEOUT_MS = 5000;
+const JUMP_HIGHLIGHT_MS = 1800;
 
 interface UseTimelineViewportArgs {
   room: RoomSummary | null;
@@ -56,6 +57,8 @@ export function useTimelineViewport({
   atBottomRef.current = atBottom;
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [hasFocusedView, setHasFocusedView] = useState(false);
+  const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
+  const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mightHaveFocusedViewRef = useRef(false);
 
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
@@ -76,6 +79,8 @@ export function useTimelineViewport({
           }
         })
         .catch(logAndIgnore);
+    } else {
+      setHasFocusedView(false);
     }
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
     handleVirtuosoAtBottomStateChange(true);
@@ -92,6 +97,12 @@ export function useTimelineViewport({
     }
     pendingScrollTargetRef.current = null;
     if (index < 0) return;
+    setHighlightedEventId(eventId);
+    if (highlightTimeoutRef.current !== null) clearTimeout(highlightTimeoutRef.current);
+    highlightTimeoutRef.current = setTimeout(() => {
+      highlightTimeoutRef.current = null;
+      setHighlightedEventId(null);
+    }, JUMP_HIGHLIGHT_MS);
     virtuosoRef.current.scrollToIndex({
       index,
       align: "center",
@@ -109,6 +120,11 @@ export function useTimelineViewport({
 
   useEffect(() => {
     pendingScrollTargetRef.current = null;
+    setHighlightedEventId(null);
+    if (highlightTimeoutRef.current !== null) {
+      clearTimeout(highlightTimeoutRef.current);
+      highlightTimeoutRef.current = null;
+    }
   }, [roomId]);
 
   // Reset before paint so a room never inherits another room's pill or
@@ -155,6 +171,10 @@ export function useTimelineViewport({
     const requestKey = `${room.room_id}:${jumpToEventId}`;
     const index = messages.findIndex((message) => message.event_id === jumpToEventId);
     if (index >= 0) {
+      // Prop-driven jumps (bookmarks, pins, search, and date navigation) get
+      // an explicit return-to-live affordance even when the target was
+      // already loaded and no focused server timeline had to be installed.
+      setHasFocusedView(true);
       handleJumpToMessage(jumpToEventId);
       if (loadRequestedForRef.current === requestKey) {
         handledAwaitingFocusedViewRef.current = requestKey;
@@ -220,6 +240,10 @@ export function useTimelineViewport({
       if (jumpFallbackTimeoutRef.current !== null) {
         clearTimeout(jumpFallbackTimeoutRef.current);
         jumpFallbackTimeoutRef.current = null;
+      }
+      if (highlightTimeoutRef.current !== null) {
+        clearTimeout(highlightTimeoutRef.current);
+        highlightTimeoutRef.current = null;
       }
     };
   }, []);
@@ -306,6 +330,7 @@ export function useTimelineViewport({
     atBottom,
     newMessageCount,
     hasFocusedView,
+    highlightedEventId,
     newMessageKeys,
     unreadStartIdx,
     handleVirtuosoAtBottomStateChange,

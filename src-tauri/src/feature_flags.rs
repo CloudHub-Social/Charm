@@ -165,6 +165,8 @@ define_feature_flag_keys!(
         /// Spec 53 composite group-DM avatars, presence rings, real member
         /// avatars, and member presence indicators.
         AvatarPresenceVisuals,
+        /// Day-2 Spec 11 room-history navigation by calendar date.
+        JumpToDate,
     }
 );
 
@@ -198,6 +200,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::QuickSwitcher => false,
             FeatureFlagKey::FullEmojiPicker => false,
             FeatureFlagKey::AvatarPresenceVisuals => false,
+            FeatureFlagKey::JumpToDate => false,
         }
     }
 
@@ -280,6 +283,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => {
                 "Show composite group-DM avatars and richer avatar/presence indicators in room and member lists."
             }
+            FeatureFlagKey::JumpToDate => {
+                "Open a calendar from the room header and jump to the first event on that date."
+            }
         }
     }
 
@@ -322,6 +328,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
             FeatureFlagKey::FullEmojiPicker => "Spec 38 (full emoji picker)",
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
+            FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
         }
     }
 
@@ -354,6 +361,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::QuickSwitcher => "quick_switcher",
             FeatureFlagKey::FullEmojiPicker => "full_emoji_picker",
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
+            FeatureFlagKey::JumpToDate => "jump_to_date",
         }
     }
 }

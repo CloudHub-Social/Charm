@@ -47,6 +47,7 @@ import {
   showHiddenEventsAtom,
 } from "@/features/appearance/atoms";
 import { bucketTimelineNotices, TimelineNoticeList } from "./TimelineNotices";
+import { JumpToDateDialog } from "./JumpToDateDialog";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -216,6 +217,7 @@ export function ChatShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
+  const jumpToDateEnabled = useFlag("jump_to_date");
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
   const messageLayout = useAtomValue(messageLayoutAtom);
@@ -224,6 +226,8 @@ export function ChatShell({
   const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
+  const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
+  const [dateJumpEventId, setDateJumpEventId] = useState<string | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const fileDragLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -254,7 +258,14 @@ export function ChatShell({
   const roomId = room?.room_id ?? "";
   useEffect(() => {
     setPillProfile(null);
+    setJumpToDateOpen(false);
+    setDateJumpEventId(null);
   }, [roomId]);
+  const activeJumpToEventId = jumpToEventId ?? dateJumpEventId;
+  const handleJumpHandled = () => {
+    if (dateJumpEventId !== null) setDateJumpEventId(null);
+    else onJumpHandled?.();
+  };
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
     pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;
@@ -313,7 +324,7 @@ export function ChatShell({
   } = useChatTimeline(
     room,
     roomSettingsOpen,
-    jumpToEventId !== null,
+    activeJumpToEventId !== null,
     timelineStateEventsEnabled,
     hideMembershipEvents,
     showHiddenEvents,
@@ -379,6 +390,7 @@ export function ChatShell({
     atBottom,
     newMessageCount,
     hasFocusedView,
+    highlightedEventId,
     newMessageKeys,
     unreadStartIdx,
     handleVirtuosoAtBottomStateChange,
@@ -395,8 +407,8 @@ export function ChatShell({
     paginationError,
     prependedCount,
     awaitingEmptyPagePagination,
-    jumpToEventId,
-    onJumpHandled,
+    jumpToEventId: activeJumpToEventId,
+    onJumpHandled: handleJumpHandled,
     handleAtBottomStateChange,
     resetToLive,
   });
@@ -736,6 +748,8 @@ export function ChatShell({
         onOpenRoomSettings={() =>
           setRoomSettingsTarget({ roomId: room.room_id, section: "general" })
         }
+        jumpToDateEnabled={jumpToDateEnabled}
+        onJumpToDate={() => setJumpToDateOpen(true)}
       />
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -856,6 +870,7 @@ export function ChatShell({
                     readers={readers}
                     senderNameByUserId={senderNameByUserId}
                     newMessageKeys={newMessageKeys}
+                    highlightedEventId={highlightedEventId}
                     controller={messageActionController}
                     onJumpToMessage={handleJumpToMessage}
                     onSenderClick={
@@ -881,16 +896,14 @@ export function ChatShell({
             }}
           />
         )}
-        {/* "Jump to present" (Spec 26 Phase 2): shown while scrolled away
+        {/* "Jump to present" (Spec 26 Phase 2): shown after a targeted jump or while scrolled away
             from the live bottom with at least one new (non-own) message
             arrived since — never while already at bottom, the Charm 1.0
             #328 failure mode this migration is meant to avoid.
-            Review fix: also shown whenever `hasFocusedView` is set,
-            regardless of `newMessageCount` — a focused (`TimelineFocus::Event`)
-            view from a Saved Messages jump never receives live updates, so
-            `newMessageCount` would otherwise stay 0 forever after such a
-            jump, leaving the user with no in-room way to reset back to
-            live short of leaving and reopening the room. */}
+            `hasFocusedView` also represents an already-loaded targeted jump:
+            those need the same visible way back to the live tail even though
+            only a real `TimelineFocus::Event` installation requires a backend
+            reset. */}
         {(hasFocusedView || (!atBottom && newMessageCount > 0)) && (
           <button
             type="button"
@@ -910,6 +923,15 @@ export function ChatShell({
         onClose={messageActionController.closeDialog}
         onConfirm={messageActionController.confirmDialog}
       />
+
+      {jumpToDateEnabled && room && (
+        <JumpToDateDialog
+          open={jumpToDateOpen}
+          roomId={room.room_id}
+          onOpenChange={setJumpToDateOpen}
+          onResolved={setDateJumpEventId}
+        />
+      )}
 
       {typingText && (
         <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">

@@ -3,10 +3,30 @@ title: Charm 2.0 Spec — Jump to date
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
 
-**Workstream:** one PR / one agent. Interacts with Spec 26's bottom-up virtualized
+## Implementation status
+
+Charm ships jump-to-date behind the default-off `jump_to_date` feature flag on
+desktop, mobile, and the authenticated web companion. The room-header calendar
+resolves the first event on or after local midnight through Matrix's stable
+[`/timestamp_to_event`](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event)
+endpoint, then hands the returned event ID to the existing bounded
+`load_timeline_around_event` and `TimelineFocus::Event` fallback from Spec 12.
+The shared jump path centers and briefly highlights the target and exposes the
+existing Jump to present control, without introducing a second viewport state
+machine.
+
+Both transports validate the room ID, require an active joined-room session, bound
+the timestamp to Matrix's JavaScript-safe integer range, accept only forward or
+backward direction, and return only the event ID. The web GET also requires Charm's
+non-simple transport header before it can cause a homeserver request. Expected
+not-found failures are sanitized before crossing IPC. This follows Element's
+established calendar-jump interaction while using the stable Matrix v1.6 endpoint
+rather than the former MSC3030 unstable path.
+
+**Workstream:** shipped in one bounded implementation PR. Interacts with Spec 26's bottom-up virtualized
 timeline — read that spec's implementation before starting, since jump-to-date
 needs to insert an arbitrary point into an already-carefully-tuned scroll/
 virtualization system.
@@ -53,7 +73,7 @@ into it is a worse experience than a shorter one). Including it as a genuine
 
 ## Data flow
 
-New IPC command wrapping `/timestamp_to_event`: `get_event_at_timestamp(room_id,
+The typed transport command wrapping `/timestamp_to_event` is `get_event_at_timestamp(room_id,
 timestamp_ms, direction) -> event_id`. Timeline loading/pagination around that
 event reuses whatever pagination primitives Spec 26/14 already expose (e.g. a
 "paginate around event ID" capability — confirm matrix-sdk-ui's `Timeline` exposes
@@ -67,13 +87,13 @@ underlying SDK already supports paginating around an arbitrary event.
 
 ## Testing strategy
 
-- Rust: `get_event_at_timestamp` correctness against a mocked
+- Rust CI: `get_event_at_timestamp` correctness against a mocked
   `/timestamp_to_event` response, including the "no event before/after this date"
   edge case (room created after the requested date, or date in the future).
-- Frontend: date picker → jump → correct message scrolled-to-and-highlighted,
+- Frontend CI: date picker → jump → correct message scrolled-to-and-highlighted,
   using a fixture timeline; "back to live" returns to the actual bottom, not a
   stale cached position.
-- Manual: this is the one most worth hand-testing against Spec 26's real
+- Manual follow-up: this is the one most worth hand-testing against Spec 26's real
   virtualized timeline (not just fixtures) given the scroll-anchoring risk called
   out above — jump to several different points in a real room's history including
   the very oldest and very newest available messages.

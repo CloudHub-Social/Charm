@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use imbl::Vector;
+use matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1 as get_event_by_timestamp;
+use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
 use matrix_sdk::ruma::events::StateEventContentChange;
-use matrix_sdk::ruma::{RoomId, UserId};
+use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, RoomId, UInt, UserId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
     AnyOtherStateEventContentChange, EventSendState, EventTimelineItem, MembershipChange,
@@ -1560,6 +1562,51 @@ pub struct JumpToEventResult {
     pub installed_focused_view: bool,
 }
 
+/// Resolves the closest room event in the requested direction using Matrix's
+/// stable `/timestamp_to_event` endpoint (Client-Server API v1.6).
+pub async fn get_event_at_timestamp_impl(
+    client: &Client,
+    room_id: &RoomId,
+    timestamp_ms: u64,
+    direction: &str,
+) -> Result<String, String> {
+    let timestamp = UInt::try_from(timestamp_ms)
+        .map(MilliSecondsSinceUnixEpoch)
+        .map_err(|_| "timestamp is outside the Matrix-supported range".to_string())?;
+    let direction = match direction {
+        "forward" => Direction::Forward,
+        "backward" => Direction::Backward,
+        _ => return Err("direction must be 'forward' or 'backward'".to_string()),
+    };
+    let response = client
+        .send(get_event_by_timestamp::Request::new(
+            room_id.to_owned(),
+            timestamp,
+            direction,
+        ))
+        .await
+        .map_err(|_| "No event was found near that date.".to_string())?;
+    Ok(response.event_id.to_string())
+}
+
+/// Finds the event nearest to a timestamp in a joined room. Only the event ID
+/// crosses IPC; the access token and the server response stay inside Rust.
+#[tauri::command]
+pub async fn get_event_at_timestamp(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    timestamp_ms: u64,
+    direction: String,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {parsed_room_id} not found"))?;
+    require_room_still_joined(&room)?;
+    get_event_at_timestamp_impl(&client, &parsed_room_id, timestamp_ms, &direction).await
+}
+
 /// Spec 12's minimal "load timeline around an arbitrary event id" capability
 /// — needed so jumping to a bookmarked message from the Saved Messages view
 /// works even when that message isn't in the room's currently-loaded
@@ -1848,8 +1895,60 @@ mod mapping_tests {
     use matrix_sdk_test::event_factory::EventFactory;
     use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
     use matrix_sdk_ui::timeline::RoomExt as _;
+    use wiremock::matchers::{method, path_regex, query_param};
+    use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn get_event_at_timestamp_returns_the_forward_event_id() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.sync_joined_room(&client, room_id).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/_matrix/client/(v1|unstable/org\.matrix\.msc3030)/rooms/.*/timestamp_to_event$",
+            ))
+            .and(query_param("ts", "1704067200000"))
+            .and(query_param("dir", "f"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "event_id": "$on-date:example.org",
+                "origin_server_ts": 1704067201000_u64,
+            })))
+            .mount(server.server())
+            .await;
+
+        let event_id = get_event_at_timestamp_impl(&client, room_id, 1_704_067_200_000, "forward")
+            .await
+            .expect("a matching event should be returned");
+
+        assert_eq!(event_id, "$on-date:example.org");
+    }
+
+    #[tokio::test]
+    async fn get_event_at_timestamp_sanitizes_not_found_errors() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.sync_joined_room(&client, room_id).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/_matrix/client/(v1|unstable/org\.matrix\.msc3030)/rooms/.*/timestamp_to_event$",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "sensitive server detail",
+            })))
+            .mount(server.server())
+            .await;
+
+        let error = get_event_at_timestamp_impl(&client, room_id, 1, "forward")
+            .await
+            .expect_err("an empty date range should not resolve");
+
+        assert_eq!(error, "No event was found near that date.");
+    }
 
     /// Builds a real `matrix-sdk-ui` `Timeline` against a mocked homeserver
     /// (no live Synapse) pre-loaded with `events`, then returns its current

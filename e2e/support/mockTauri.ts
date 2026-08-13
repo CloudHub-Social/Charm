@@ -112,13 +112,16 @@ export function installMockTauri(seed: {
   messageSearch?: boolean;
   /** Enable Spec 55's room/DM/space quick switcher. */
   quickSwitcher?: boolean;
+  /** Enable Day-2 Spec 11's room-header date navigation. */
+  jumpToDate?: boolean;
 }) {
   if (
     seed.registrationUia ||
     seed.loginChoices ||
     seed.passwordRecovery ||
     seed.messageSearch ||
-    seed.quickSwitcher
+    seed.quickSwitcher ||
+    seed.jumpToDate
   ) {
     const overrides: Record<string, boolean> = {};
     if (seed.registrationUia || seed.loginChoices || seed.passwordRecovery) {
@@ -126,6 +129,7 @@ export function installMockTauri(seed: {
     }
     if (seed.messageSearch) overrides.encrypted_local_message_search = true;
     if (seed.quickSwitcher) overrides.quick_switcher = true;
+    if (seed.jumpToDate) overrides.jump_to_date = true;
     localStorage.setItem(
       "charm:featureFlags",
       JSON.stringify({
@@ -540,6 +544,17 @@ export function installMockTauri(seed: {
       messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
+    get_event_at_timestamp: (args) => {
+      const messages = messagesByRoom.get(args.roomId as string) ?? [];
+      const timestamp = Number(args.timestampMs);
+      const forward = args.direction === "forward";
+      const ordered = [...messages].sort((a, b) => Number(a.timestamp_ms) - Number(b.timestamp_ms));
+      const match = forward
+        ? ordered.find((message) => Number(message.timestamp_ms) >= timestamp)
+        : ordered.reverse().find((message) => Number(message.timestamp_ms) <= timestamp);
+      if (!match) throw new Error("No event was found near that date.");
+      return match.event_id;
+    },
     search_messages: (args) => {
       const query = typeof args.query === "string" ? args.query.toLocaleLowerCase() : "";
       const scopedRoomId = typeof args.roomId === "string" ? args.roomId : null;
