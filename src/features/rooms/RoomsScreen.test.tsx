@@ -7,7 +7,7 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
-const mockUseRoomDetails = vi.fn(() => ({
+const mockUseRoomDetails = vi.fn((_roomId: string | null, _refetchOnMount = false) => ({
   data: undefined,
   isSuccess: false,
   isFetching: false,
@@ -82,7 +82,8 @@ vi.mock("@/features/room-info/RoomSettingsModal", () => ({
 // these tests, which aren't exercising that data-fetching behavior, don't need a
 // `QueryClientProvider` in the tree.
 vi.mock("@/features/room-info/useRoomDetails", () => ({
-  useRoomDetails: (...args: unknown[]) => mockUseRoomDetails(...args),
+  useRoomDetails: (roomId: string | null, refetchOnMount?: boolean) =>
+    mockUseRoomDetails(roomId, refetchOnMount),
 }));
 
 // Same rationale as `useRoomDetails` above — `usePrivacySettings` is also a
