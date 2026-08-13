@@ -96,6 +96,7 @@ function renderModal(
 
 describe("RoomSettingsModal", () => {
   beforeEach(() => {
+    getRoomDetails.mockReset();
     featureFlagMocks.roomAliasManagement = false;
     featureFlagMocks.roomUpgrades = false;
     featureFlagMocks.roomUpgradesPersistenceSettled = true;
