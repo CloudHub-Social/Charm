@@ -21,7 +21,7 @@ import {
   startDirectMessage,
 } from "@/lib/matrix";
 import { usePresence } from "@/features/presence/usePresence";
-import { formatLastActiveAgo } from "@/features/presence/PresenceDot";
+import { formatLastActiveAgo, presenceLabel } from "@/features/presence/PresenceDot";
 import { Input } from "@/components/ui/input";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 
@@ -128,6 +128,7 @@ export function MessagePillProfileDialog({
     };
   }, [detailed, refreshMutualRooms, userId]);
   const presenceDetailsEnabled = useFlag("presence_privacy_controls");
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   // getUserProfile already includes the initial presence snapshot. This hook
   // only needs to observe newer pushes while the card stays open.
   const livePresence = usePresence(detailed && userId !== "" ? userId : null, {
@@ -284,7 +285,11 @@ export function MessagePillProfileDialog({
             {detailed && presence && (
               <div className="max-w-full min-w-0 text-sm text-muted-foreground">
                 <p className="break-words">
-                  {presence.presence === "unavailable" ? "away" : presence.presence}
+                  {presenceLabel(
+                    presence.presence === "dnd" && !avatarPresenceVisualsEnabled
+                      ? "offline"
+                      : presence.presence,
+                  )}
                   {presenceDetailsEnabled && presence.status_msg ? ` · ${presence.status_msg}` : ""}
                 </p>
                 {presenceDetailsEnabled && presence.last_active_ago_ms != null && (
