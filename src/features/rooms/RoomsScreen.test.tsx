@@ -7,11 +7,15 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
-const mockUseRoomDetails = vi.fn((_roomId: string | null, _refetchOnMount = false) => ({
-  data: undefined,
-  isSuccess: false,
-  isFetching: false,
-}));
+const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false) => {
+  void roomId;
+  void refetchOnMount;
+  return {
+    data: undefined,
+    isSuccess: false,
+    isFetching: false,
+  };
+});
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
