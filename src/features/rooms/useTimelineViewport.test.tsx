@@ -86,6 +86,24 @@ describe("useTimelineViewport", () => {
     expect(result.current.unreadStartIdx).toBe(0);
   });
 
+  it("counts a live arrival immediately after Virtuoso reports leaving the bottom", () => {
+    const initialProps = props();
+    const { result, rerender } = renderHook((currentProps) => useTimelineViewport(currentProps), {
+      initialProps,
+    });
+
+    rerender({ ...initialProps, loading: false });
+    act(() => result.current.handleVirtuosoAtBottomStateChange(false));
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [...initialProps.messages, message("$racing-live-message", "@other:localhost", 2)],
+    });
+
+    expect(result.current.atBottom).toBe(false);
+    expect(result.current.newMessageCount).toBe(1);
+  });
+
   it("uses one reconciliation path when an own send returns to present", () => {
     const initialProps = props();
     const { result } = renderHook(() => useTimelineViewport(initialProps));

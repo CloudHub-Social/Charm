@@ -67,6 +67,12 @@ export function useTimelineViewport({
   const mightHaveFocusedViewRef = useRef(false);
 
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
+    // Virtuoso can publish this callback immediately before a live timeline
+    // snapshot commits. React state is scheduled, but the snapshot-counting
+    // effect reads the ref synchronously; update it here so that narrow gap
+    // cannot mistake an off-bottom reader for someone still at the live tail
+    // and silently omit the jump-to-present pill (issue #399).
+    atBottomRef.current = bottom;
     handleAtBottomStateChange(bottom);
     setAtBottom(bottom);
     if (bottom) setNewMessageCount(0);
