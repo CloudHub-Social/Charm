@@ -493,8 +493,19 @@ describe("ChatShell", () => {
 
   it("uses authoritative current tombstone state when the timeline window omits it", async () => {
     getTimelinePage.mockResolvedValueOnce({
-      messages: [summary({ event_id: "$newer", body: "after upgrade" })],
-      items: [{ kind: "message", message: summary({ event_id: "$newer", body: "after upgrade" }) }],
+      messages: [
+        summary({ event_id: "$newer", sender: "@alice:localhost", body: "after upgrade" }),
+      ],
+      items: [
+        {
+          kind: "message",
+          message: summary({
+            event_id: "$newer",
+            sender: "@alice:localhost",
+            body: "after upgrade",
+          }),
+        },
+      ],
       next_cursor: null,
     });
 
