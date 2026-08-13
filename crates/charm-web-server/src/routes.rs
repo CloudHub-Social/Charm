@@ -4260,6 +4260,7 @@ struct PresenceQuery {
 async fn get_own_profile(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(query): Query<PresenceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     // Unlike desktop's `MatrixState::sync_presence` (updated by the
@@ -4268,13 +4269,16 @@ async fn get_own_profile(
     // homeserver directly for the actual current value instead of
     // hardcoding `PresenceStateDto::default()` (always `Online`), which
     // would misreport `unavailable`/`offline` accounts.
-    // Custom busy states stay behind the desktop-only rollout flag for now.
-    let presence = get_presence_impl(&session.client, &session.user_id, false)
-        .await
-        .ok()
-        .flatten()
-        .map(|update| update.presence)
-        .unwrap_or_default();
+    let presence = get_presence_impl(
+        &session.client,
+        &session.user_id,
+        query.avatar_presence_visuals_enabled,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|update| update.presence)
+    .unwrap_or_default();
     let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;

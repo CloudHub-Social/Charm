@@ -842,8 +842,8 @@ export function setPrivacySettings(settings: PrivacySettings): Promise<void> {
   return invoke("set_privacy_settings", { settings });
 }
 
-export function getOwnProfile(): Promise<OwnProfile> {
-  return invoke("get_own_profile");
+export function getOwnProfile(avatarPresenceVisualsEnabled?: boolean): Promise<OwnProfile> {
+  return invoke("get_own_profile", { avatarPresenceVisualsEnabled });
 }
 
 export function getUserProfile(

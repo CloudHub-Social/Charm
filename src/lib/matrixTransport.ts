@@ -737,8 +737,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           : "";
       return requestJson<T>("GET", `/api/presence/${encodeSegment(String(args.userId))}${visuals}`);
     }
-    case "get_own_profile":
-      return requestJson<T>("GET", "/api/profile/me");
+    case "get_own_profile": {
+      const visuals =
+        typeof args.avatarPresenceVisualsEnabled === "boolean"
+          ? `?avatar_presence_visuals_enabled=${String(args.avatarPresenceVisualsEnabled)}`
+          : "";
+      return requestJson<T>("GET", `/api/profile/me${visuals}`);
+    }
     case "get_user_profile": {
       const searchParams = new URLSearchParams();
       if (typeof args.roomId === "string") searchParams.set("room_id", args.roomId);

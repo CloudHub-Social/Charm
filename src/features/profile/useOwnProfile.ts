@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/providers";
 import { getOwnProfile, onSelfProfileUpdate } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
-const OWN_PROFILE_QUERY_KEY = ["own-profile"];
+const OWN_PROFILE_QUERY_KEY = ["own-profile"] as const;
 
 /**
  * The signed-in user's own profile (display name, avatar, presence) — backs
@@ -15,6 +16,7 @@ const OWN_PROFILE_QUERY_KEY = ["own-profile"];
  * "your profile changed" sync event).
  */
 export function useOwnProfile() {
+  const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   useEffect(() => {
     const unlisten = onSelfProfileUpdate(() => {
       queryClient.invalidateQueries({ queryKey: OWN_PROFILE_QUERY_KEY });
@@ -25,7 +27,7 @@ export function useOwnProfile() {
   }, []);
 
   return useQuery({
-    queryKey: OWN_PROFILE_QUERY_KEY,
-    queryFn: getOwnProfile,
+    queryKey: [...OWN_PROFILE_QUERY_KEY, avatarPresenceVisualsEnabled],
+    queryFn: () => getOwnProfile(avatarPresenceVisualsEnabled),
   });
 }

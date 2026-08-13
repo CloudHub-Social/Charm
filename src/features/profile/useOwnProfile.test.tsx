@@ -1,9 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { queryClient } from "@/providers";
 import { useOwnProfile } from "./useOwnProfile";
+import { featureFlagTestHooks } from "@/featureFlags";
 
 const getOwnProfile = vi.fn();
 let selfProfileCallback:
@@ -11,7 +12,8 @@ let selfProfileCallback:
   | undefined;
 
 vi.mock("@/lib/matrix", () => ({
-  getOwnProfile: () => getOwnProfile(),
+  getOwnProfile: (avatarPresenceVisualsEnabled?: boolean) =>
+    getOwnProfile(avatarPresenceVisualsEnabled),
   onSelfProfileUpdate: (callback: typeof selfProfileCallback) => {
     selfProfileCallback = callback;
     return Promise.resolve(() => {
@@ -31,6 +33,7 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   getOwnProfile.mockReset();
+  featureFlagTestHooks.reset();
   queryClient.clear();
   selfProfileCallback = undefined;
 });
@@ -48,6 +51,32 @@ describe("useOwnProfile", () => {
     const { result } = renderHook(() => useOwnProfile(), { wrapper });
 
     await waitFor(() => expect(result.current.data?.display_name).toBe("Me"));
+    expect(getOwnProfile).toHaveBeenCalledWith(false);
+  });
+
+  it("refetches with the current avatar-presence decision when the flag changes", async () => {
+    getOwnProfile
+      .mockResolvedValueOnce({
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        avatar_path: null,
+        presence: "offline",
+      })
+      .mockResolvedValueOnce({
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        avatar_path: null,
+        presence: "dnd",
+      });
+    const { result } = renderHook(() => useOwnProfile(), { wrapper });
+    await waitFor(() => expect(result.current.data?.presence).toBe("offline"));
+
+    act(() => featureFlagTestHooks.setCache({ avatar_presence_visuals: true }));
+
+    await waitFor(() => expect(result.current.data?.presence).toBe("dnd"));
+    expect(getOwnProfile).toHaveBeenLastCalledWith(true);
   });
 
   it("refetches when a profile:self event arrives", async () => {
