@@ -544,6 +544,10 @@ export function installMockTauri(seed: {
       messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
+    load_timeline_around_event: (args) => ({
+      found: Boolean(findMessage(args.roomId as string, args.eventId as string)),
+      installed_focused_view: false,
+    }),
     get_event_at_timestamp: (args) => {
       const messages = messagesByRoom.get(args.roomId as string) ?? [];
       const timestamp = Number(args.timestampMs);
