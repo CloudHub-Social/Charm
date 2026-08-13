@@ -1575,13 +1575,12 @@ fn renderable_message_event_id(event: &Raw<AnyTimelineEvent>) -> Option<String> 
 }
 
 fn renderable_message_filter() -> RoomEventFilter {
-    RoomEventFilter {
-        types: Some(vec![
-            "m.room.message".to_string(),
-            "m.room.encrypted".to_string(),
-        ]),
-        ..Default::default()
-    }
+    let mut filter = RoomEventFilter::default();
+    filter.types = Some(vec![
+        "m.room.message".to_string(),
+        "m.room.encrypted".to_string(),
+    ]);
+    filter
 }
 
 const MAX_TIMESTAMP_MESSAGE_PAGES: usize = 20;
