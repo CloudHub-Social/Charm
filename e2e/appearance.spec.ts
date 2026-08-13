@@ -103,6 +103,7 @@ test("group DMs use composite avatars and the persisted ring-or-dot preference",
   });
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Direct messages" }).click();
   const groupRow = page.getByRole("button", { name: /Alice, Bob, Carol/ });
   await expect(groupRow.locator("[data-group-dm-avatar]")).toBeVisible();
   await expect(groupRow.locator("[data-group-dm-avatar] [data-slot='avatar']")).toHaveCount(3);
