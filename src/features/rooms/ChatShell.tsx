@@ -766,12 +766,8 @@ export function ChatShell({
         onJumpToDate={() => setJumpToDateOpen(true)}
       />
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* While `messages` is empty but `hasMore` is true (and no request
-            has failed), older pages are being auto-fetched (see the effect
-            above) looking for a renderable message — keep showing the
-            loading state rather than "No messages yet", which would
-            otherwise flash misleadingly for a room whose *newest* page
-            happened to be entirely unsupported item types. */}
+        {/* Keep loading while older pages are auto-fetched for a renderable message;
+            the newest page may contain only unsupported item types. */}
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
