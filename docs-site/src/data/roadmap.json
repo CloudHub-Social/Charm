@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T16:15:53.096Z",
+  "generatedAt": "2026-08-13T17:31:32.153Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 47,
-    "follow-up": 2,
+    "follow-up": 3,
     "in-progress": 2,
-    "planned": 26
+    "planned": 25
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 463,
+      "title": "Day-1 Spec 31: room upgrades",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/463",
+      "detail": "Day-1 Spec 31 · draft"
+    },
     {
       "type": "issue",
       "number": 416,
@@ -124,9 +131,9 @@
       ],
       "counts": {
         "shipped": 19,
-        "follow-up": 1,
+        "follow-up": 2,
         "in-progress": 1,
-        "planned": 15
+        "planned": 14
       }
     },
     {
@@ -1047,8 +1054,17 @@
       "number": 31,
       "title": "Room upgrades",
       "route": "/specs/day-1/spec-31--room-upgrades/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 463,
+          "title": "Day-1 Spec 31: room upgrades",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/463",
+          "state": "open",
+          "draft": true,
+          "updatedAt": "2026-08-13T17:31:22Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1874,6 +1890,14 @@
       "route": "/specs/day-2/spec-11--jump-to-date/",
       "status": "shipped",
       "pullRequests": [
+        {
+          "number": 462,
+          "title": "docs: mark Day-2 Spec 11 shipped",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/462",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-13T16:22:58Z"
+        },
         {
           "number": 460,
           "title": "Day-2 Spec 11: jump to date",
