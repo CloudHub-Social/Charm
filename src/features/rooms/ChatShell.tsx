@@ -1191,6 +1191,7 @@ export function ChatShell({
         currentUserId={currentUserId}
         roomId={roomId}
         detailed={userProfileCardsEnabled}
+        roomMutationsBlocked={roomMutationsBlocked}
         onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />

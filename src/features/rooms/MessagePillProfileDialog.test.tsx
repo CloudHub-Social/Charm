@@ -258,6 +258,29 @@ describe("MessagePillProfileDialog", () => {
     );
   });
 
+  it("blocks room-profile edits while authoritative room state is read-only", async () => {
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: "@alice:example.org",
+      display_name: "Alice",
+      avatar_url: null,
+      avatar_path: null,
+      room_display_name: "Alice Here",
+      room_avatar_url: null,
+      room_avatar_path: null,
+      presence: null,
+    });
+    vi.mocked(getMutualRooms).mockResolvedValue([]);
+    renderDialog({
+      detailed: true,
+      currentUserId: "@alice:example.org",
+      roomId: "!room:example.org",
+      roomMutationsBlocked: true,
+    });
+
+    expect(await screen.findByRole("button", { name: "Edit room profile" })).toBeDisabled();
+    expect(setRoomProfile).not.toHaveBeenCalled();
+  });
+
   it("clears and cancels room-scoped profile edits", async () => {
     vi.mocked(getUserProfile).mockResolvedValue({
       user_id: "@alice:example.org",

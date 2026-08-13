@@ -272,6 +272,7 @@ export function RoomSettingsModal({
                   <MemberList
                     details={renderedDetails}
                     currentUserId={currentUserId}
+                    mutationsBlocked={roomMutationsBlocked}
                     onNavigateToRoom={onNavigateToRoom}
                   />
                 </TabsContent>

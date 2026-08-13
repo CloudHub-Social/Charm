@@ -112,11 +112,7 @@ pub async fn run_command_impl(
     let _mutation_guard = if command == SlashCommand::Me {
         None
     } else {
-        let guard = super::send::SEND_CAPTURE_LOCK.lock().await;
-        if super::actions::room_upgrade_queue_is_paused(room.room_id()).await {
-            return Err("This room is read-only while its current state is verified.".to_string());
-        }
-        Some(guard)
+        Some(super::actions::lock_room_mutation(room_id).await?)
     };
 
     match command {

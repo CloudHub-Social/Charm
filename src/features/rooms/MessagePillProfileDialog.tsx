@@ -49,6 +49,7 @@ export function MessagePillProfileDialog({
   currentUserId,
   roomId,
   detailed = false,
+  roomMutationsBlocked = false,
   refetchOnMount = "always",
   onNavigateToRoom,
   moderationActions,
@@ -59,6 +60,7 @@ export function MessagePillProfileDialog({
   currentUserId?: string;
   roomId?: string;
   detailed?: boolean;
+  roomMutationsBlocked?: boolean;
   refetchOnMount?: "always" | boolean;
   onNavigateToRoom?: (roomId: string) => void;
   moderationActions?: ProfileModerationActions;
@@ -219,6 +221,9 @@ export function MessagePillProfileDialog({
     setRoomDisplayName("");
     setRoomAvatarUrl("");
   }, [roomId, userId]);
+  useEffect(() => {
+    if (roomMutationsBlocked) setEditingRoomProfile(false);
+  }, [roomMutationsBlocked]);
   const startDm = useMutation({
     mutationFn: () => startDirectMessage(userId),
     onSuccess: (directRoomId) => {
@@ -231,8 +236,16 @@ export function MessagePillProfileDialog({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] }),
   });
   const saveRoomProfile = useMutation({
-    mutationFn: () =>
-      setRoomProfile(roomId ?? "", roomDisplayName.trim() || null, roomAvatarUrl.trim() || null),
+    mutationFn: () => {
+      if (roomMutationsBlocked) {
+        throw new Error("This room is read-only");
+      }
+      return setRoomProfile(
+        roomId ?? "",
+        roomDisplayName.trim() || null,
+        roomAvatarUrl.trim() || null,
+      );
+    },
     onSuccess: async () => {
       setEditingRoomProfile(false);
       await profileQuery.refetch();
@@ -379,6 +392,7 @@ export function MessagePillProfileDialog({
                 type="button"
                 size="sm"
                 variant="outline"
+                disabled={roomMutationsBlocked}
                 onClick={() => {
                   setRoomDisplayName(
                     resolvedProfile?.room_display_name ?? resolvedProfile?.display_name ?? "",
