@@ -58,13 +58,14 @@ export function RoomSettingsModal({
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
+  const roomUpgradesEnabled = useFlag("room_upgrades");
   const {
     data: details,
     isLoading,
     isError,
     isFetching,
     isRefetchError,
-  } = useRoomDetails(targetRoomId, Boolean(targetRoomId));
+  } = useRoomDetails(targetRoomId, target?.kind === "space" || roomUpgradesEnabled);
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -96,7 +97,9 @@ export function RoomSettingsModal({
 
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
   const roomMutationsBlocked =
-    target?.kind !== "space" && (isFetching || isRefetchError || Boolean(details?.tombstone));
+    roomUpgradesEnabled &&
+    target?.kind !== "space" &&
+    (isFetching || isRefetchError || Boolean(details?.tombstone));
   const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
   roomMutationsBlockedRef.current = roomMutationsBlocked;
   const renderedDetails =

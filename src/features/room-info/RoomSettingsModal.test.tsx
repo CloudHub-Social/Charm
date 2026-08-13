@@ -15,15 +15,18 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
 
 const featureFlagMocks = vi.hoisted(() => ({
   roomAliasManagement: false,
+  roomUpgrades: false,
   spaceHierarchy: true,
 }));
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) =>
     key === "room_alias_management"
       ? featureFlagMocks.roomAliasManagement
-      : key === "space_hierarchy_reorganization"
-        ? featureFlagMocks.spaceHierarchy
-        : false,
+      : key === "room_upgrades"
+        ? featureFlagMocks.roomUpgrades
+        : key === "space_hierarchy_reorganization"
+          ? featureFlagMocks.spaceHierarchy
+          : false,
 }));
 
 const getRoomDetails = vi.fn();
@@ -88,6 +91,7 @@ function renderModal(
 describe("RoomSettingsModal", () => {
   beforeEach(() => {
     featureFlagMocks.roomAliasManagement = false;
+    featureFlagMocks.roomUpgrades = false;
     featureFlagMocks.spaceHierarchy = true;
   });
 
@@ -142,6 +146,7 @@ describe("RoomSettingsModal", () => {
   });
 
   it("keeps every room mutation disabled after the room is tombstoned", async () => {
+    featureFlagMocks.roomUpgrades = true;
     const details = makeRoomDetails({
       name: "Old room",
       tombstone: {
