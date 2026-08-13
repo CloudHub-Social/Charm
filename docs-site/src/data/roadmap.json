@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T05:23:34.118Z",
+  "generatedAt": "2026-08-13T13:03:41.603Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 46,
-    "follow-up": 2,
+    "follow-up": 3,
     "in-progress": 2,
-    "planned": 27
+    "planned": 26
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 460,
+      "title": "Day-2 Spec 11: jump to date",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/460",
+      "detail": "Day-2 Spec 11 · ready for review"
+    },
     {
       "type": "issue",
       "number": 416,
@@ -151,9 +158,9 @@
       ],
       "counts": {
         "shipped": 2,
-        "follow-up": 0,
+        "follow-up": 1,
         "in-progress": 0,
-        "planned": 12
+        "planned": 11
       }
     }
   ],
@@ -1530,6 +1537,14 @@
       "status": "shipped",
       "pullRequests": [
         {
+          "number": 458,
+          "title": "docs: mark Spec 53 shipped",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/458",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-13T05:30:27Z"
+        },
+        {
           "number": 457,
           "title": "feat: add avatar and presence visuals",
           "url": "https://github.com/CloudHub-Social/Charm/pull/457",
@@ -1864,8 +1879,17 @@
       "number": 11,
       "title": "Jump to date",
       "route": "/specs/day-2/spec-11--jump-to-date/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 460,
+          "title": "Day-2 Spec 11: jump to date",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/460",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-13T13:03:38Z"
+        }
+      ],
       "issues": []
     },
     {
