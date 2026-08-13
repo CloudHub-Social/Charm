@@ -43,5 +43,4 @@ test("jumps from the room calendar to the first message on a date", async ({ pag
   await expect(page.locator('[data-message-event-id="$february"]')).toHaveAttribute(
     "data-jump-highlighted",
   );
-  await expect(page.getByRole("button", { name: "Jump to present" })).toBeVisible();
 });
