@@ -3091,6 +3091,7 @@ async fn get_event_at_timestamp(
         .get_room(&parsed_room_id)
         .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
     require_room_still_joined(&room)?;
+    require_session_still_open(&session)?;
     let event_id = charm_lib::matrix::timeline::get_event_at_timestamp_impl(
         &session.client,
         &parsed_room_id,
@@ -3099,12 +3100,7 @@ async fn get_event_at_timestamp(
     )
     .await
     .map_err(ApiError::bad_request)?;
-    if session
-        .session_closed
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(ApiError::unauthorized("session closed"));
-    }
+    require_session_still_open(&session)?;
     Ok(Json(event_id))
 }
 
