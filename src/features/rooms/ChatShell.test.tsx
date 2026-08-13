@@ -663,7 +663,8 @@ describe("ChatShell", () => {
       expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true),
     );
 
-    view.rerender(
+    view.unmount();
+    render(
       <JotaiProvider store={store}>
         <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
       </JotaiProvider>,

@@ -524,10 +524,21 @@ async fn find_local_echo_send_handle(
 /// disabling the feature) can resume normal delivery.
 #[tauri::command]
 pub async fn set_room_send_queue_read_only(
+    app: tauri::AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     read_only: bool,
 ) -> Result<u64, String> {
+    if read_only {
+        use tauri::Manager;
+
+        let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+        });
+        if !enabled {
+            return Err("Room upgrades are not enabled.".to_string());
+        }
+    }
     let client = state.require_client().await?;
     set_room_send_queue_read_only_impl(&client, &room_id, read_only).await
 }

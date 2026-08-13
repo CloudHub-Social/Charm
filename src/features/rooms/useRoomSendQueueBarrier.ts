@@ -1,7 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { setRoomSendQueueReadOnly } from "@/lib/matrix";
 import { isWebBuild } from "@/lib/platform";
+
+// Module-owned so mobile navigation can unmount and remount ChatShell without
+// forgetting which SDK room queues this feature paused.
+const pausedRoomIds = new Set<string>();
+const commandChains = new Map<string, Promise<void>>();
 
 /**
  * Serializes native SDK send-queue barrier transitions per room. A transition
@@ -14,27 +19,22 @@ export function useRoomSendQueueBarrier(
   enabled: boolean,
   readOnly: boolean,
 ): void {
-  const pausedRoomIdsRef = useRef(new Set<string>());
-  const commandChainsRef = useRef(new Map<string, Promise<void>>());
-
   useEffect(() => {
     if (!roomId || isWebBuild()) return;
-    const pausedRoomIds = pausedRoomIdsRef.current;
     const desiredReadOnly = enabled && readOnly;
     if (pausedRoomIds.has(roomId) === desiredReadOnly) return;
     if (desiredReadOnly) pausedRoomIds.add(roomId);
     else pausedRoomIds.delete(roomId);
 
-    const chains = commandChainsRef.current;
-    const previous = chains.get(roomId) ?? Promise.resolve();
+    const previous = commandChains.get(roomId) ?? Promise.resolve();
     const next = previous
       .catch(logAndIgnore)
       .then(() => setRoomSendQueueReadOnly(roomId, desiredReadOnly))
       .then(() => undefined)
       .catch(logAndIgnore);
-    chains.set(roomId, next);
+    commandChains.set(roomId, next);
     void next.finally(() => {
-      if (chains.get(roomId) === next) chains.delete(roomId);
+      if (commandChains.get(roomId) === next) commandChains.delete(roomId);
     });
   }, [enabled, readOnly, roomId]);
 }
