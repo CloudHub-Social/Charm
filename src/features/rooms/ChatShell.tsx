@@ -765,7 +765,6 @@ export function ChatShell({
         jumpToDateEnabled={jumpToDateEnabled}
         onJumpToDate={() => setJumpToDateOpen(true)}
       />
-
       <div className="relative flex min-h-0 flex-1 flex-col">
         {/* While `messages` is empty but `hasMore` is true (and no request
             has failed), older pages are being auto-fetched (see the effect
@@ -934,13 +933,11 @@ export function ChatShell({
           </button>
         )}
       </div>
-
       <MessageActionDialogs
         target={messageActionController.visibleDialogTarget}
         onClose={messageActionController.closeDialog}
         onConfirm={messageActionController.confirmDialog}
       />
-
       {jumpToDateEnabled && room && (
         <JumpToDateDialog
           open={jumpToDateOpen}
@@ -949,7 +946,6 @@ export function ChatShell({
           onResolved={setDateJumpTarget}
         />
       )}
-
       {typingText && (
         <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">
           <span className="flex items-center gap-[3px]" aria-hidden="true">
