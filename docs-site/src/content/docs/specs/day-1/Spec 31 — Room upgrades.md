@@ -61,7 +61,10 @@ server-recommended room version from `/capabilities`, verifies the current user'
 timeline state parsing remains useful for in-context notices, while the read-only
 decision comes from the room's authoritative current `m.room.tombstone` state in
 `RoomDetails`; it therefore remains correct when the tombstone is outside the loaded
-timeline window. The backend includes timeline state items when either
+timeline window. Room activation always refetches those details and keeps the
+composer fail-closed until the current-state request settles, so a still-fresh cache
+entry from before a remote upgrade cannot reopen the old room. The backend includes
+timeline state items when either
 `timeline_state_events` or `room_upgrades` is enabled, so the upgrade flag remains
 self-contained. Following the replacement explicitly joins it when necessary,
 refreshes the room list, and retains a pending selection until sync publishes it.

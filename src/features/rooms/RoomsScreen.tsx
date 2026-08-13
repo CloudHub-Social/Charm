@@ -609,9 +609,12 @@ export function RoomsScreen({
   // while visible, so without this always-on subscription here a remote
   // membership change while both are closed would go un-invalidated,
   // leaving `useRoomMembers`' cache stale until it naturally expires.
-  const { data: activeRoomDetails, isSuccess: activeRoomStateResolved } = useRoomDetails(
-    activeRoom?.room_id ?? null,
-  );
+  const {
+    data: activeRoomDetails,
+    isSuccess: activeRoomStateLoaded,
+    isFetching: activeRoomStateFetching,
+  } = useRoomDetails(activeRoom?.room_id ?? null, true);
+  const activeRoomStateResolved = activeRoomStateLoaded && !activeRoomStateFetching;
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
   );

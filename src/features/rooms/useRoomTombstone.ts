@@ -13,7 +13,9 @@ export function useRoomTombstone(
     for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
       const item = timelineItems[index];
       if (item.kind === "state" && item.change.type === "tombstone") {
-        return item.change;
+        const { body, replacement_room_id: replacementRoomId } = item.change;
+        if (body === null || replacementRoomId === null) return null;
+        return { body, replacement_room_id: replacementRoomId };
       }
     }
     return null;

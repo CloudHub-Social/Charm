@@ -7,6 +7,11 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
+const mockUseRoomDetails = vi.fn(() => ({
+  data: undefined,
+  isSuccess: false,
+  isFetching: false,
+}));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
@@ -77,7 +82,7 @@ vi.mock("@/features/room-info/RoomSettingsModal", () => ({
 // these tests, which aren't exercising that data-fetching behavior, don't need a
 // `QueryClientProvider` in the tree.
 vi.mock("@/features/room-info/useRoomDetails", () => ({
-  useRoomDetails: () => ({ data: undefined, isLoading: false }),
+  useRoomDetails: (...args: unknown[]) => mockUseRoomDetails(...args),
 }));
 
 // Same rationale as `useRoomDetails` above — `usePrivacySettings` is also a
@@ -95,6 +100,7 @@ vi.mock("./ChatShell", () => ({
     onNavigateToRoom,
     onNavigateToProfileRoom,
     onFollowRoomUpgrade,
+    currentRoomStateResolved,
     jumpToEventId,
     onJumpHandled,
   }: {
@@ -103,11 +109,13 @@ vi.mock("./ChatShell", () => ({
     onNavigateToRoom: (roomIdentifier: string) => void;
     onNavigateToProfileRoom: (roomId: string) => void;
     onFollowRoomUpgrade: (roomId: string) => Promise<void>;
+    currentRoomStateResolved?: boolean;
     jumpToEventId?: string | null;
     onJumpHandled?: () => void;
   }) => (
     <div>
       chat-content:{activeRoom?.room_id ?? "none"}
+      <div>room-state-resolved:{String(currentRoomStateResolved)}</div>
       <div>jump-to-event:{jumpToEventId ?? "none"}</div>
       <button type="button" onClick={onBack}>
         back-to-chats
@@ -276,6 +284,11 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
   mockUseFlag.mockReset().mockReturnValue(true);
+  mockUseRoomDetails.mockReset().mockReturnValue({
+    data: undefined,
+    isSuccess: false,
+    isFetching: false,
+  });
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
@@ -297,6 +310,20 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("refetches details on room activation and fails closed while they refresh", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: true,
+    });
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!a:example.org");
+    expect(mockUseRoomDetails).toHaveBeenLastCalledWith("!a:example.org", true);
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+  });
+
   it("keeps an explicitly quick-switched space selected without auto-selecting a room", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!space:example.org", name: "Space", is_space: true }),
