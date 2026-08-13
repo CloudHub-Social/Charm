@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T01:47:04.554Z",
+  "generatedAt": "2026-08-13T02:33:42.265Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 45,
-    "follow-up": 2,
+    "follow-up": 3,
     "in-progress": 2,
-    "planned": 28
+    "planned": 27
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 457,
+      "title": "feat: add avatar and presence visuals",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/457",
+      "detail": "Day-1 Spec 53 · ready for review"
+    },
     {
       "type": "issue",
       "number": 416,
@@ -124,9 +131,9 @@
       ],
       "counts": {
         "shipped": 18,
-        "follow-up": 1,
+        "follow-up": 2,
         "in-progress": 1,
-        "planned": 16
+        "planned": 15
       }
     },
     {
@@ -1047,17 +1054,8 @@
       "number": 31,
       "title": "Room upgrades",
       "route": "/specs/day-1/spec-31--room-upgrades/",
-      "status": "shipped",
-      "pullRequests": [
-        {
-          "number": 457,
-          "title": "feat: add avatar and presence visuals",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/457",
-          "state": "open",
-          "draft": false,
-          "updatedAt": "2026-08-13T02:31:26Z"
-        }
-      ],
+      "status": "planned",
+      "pullRequests": [],
       "issues": []
     },
     {
@@ -1286,6 +1284,14 @@
       "route": "/specs/day-1/spec-38--full-emoji-picker/",
       "status": "shipped",
       "pullRequests": [
+        {
+          "number": 455,
+          "title": "docs: mark Spec 38 shipped in roadmap",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/455",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-13T01:52:32Z"
+        },
         {
           "number": 454,
           "title": "feat: add full emoji picker",
@@ -1528,8 +1534,17 @@
       "number": 53,
       "title": "Avatars and presence visuals",
       "route": "/specs/day-1/spec-53--avatars-and-presence-visuals/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 457,
+          "title": "feat: add avatar and presence visuals",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/457",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-13T02:33:38Z"
+        }
+      ],
       "issues": []
     },
     {
