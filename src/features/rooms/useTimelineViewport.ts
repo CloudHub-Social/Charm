@@ -221,7 +221,6 @@ export function useTimelineViewport({
     const initialLoadSettled = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
     if (!initialLoadSettled || loadRequestedForRef.current === requestKey) return;
     loadRequestedForRef.current = requestKey;
-    const messagesAtRequestStart = messages;
     loadTimelineAroundEvent(room.room_id, jumpToEventId)
       .then(({ found, installed_focused_view }) => {
         if (handledAwaitingFocusedViewRef.current === requestKey) {
@@ -245,11 +244,10 @@ export function useTimelineViewport({
         }
         if (jumpToTimestampMs !== null) {
           const latestMessages = latestMessagesRef.current;
-          const focusedContextAlreadyCommitted =
-            latestMessages !== messagesAtRequestStart &&
-            (latestMessages.some((message) => message.event_id === jumpToEventId) ||
-              latestMessages.some((message) => message.timestamp_ms < jumpToTimestampMs));
-          if (!installed_focused_view || focusedContextAlreadyCommitted) {
+          const anchorContextAlreadyCommitted = latestMessages.some(
+            (message) => message.event_id === jumpToEventId,
+          );
+          if (anchorContextAlreadyCommitted) {
             setResolvedDateRequestKey(requestKey);
           } else {
             dateAwaitingTimelineRef.current = {

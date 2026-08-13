@@ -153,7 +153,16 @@ describe("useTimelineViewport", () => {
         message("$latest", "@other:localhost", 200),
       ],
     });
-    resolveLoad?.({ found: true, installed_focused_view: true });
+    await act(async () => resolveLoad?.({ found: true, installed_focused_view: true }));
+    rerender({
+      ...initialProps,
+      loading: false,
+      messages: [
+        message("$before", "@other:localhost", 50),
+        message("$first-visible", "@other:localhost", 120),
+        message("$latest", "@other:localhost", 200),
+      ],
+    });
 
     await waitFor(() =>
       expect(scrollToIndex).toHaveBeenCalledWith(
