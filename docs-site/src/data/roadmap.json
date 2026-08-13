@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-13T17:34:30.927Z",
+  "generatedAt": "2026-08-13T17:49:40.064Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 47,
@@ -1062,7 +1062,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/463",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-08-13T17:33:07Z"
+          "updatedAt": "2026-08-13T17:49:33Z"
         }
       ],
       "issues": []
