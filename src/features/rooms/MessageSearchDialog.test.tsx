@@ -461,6 +461,6 @@ describe("MessageSearchDialog", () => {
 
     expect(screen.queryByText("stale reopened result")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Message search query")).toHaveValue("");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Search" })).not.toBeDisabled());
+    expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
   });
 });
