@@ -67,6 +67,7 @@ const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
 const resendMessage = vi.fn().mockResolvedValue(undefined);
 const discardFailedMessage = vi.fn().mockResolvedValue(true);
+const setRoomSendQueueReadOnly = vi.fn().mockResolvedValue(0);
 const canRedactOthers = vi.fn().mockResolvedValue(true);
 const pinEvent = vi.fn().mockResolvedValue(undefined);
 const unpinEvent = vi.fn().mockResolvedValue(undefined);
@@ -214,6 +215,7 @@ vi.mock("@/lib/matrix", () => ({
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
   resendMessage: (...args: unknown[]) => resendMessage(...args),
   discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
+  setRoomSendQueueReadOnly: (...args: unknown[]) => setRoomSendQueueReadOnly(...args),
   canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
   pinEvent: (...args: unknown[]) => pinEvent(...args),
   unpinEvent: (...args: unknown[]) => unpinEvent(...args),
@@ -407,6 +409,7 @@ describe("ChatShell", () => {
     toggleReaction.mockReset();
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
+    setRoomSendQueueReadOnly.mockReset().mockResolvedValue(0);
     pinEvent.mockReset().mockResolvedValue(undefined);
     unpinEvent.mockReset().mockResolvedValue(undefined);
     getRoomDetails
@@ -656,6 +659,18 @@ describe("ChatShell", () => {
     );
 
     await waitFor(() => expect(sendTyping).toHaveBeenCalledWith(room.room_id, false));
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true),
+    );
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, false),
+    );
   });
 
   it("reports a replacement-room access failure instead of silently doing nothing", async () => {

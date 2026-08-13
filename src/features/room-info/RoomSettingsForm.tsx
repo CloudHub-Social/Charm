@@ -102,7 +102,7 @@ export function RoomSettingsForm({
   const fallbackMutationsBlockedRef = useRef(false);
   const liveMutationsBlockedRef = mutationsBlockedRef ?? fallbackMutationsBlockedRef;
   const roomAliasManagementEnabled = useFlag("room_alias_management");
-  const roomUpgradesEnabled = useFlag("room_upgrades");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
 
   async function followUpgradedRoom(replacementRoomId: string) {
     setFollowingUpgrade(true);

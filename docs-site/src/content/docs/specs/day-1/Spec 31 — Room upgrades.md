@@ -18,7 +18,9 @@ version needs bumping for a feature or security fix the server/spec requires.
 Charm 1.0 has a `RoomUpgrade.tsx` flow for this (surfaced to room admins). Charm now
 provides the same essential path behind the default-off `room_upgrades` feature
 flag: authorized admins can explicitly upgrade a room, and members landing in the
-old room are directed to its replacement.
+old room are directed to its replacement. The rollout is native-only: browser builds
+keep the feature disabled until the web transport can provide the same authoritative
+current-state guarantees as the Tauri path.
 
 ## Non-goals
 
@@ -44,6 +46,9 @@ old room are directed to its replacement.
   preventing a second replacement from superseding the original upgrade path. The
   native guard and `RoomDetails` refresh both read current homeserver state rather
   than trusting an SDK state cache that may not have received another admin's upgrade.
+  Charm also compares the room's current version with the advertised target: rooms
+  already at that version hide the action, and the command rejects a stale direct
+  invocation with a no-upgrade-needed error.
 
 ### Landing in a tombstoned room
 
@@ -68,7 +73,10 @@ old room are directed to its replacement.
   alias, encryption, and power-level mutations are disabled while state is unresolved
   and after a tombstone is present. Native avatar picking and alias-availability checks
   recheck that live write barrier after their asynchronous work completes, including
-  alias-state cleanup that would otherwise race a completed directory removal.
+  alias-state cleanup that would otherwise race a completed directory removal. When
+  the barrier closes, Charm pauses the SDK room send queue and aborts all pending local
+  echoes, preventing messages queued while offline from reaching the old room after
+  connectivity returns.
 
 ## Data flow
 
@@ -99,6 +107,8 @@ that retry remains visible after the tombstone refresh hides the original upgrad
 ## API/contract changes
 
 - New IPC command for initiating an upgrade (admin action).
+- New native queue-barrier IPC command pauses/resumes a room send queue and drains
+  pending local echoes when the room becomes read-only.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch.
 - `RoomDetails` exposes the current tombstone body and replacement room id so the
@@ -108,9 +118,10 @@ that retry remains visible after the tombstone refresh hides the original upgrad
 
 - Frontend coverage verifies the tombstone banner, read-only composer replacement,
   replacement-room navigation, confirmation/error dialog behavior, message-mutation
-  gating, and power-level gating.
+  gating, power-level gating, native-only feature boundary, and queue-barrier wiring.
 - Rust integration coverage upgrades a deliberately older-version room against the
-  CI homeserver and rejects a low-power member before issuing the endpoint request.
+  CI homeserver, hides/rejects an already-current room, rejects a low-power member
+  before issuing the endpoint request, and verifies pending local echoes are aborted.
 - Remote GitHub Actions remains the verification authority; local Charm checks are
   intentionally not run under the repository policy.
 

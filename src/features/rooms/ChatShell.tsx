@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
+import { canRedactOthers, onRoomDetailsUpdate, setRoomSendQueueReadOnly } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
@@ -186,7 +186,7 @@ export function ChatShell({
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
-  const roomUpgradesEnabled = useFlag("room_upgrades");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
   const messageLayout = useAtomValue(messageLayoutAtom);
@@ -307,6 +307,28 @@ export function ChatShell({
     Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
   const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
   roomMutationsBlockedRef.current = roomMutationsBlocked;
+  const pausedSendQueueRoomIdsRef = useRef(new Set<string>());
+  const sendQueueBarrierChainsRef = useRef(new Map<string, Promise<void>>());
+  useEffect(() => {
+    if (!activeRoomId || isWebBuild()) return;
+    const pausedRoomIds = pausedSendQueueRoomIdsRef.current;
+    const desiredReadOnly = roomUpgradesEnabled && roomMutationsBlocked;
+    if (pausedRoomIds.has(activeRoomId) === desiredReadOnly) return;
+    if (desiredReadOnly) pausedRoomIds.add(activeRoomId);
+    else pausedRoomIds.delete(activeRoomId);
+
+    const chains = sendQueueBarrierChainsRef.current;
+    const previous = chains.get(activeRoomId) ?? Promise.resolve();
+    const next = previous
+      .catch(logAndIgnore)
+      .then(() => setRoomSendQueueReadOnly(activeRoomId, desiredReadOnly))
+      .then(() => undefined)
+      .catch(logAndIgnore);
+    chains.set(activeRoomId, next);
+    void next.finally(() => {
+      if (chains.get(activeRoomId) === next) chains.delete(activeRoomId);
+    });
+  }, [activeRoomId, roomMutationsBlocked, roomUpgradesEnabled]);
   useEffect(() => {
     if (!roomMutationsBlocked) return;
     setPendingAttachment(null);

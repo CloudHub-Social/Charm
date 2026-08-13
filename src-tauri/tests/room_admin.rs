@@ -54,6 +54,20 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
     let room = create_test_room(&admin).await;
     let timeline = room.timeline().await.expect("build room timeline");
 
+    let default_version_details = build_room_details(&admin, room.room_id().as_str(), true)
+        .await
+        .expect("build default-version room details");
+    assert!(
+        !default_version_details.can.upgrade_room,
+        "the UI must hide upgrade when the room already uses the target version"
+    );
+    assert_eq!(
+        upgrade_room_impl(&admin, room.room_id().as_str())
+            .await
+            .expect_err("a room at the default version needs no upgrade"),
+        "This room already uses the homeserver's default room version."
+    );
+
     // --- Room settings: name, topic, join rule, history visibility ---
     room.set_name("Spec 07 Test Room".to_string())
         .await

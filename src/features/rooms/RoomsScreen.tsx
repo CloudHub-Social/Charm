@@ -97,7 +97,9 @@ export function RoomsScreen({
   // two definitions in sync avoids it becoming one the next time either
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
-  const roomUpgradesEnabled = useFlag("room_upgrades");
+  // Spec 31 is native-only until the web transport can perform the same
+  // authoritative tombstone read as the Tauri command.
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const roomUpgradesPersistenceVersion = useFeatureFlagPersistenceVersion("room_upgrades");
   const roomUpgradesPersistenceSettled = useFeatureFlagPersistenceSettled("room_upgrades");
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");

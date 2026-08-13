@@ -8,6 +8,7 @@ import {
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { isWebBuild } from "@/lib/platform";
 import { useFlag } from "@/featureFlags";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
@@ -80,7 +81,7 @@ export function PinnedMessagesPanel({
   onClose,
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
-  const roomUpgradesEnabled = useFlag("room_upgrades");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const { data: details } = useRoomDetails(roomId);
   // Review fix: `details?.pinned_event_ids` is a fresh array reference on
   // every `room_details:update` (even one unrelated to pinning, e.g. a

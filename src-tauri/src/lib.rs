@@ -1480,6 +1480,7 @@ pub fn run() {
             matrix::actions::send_reply,
             matrix::actions::resend_message,
             matrix::actions::discard_failed_message,
+            matrix::actions::set_room_send_queue_read_only,
             matrix::actions::report_event,
             matrix::actions::get_event_source,
             matrix::actions::get_edit_history,

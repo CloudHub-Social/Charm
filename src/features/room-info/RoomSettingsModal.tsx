@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { cn } from "@/lib/utils";
+import { isWebBuild } from "@/lib/platform";
 import { roomSettingsAtom, type RoomSettingsSection } from "./roomInfoAtoms";
 import { useRoomDetails } from "./useRoomDetails";
 import { RoomSettingsForm } from "./RoomSettingsForm";
@@ -50,7 +51,7 @@ export function RoomSettingsModal({
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
-  const roomUpgradesEnabled = useFlag("room_upgrades");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const {
     data: details,
     isLoading,

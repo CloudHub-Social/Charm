@@ -349,6 +349,20 @@ pub async fn build_room_details(
 
     let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
     let my_power_level = user_power_level_to_i64(power_levels.for_user(own_user_id));
+    let can_upgrade_room_by_power =
+        power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone);
+    let can_upgrade_room = if authoritative_tombstone && can_upgrade_room_by_power {
+        let target_version = client
+            .homeserver_capabilities()
+            .room_versions()
+            .await
+            .map_err(|e| e.to_string())?
+            .default;
+        room.create_content()
+            .is_some_and(|content| content.room_version != target_version)
+    } else {
+        can_upgrade_room_by_power
+    };
 
     let can = RoomPermissions {
         set_name: power_levels.user_can_send_state(own_user_id, StateEventType::RoomName),
@@ -372,7 +386,7 @@ pub async fn build_room_details(
         set_space_child: power_levels.user_can_send_state(own_user_id, StateEventType::SpaceChild),
         set_space_parent: power_levels
             .user_can_send_state(own_user_id, StateEventType::SpaceParent),
-        upgrade_room: power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone),
+        upgrade_room: can_upgrade_room,
     };
 
     let is_encrypted = room
@@ -670,6 +684,12 @@ pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String,
         .room_versions()
         .await
         .map_err(|e| e.to_string())?;
+    if room
+        .create_content()
+        .is_some_and(|content| content.room_version == room_versions.default)
+    {
+        return Err("This room already uses the homeserver's default room version.".to_string());
+    }
     // Keep this authoritative guard immediately next to the upgrade write.
     // Capabilities and power-level reads above may await the network long
     // enough for another administrator to upgrade the room first.

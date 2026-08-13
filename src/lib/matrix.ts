@@ -1166,6 +1166,11 @@ export function upgradeRoom(roomId: string): Promise<string> {
   return invoke("upgrade_room", { roomId });
 }
 
+/** Pauses or resumes a room queue, aborting every pending local echo when pausing. */
+export function setRoomSendQueueReadOnly(roomId: string, readOnly: boolean): Promise<number> {
+  return invoke("set_room_send_queue_read_only", { roomId, readOnly });
+}
+
 export function setMemberPowerLevel(
   roomId: string,
   userId: string,

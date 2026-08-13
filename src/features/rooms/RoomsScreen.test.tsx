@@ -9,6 +9,7 @@ const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
 const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
+const mockIsWebBuild = vi.fn(() => false);
 const mockRefetchRoomDetails = vi.fn().mockResolvedValue({ isError: false });
 const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false) => {
   void roomId;
@@ -29,6 +30,7 @@ vi.mock("@/featureFlags", () => ({
   useFeatureFlagPersistenceVersion: () => mockUseFeatureFlagPersistenceVersion(),
   useFeatureFlagPersistenceSettled: () => mockUseFeatureFlagPersistenceSettled(),
 }));
+vi.mock("@/lib/platform", () => ({ isWebBuild: () => mockIsWebBuild() }));
 
 const listRooms = vi.fn();
 const onRoomListUpdate = vi.fn();
@@ -299,6 +301,7 @@ beforeEach(() => {
   mockUseFlag.mockReset().mockReturnValue(true);
   mockUseFeatureFlagPersistenceVersion.mockReset().mockReturnValue(0);
   mockUseFeatureFlagPersistenceSettled.mockReset().mockReturnValue(true);
+  mockIsWebBuild.mockReset().mockReturnValue(false);
   mockRefetchRoomDetails.mockReset().mockResolvedValue({ isError: false });
   mockUseRoomDetails.mockReset().mockReturnValue({
     data: undefined,
@@ -410,6 +413,21 @@ describe("RoomsScreen", () => {
     );
 
     expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+    expect(mockRefetchRoomDetails).not.toHaveBeenCalled();
+  });
+
+  it("keeps room upgrades disabled on web until the transport supports authoritative state", async () => {
+    mockIsWebBuild.mockReturnValue(true);
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: false,
+    });
+
+    renderRoomsScreen();
+
+    expect(await screen.findByText("room-state-resolved:true")).toBeInTheDocument();
     expect(mockRefetchRoomDetails).not.toHaveBeenCalled();
   });
 

@@ -517,6 +517,94 @@ async fn find_local_echo_send_handle(
         }))
 }
 
+/// Makes a room's SDK send queue read-only. Closing the queue first prevents
+/// offline local echoes from being delivered after the room is tombstoned;
+/// every kind of pending send is then aborted while the queue remains paused.
+/// Reopening the queue is explicit so an authoritative active-room refresh (or
+/// disabling the feature) can resume normal delivery.
+#[tauri::command]
+pub async fn set_room_send_queue_read_only(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    read_only: bool,
+) -> Result<u64, String> {
+    let client = state.require_client().await?;
+    set_room_send_queue_read_only_impl(&client, &room_id, read_only).await
+}
+
+pub async fn set_room_send_queue_read_only_impl(
+    client: &Client,
+    room_id: &str,
+    read_only: bool,
+) -> Result<u64, String> {
+    let room = get_room(client, room_id)?;
+    let queue = room.send_queue();
+
+    if !read_only {
+        queue.set_enabled(true);
+        return Ok(0);
+    }
+
+    queue.set_enabled(false);
+    let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
+    let mut aborted = 0;
+    for echo in local_echoes {
+        let was_aborted = match echo.content {
+            LocalEchoContent::Event { send_handle, .. } => send_handle.abort().await,
+            LocalEchoContent::React { send_handle, .. } => send_handle.abort().await,
+            LocalEchoContent::Redaction { send_handle, .. } => send_handle.abort().await,
+        }
+        .map_err(|e| e.to_string())?;
+        if was_aborted {
+            aborted += 1;
+        }
+    }
+
+    Ok(aborted)
+}
+
+#[cfg(test)]
+mod room_send_queue_barrier_tests {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn read_only_barrier_aborts_pending_messages_and_pauses_the_queue() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::RoomMessage(
+                RoomMessageEventContent::text_plain("offline message"),
+            ))
+            .await
+            .expect("queue pending message");
+
+        assert_eq!(
+            set_room_send_queue_read_only_impl(&client, room_id.as_str(), true)
+                .await
+                .expect("close room queue"),
+            1
+        );
+        assert!(!room.send_queue().is_enabled());
+        let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
+        assert!(local_echoes.is_empty());
+
+        set_room_send_queue_read_only_impl(&client, room_id.as_str(), false)
+            .await
+            .expect("reopen room queue");
+        assert!(room.send_queue().is_enabled());
+    }
+}
+
 /// Retries sending a message local echo that's parked in a failed
 /// ("wedged") state — Charm 1.0's `onResend` (`message/Message.tsx:666-713`)
 /// equivalent. Uses matrix-rust-sdk's own send-queue retry primitive
