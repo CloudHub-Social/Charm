@@ -19,7 +19,7 @@ use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::members;
@@ -590,9 +590,16 @@ pub async fn enable_room_encryption_impl(client: &Client, room_id: &str) -> Resu
 /// reproduce that protocol operation with a sequence of state-event writes.
 #[tauri::command]
 pub async fn upgrade_room(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<String, String> {
+    let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    if !enabled {
+        return Err("Room upgrades are not enabled.".to_string());
+    }
     let client = state.require_client().await?;
     upgrade_room_impl(&client, &room_id).await
 }
