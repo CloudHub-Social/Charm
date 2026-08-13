@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,19 +71,22 @@ describe("RoomListItem", () => {
 
   it("renders the feature-flagged group DM composite avatar", () => {
     featureFlagTestHooks.setCache({ avatar_presence_visuals: true });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { container } = render(
-      <RoomListItem
-        room={makeRoomSummary({
-          is_direct: true,
-          group_dm_members: [
-            { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
-            { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
-            { user_id: "@carol:example.org", display_name: "Carol", avatar_url: null },
-          ],
-        })}
-        active={false}
-        onSelect={() => {}}
-      />,
+      <QueryClientProvider client={queryClient}>
+        <RoomListItem
+          room={makeRoomSummary({
+            is_direct: true,
+            group_dm_members: [
+              { user_id: "@alice:example.org", display_name: "Alice", avatar_url: null },
+              { user_id: "@bob:example.org", display_name: "Bob", avatar_url: null },
+              { user_id: "@carol:example.org", display_name: "Carol", avatar_url: null },
+            ],
+          })}
+          active={false}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
     );
 
     expect(container.querySelector("[data-group-dm-avatar]")).toBeInTheDocument();
