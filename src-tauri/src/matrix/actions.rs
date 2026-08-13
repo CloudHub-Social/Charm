@@ -585,6 +585,17 @@ pub async fn set_room_send_queue_read_only_impl(
     discard_pending: bool,
 ) -> Result<u64, String> {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
+        .await
+}
+
+pub(super) async fn set_room_send_queue_read_only_impl_locked(
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<u64, String> {
     let room = get_room(client, room_id)?;
     let queue = room.send_queue();
     let mut barrier_rooms = ROOM_UPGRADE_BARRIER_ROOMS.lock().await;

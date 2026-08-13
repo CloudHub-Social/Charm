@@ -665,11 +665,20 @@ pub async fn upgrade_room(
         return Err("Room upgrades are not enabled.".to_string());
     }
     let client = state.require_client().await?;
+    // Serialize the authoritative upgrade and immediate old-room drain with
+    // every message, upload, slash mutation, and sync-driven barrier admission.
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let replacement_room_id = upgrade_room_impl(&client, &room_id).await?;
     // The successful endpoint response is authoritative: close the old room
     // immediately instead of waiting for a later sync to publish its tombstone.
-    super::actions::set_room_send_queue_read_only_impl(&client, Some(&state), &room_id, true, true)
-        .await?;
+    super::actions::set_room_send_queue_read_only_impl_locked(
+        &client,
+        Some(&state),
+        &room_id,
+        true,
+        true,
+    )
+    .await?;
     Ok(replacement_room_id)
 }
 
