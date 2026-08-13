@@ -2,6 +2,7 @@
 //! iteration. Room-list snapshotting itself (`RoomSummary`/`snapshot_rooms`)
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
+use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
@@ -116,8 +117,13 @@ async fn emit_room_updates(
     response: &matrix_sdk::sync::SyncResponse,
     seq_before_response: &std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>,
 ) {
+    const ROOM_DETAILS_CONCURRENCY: usize = 8;
     let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
+    let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    let mut room_details_room_ids = Vec::new();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
@@ -289,24 +295,36 @@ async fn emit_room_updates(
             // caught up — leaving the panel showing a stale pinned list
             // until some unrelated later refresh. Reconciling first means
             // any refetch this event triggers already sees the fresh cache.
-            let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
-                crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
-            });
-            match room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
-                .await
-            {
-                Ok(details) => {
-                    let _ = app.emit("room_details:update", details);
-                }
-                Err(_) if authoritative_tombstone => {
-                    // The current-state request is the write barrier for a
-                    // remotely-upgraded room. Tell active consumers to drop
-                    // their previously-writable snapshot and refetch; if the
-                    // retry also fails they remain unresolved/read-only.
-                    let _ = app.emit("room_details:unresolved", room_id.to_string());
-                }
-                Err(_) => {}
+            room_details_room_ids.push(room_id.to_owned());
+        }
+    }
+
+    // Authoritative tombstone reads may hit the homeserver once per room.
+    // Bound them outside the serial response loop so a multi-room state
+    // batch costs a small number of network rounds instead of one per room.
+    let detail_updates = futures_util::stream::iter(room_details_room_ids)
+        .map(|room_id| async move {
+            let result =
+                room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
+                    .await;
+            (room_id, result)
+        })
+        .buffer_unordered(ROOM_DETAILS_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    for (room_id, result) in detail_updates {
+        match result {
+            Ok(details) => {
+                let _ = app.emit("room_details:update", details);
             }
+            Err(_) if authoritative_tombstone => {
+                // The current-state request is the write barrier for a
+                // remotely-upgraded room. Tell active consumers to drop
+                // their previously-writable snapshot and refetch; if the
+                // retry also fails they remain unresolved/read-only.
+                let _ = app.emit("room_details:unresolved", room_id.to_string());
+            }
+            Err(_) => {}
         }
     }
 }

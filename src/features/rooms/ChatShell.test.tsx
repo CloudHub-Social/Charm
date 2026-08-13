@@ -639,6 +639,25 @@ describe("ChatShell", () => {
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
   });
 
+  it("withdraws typing when authoritative room state becomes read-only", async () => {
+    const store = createStore();
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByTestId("composer-shell");
+    sendTyping.mockClear();
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(sendTyping).toHaveBeenCalledWith(room.room_id, false));
+  });
+
   it("reports a replacement-room access failure instead of silently doing nothing", async () => {
     const onFollowRoomUpgrade = vi.fn().mockRejectedValue(new Error("forbidden"));
     render(

@@ -339,4 +339,28 @@ describe("feature-flag client", () => {
 
     expect(timelineVersion.result.current).toBe(1);
   });
+
+  it("reports an optimistic flag as unsettled until its durable write completes", async () => {
+    let resolveSave: (() => void) | undefined;
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn(() => new Promise<void>((resolve) => (resolveSave = resolve))),
+    });
+    const mod = await import("./index");
+    const settled = renderHook(() => mod.useFeatureFlagPersistenceSettled("canary"));
+
+    let update: Promise<void> | undefined;
+    act(() => {
+      update = mod.setFeatureFlagOverride("canary", true);
+    });
+    expect(settled.result.current).toBe(false);
+
+    await act(async () => {
+      resolveSave?.();
+      await update;
+    });
+    expect(settled.result.current).toBe(true);
+  });
 });

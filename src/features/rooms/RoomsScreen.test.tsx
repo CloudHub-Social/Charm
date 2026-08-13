@@ -8,6 +8,7 @@ import type { RoomSummary } from "@/lib/matrix";
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
+const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
 const mockRefetchRoomDetails = vi.fn().mockResolvedValue({ isError: false });
 const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false) => {
   void roomId;
@@ -26,6 +27,7 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
 vi.mock("@/featureFlags", () => ({
   useFlag: () => mockUseFlag(),
   useFeatureFlagPersistenceVersion: () => mockUseFeatureFlagPersistenceVersion(),
+  useFeatureFlagPersistenceSettled: () => mockUseFeatureFlagPersistenceSettled(),
 }));
 
 const listRooms = vi.fn();
@@ -296,6 +298,7 @@ beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
   mockUseFlag.mockReset().mockReturnValue(true);
   mockUseFeatureFlagPersistenceVersion.mockReset().mockReturnValue(0);
+  mockUseFeatureFlagPersistenceSettled.mockReset().mockReturnValue(true);
   mockRefetchRoomDetails.mockReset().mockResolvedValue({ isError: false });
   mockUseRoomDetails.mockReset().mockReturnValue({
     data: undefined,
@@ -383,6 +386,31 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
     await act(async () => resolveRefresh?.({ isError: false }));
     expect(await screen.findByText("room-state-resolved:true")).toBeInTheDocument();
+  });
+
+  it("does not trust a refetch while room-upgrades enablement is still optimistic", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: false,
+    });
+    const view = renderRoomsScreen();
+    await screen.findByText("room-state-resolved:true");
+    mockRefetchRoomDetails.mockClear();
+
+    mockUseFeatureFlagPersistenceSettled.mockReturnValue(false);
+    view.rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+    expect(mockRefetchRoomDetails).not.toHaveBeenCalled();
   });
 
   it("keeps an explicitly quick-switched space selected without auto-selecting a room", async () => {

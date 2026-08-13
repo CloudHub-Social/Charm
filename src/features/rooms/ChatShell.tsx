@@ -514,6 +514,9 @@ export function ChatShell({
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
   const { typingText, handleTypingInput, stopTyping } = useChatTyping(activeRoomId, currentUserId);
+  useEffect(() => {
+    if (roomMutationsBlocked) stopTyping();
+  }, [roomMutationsBlocked, stopTyping]);
   const participants = useRoomParticipants(activeRoomId, currentUserId);
   useEffect(() => {
     setFollowingExpanded(false);

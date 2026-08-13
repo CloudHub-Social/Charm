@@ -41,7 +41,11 @@ import {
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
+import {
+  useFeatureFlagPersistenceSettled,
+  useFeatureFlagPersistenceVersion,
+  useFlag,
+} from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 import { useIdlePresence } from "@/features/settings/useIdlePresence";
 import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
@@ -95,6 +99,7 @@ export function RoomsScreen({
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const roomUpgradesEnabled = useFlag("room_upgrades");
   const roomUpgradesPersistenceVersion = useFeatureFlagPersistenceVersion("room_upgrades");
+  const roomUpgradesPersistenceSettled = useFeatureFlagPersistenceSettled("room_upgrades");
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
   const messageSearchEnabled = useFlag("encrypted_local_message_search");
   const quickSwitcherEnabled = useFlag("quick_switcher");
@@ -624,7 +629,7 @@ export function RoomsScreen({
   } | null>(null);
   useEffect(() => {
     const roomId = activeRoom?.room_id;
-    if (!roomUpgradesEnabled || !roomId) {
+    if (!roomUpgradesEnabled || !roomId || !roomUpgradesPersistenceSettled) {
       setAuthoritativeRoomState(null);
       return undefined;
     }
@@ -648,11 +653,13 @@ export function RoomsScreen({
     activeRoom?.room_id,
     refetchActiveRoomState,
     roomUpgradesEnabled,
+    roomUpgradesPersistenceSettled,
     roomUpgradesPersistenceVersion,
   ]);
   const authoritativeRoomStateResolved =
     !roomUpgradesEnabled ||
-    (authoritativeRoomState?.roomId === activeRoom?.room_id &&
+    (roomUpgradesPersistenceSettled &&
+      authoritativeRoomState?.roomId === activeRoom?.room_id &&
       authoritativeRoomState?.persistenceVersion === roomUpgradesPersistenceVersion);
   const activeRoomStateResolved =
     activeRoomStateLoaded &&

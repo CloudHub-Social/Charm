@@ -139,6 +139,14 @@ export function useFeatureFlagPersistenceVersion(key: FeatureFlagKey): number {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
+/** True when the optimistic flag value matches what native readers can resolve from durable state. */
+export function useFeatureFlagPersistenceSettled(key: FeatureFlagKey): boolean {
+  const snapshot = () =>
+    resolveFlag(key, overridesCache, remoteCache) ===
+    resolveFlag(key, persistedOverridesCache, remoteCache);
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
+
 /** True once persisted/remote cached flag state has been reconciled. */
 export function useFeatureFlagsInitialized(): boolean {
   const snapshot = () => initialized;
