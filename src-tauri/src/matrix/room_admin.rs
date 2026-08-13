@@ -308,18 +308,23 @@ async fn fetch_current_tombstone(
         .map_err(|e| e.to_string())?;
 
     for raw in response.room_state {
+        if raw
+            .get_field::<String>("state_key")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some("")
+        {
+            continue;
+        }
         match raw.deserialize() {
-            Ok(AnyStateEvent::RoomTombstone(StateEvent::Original(event)))
-                if event.state_key.is_empty() =>
-            {
+            Ok(AnyStateEvent::RoomTombstone(StateEvent::Original(event))) => {
                 return Ok(Some(RoomTombstoneDetails {
                     body: event.content.body,
                     replacement_room_id: event.content.replacement_room.to_string(),
                 }));
             }
-            Ok(AnyStateEvent::RoomTombstone(StateEvent::Redacted(event)))
-                if event.state_key.is_empty() =>
-            {
+            Ok(AnyStateEvent::RoomTombstone(StateEvent::Redacted(_))) => {
                 // Redaction removes the replacement-room fields but not the
                 // fact that this room was upgraded. Keep it read-only while
                 // omitting a navigation target the server no longer exposes.

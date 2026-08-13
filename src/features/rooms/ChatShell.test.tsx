@@ -246,6 +246,7 @@ vi.mock("@/lib/matrix", () => ({
     roomDetailsCallbacks.push(callback);
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   // Spec 29: LinkPreviewForMessage reads room encryption state before ever
   // fetching a preview. None of ChatShell's own tests exercise link
   // previews, so default to "encrypted" (the safe suppress-by-default
