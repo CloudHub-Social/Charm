@@ -61,4 +61,21 @@ describe("MembersDrawer", () => {
     // rendered unconditionally in the header, not gated on `details`.
     expect(screen.getByRole("button", { name: "Close members" })).toBeInTheDocument();
   });
+
+  it("fails moderation controls closed when room mutations are blocked", async () => {
+    const details = makeRoomDetails({ member_count: 1 });
+    getRoomDetails.mockResolvedValue(details);
+    getRoomMemberList.mockResolvedValue([MEMBER]);
+
+    renderWithProviders(
+      <MembersDrawer
+        roomId={details.room_id}
+        currentUserId="@evie:localhost"
+        mutationsBlocked
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Invite" })).toBeDisabled();
+  });
 });

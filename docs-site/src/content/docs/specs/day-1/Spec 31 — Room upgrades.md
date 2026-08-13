@@ -56,15 +56,18 @@ old room are directed to its replacement.
 - The composer is replaced by the persistent read-only explanation in a tombstoned
   room, and its drop, paste, picker, and staged-attachment paths are closed with it.
   The asynchronous native picker rechecks the write barrier after its dialog returns,
-  so a tombstone received while it is open cannot stage a stale-room upload. Attachments,
-  slash commands, and ordinary messages therefore cannot be sent from the stale
+  and any upload already in flight is cancelled when the barrier closes, so a tombstone
+  received during either path cannot send into the stale room. Attachments, slash
+  commands, and ordinary messages therefore cannot be sent from the stale
   conversation surface. Server-mutating message actions are closed too: reactions,
   edits, redactions, retries, reports, and room pin/unpin actions cannot target the
-  tombstoned room, while read-only and local actions such as copy and bookmarks remain
-  available. Room settings follows the same boundary: profile, access, membership,
+  tombstoned room, while stable read-only and local actions such as copy, copy link,
+  forward, view source, and bookmarks remain available. Room settings and the members
+  drawer follow the same boundary: profile, access, membership,
   alias, encryption, and power-level mutations are disabled while state is unresolved
   and after a tombstone is present. Native avatar picking and alias-availability checks
-  recheck that live write barrier after their asynchronous work completes.
+  recheck that live write barrier after their asynchronous work completes, including
+  alias-state cleanup that would otherwise race a completed directory removal.
 
 ## Data flow
 
@@ -85,7 +88,8 @@ timeline state items when either
 self-contained. Following the replacement explicitly joins it when necessary,
 refreshes the room list, and retains a pending selection until sync publishes it. If
 that follow step fails after the server has upgraded the room, settings stays open and
-shows an actionable access error instead of closing silently.
+shows an actionable access error and replacement-room retry instead of closing silently;
+that retry remains visible after the tombstone refresh hides the original upgrade action.
 
 ## API/contract changes
 

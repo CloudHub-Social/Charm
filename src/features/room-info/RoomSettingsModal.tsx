@@ -13,6 +13,7 @@ import { RoomSettingsForm } from "./RoomSettingsForm";
 import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
 import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
+import { withRoomMutationsDisabled } from "./roomMutationBarrier";
 import type { RoomDetails, RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
@@ -30,15 +31,6 @@ interface RoomSettingsModalProps {
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
-
-function withMutationsDisabled(details: RoomDetails): RoomDetails {
-  return {
-    ...details,
-    can: Object.fromEntries(
-      Object.keys(details.can).map((key) => [key, false]),
-    ) as RoomDetails["can"],
-  };
-}
 
 /**
  * Room settings as a modal — full-screen on mobile, a centered card on
@@ -103,7 +95,7 @@ export function RoomSettingsModal({
   const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
   roomMutationsBlockedRef.current = roomMutationsBlocked;
   const renderedDetails =
-    details && roomMutationsBlocked ? withMutationsDisabled(details) : details;
+    details && roomMutationsBlocked ? withRoomMutationsDisabled(details) : details;
 
   return (
     <Dialog open={visibleTarget !== null} onOpenChange={(open) => !open && setTarget(null)}>

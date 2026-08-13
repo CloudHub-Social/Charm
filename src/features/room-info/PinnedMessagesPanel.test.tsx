@@ -1,9 +1,10 @@
 import { act, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { makeRoomDetails } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
 import type { PinnedMessageSummary, RoomDetails, RoomTimelineUpdate } from "@/lib/matrix";
+import { featureFlagTestHooks } from "@/featureFlags";
 
 const getRoomDetails = vi.fn();
 const getPinnedMessages = vi.fn();
@@ -45,10 +46,14 @@ function pinnedMessage(overrides: Partial<PinnedMessageSummary> = {}): PinnedMes
 
 describe("PinnedMessagesPanel", () => {
   beforeEach(() => {
+    featureFlagTestHooks.reset();
+    featureFlagTestHooks.setCache({ room_upgrades: true });
     unpinEvent.mockReset().mockResolvedValue(undefined);
     timelineUpdateCallback = undefined;
     roomDetailsUpdateCallbacks = [];
   });
+
+  afterEach(() => featureFlagTestHooks.reset());
 
   it("lists resolved pinned messages in order and calls onClose", async () => {
     const details = makeRoomDetails({ pinned_event_ids: ["$1", "$2"] });
@@ -127,6 +132,30 @@ describe("PinnedMessagesPanel", () => {
 
     await screen.findByText("Read the room rules before posting");
     expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
+  });
+
+  it("keeps existing unpin behavior when room upgrades are disabled", async () => {
+    featureFlagTestHooks.setCache({ room_upgrades: false });
+    const details = makeRoomDetails({
+      pinned_event_ids: ["$1"],
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([pinnedMessage({ event_id: "$1" })]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        roomStateResolved={false}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Unpin message" })).toBeInTheDocument();
   });
 
   it("shows an error message when the fetch fails", async () => {

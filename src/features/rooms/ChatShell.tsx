@@ -541,6 +541,10 @@ export function ChatShell({
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
   const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
+  useEffect(() => {
+    if (!roomMutationsBlocked || uploads.length === 0) return;
+    for (const upload of uploads) dismissUpload(upload.txnId);
+  }, [dismissUpload, roomMutationsBlocked, uploads]);
   const { commandFeedback, setCommandFeedback, handleComposerSubmit, handleSlashCommand } =
     useMessageSend({
       room,

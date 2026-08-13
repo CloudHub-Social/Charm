@@ -97,11 +97,28 @@ export function RoomSettingsForm({
   const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
   const [followingUpgrade, setFollowingUpgrade] = useState(false);
   const [followUpgradeError, setFollowUpgradeError] = useState<string | null>(null);
+  const [failedReplacementRoomId, setFailedReplacementRoomId] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const fallbackMutationsBlockedRef = useRef(false);
   const liveMutationsBlockedRef = mutationsBlockedRef ?? fallbackMutationsBlockedRef;
   const roomAliasManagementEnabled = useFlag("room_alias_management");
   const roomUpgradesEnabled = useFlag("room_upgrades");
+
+  async function followUpgradedRoom(replacementRoomId: string) {
+    setFollowingUpgrade(true);
+    setFollowUpgradeError(null);
+    try {
+      await onRoomUpgraded?.(replacementRoomId);
+      setConfirmingUpgrade(false);
+      setFailedReplacementRoomId(null);
+    } catch {
+      setConfirmingUpgrade(false);
+      setFailedReplacementRoomId(replacementRoomId);
+      setFollowUpgradeError("Couldn't open the upgraded room. Check your access and try again.");
+    } finally {
+      setFollowingUpgrade(false);
+    }
+  }
 
   useEffect(() => {
     setName(details.name ?? "");
@@ -347,9 +364,9 @@ export function RoomSettingsForm({
                   Upgrade room
                 </Button>
               </PermissionGate>
-              {(actions.upgrade.error || followUpgradeError) && (
+              {actions.upgrade.error && (
                 <p role="alert" className="text-sm text-destructive">
-                  {actions.upgrade.error?.message ?? followUpgradeError}
+                  {actions.upgrade.error.message}
                 </p>
               )}
               <Dialog open={confirmingUpgrade} onOpenChange={setConfirmingUpgrade}>
@@ -381,18 +398,7 @@ export function RoomSettingsForm({
                         setFollowUpgradeError(null);
                         actions.upgrade.mutate(undefined, {
                           onSuccess: async (replacementRoomId) => {
-                            setFollowingUpgrade(true);
-                            try {
-                              await onRoomUpgraded?.(replacementRoomId);
-                              setConfirmingUpgrade(false);
-                            } catch {
-                              setConfirmingUpgrade(false);
-                              setFollowUpgradeError(
-                                "Couldn't open the upgraded room. Check your access and try again.",
-                              );
-                            } finally {
-                              setFollowingUpgrade(false);
-                            }
+                            await followUpgradedRoom(replacementRoomId);
                           },
                           onError: () => setConfirmingUpgrade(false),
                         });
@@ -409,6 +415,24 @@ export function RoomSettingsForm({
               </Dialog>
             </div>
           )}
+          {roomUpgradesEnabled &&
+            !isWebBuild() &&
+            followUpgradeError &&
+            failedReplacementRoomId && (
+              <div className="flex flex-col items-start gap-2">
+                <p role="alert" className="text-sm text-destructive">
+                  {followUpgradeError}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={followingUpgrade}
+                  onClick={() => void followUpgradedRoom(failedReplacementRoomId)}
+                >
+                  {followingUpgrade ? "Opening upgraded room…" : "Try upgraded room again"}
+                </Button>
+              </div>
+            )}
         </section>
       )}
     </div>

@@ -2,12 +2,15 @@ import { X } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useRoomDetails } from "./useRoomDetails";
 import { MemberList } from "./MemberList";
+import { withRoomMutationsDisabled } from "./roomMutationBarrier";
 
 interface MembersDrawerProps {
   roomId: string;
   currentUserId: string;
   onClose: () => void;
   onNavigateToRoom?: (roomId: string) => void;
+  /** Denies every moderation mutation while authoritative room state is unsafe. */
+  mutationsBlocked?: boolean;
 }
 
 /**
@@ -21,8 +24,11 @@ export function MembersDrawer({
   currentUserId,
   onClose,
   onNavigateToRoom,
+  mutationsBlocked = false,
 }: MembersDrawerProps) {
   const { data: details, isLoading, isError } = useRoomDetails(roomId);
+  const renderedDetails =
+    details && mutationsBlocked ? withRoomMutationsDisabled(details) : details;
 
   return (
     <div className="flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80">
@@ -42,11 +48,11 @@ export function MembersDrawer({
 
       {isError && <p className="p-4 text-sm text-destructive">Couldn't load members.</p>}
 
-      {details && (
+      {renderedDetails && (
         <TooltipProvider>
           <div className="min-h-0 flex-1 overflow-y-auto">
             <MemberList
-              details={details}
+              details={renderedDetails}
               currentUserId={currentUserId}
               onNavigateToRoom={onNavigateToRoom}
             />

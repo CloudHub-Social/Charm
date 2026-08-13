@@ -109,6 +109,12 @@ export function RoomAliasManagement({ details, mutationsBlockedRef }: RoomAliasM
   function handleRemoveAlias(alias: string) {
     actions.removeAlias.mutate(alias, {
       onSuccess: () => {
+        if (mutationsBlockedRef?.current) {
+          setAddError(
+            "Alias removed, but the room became read-only before its state could be updated",
+          );
+          return;
+        }
         // If the removed alias was canonical or alt, clear it out of that
         // state too — `remove_room_alias` only unpublishes from the
         // directory, it doesn't touch `m.room.canonical_alias` (see

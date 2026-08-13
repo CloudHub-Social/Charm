@@ -180,6 +180,30 @@ describe("RoomAliasManagement", () => {
     });
   });
 
+  it("does not mutate canonical state after alias removal if the room became read-only", async () => {
+    removeRoomAlias.mockClear();
+    setCanonicalAlias.mockClear();
+    let resolveRemoval: (() => void) | undefined;
+    removeRoomAlias.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveRemoval = resolve)),
+    );
+    getRoomLocalAliases.mockResolvedValue(["#general:example.org"]);
+    const details = makeRoomDetails({ canonical_alias: "#general:example.org" });
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    await screen.findByText("#general:example.org", { selector: "button" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeRoomAlias).toHaveBeenCalledWith("#general:example.org"));
+    mutationsBlockedRef.current = true;
+    await act(async () => resolveRemoval?.());
+
+    expect(await screen.findByText(/became read-only/)).toBeInTheDocument();
+    expect(setCanonicalAlias).not.toHaveBeenCalled();
+  });
+
   it("clears a removed alias from alt_aliases when it wasn't canonical", async () => {
     getRoomLocalAliases.mockResolvedValue(["#alt:example.org"]);
     const details = makeRoomDetails({

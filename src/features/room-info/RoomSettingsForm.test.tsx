@@ -222,9 +222,10 @@ describe("RoomSettingsForm", () => {
 
   it("keeps settings open and reports a replacement-room navigation failure", async () => {
     featureFlagMocks.roomUpgrades = true;
-    const onRoomUpgraded = vi.fn().mockRejectedValue(new Error("join denied"));
-    renderWithProviders(
-      <RoomSettingsForm details={makeRoomDetails()} onRoomUpgraded={onRoomUpgraded} />,
+    const onRoomUpgraded = vi.fn().mockRejectedValueOnce(new Error("join denied"));
+    const details = makeRoomDetails();
+    const { rerender } = renderWithProviders(
+      <RoomSettingsForm details={details} onRoomUpgraded={onRoomUpgraded} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
@@ -235,6 +236,22 @@ describe("RoomSettingsForm", () => {
       "Couldn't open the upgraded room. Check your access and try again.",
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(
+      <RoomSettingsForm
+        details={{
+          ...details,
+          tombstone: {
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:example.org",
+          },
+        }}
+        onRoomUpgraded={onRoomUpgraded}
+      />,
+    );
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try upgraded room again" }));
+    await waitFor(() => expect(onRoomUpgraded).toHaveBeenCalledTimes(2));
   });
 
   it("closes the confirmation so an upgrade failure is visible", async () => {

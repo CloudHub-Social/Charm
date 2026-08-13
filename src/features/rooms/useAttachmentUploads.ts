@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { stripExifOnUploadAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
 import {
@@ -149,7 +149,7 @@ export function useAttachmentUploads(roomId: string | null) {
     }
   }
 
-  function dismissUpload(txnId: string) {
+  const dismissUpload = useCallback((txnId: string) => {
     setUploads((prev) => {
       const upload = prev.find((u) => u.txnId === txnId);
       if (upload && !upload.failed) {
@@ -158,7 +158,7 @@ export function useAttachmentUploads(roomId: string | null) {
       }
       return prev.filter((u) => u.txnId !== txnId);
     });
-  }
+  }, []);
 
   return { uploads, handleAttachFile, dismissUpload };
 }

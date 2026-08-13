@@ -8,6 +8,7 @@ import {
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
 import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
@@ -79,6 +80,7 @@ export function PinnedMessagesPanel({
   onClose,
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
+  const roomUpgradesEnabled = useFlag("room_upgrades");
   const { data: details } = useRoomDetails(roomId);
   // Review fix: `details?.pinned_event_ids` is a fresh array reference on
   // every `room_details:update` (even one unrelated to pinning, e.g. a
@@ -102,8 +104,8 @@ export function PinnedMessagesPanel({
     [pinnedEventIdsKey],
   );
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
-  const canUnpin =
-    roomStateResolved && (details?.can.set_pinned_events ?? false) && !details?.tombstone;
+  const upgradeBarrierOpen = !roomUpgradesEnabled || (roomStateResolved && !details?.tombstone);
+  const canUnpin = upgradeBarrierOpen && (details?.can.set_pinned_events ?? false);
   const queryClient = useQueryClient();
 
   // Review fix: `usePinnedMessages`'s query key only covers the pinned id

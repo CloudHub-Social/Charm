@@ -5093,6 +5093,41 @@ describe("ChatShell", () => {
     expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
   });
 
+  it("cancels an in-flight upload when the room becomes read-only", async () => {
+    sendAttachment.mockImplementation(() => new Promise(() => {}));
+    openFileDialog.mockResolvedValue("/Users/me/upgrade-race.mp4");
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_001);
+    vi.spyOn(Math, "random").mockReturnValue(0.23456789);
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    await screen.findByText("upgrade-race.mp4");
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const expectedTxnId = `local-1700000000001-${(0.23456789).toString(36).slice(2)}`;
+    await waitFor(() => expect(cancelAttachmentUpload).toHaveBeenCalledWith(expectedTxnId));
+    expect(screen.queryByText("upgrade-race.mp4")).not.toBeInTheDocument();
+    vi.restoreAllMocks();
+  });
+
   it("does not confirm a staged attachment into a newly selected room", async () => {
     openFileDialog.mockResolvedValue("/Users/me/room-a.png");
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });

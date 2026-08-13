@@ -756,6 +756,10 @@ export function RoomsScreen({
             <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
+              mutationsBlocked={
+                roomUpgradesEnabled &&
+                (!activeRoomStateResolved || Boolean(activeRoomDetails?.tombstone))
+              }
               onNavigateToRoom={navigateToProfileRoom}
               onClose={() => setMembersDrawerOpen(false)}
             />
