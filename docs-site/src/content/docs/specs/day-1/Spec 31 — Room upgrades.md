@@ -122,7 +122,9 @@ that retry remains visible after the tombstone refresh hides the original upgrad
 - New native queue-barrier IPC command pauses/resumes a room send queue and drains
   pending local echoes when the room becomes read-only. Its destructive pause path
   enforces the persisted `room_upgrades` flag; resume remains available for kill-switch
-  cleanup.
+  cleanup. Barrier enforcement is tracked separately from queue ownership, so a queue
+  disabled by an unrelated send failure remains blocked during verification and is not
+  incorrectly re-enabled when the room barrier opens.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch.
 - `RoomDetails` exposes the current tombstone body and replacement room id so the

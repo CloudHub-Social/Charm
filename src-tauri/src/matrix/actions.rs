@@ -28,21 +28,25 @@ use ts_rs::TS;
 
 use super::MatrixState;
 
-static ROOM_UPGRADE_PAUSED_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
+static ROOM_UPGRADE_BARRIER_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
+static ROOM_UPGRADE_RESUME_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
 
 pub(super) async fn clear_room_upgrade_queue_barriers() {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
-    ROOM_UPGRADE_PAUSED_ROOMS.lock().await.clear();
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
+    ROOM_UPGRADE_RESUME_ROOMS.lock().await.clear();
 }
 
 pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
-    ROOM_UPGRADE_PAUSED_ROOMS.lock().await.contains(room_id)
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.contains(room_id)
 }
 
 pub(super) async fn resume_all_room_upgrade_queues(client: &Client) {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
-    let room_ids = ROOM_UPGRADE_PAUSED_ROOMS
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
+    let room_ids = ROOM_UPGRADE_RESUME_ROOMS
         .lock()
         .await
         .drain()
@@ -581,18 +585,21 @@ pub async fn set_room_send_queue_read_only_impl(
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
     let queue = room.send_queue();
-    let mut paused_rooms = ROOM_UPGRADE_PAUSED_ROOMS.lock().await;
+    let mut barrier_rooms = ROOM_UPGRADE_BARRIER_ROOMS.lock().await;
+    let mut resume_rooms = ROOM_UPGRADE_RESUME_ROOMS.lock().await;
 
     if !read_only {
-        if paused_rooms.remove(room.room_id()) {
+        barrier_rooms.remove(room.room_id());
+        if resume_rooms.remove(room.room_id()) {
             queue.set_enabled(true);
         }
         return Ok(0);
     }
 
+    barrier_rooms.insert(room.room_id().to_owned());
     if queue.is_enabled() {
         queue.set_enabled(false);
-        paused_rooms.insert(room.room_id().to_owned());
+        resume_rooms.insert(room.room_id().to_owned());
     }
     if !discard_pending {
         return Ok(0);
@@ -647,6 +654,14 @@ mod room_send_queue_barrier_tests {
         );
         let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
         assert_eq!(local_echoes.len(), 1);
+        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
+            "blocked while pre-disabled",
+        ));
+        assert!(
+            super::super::send::send_and_capture_transaction_id(&client, &room, content)
+                .await
+                .is_err()
+        );
 
         assert_eq!(
             set_room_send_queue_read_only_impl(&client, room_id.as_str(), true, true)
@@ -720,7 +735,7 @@ pub async fn resend_message_impl(
 ) -> Result<(), String> {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
-    if ROOM_UPGRADE_PAUSED_ROOMS
+    if ROOM_UPGRADE_BARRIER_ROOMS
         .lock()
         .await
         .contains(room.room_id())
@@ -779,7 +794,7 @@ pub async fn discard_failed_message_impl(
     // *other* message the user sends in this room afterward would sit as a
     // local echo forever, never actually reaching the queue's background
     // task.
-    if !ROOM_UPGRADE_PAUSED_ROOMS
+    if !ROOM_UPGRADE_BARRIER_ROOMS
         .lock()
         .await
         .contains(room.room_id())
