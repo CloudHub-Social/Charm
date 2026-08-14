@@ -96,7 +96,9 @@ current-state guarantees as the Tauri path.
   room-scoped admission lock, so an unrelated room's network request cannot delay a
   tombstone boundary; queue insertion keeps its narrower global transaction-capture
   serialization so a send already entering the SDK cannot slip in after the
-  confirmed-tombstone drain.
+  confirmed-tombstone drain. Sync publishes the SDK queue pause before waiting for an
+  already-running same-room mutation, then waits on that room admission boundary only
+  before destructive draining.
   Failed authoritative refreshes remain in the sync task's session-scoped retry set and
   are retried after the next successful sync instead of leaving an inactive room paused
   indefinitely. Starting or enabling the feature seeds an authoritative scan of every

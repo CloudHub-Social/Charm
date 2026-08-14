@@ -713,6 +713,7 @@ pub async fn upgrade_room(
         }
     };
     if !_mutation_guard.session_is_current() {
+        super::actions::discard_pending_room_sends(&client, &room_id).await?;
         return Err("The signed-in session changed while the room was being upgraded.".to_string());
     }
     // The successful endpoint response is authoritative: close the old room

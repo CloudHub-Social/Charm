@@ -634,19 +634,15 @@ pub(super) async fn set_room_send_queue_read_only_if_enabled(
     read_only: bool,
     discard_pending: bool,
 ) -> Result<Option<u64>, String> {
-    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
-    let mutation_lock = room_mutation_lock(&parsed_room_id).await;
-    let _mutation_guard = mutation_lock.lock_owned().await;
-    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
-    let enabled = app.path().app_data_dir().is_ok_and(|dir| {
-        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
-    });
-    if !enabled {
-        return Ok(None);
-    }
-    set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
-        .await
-        .map(Some)
+    set_room_send_queue_read_only_transition(
+        Some(app),
+        client,
+        state,
+        room_id,
+        read_only,
+        discard_pending,
+    )
+    .await
 }
 
 pub async fn set_room_send_queue_read_only_impl(
@@ -656,12 +652,64 @@ pub async fn set_room_send_queue_read_only_impl(
     read_only: bool,
     discard_pending: bool,
 ) -> Result<u64, String> {
+    set_room_send_queue_read_only_transition(
+        None,
+        client,
+        state,
+        room_id,
+        read_only,
+        discard_pending,
+    )
+    .await?
+    .ok_or_else(|| "Room upgrades are not enabled.".to_string())
+}
+
+async fn set_room_send_queue_read_only_transition(
+    app: Option<&tauri::AppHandle>,
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<Option<u64>, String> {
     let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let generation = ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire);
     let mutation_lock = room_mutation_lock(&parsed_room_id).await;
+
+    if read_only {
+        // Publish the barrier and stop the SDK worker before waiting for an
+        // already-running same-room mutation. The worker does not acquire the
+        // room mutex, so waiting first would leave pending echoes deliverable.
+        {
+            let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+            if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+                return Err("The signed-in session changed before the queue barrier began.".into());
+            }
+            if app.is_some_and(|app| {
+                !app.path().app_data_dir().is_ok_and(|dir| {
+                    crate::feature_flags::flag(
+                        &dir,
+                        crate::feature_flags::FeatureFlagKey::RoomUpgrades,
+                    )
+                })
+            }) {
+                return Ok(None);
+            }
+            set_room_send_queue_read_only_impl_locked(client, state, room_id, true, false).await?;
+        }
+        if !discard_pending {
+            return Ok(Some(0));
+        }
+    }
+
     let _mutation_guard = mutation_lock.lock_owned().await;
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+        return Err("The signed-in session changed during the queue barrier transition.".into());
+    }
     set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
         .await
+        .map(Some)
 }
 
 pub(super) async fn set_room_send_queue_read_only_impl_locked(
@@ -695,6 +743,11 @@ pub(super) async fn set_room_send_queue_read_only_impl_locked(
     if !discard_pending {
         return Ok(0);
     }
+    abort_pending_room_queue(&room).await
+}
+
+async fn abort_pending_room_queue(room: &matrix_sdk::Room) -> Result<u64, String> {
+    let queue = room.send_queue();
     let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
     let mut aborted = 0;
     for echo in local_echoes {
@@ -710,6 +763,15 @@ pub(super) async fn set_room_send_queue_read_only_impl_locked(
     }
 
     Ok(aborted)
+}
+
+pub(super) async fn discard_pending_room_sends(
+    client: &Client,
+    room_id: &str,
+) -> Result<u64, String> {
+    let room = get_room(client, room_id)?;
+    room.send_queue().set_enabled(false);
+    abort_pending_room_queue(&room).await
 }
 
 #[cfg(test)]
