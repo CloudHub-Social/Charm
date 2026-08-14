@@ -4,10 +4,10 @@
   "generatedAt": "2026-08-14T01:07:38.520Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 48,
+    "shipped": 49,
     "follow-up": 2,
     "in-progress": 2,
-    "planned": 25
+    "planned": 24
   },
   "attention": [
     {
@@ -150,10 +150,10 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 3,
+        "shipped": 4,
         "follow-up": 0,
         "in-progress": 0,
-        "planned": 11
+        "planned": 10
       }
     }
   ],
@@ -1831,7 +1831,7 @@
       "number": 6,
       "title": "Room directory and public room browser",
       "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
-      "status": "planned",
+      "status": "shipped",
       "pullRequests": [],
       "issues": []
     },

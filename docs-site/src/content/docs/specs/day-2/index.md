@@ -23,7 +23,7 @@ already contain a settled architecture and detailed acceptance criteria.
 | 03 | [Polls](/specs/day-2/spec-03--polls/) | **Planned** | Matrix poll events and aggregation UI |
 | 04 | [Message pinning](/specs/day-2/spec-04--message-pinning/) | **Shipped** | Shared room pins, distinct from private bookmarks |
 | 05 | [Custom emoji and sticker packs](/specs/day-2/spec-05--custom-emoji-and-sticker-packs/) | **Planned** | Pack consumption before authoring tools |
-| 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **Planned** | Public-room search and browse UI |
+| 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **Shipped** | Own-homeserver public-room search, pagination, and join UI behind `room_directory` |
 | 07 | [Location sharing](/specs/day-2/spec-07--location-sharing/) | **Planned** | Static location first; live beacons deferred |
 | 08 | [Image editing before send](/specs/day-2/spec-08--image-editing-before-send/) | **Planned** | Crop, annotate, and blur before upload |
 | 09 | [Multi-account switcher](/specs/day-2/spec-09--multi-account-switcher-ui/) | **Planned** | Builds on shipped Day-1 Spec 15 store isolation |

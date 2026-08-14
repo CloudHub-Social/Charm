@@ -160,5 +160,11 @@
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "key": "room_directory",
+    "default": false,
+    "description": "Browse and search the homeserver's public room directory, then join a result.",
+    "owner": "Day-2 Spec 06 (public room directory)"
   }
 ]

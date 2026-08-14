@@ -3,10 +3,12 @@ title: Charm 2.0 Spec — Room directory and public room browser
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 sidebar:
   label: "Room directory & public browser"
 ---
+
+**Status:** shipped behind the default-off `room_directory` feature flag.
 
 **Workstream:** one PR / one agent.
 
@@ -48,14 +50,19 @@ invite/alias/link from outside the app.
 
 ## Data flow
 
-New IPC command `search_public_rooms(server?, query, since?) -> PaginatedRoomList`,
-thin-wrapping the homeserver's `/publicRooms` endpoint. No new sync-side state —
-this is a request/response query pattern, not a synced data source.
+The `search_public_rooms(query, since, limit) -> PublicRoomPage` command uses the
+Matrix SDK's maintained filtered-public-rooms request on desktop. The hosted web
+companion exposes the same authenticated contract at
+`POST /api/rooms/directory/search`. No new sync-side state is introduced — this
+is a request/response query pattern, not a synced data source.
 
 ## API/contract changes
 
-New IPC command as above with pagination token handling. No changes to existing
-commands.
+The new command returns room id, name, topic, canonical alias, avatar MXC URI,
+joined-member count, the next pagination token, and the homeserver's optional
+total estimate. Queries and pagination tokens are trimmed, page size defaults to
+20, and the backend caps it at 50. Joining deliberately continues through the
+existing `join_room` command.
 
 ## Testing strategy
 
@@ -65,6 +72,21 @@ commands.
   join-from-directory flow reusing existing join command, empty/error states.
 - Manual: browse a real homeserver's public directory, join a room from it, confirm
   it appears correctly in the room list afterward.
+
+## Implementation
+
+- A globe action in the room-list header opens the browser when
+  `room_directory` is enabled.
+- Search is debounced and sent to the homeserver; results are never produced by
+  downloading and filtering an entire directory in the renderer.
+- Pagination appends unique rooms by room id and preserves the server's next
+  token.
+- Room avatars reuse Charm's existing authenticated Matrix media resolution on
+  desktop and web.
+- Join actions prefer a canonical alias when available, reuse the existing join
+  flow, select the resolved room id, and close the browser after success.
+- Phase 1 searches only the signed-in account's own homeserver. Remote-server
+  selection and directory-publication controls remain follow-ups.
 
 ## Trade-offs
 

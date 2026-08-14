@@ -11,6 +11,8 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { GroupDmAvatarMember } from "@bindings/GroupDmAvatarMember";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
+import type { PublicRoomPage } from "@bindings/PublicRoomPage";
+import type { PublicRoomSummary } from "@bindings/PublicRoomSummary";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
@@ -953,6 +955,16 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
 export function joinRoom(roomIdOrAlias: string): Promise<JoinedRoom> {
   return invoke("join_room", { roomIdOrAlias });
 }
+
+export function searchPublicRooms(
+  query: string | null,
+  since: string | null = null,
+  limit = 20,
+): Promise<PublicRoomPage> {
+  return invoke("search_public_rooms", { query, since, limit });
+}
+
+export type { PublicRoomPage, PublicRoomSummary };
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });

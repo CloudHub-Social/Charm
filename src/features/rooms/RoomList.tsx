@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { CommandIcon, MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { CommandIcon, Globe2Icon, MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -34,6 +34,7 @@ import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomInviteItem } from "./RoomInviteItem";
+import { RoomDirectoryDialog } from "./RoomDirectoryDialog";
 import { RoomListSection } from "./SpaceSection";
 import {
   filterHierarchyToUnread,
@@ -172,6 +173,7 @@ export function RoomList({
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [roomDirectoryOpen, setRoomDirectoryOpen] = useState(false);
   // The action is permission-gated below, but the server remains authoritative:
   // power levels or child edges can change between the menu check and the
   // mutation, and offline failures also remain normal reachable outcomes.
@@ -206,6 +208,7 @@ export function RoomList({
   const spaceRailManagementEnabled = useFlag("space_rail_management");
   const roomListSortFlagEnabled = useFlag("room_list_sort");
   const roomListTypingFlagEnabled = useFlag("room_list_typing_indicator");
+  const roomDirectoryEnabled = useFlag("room_directory");
   // Called unconditionally (rules of hooks) — the `enabled` flag it's given
   // makes the disabled case a real kill switch (no subscription, no
   // cross-room typing processing), not just a discarded result; every read
@@ -799,6 +802,17 @@ export function RoomList({
                 <SearchIcon />
               </Button>
             )}
+            {roomDirectoryEnabled && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Browse public rooms"
+                title="Browse public rooms"
+                onClick={() => setRoomDirectoryOpen(true)}
+              >
+                <Globe2Icon />
+              </Button>
+            )}
             {onOpenQuickSwitcher && (
               <Button
                 variant="ghost"
@@ -1093,6 +1107,13 @@ export function RoomList({
           )}
         </div>
       </aside>
+      {roomDirectoryEnabled && (
+        <RoomDirectoryDialog
+          open={roomDirectoryOpen}
+          onOpenChange={setRoomDirectoryOpen}
+          onJoined={onSelectRoom}
+        />
+      )}
     </TooltipProvider>
   );
 }
