@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-14T01:07:38.520Z",
+  "generatedAt": "2026-08-14T03:32:23.909Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 48,
+    "shipped": 49,
     "follow-up": 2,
     "in-progress": 2,
-    "planned": 25
+    "planned": 24
   },
   "attention": [
     {
@@ -150,10 +150,10 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 3,
+        "shipped": 4,
         "follow-up": 0,
         "in-progress": 0,
-        "planned": 11
+        "planned": 10
       }
     }
   ],
@@ -1050,6 +1050,14 @@
       "status": "shipped",
       "pullRequests": [
         {
+          "number": 466,
+          "title": "docs: mark Spec 31 shipped on roadmap",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/466",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-14T01:15:09Z"
+        },
+        {
           "number": 463,
           "title": "Day-1 Spec 31: room upgrades",
           "url": "https://github.com/CloudHub-Social/Charm/pull/463",
@@ -1792,7 +1800,7 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "planned",
+      "status": "shipped",
       "pullRequests": [],
       "issues": []
     },

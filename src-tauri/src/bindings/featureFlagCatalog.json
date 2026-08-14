@@ -160,5 +160,11 @@
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "key": "polls",
+    "default": false,
+    "description": "Create, vote on, display, and end Matrix polls in the room timeline.",
+    "owner": "Day-2 Spec 03 (polls)"
   }
 ]

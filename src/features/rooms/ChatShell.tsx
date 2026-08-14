@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
+import { ChevronDown, ListChecks, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
@@ -57,6 +57,7 @@ import { useRoomTombstone } from "./useRoomTombstone";
 import type { ChatShellProps } from "./ChatShellProps";
 import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
+import { PollDialog } from "./PollDialog";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -187,6 +188,7 @@ export function ChatShell({
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
+  const pollsEnabled = useFlag("polls");
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
@@ -197,6 +199,7 @@ export function ChatShell({
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
+  const [pollOpen, setPollOpen] = useState(false);
   const [dateJumpTarget, setDateJumpTarget] = useState<{
     eventId: string;
     timestampMs: number;
@@ -232,6 +235,7 @@ export function ChatShell({
   useEffect(() => {
     setPillProfile(null);
     setJumpToDateOpen(false);
+    setPollOpen(false);
     setDateJumpTarget(null);
   }, [roomId]);
   const activeJumpToEventId = jumpToEventId ?? dateJumpTarget?.eventId ?? null;
@@ -311,6 +315,7 @@ export function ChatShell({
   useRoomSendQueueBarrier(activeRoomId, roomUpgradesEnabled, roomMutationsBlocked, !!tombstone);
   useEffect(() => {
     if (!roomMutationsBlocked) return;
+    setPollOpen(false);
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
     setFileDragActive(false);
@@ -1084,6 +1089,20 @@ export function ChatShell({
             >
               <Paperclip size={18} />
             </button>
+            {pollsEnabled && composerMode === "send" && (
+              <button
+                type="button"
+                aria-label="Create poll"
+                onClick={() => setPollOpen(true)}
+                disabled={roomMutationsBlocked}
+                className={cn(
+                  "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50",
+                  mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+                )}
+              >
+                <ListChecks size={18} />
+              </button>
+            )}
             <Composer
               accountId={currentUserId}
               key={`${room.room_id}-${editingEventId ?? "new"}`}
@@ -1178,6 +1197,9 @@ export function ChatShell({
         onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />
+      {pollsEnabled && (
+        <PollDialog open={pollOpen} roomId={roomId} onOpenChange={setPollOpen} />
+      )}
     </div>
   );
 }

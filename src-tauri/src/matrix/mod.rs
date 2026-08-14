@@ -12,6 +12,7 @@ pub mod media;
 pub mod members;
 pub mod notifications;
 pub mod persistence;
+pub mod polls;
 pub mod presence;
 pub mod privacy_settings;
 pub mod profiles;

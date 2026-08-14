@@ -513,6 +513,27 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         formatted_body: args.formattedBody,
         mentions: args.mentions,
       });
+    case "create_poll":
+      return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/polls`, {
+        question: args.question,
+        options: args.options,
+        disclosed: args.disclosed,
+      });
+    case "vote_on_poll":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote`,
+        { answer_id: args.answerId },
+      );
+    case "end_poll":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end`,
+      );
     case "send_reply":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/reply`, {
         in_reply_to_event_id: args.inReplyToEventId,

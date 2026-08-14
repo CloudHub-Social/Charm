@@ -238,6 +238,32 @@ describe("matrix web transport", () => {
       { body: "hi", formatted_body: null, mentions: null },
     ],
     [
+      "create_poll",
+      {
+        roomId: "!r:example.org",
+        question: "Lunch?",
+        options: ["Pizza", "Tacos"],
+        disclosed: true,
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls",
+      { question: "Lunch?", options: ["Pizza", "Tacos"], disclosed: true },
+    ],
+    [
+      "vote_on_poll",
+      { roomId: "!r:example.org", pollEventId: "$poll", answerId: "0" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote",
+      { answer_id: "0" },
+    ],
+    [
+      "end_poll",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end",
+      undefined,
+    ],
+    [
       "send_reply",
       { roomId: "!r:example.org", inReplyToEventId: "$e", body: "reply" },
       "POST",

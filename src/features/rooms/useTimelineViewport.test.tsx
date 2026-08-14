@@ -32,6 +32,7 @@ function message(
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    poll: null,
     is_undecrypted: false,
   };
 }
