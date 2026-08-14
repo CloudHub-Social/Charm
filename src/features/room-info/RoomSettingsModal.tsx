@@ -100,11 +100,7 @@ export function RoomSettingsModal({
   }, [setTarget, spaceHierarchyEnabled, target?.kind]);
 
   useEffect(() => {
-    if (
-      !roomUpgradesEnabled ||
-      !roomUpgradesPersistenceSettled ||
-      !targetRoomId
-    ) {
+    if (!roomUpgradesEnabled || !roomUpgradesPersistenceSettled || !targetRoomId) {
       return;
     }
     let cancelled = false;
