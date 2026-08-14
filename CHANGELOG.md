@@ -1,3 +1,16 @@
+## 0.1.3 (2026-08-14)
+
+### Features
+
+* Add a feature-flagged room calendar that jumps to and highlights messages by date. ([#460](<https://github.com/CloudHub-Social/Charm/pull/460>) by @Just-Insane)
+
+### Fixes
+
+* Reset both the message-search query and results when reopening the search dialog. ([#461](<https://github.com/CloudHub-Social/Charm/pull/461>) by @Just-Insane)
+* Harden encrypted message-search cleanup and exclude its mobile storage from backups. ([#450](<https://github.com/CloudHub-Social/Charm/pull/450>) by @Just-Insane)
+* Keep room-scoped message searches from widening when the active room changes. ([#451](<https://github.com/CloudHub-Social/Charm/pull/451>) by @Just-Insane)
+* Keep message search open and explain when an outdated result points to a room that is no longer joined. ([#453](<https://github.com/CloudHub-Social/Charm/pull/453>) by @Just-Insane)
+
 ## 0.1.2 (2026-08-01)
 
 ### Fixes
