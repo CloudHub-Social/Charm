@@ -11,7 +11,7 @@ import { makeMessageSummary } from "./testFixtures";
 
 const getUrlPreview = vi.fn();
 const getRoomDetails = vi.fn();
-const mockUseFlag = vi.hoisted(() => vi.fn((_flag: string) => true));
+const mockUseFlag = vi.hoisted(() => vi.fn((flag: string) => flag.length > 0));
 
 vi.mock("@/lib/matrix", async () => {
   const actual = await vi.importActual<typeof MatrixModule>("@/lib/matrix");
