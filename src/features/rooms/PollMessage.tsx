@@ -212,7 +212,7 @@ export function PollMessage({
           onForward={rowActions.onForward}
           onViewSource={rowActions.onViewSource}
           onReport={rowActions.onReport}
-          isEdited={message.edited}
+          isEdited={poll.edited}
           onViewEditHistory={rowActions.onViewEditHistory}
         />
       )}
