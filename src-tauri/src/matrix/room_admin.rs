@@ -673,14 +673,48 @@ pub async fn upgrade_room(
     }
     let client = state.require_client().await?;
     // Serialize the authoritative upgrade and immediate old-room drain with
-    // mutations and sync-driven barrier admission for this room. The global
-    // send-capture lock remains narrower so an unrelated room's network
-    // mutation cannot delay publication of this room's tombstone barrier.
+    // mutations and sync-driven barrier admission for this room.
     let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
-    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
-    let replacement_room_id = upgrade_room_impl(&client, &room_id).await?;
+    // Pause the SDK worker before the request: it does not participate in the
+    // command-side admission locks and could otherwise deliver an existing
+    // local echo after the server installs the tombstone. Hold the global
+    // lock only for this queue transition, never across homeserver I/O.
+    {
+        let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+        super::actions::set_room_send_queue_read_only_impl_locked(
+            &client,
+            Some(&state),
+            &room_id,
+            true,
+            false,
+        )
+        .await?;
+    }
+    let replacement_room_id = match upgrade_room_impl(&client, &room_id).await {
+        Ok(replacement_room_id) => replacement_room_id,
+        Err(error) => {
+            let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+            // Resume only when Charm owned the pause; pre-disabled queues stay
+            // disabled through the resume-ownership bookkeeping.
+            if let Err(resume_error) = super::actions::set_room_send_queue_read_only_impl_locked(
+                &client,
+                Some(&state),
+                &room_id,
+                false,
+                false,
+            )
+            .await
+            {
+                return Err(format!(
+                    "{error}; the room send queue could not be resumed: {resume_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
     // The successful endpoint response is authoritative: close the old room
     // immediately instead of waiting for a later sync to publish its tombstone.
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     super::actions::set_room_send_queue_read_only_impl_locked(
         &client,
         Some(&state),

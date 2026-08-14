@@ -772,6 +772,7 @@ pub async fn add_existing_space_child_impl(
     space_id: &str,
     child_room_id: &str,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(space_id).await?;
     let space = require_space(client, space_id)?;
     let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
     if child_room_id == space_id {
@@ -950,6 +951,7 @@ pub async fn remove_space_child_impl(
     space_id: &str,
     child_room_id: &str,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(space_id).await?;
     let space = require_space(client, space_id)?;
     let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
 
@@ -995,6 +997,7 @@ pub async fn set_space_child_suggested_impl(
     child_room_id: &str,
     suggested: bool,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(space_id).await?;
     let space = require_space(client, space_id)?;
     let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
 

@@ -46,6 +46,10 @@ current-state guarantees as the Tauri path.
   preventing a second replacement from superseding the original upgrade path. The
   native guard and `RoomDetails` refresh both read current homeserver state rather
   than trusting an SDK state cache that may not have received another admin's upgrade.
+  Charm pauses the old room's SDK queue before the upgrade request, resumes only a
+  Charm-owned pause if the request fails, and converts that pause into a destructive
+  drain after success. The global queue-insertion lock is held only for those local
+  transitions, not across capabilities, state, or upgrade network requests.
   Charm also compares the room's current version with the advertised target: rooms
   already at that version hide the action, and the command rejects a stale direct
   invocation with a no-upgrade-needed error. If the SDK cannot resolve the room's
@@ -139,7 +143,8 @@ that retry remains visible after the tombstone refresh hides the original upgrad
 - Native message, room-state, membership, pinning, alias, reporting, and slash-command
   mutations share the same room-scoped admission guard, so a stale webview cannot bypass
   a sync-installed barrier while the frontend catches up without unrelated rooms
-  blocking one another.
+  blocking one another. Tombstoned spaces use the same settings barrier, including
+  native add, remove, and suggested-child hierarchy mutations.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch. Native sync likewise skips all
   queue barrier and drain transitions while the flag is disabled and rechecks the

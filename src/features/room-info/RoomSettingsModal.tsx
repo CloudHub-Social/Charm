@@ -130,7 +130,6 @@ export function RoomSettingsModal({
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
   const roomMutationsBlocked =
     roomUpgradesEnabled &&
-    target?.kind !== "space" &&
     (!roomUpgradesPersistenceSettled ||
       authoritativeRoomDetails?.roomId !== targetRoomId ||
       authoritativeRoomDetails.persistenceVersion !== roomUpgradesPersistenceVersion ||
@@ -289,7 +288,12 @@ export function RoomSettingsModal({
                       spaceId={renderedDetails.room_id}
                       spaceName={renderedDetails.name}
                       rooms={rooms}
-                      canEdit={renderedDetails.can.set_space_child && !isFetching && !isError}
+                      canEdit={
+                        renderedDetails.can.set_space_child &&
+                        !roomMutationsBlocked &&
+                        !isFetching &&
+                        !isError
+                      }
                       onChanged={onSpaceChildrenChanged}
                     />
                   </TabsContent>
