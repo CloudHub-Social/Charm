@@ -18,13 +18,15 @@ export function PollMessage({ message, roomId, own, mutationsDisabled = false }:
   const [ending, setEnding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!poll) return null;
+  const currentPoll = poll;
 
   const hasRealEventId = message.event_id.startsWith("$");
   const showResults = poll.kind === "disclosed" || poll.ended;
   const totalVotes = poll.answers.reduce((sum, answer) => sum + answer.votes, 0);
 
   async function vote(answerId: string) {
-    if (poll.ended || mutationsDisabled || !hasRealEventId || pendingAnswerId !== null) return;
+    if (currentPoll.ended || mutationsDisabled || !hasRealEventId || pendingAnswerId !== null)
+      return;
     setPendingAnswerId(answerId);
     setError(null);
     try {
@@ -37,7 +39,7 @@ export function PollMessage({ message, roomId, own, mutationsDisabled = false }:
   }
 
   async function end() {
-    if (!own || poll.ended || mutationsDisabled || !hasRealEventId || ending) return;
+    if (!own || currentPoll.ended || mutationsDisabled || !hasRealEventId || ending) return;
     setEnding(true);
     setError(null);
     try {
