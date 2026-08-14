@@ -690,9 +690,36 @@ pub async fn upgrade_room(
         )
         .await?;
     }
-    let replacement_room_id = match upgrade_room_impl(&client, &room_id).await {
+    let replacement_room_id = match upgrade_room_impl_with_gate(&client, &room_id, || {
+        if !_mutation_guard.session_is_current() {
+            return Err(
+                "The signed-in session changed before the room upgrade request was sent."
+                    .to_string(),
+            );
+        }
+        let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+            crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+        });
+        enabled
+            .then_some(())
+            .ok_or_else(|| "Room upgrades were disabled before the request was sent.".to_string())
+    })
+    .await
+    {
         Ok(replacement_room_id) => replacement_room_id,
         Err(error) => {
+            if !_mutation_guard.session_is_current() {
+                if let Err(cleanup_error) =
+                    super::actions::discard_pending_room_sends(&client, &room_id).await
+                {
+                    return Err(format!(
+                        "{error}; the signed-in session changed while the room upgrade was in flight; pending sends could not be discarded: {cleanup_error}"
+                    ));
+                }
+                return Err(format!(
+                    "{error}; the signed-in session changed while the room upgrade was in flight"
+                ));
+            }
             let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
             // Resume only when Charm owned the pause; pre-disabled queues stay
             // disabled through the resume-ownership bookkeeping.
@@ -713,7 +740,13 @@ pub async fn upgrade_room(
         }
     };
     if !_mutation_guard.session_is_current() {
-        super::actions::discard_pending_room_sends(&client, &room_id).await?;
+        if let Err(cleanup_error) =
+            super::actions::discard_pending_room_sends(&client, &room_id).await
+        {
+            return Err(format!(
+                "The signed-in session changed while the room was being upgraded; pending sends could not be discarded: {cleanup_error}"
+            ));
+        }
         return Err("The signed-in session changed while the room was being upgraded.".to_string());
     }
     // The successful endpoint response is authoritative: close the old room
@@ -732,6 +765,17 @@ pub async fn upgrade_room(
 
 /// Core logic behind [`upgrade_room`].
 pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
+    upgrade_room_impl_with_gate(client, room_id, || Ok(())).await
+}
+
+async fn upgrade_room_impl_with_gate<F>(
+    client: &Client,
+    room_id: &str,
+    before_send: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
     let room = require_room(client, room_id)?;
     let own_user_id = client
         .user_id()
@@ -762,6 +806,7 @@ pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String,
     {
         return Err("This room has already been upgraded.".to_string());
     }
+    before_send()?;
     let response = client
         .send(upgrade_room::v3::Request::new(
             room.room_id().to_owned(),

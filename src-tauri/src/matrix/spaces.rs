@@ -495,6 +495,14 @@ pub async fn create_space_impl(
 ) -> Result<String, String> {
     use matrix_sdk::ruma::serde::Raw;
 
+    // A nested create writes an m.space.parent event into the new room and
+    // then an m.space.child event into the existing parent. Admit the parent
+    // mutation before creating anything because the child cannot be rolled
+    // back if the parent is already unresolved or tombstoned.
+    let _parent_mutation_guard = match parent_space_id {
+        Some(parent_id) => Some(super::actions::lock_room_mutation(parent_id).await?),
+        None => None,
+    };
     let parent = match parent_space_id {
         Some(parent_id) => Some(require_space(client, parent_id)?),
         None => None,

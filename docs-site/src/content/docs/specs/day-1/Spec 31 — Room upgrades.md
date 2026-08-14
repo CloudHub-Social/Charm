@@ -98,7 +98,10 @@ current-state guarantees as the Tauri path.
   serialization so a send already entering the SDK cannot slip in after the
   confirmed-tombstone drain. Sync publishes the SDK queue pause before waiting for an
   already-running same-room mutation, then waits on that room admission boundary only
-  before destructive draining.
+  before destructive draining. The upgrade command rechecks both the active session and
+  the persisted kill switch immediately before any post-flight cleanup or irreversible
+  homeserver write. Nested-space creation admits the existing parent through the same
+  mutation boundary before creating the child.
   Failed authoritative refreshes remain in the sync task's session-scoped retry set and
   are retried after the next successful sync instead of leaving an inactive room paused
   indefinitely. Starting or enabling the feature seeds an authoritative scan of every
