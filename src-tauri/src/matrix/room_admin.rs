@@ -703,7 +703,13 @@ pub async fn upgrade_room(
         Ok(replacement_room_id) => replacement_room_id,
         Err(error) => {
             if !_mutation_guard.session_is_current() {
-                super::actions::discard_pending_room_sends(&client, &room_id).await?;
+                if let Err(cleanup_error) =
+                    super::actions::discard_pending_room_sends(&client, &room_id).await
+                {
+                    return Err(format!(
+                        "{error}; the signed-in session changed while the room upgrade was in flight; pending sends could not be discarded: {cleanup_error}"
+                    ));
+                }
                 return Err(format!(
                     "{error}; the signed-in session changed while the room upgrade was in flight"
                 ));
@@ -728,7 +734,13 @@ pub async fn upgrade_room(
         }
     };
     if !_mutation_guard.session_is_current() {
-        super::actions::discard_pending_room_sends(&client, &room_id).await?;
+        if let Err(cleanup_error) =
+            super::actions::discard_pending_room_sends(&client, &room_id).await
+        {
+            return Err(format!(
+                "The signed-in session changed while the room was being upgraded; pending sends could not be discarded: {cleanup_error}"
+            ));
+        }
         return Err("The signed-in session changed while the room was being upgraded.".to_string());
     }
     // The successful endpoint response is authoritative: close the old room
