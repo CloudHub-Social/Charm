@@ -8,6 +8,8 @@ import type { MessageRowLayoutProps } from "./messageRowShared";
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 vi.mock("@/lib/matrix", async () => {
   const actual = await vi.importActual<typeof MatrixModule>("@/lib/matrix");
   return {
