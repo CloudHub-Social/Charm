@@ -105,6 +105,27 @@ describe("PollMessage", () => {
     expect(screen.getByText("Selected")).toBeInTheDocument();
   });
 
+  it("marks edited poll content and keeps edit history available", async () => {
+    const onViewEditHistory = vi.fn();
+    render(
+      <PollMessage
+        message={pollMessage({ edited: true })}
+        roomId="!room:example.org"
+        own
+        rowActions={rowActions({ onViewEditHistory })}
+      />,
+    );
+
+    expect(screen.getByText("(edited)")).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Edit history"));
+    expect(onViewEditHistory).toHaveBeenCalledOnce();
+  });
+
   it("lets the poll creator end an open poll", async () => {
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
     fireEvent.click(screen.getByRole("button", { name: "End poll" }));

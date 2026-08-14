@@ -35,8 +35,8 @@ use charm_lib::matrix::devices::{
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
-use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::polls::{create_poll_impl, end_poll_impl, vote_on_poll_impl};
+use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
     get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
     start_direct_message_impl, OwnProfile,
@@ -3567,22 +3567,22 @@ async fn vote_on_poll(
     Json(request): Json<VoteOnPollRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let transaction_id = vote_on_poll_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        request.answer_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let transaction_id =
+        vote_on_poll_impl(&session.client, &room_id, &poll_event_id, request.answer_id)
+            .await
+            .map_err(ApiError::bad_request)?;
     Ok(Json(transaction_id))
 }
 
 async fn end_poll(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, poll_event_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Zero-body POSTs are CORS-simple requests, so validate the caller's
+    // origin before accepting the authenticated session cookie.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let transaction_id = end_poll_impl(&session.client, &room_id, &poll_event_id)
         .await

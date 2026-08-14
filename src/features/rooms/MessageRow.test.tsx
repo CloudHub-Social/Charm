@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
@@ -11,6 +11,7 @@ import { makeMessageSummary } from "./testFixtures";
 
 const getUrlPreview = vi.fn();
 const getRoomDetails = vi.fn();
+const mockUseFlag = vi.hoisted(() => vi.fn((_flag: string) => true));
 
 vi.mock("@/lib/matrix", async () => {
   const actual = await vi.importActual<typeof MatrixModule>("@/lib/matrix");
@@ -26,12 +27,13 @@ vi.mock("@/lib/matrix", async () => {
 // merely that the flag happened to be off.
 vi.mock("@/featureFlags", async () => {
   const actual = await vi.importActual<typeof FeatureFlagsModule>("@/featureFlags");
-  return { ...actual, useFlag: () => true };
+  return { ...actual, useFlag: (flag: string) => mockUseFlag(flag) };
 });
 
 beforeEach(() => {
   getUrlPreview.mockReset();
   getRoomDetails.mockReset();
+  mockUseFlag.mockReturnValue(true);
 });
 
 function renderRow(messageLayout: MessageLayout, body = "hello", edited = false) {
@@ -94,6 +96,71 @@ describe("MessageRow dispatcher", () => {
     renderRow("irc");
     expect(screen.getByText("<Bob>")).toBeInTheDocument();
   });
+
+  it.each<MessageLayout>(["bubble", "discord", "irc"])(
+    "does not offer text editing for a poll fallback in %s mode",
+    async (messageLayout) => {
+      mockUseFlag.mockImplementation((flag: string) => flag !== "polls");
+      const store = createStore();
+      store.set(messageLayoutAtom, messageLayout);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={client}>
+          <Provider store={store}>
+            <MessageRow
+              message={makeMessageSummary({
+                event_id: "$poll",
+                sender: "@me:localhost",
+                body: "Poll fallback",
+                poll: {
+                  question: "Lunch?",
+                  kind: "disclosed",
+                  max_selections: 1,
+                  answers: [
+                    { id: "0", text: "Pizza", votes: 0, selected_by_me: false },
+                    { id: "1", text: "Tacos", votes: 0, selected_by_me: false },
+                  ],
+                  ended: false,
+                  edited: false,
+                },
+              })}
+              roomId="!room:localhost"
+              own
+              sameSenderAsPrev={false}
+              sameSenderAsNext={false}
+              canRedact
+              canPin={false}
+              isPinned={false}
+              readers={[]}
+              senderNameByUserId={new Map()}
+              isNew={false}
+              getActionsHandle={() => undefined}
+              registerActionsRef={vi.fn()}
+              onReply={vi.fn()}
+              onReact={vi.fn()}
+              onEdit={vi.fn()}
+              onDelete={vi.fn()}
+              onPin={vi.fn()}
+              onUnpin={vi.fn()}
+              onCopy={vi.fn()}
+              onCopyLink={vi.fn()}
+              onResend={vi.fn()}
+              onDiscard={vi.fn()}
+              onJumpToMessage={vi.fn()}
+            />
+          </Provider>
+        </QueryClientProvider>,
+      );
+
+      fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+        button: 0,
+        ctrlKey: false,
+        pointerType: "mouse",
+      });
+      expect(await screen.findByText("Reply")).toBeInTheDocument();
+      expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe("MessageRow link previews (Spec 29)", () => {

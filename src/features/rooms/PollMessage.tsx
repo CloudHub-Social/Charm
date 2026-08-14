@@ -90,9 +90,10 @@ export function PollMessage({
               </p>
               <h3 className="mt-1 text-base font-semibold text-foreground">{poll.question}</h3>
             </div>
-            <time className="shrink-0 text-[11px] text-muted-foreground">
-              {formatTime(message.timestamp_ms)}
-            </time>
+            <div className="shrink-0 text-right text-[11px] text-muted-foreground">
+              <time>{formatTime(message.timestamp_ms)}</time>
+              {poll.edited && <span className="ml-1">(edited)</span>}
+            </div>
           </div>
 
           <div className="mt-3 space-y-2">
