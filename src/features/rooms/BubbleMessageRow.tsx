@@ -181,6 +181,7 @@ export function BubbleMessageRow({
               ref={(el) => registerActionsRef(rowKey, el)}
               accountId={currentUserId ?? ""}
               isOwn={own}
+              canEdit={own && !message.poll}
               canRedact={canRedact}
               canPin={canPin}
               isPinned={isPinned}

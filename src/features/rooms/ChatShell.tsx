@@ -57,6 +57,8 @@ import { useRoomTombstone } from "./useRoomTombstone";
 import type { ChatShellProps } from "./ChatShellProps";
 import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
+import { PollDialog } from "./PollDialog";
+import { PollComposerAction } from "./PollComposerAction";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -187,6 +189,7 @@ export function ChatShell({
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
+  const pollsEnabled = useFlag("polls");
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
@@ -197,6 +200,7 @@ export function ChatShell({
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
+  const [pollOpen, setPollOpen] = useState(false);
   const [dateJumpTarget, setDateJumpTarget] = useState<{
     eventId: string;
     timestampMs: number;
@@ -232,6 +236,7 @@ export function ChatShell({
   useEffect(() => {
     setPillProfile(null);
     setJumpToDateOpen(false);
+    setPollOpen(false);
     setDateJumpTarget(null);
   }, [roomId]);
   const activeJumpToEventId = jumpToEventId ?? dateJumpTarget?.eventId ?? null;
@@ -311,6 +316,7 @@ export function ChatShell({
   useRoomSendQueueBarrier(activeRoomId, roomUpgradesEnabled, roomMutationsBlocked, !!tombstone);
   useEffect(() => {
     if (!roomMutationsBlocked) return;
+    setPollOpen(false);
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
     setFileDragActive(false);
@@ -1084,6 +1090,13 @@ export function ChatShell({
             >
               <Paperclip size={18} />
             </button>
+            {pollsEnabled && composerMode === "send" && (
+              <PollComposerAction
+                mobile={mobile}
+                disabled={roomMutationsBlocked}
+                onClick={() => setPollOpen(true)}
+              />
+            )}
             <Composer
               accountId={currentUserId}
               key={`${room.room_id}-${editingEventId ?? "new"}`}
@@ -1178,6 +1191,7 @@ export function ChatShell({
         onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />
+      {pollsEnabled && <PollDialog open={pollOpen} roomId={roomId} onOpenChange={setPollOpen} />}
     </div>
   );
 }

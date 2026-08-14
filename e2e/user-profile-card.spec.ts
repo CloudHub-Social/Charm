@@ -46,6 +46,7 @@ test("opens a message sender profile and navigates through a mutual room", async
         in_reply_to: null,
         reactions: [],
         media: null,
+        poll: null,
         send_state: { state: "sent" },
       },
     ],

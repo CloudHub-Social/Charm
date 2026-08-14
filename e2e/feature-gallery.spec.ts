@@ -28,6 +28,54 @@ test("full emoji picker opens from the composer", async ({ page }) => {
   await captureSnapshot(page, "feature-full-emoji-picker");
 });
 
+test("polls render live results and expose composer creation", async ({ page }) => {
+  await page.addInitScript(enableFlags, { polls: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+    initialMessages: [
+      {
+        event_id: "$feature-poll",
+        sender: "@alice:cloudhub.social",
+        sender_display_name: "Alice",
+        sender_avatar_url: null,
+        sender_avatar_path: null,
+        body: "Poll: Where should we eat?",
+        formatted_body: null,
+        timestamp_ms: 1735689600000,
+        edited: false,
+        redacted: false,
+        reactions: [],
+        in_reply_to: null,
+        transaction_id: null,
+        send_state: { state: "sent" },
+        media: null,
+        poll: {
+          question: "Where should we eat?",
+          kind: "disclosed",
+          max_selections: 1,
+          answers: [
+            { id: "0", text: "Pizza", votes: 2, selected_by_me: false },
+            { id: "1", text: "Tacos", votes: 1, selected_by_me: true },
+          ],
+          ended: false,
+          edited: false,
+        },
+        is_undecrypted: false,
+      },
+    ],
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByRole("heading", { name: "Where should we eat?" })).toBeVisible();
+  await expect(page.getByText("2 · 67%")).toBeVisible();
+  await page.getByRole("button", { name: "Create poll" }).click();
+  await expect(page.getByRole("dialog", { name: "Create poll" })).toBeVisible();
+  await captureSnapshot(page, "feature-polls");
+});
+
 test("link previews render inside a complete conversation", async ({ page }) => {
   await page.addInitScript(enableFlags, { link_previews: true });
   await page.addInitScript(installMockTauri, {
@@ -100,6 +148,7 @@ test("timeline membership changes collapse into expandable notices", async ({ pa
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    poll: null,
     is_undecrypted: false,
   };
   const emitTimeline = () =>

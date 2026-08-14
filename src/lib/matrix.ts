@@ -24,6 +24,9 @@ import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
 import type { NotificationSettingsSummary } from "@bindings/NotificationSettingsSummary";
 import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
+import type { PollAnswerSummary } from "@bindings/PollAnswerSummary";
+import type { PollKindSummary } from "@bindings/PollKindSummary";
+import type { PollSummary } from "@bindings/PollSummary";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { PrivacySettings } from "@bindings/PrivacySettings";
@@ -168,6 +171,9 @@ export type {
   NotificationSettingsSummary,
   OwnProfile,
   PinnedMessageSummary,
+  PollAnswerSummary,
+  PollKindSummary,
+  PollSummary,
   PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
@@ -522,6 +528,26 @@ export function sendMessage(
     formattedBody: formattedBody ?? null,
     mentions: mentions ?? null,
   });
+}
+
+/** Creates an MSC3381 single-select poll via the Matrix send queue. */
+export function createPoll(
+  roomId: string,
+  question: string,
+  options: string[],
+  disclosed: boolean,
+): Promise<string> {
+  return invokeMatrix("create_poll", { roomId, question, options, disclosed });
+}
+
+/** Sends a response relation; the latest valid response from a user wins. */
+export function voteOnPoll(roomId: string, pollEventId: string, answerId: string): Promise<string> {
+  return invokeMatrix("vote_on_poll", { roomId, pollEventId, answerId });
+}
+
+/** Ends an open poll and returns the send-queue transaction id. */
+export function endPoll(roomId: string, pollEventId: string): Promise<string> {
+  return invokeMatrix("end_poll", { roomId, pollEventId });
 }
 
 /** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */

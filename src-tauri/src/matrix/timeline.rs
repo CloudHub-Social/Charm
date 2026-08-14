@@ -280,6 +280,37 @@ pub enum SendState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum PollKindSummary {
+    Disclosed,
+    Undisclosed,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PollAnswerSummary {
+    pub id: String,
+    pub text: String,
+    #[ts(type = "number")]
+    pub votes: u32,
+    pub selected_by_me: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PollSummary {
+    pub question: String,
+    pub kind: PollKindSummary,
+    #[ts(type = "number")]
+    pub max_selections: u64,
+    pub answers: Vec<PollAnswerSummary>,
+    pub ended: bool,
+    pub edited: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
 pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
@@ -322,6 +353,9 @@ pub struct RoomMessageSummary {
     /// how the frontend turns this into an actual displayable/downloadable
     /// local path.
     pub media: Option<MediaContent>,
+    /// MSC3381 poll state already aggregated by matrix-sdk-ui. `None` for
+    /// ordinary messages and unsupported message-like event types.
+    pub poll: Option<PollSummary>,
     /// `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
     /// signal for "this is the undecrypted placeholder", set server-side.
     /// Never derive this by comparing `body` against the placeholder text: a
@@ -932,6 +966,7 @@ async fn timeline_item_to_summary(
         reactions: Vec::new(),
         in_reply_to: None,
         media: None,
+        poll: None,
         is_undecrypted: false,
     };
 
@@ -961,14 +996,54 @@ async fn timeline_item_to_summary(
             is_undecrypted: true,
             ..base
         }),
-        // Stickers/polls/live-locations/custom message-likes aren't part of
-        // this DTO shape yet — out of scope for a like-for-like engine swap
-        // (see Spec 14's non-goals) — dropped the same way the hand-rolled
-        // fold silently ignored any event type it didn't recognize.
-        MsgLikeKind::Sticker(_)
-        | MsgLikeKind::Poll(_)
-        | MsgLikeKind::Other(_)
-        | MsgLikeKind::LiveLocation(_) => None,
+        MsgLikeKind::Poll(poll) => {
+            use matrix_sdk::ruma::events::poll::start::PollKind;
+
+            let result = poll.results();
+            let kind = match result.kind {
+                PollKind::Disclosed => PollKindSummary::Disclosed,
+                PollKind::Undisclosed => PollKindSummary::Undisclosed,
+                _ => PollKindSummary::Custom,
+            };
+            let answers = result
+                .answers
+                .into_iter()
+                .map(|answer| {
+                    let voters = result.votes.get(&answer.id);
+                    PollAnswerSummary {
+                        id: answer.id,
+                        text: answer.text,
+                        votes: voters
+                            .map(|voters| u32::try_from(voters.len()).unwrap_or(u32::MAX))
+                            .unwrap_or_default(),
+                        selected_by_me: own_user_id.is_some_and(|own_user_id| {
+                            voters.is_some_and(|voters| {
+                                voters.iter().any(|voter| voter == own_user_id.as_str())
+                            })
+                        }),
+                    }
+                })
+                .collect();
+            Some(RoomMessageSummary {
+                body: poll
+                    .fallback_text()
+                    .unwrap_or_else(|| format!("Poll: {}", result.question)),
+                reactions,
+                in_reply_to,
+                poll: Some(PollSummary {
+                    question: result.question,
+                    kind,
+                    max_selections: result.max_selections,
+                    answers,
+                    ended: result.end_time.is_some(),
+                    edited: result.has_been_edited,
+                }),
+                ..base
+            })
+        }
+        // Stickers/live-locations/custom message-likes aren't part of this
+        // DTO shape yet and remain filtered like the pre-Timeline fold.
+        MsgLikeKind::Sticker(_) | MsgLikeKind::Other(_) | MsgLikeKind::LiveLocation(_) => None,
     }
 }
 
@@ -1061,6 +1136,7 @@ mod notification_dedup_tests {
             transaction_id: None,
             send_state: SendState::Sent,
             media: None,
+            poll: None,
             is_undecrypted: false,
         }
     }

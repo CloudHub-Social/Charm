@@ -1,0 +1,201 @@
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { createPoll } from "@/lib/matrix";
+
+interface PollDialogProps {
+  open: boolean;
+  roomId: string;
+  onOpenChange: (open: boolean) => void;
+}
+
+interface DraftOption {
+  id: number;
+  value: string;
+}
+
+const EMPTY_OPTIONS: DraftOption[] = [
+  { id: 0, value: "" },
+  { id: 1, value: "" },
+];
+
+export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState<DraftOption[]>(EMPTY_OPTIONS);
+  const [disclosed, setDisclosed] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const nextOptionId = useRef(2);
+
+  useEffect(() => {
+    requestId.current += 1;
+    setPending(false);
+    setError(null);
+    setQuestion("");
+    setOptions(EMPTY_OPTIONS);
+    nextOptionId.current = 2;
+    setDisclosed(true);
+  }, [open, roomId]);
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) requestId.current += 1;
+    onOpenChange(nextOpen);
+  }
+
+  function updateOption(id: number, value: string) {
+    setOptions((current) =>
+      current.map((option) => (option.id === id ? { ...option, value } : option)),
+    );
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const normalizedQuestion = question.trim();
+    const normalizedOptions = options.map((option) => option.value.trim());
+    if (!normalizedQuestion || normalizedOptions.some((option) => !option)) {
+      setError("Add a question and fill in every option.");
+      return;
+    }
+    if (
+      new Set(normalizedOptions.map((option) => option.toLowerCase())).size !==
+      normalizedOptions.length
+    ) {
+      setError("Each option must be unique.");
+      return;
+    }
+
+    const id = ++requestId.current;
+    setPending(true);
+    setError(null);
+    try {
+      await createPoll(roomId, normalizedQuestion, normalizedOptions, disclosed);
+      if (requestId.current === id) handleOpenChange(false);
+    } catch {
+      if (requestId.current === id) setError("The poll could not be created.");
+    } finally {
+      if (requestId.current === id) setPending(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Create poll</DialogTitle>
+          <DialogDescription>
+            Ask one question with up to 20 choices. Voters can select one answer.
+          </DialogDescription>
+        </DialogHeader>
+        <form className="space-y-4" onSubmit={submit}>
+          <div className="space-y-1.5">
+            <Label htmlFor="poll-question">Question</Label>
+            <Input
+              id="poll-question"
+              value={question}
+              onChange={(event) => setQuestion(event.currentTarget.value)}
+              placeholder="What should we choose?"
+              maxLength={500}
+              required
+              disabled={pending}
+            />
+          </div>
+
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium text-foreground">Options</legend>
+            {options.map((option, index) => (
+              <div key={option.id} className="flex items-center gap-2">
+                <Label className="sr-only" htmlFor={`poll-option-${index}`}>
+                  Option {index + 1}
+                </Label>
+                <Input
+                  id={`poll-option-${index}`}
+                  value={option.value}
+                  onChange={(event) => updateOption(option.id, event.currentTarget.value)}
+                  placeholder={`Option ${index + 1}`}
+                  maxLength={200}
+                  required
+                  disabled={pending}
+                />
+                {options.length > 2 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Remove option ${index + 1}`}
+                    disabled={pending}
+                    onClick={() =>
+                      setOptions((current) =>
+                        current.filter((candidate) => candidate.id !== option.id),
+                      )
+                    }
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                )}
+              </div>
+            ))}
+            {options.length < 20 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={pending}
+                onClick={() => {
+                  const id = nextOptionId.current;
+                  nextOptionId.current += 1;
+                  setOptions((current) => [...current, { id, value: "" }]);
+                }}
+              >
+                <Plus className="size-4" />
+                Add option
+              </Button>
+            )}
+          </fieldset>
+
+          <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+            <input
+              id="poll-disclosed"
+              type="checkbox"
+              checked={disclosed}
+              onChange={(event) => setDisclosed(event.currentTarget.checked)}
+              disabled={pending}
+              className="mt-0.5 size-4 accent-primary"
+            />
+            <span>
+              <Label htmlFor="poll-disclosed">Show live results</Label>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Turn this off to hide totals until the poll is ended.
+              </span>
+            </span>
+          </div>
+
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Creating…" : "Create poll"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}

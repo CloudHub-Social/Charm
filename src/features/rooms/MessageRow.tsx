@@ -1,4 +1,5 @@
 import { useAtomValue } from "jotai";
+import { useFlag } from "@/featureFlags";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { BubbleMessageRow } from "./BubbleMessageRow";
@@ -6,6 +7,7 @@ import { DiscordMessageRow } from "./DiscordMessageRow";
 import { IrcMessageRow } from "./IrcMessageRow";
 import { messageRowKey, type MessageRowLayoutProps } from "./messageRowShared";
 import type { MessageActionsHandle } from "./MessageActions";
+import { PollMessage } from "./PollMessage";
 
 export { messageRowKey } from "./messageRowShared";
 
@@ -83,6 +85,7 @@ interface MessageRowProps {
  */
 export function MessageRow(props: MessageRowProps) {
   const messageLayout = useAtomValue(messageLayoutAtom);
+  const pollsEnabled = useFlag("polls");
   const { message, mutationsDisabled = false, ...rowProps } = props;
 
   const isPending = message.send_state.state === "pending";
@@ -116,6 +119,18 @@ export function MessageRow(props: MessageRowProps) {
     isUndecrypted,
     rowKey,
   };
+
+  if (pollsEnabled && message.poll) {
+    return (
+      <PollMessage
+        message={message}
+        roomId={props.roomId}
+        own={props.own}
+        mutationsDisabled={mutationsDisabled}
+        rowActions={layoutProps}
+      />
+    );
+  }
 
   switch (messageLayout) {
     case "discord":
