@@ -189,7 +189,7 @@ export function DiscordMessageRow({
               ref={(el) => registerActionsRef(rowKey, el)}
               accountId={currentUserId ?? ""}
               isOwn={own}
-              canEdit={!message.poll}
+              canEdit={own && !message.poll}
               canRedact={canRedact}
               canPin={canPin}
               isPinned={isPinned}

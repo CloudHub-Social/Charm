@@ -98,6 +98,21 @@ describe("MessageRow dispatcher", () => {
   });
 
   it.each<MessageLayout>(["bubble", "discord", "irc"])(
+    "does not offer editing for another user's ordinary message in %s mode",
+    async (messageLayout) => {
+      renderRow(messageLayout);
+      fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+        button: 0,
+        ctrlKey: false,
+        pointerType: "mouse",
+      });
+
+      expect(await screen.findByText("Reply")).toBeInTheDocument();
+      expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each<MessageLayout>(["bubble", "discord", "irc"])(
     "does not offer text editing for a poll fallback in %s mode",
     async (messageLayout) => {
       mockUseFlag.mockImplementation((flag: string) => flag !== "polls");
