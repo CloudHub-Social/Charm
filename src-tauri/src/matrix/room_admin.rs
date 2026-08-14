@@ -712,6 +712,9 @@ pub async fn upgrade_room(
             return Err(error);
         }
     };
+    if !_mutation_guard.session_is_current() {
+        return Err("The signed-in session changed while the room was being upgraded.".to_string());
+    }
     // The successful endpoint response is authoritative: close the old room
     // immediately instead of waiting for a later sync to publish its tombstone.
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;

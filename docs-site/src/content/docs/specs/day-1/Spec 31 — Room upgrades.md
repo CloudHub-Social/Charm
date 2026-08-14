@@ -88,7 +88,8 @@ current-state guarantees as the Tauri path.
   ownership survives navigation remounts within one
   account, but every successful client adoption (password, registration, SSO, QR, or
   restored session) clears it and invalidates pending transitions so it cannot affect
-  a replacement signed-in session. Failed native queue transitions retain safety ownership
+  a replacement signed-in session. An adoption generation also prevents an old client's
+  in-flight upgrade from repopulating barriers after that reset. Failed native queue transitions retain safety ownership
   and retry, since an IPC error alone cannot prove whether the SDK queue changed. Native
   sync applies the same barrier to every affected room, including rooms
   that are not currently open. Barrier publication and direct mutations share a
@@ -144,7 +145,8 @@ that retry remains visible after the tombstone refresh hides the original upgrad
   mutations share the same room-scoped admission guard, so a stale webview cannot bypass
   a sync-installed barrier while the frontend catches up without unrelated rooms
   blocking one another. Tombstoned spaces use the same settings barrier, including
-  native add, remove, and suggested-child hierarchy mutations.
+  native add, remove, suggested-child, and multi-space reparenting mutations; reparenting
+  locks every space it may write in stable room-ID order and retries on hierarchy drift.
 - The native IPC command enforces `room_upgrades` itself, so a stale webview or
   direct invoke cannot bypass the rollout kill switch. Native sync likewise skips all
   queue barrier and drain transitions while the flag is disabled and rechecks the

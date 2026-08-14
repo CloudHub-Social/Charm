@@ -9,6 +9,7 @@
 //! `resend_message`/`discard_failed_message`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use matrix_sdk::ruma::api::client::room::report_content;
@@ -35,9 +36,22 @@ static ROOM_UPGRADE_RESUME_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomI
 static ROOM_MUTATION_LOCKS: LazyLock<
     tokio::sync::Mutex<HashMap<OwnedRoomId, Arc<tokio::sync::Mutex<()>>>>,
 > = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+static ROOM_UPGRADE_SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(super) struct RoomMutationGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    generation: u64,
+}
+
+impl RoomMutationGuard {
+    pub(super) fn session_is_current(&self) -> bool {
+        self.generation == ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire)
+    }
+}
 
 pub(super) async fn clear_room_upgrade_queue_barriers() {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    ROOM_UPGRADE_SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
     ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
     ROOM_UPGRADE_RESUME_ROOMS.lock().await.clear();
     ROOM_MUTATION_LOCKS.lock().await.clear();
@@ -47,16 +61,21 @@ pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
     ROOM_UPGRADE_BARRIER_ROOMS.lock().await.contains(room_id)
 }
 
-pub(super) async fn lock_room_mutation(
-    room_id: &str,
-) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+pub(super) async fn lock_room_mutation(room_id: &str) -> Result<RoomMutationGuard, String> {
     let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let generation = ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire);
     let lock = room_mutation_lock(&parsed_room_id).await;
     let guard = lock.lock_owned().await;
+    if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+        return Err("The signed-in session changed before the room mutation began.".to_string());
+    }
     if room_upgrade_queue_is_paused(&parsed_room_id).await {
         return Err("This room is read-only while its current state is verified.".to_string());
     }
-    Ok(guard)
+    Ok(RoomMutationGuard {
+        _guard: guard,
+        generation,
+    })
 }
 
 async fn room_mutation_lock(room_id: &RoomId) -> Arc<tokio::sync::Mutex<()>> {

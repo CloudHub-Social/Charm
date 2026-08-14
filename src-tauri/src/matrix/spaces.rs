@@ -599,7 +599,29 @@ pub async fn set_space_parent_impl(
         None => None,
     };
 
-    let canonical_parent_ids = canonical_parent_ids(&child).await?;
+    let mut original_canonical_parent_ids = canonical_parent_ids(&child).await?;
+    original_canonical_parent_ids.sort();
+
+    // This operation can write the child, the new parent, and every old
+    // canonical parent. Acquire their room barriers in stable ID order to
+    // avoid inverse-reparent deadlocks, then verify the remotely-read parent
+    // set did not change while admission was being acquired.
+    let mut mutation_room_ids = original_canonical_parent_ids.clone();
+    mutation_room_ids.push(child_id.clone());
+    if let Some(parent) = &new_parent {
+        mutation_room_ids.push(parent.room_id().to_owned());
+    }
+    mutation_room_ids.sort();
+    mutation_room_ids.dedup();
+    let mut _mutation_guards = Vec::with_capacity(mutation_room_ids.len());
+    for room_id in &mutation_room_ids {
+        _mutation_guards.push(super::actions::lock_room_mutation(room_id.as_str()).await?);
+    }
+    let mut current_canonical_parent_ids = canonical_parent_ids(&child).await?;
+    current_canonical_parent_ids.sort();
+    if current_canonical_parent_ids != original_canonical_parent_ids {
+        return Err("The space hierarchy changed while reparenting; try again.".to_string());
+    }
 
     // Validate every state-event permission we can know about before sending
     // the first write. In particular, publishing the new parent's
@@ -624,7 +646,7 @@ pub async fn set_space_parent_impl(
             .map_err(|e| e.to_string())?;
     }
 
-    for old_parent_id in canonical_parent_ids {
+    for old_parent_id in original_canonical_parent_ids {
         if new_parent
             .as_ref()
             .is_some_and(|parent| parent.room_id() == old_parent_id)

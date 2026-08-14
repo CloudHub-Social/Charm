@@ -103,8 +103,7 @@ export function RoomSettingsModal({
     if (
       !roomUpgradesEnabled ||
       !roomUpgradesPersistenceSettled ||
-      !targetRoomId ||
-      target?.kind === "space"
+      !targetRoomId
     ) {
       return;
     }
