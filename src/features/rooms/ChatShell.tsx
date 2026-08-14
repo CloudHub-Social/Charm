@@ -457,40 +457,24 @@ export function ChatShell({
     // transition and room id are the only activation inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.room_id, timelineStateEventsEnabled, timelineStateEventsPersistenceVersion]);
-  const trailingNoticeInitialScrollRoomRef = useRef<string | null>(null);
-  const leadingNoticeInitialScrollRoomRef = useRef<string | null>(null);
+  const noticeInitialScrollRoomRef = useRef<string | null>(null);
   useEffect(() => {
-    trailingNoticeInitialScrollRoomRef.current = null;
-    leadingNoticeInitialScrollRoomRef.current = null;
+    noticeInitialScrollRoomRef.current = null;
   }, [room?.room_id]);
-  useEffect(() => {
-    if (
-      room &&
-      messages.length > 0 &&
-      noticeBuckets.trailing.length > 0 &&
-      trailingNoticeInitialScrollRoomRef.current !== room.room_id
-    ) {
-      trailingNoticeInitialScrollRoomRef.current = room.room_id;
-      if (!atBottom) return undefined;
-      const frame = requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-    return undefined;
-  }, [atBottom, messages.length, noticeBuckets.trailing.length, room, virtuosoRef]);
   const finalLeadingNoticeCount =
     messages.length > 0
       ? (noticeBuckets.beforeMessage.get(messages.at(-1)?.event_id ?? "")?.length ?? 0)
       : 0;
+  const hasFinalNoticeRegion =
+    noticeBuckets.trailing.length > 0 || finalLeadingNoticeCount > 0;
   useEffect(() => {
     if (
       room &&
       messages.length > 0 &&
-      finalLeadingNoticeCount > 0 &&
-      leadingNoticeInitialScrollRoomRef.current !== room.room_id
+      hasFinalNoticeRegion &&
+      noticeInitialScrollRoomRef.current !== room.room_id
     ) {
-      leadingNoticeInitialScrollRoomRef.current = room.room_id;
+      noticeInitialScrollRoomRef.current = room.room_id;
       if (!atBottom) return undefined;
       const frame = requestAnimationFrame(() => {
         virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
@@ -498,7 +482,7 @@ export function ChatShell({
       return () => cancelAnimationFrame(frame);
     }
     return undefined;
-  }, [atBottom, finalLeadingNoticeCount, messages.length, room, virtuosoRef]);
+  }, [atBottom, hasFinalNoticeRegion, messages.length, room, virtuosoRef]);
   // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
   // a `useMemo` dependency — a fresh array every render would defeat that
   // memoization entirely (Sentry review on #287, LOW).

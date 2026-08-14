@@ -5829,6 +5829,32 @@ describe("ChatShell", () => {
     );
   });
 
+  it("schedules one initial tail alignment when leading and trailing notices are both present", async () => {
+    const message = summary({
+      event_id: "$message",
+      sender: "@alice:localhost",
+      body: "hello",
+      timestamp_ms: 20,
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [message],
+      items: [
+        joinedMembershipItem("alice", "Alice"),
+        { kind: "message", message },
+        joinedMembershipItem("bob", "Bob"),
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+    await screen.findByText("hello");
+    await waitFor(() => expect(virtuosoScrollToIndexMock).toHaveBeenCalledTimes(1));
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith({
+      index: "LAST",
+      align: "end",
+    });
+  });
+
   it("renders state-only timelines and respects membership and hidden-event settings", async () => {
     const store = createStore();
     store.set(hideMembershipEventsAtom, true);
