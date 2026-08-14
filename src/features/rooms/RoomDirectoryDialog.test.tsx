@@ -98,4 +98,45 @@ describe("RoomDirectoryDialog", () => {
     await waitFor(() => expect(onJoined).toHaveBeenCalledWith("!matrix:example.org"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("clears stale pagination state when a new search supersedes it", async () => {
+    let resolveStalePage: (page: MatrixModule.PublicRoomPage) => void = () => {};
+    searchPublicRooms
+      .mockResolvedValueOnce({
+        rooms: [matrixRoom],
+        next_batch: "old-page-2",
+        total_room_count_estimate: 2,
+      })
+      .mockReturnValueOnce(
+        new Promise<MatrixModule.PublicRoomPage>((resolve) => {
+          resolveStalePage = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({
+        rooms: [{ ...matrixRoom, room_id: "!rust:example.org", name: "Rust" }],
+        next_batch: "fresh-page-2",
+        total_room_count_estimate: 2,
+      });
+    renderDialog();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Search public rooms"), {
+      target: { value: "rust" },
+    });
+
+    expect(await screen.findByText("Rust")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeEnabled();
+
+    resolveStalePage({
+      rooms: [{ ...matrixRoom, room_id: "!stale:example.org", name: "Stale" }],
+      next_batch: null,
+      total_room_count_estimate: 2,
+    });
+    await Promise.resolve();
+
+    expect(screen.queryByText("Stale")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeEnabled();
+  });
 });

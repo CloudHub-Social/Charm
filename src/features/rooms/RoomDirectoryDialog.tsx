@@ -60,6 +60,10 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   const searchRequestIdRef = useRef(0);
 
   useEffect(() => {
+    // A pagination request belongs to the query that started it. Changing the
+    // query or closing the dialog supersedes that request, so its disabled UI
+    // state must not leak into the next result set.
+    setLoadingMore(false);
     if (!open) {
       searchRequestIdRef.current += 1;
       return;
