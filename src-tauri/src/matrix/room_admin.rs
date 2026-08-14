@@ -691,6 +691,12 @@ pub async fn upgrade_room(
         .await?;
     }
     let replacement_room_id = match upgrade_room_impl_with_gate(&client, &room_id, || {
+        if !_mutation_guard.session_is_current() {
+            return Err(
+                "The signed-in session changed before the room upgrade request was sent."
+                    .to_string(),
+            );
+        }
         let enabled = app.path().app_data_dir().is_ok_and(|dir| {
             crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
         });
