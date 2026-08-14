@@ -4,9 +4,9 @@
   "generatedAt": "2026-08-14T01:07:38.520Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 49,
+    "shipped": 48,
     "follow-up": 2,
-    "in-progress": 2,
+    "in-progress": 3,
     "planned": 24
   },
   "attention": [
@@ -150,9 +150,9 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 4,
+        "shipped": 3,
         "follow-up": 0,
-        "in-progress": 0,
+        "in-progress": 1,
         "planned": 10
       }
     }
@@ -1831,8 +1831,17 @@
       "number": 6,
       "title": "Room directory and public room browser",
       "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
-      "status": "shipped",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 470,
+          "title": "feat(rooms): add public room directory",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/470",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-14T14:47:31Z"
+        }
+      ],
       "issues": []
     },
     {

@@ -3,12 +3,13 @@ title: Charm 2.0 Spec — Room directory and public room browser
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: shipped
+status: in-progress
 sidebar:
   label: "Room directory & public browser"
 ---
 
-**Status:** shipped behind the default-off `room_directory` feature flag.
+**Status:** implementation is in review behind the default-off `room_directory`
+feature flag.
 
 **Workstream:** one PR / one agent.
 
