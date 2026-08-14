@@ -1,15 +1,29 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-14T01:07:38.520Z",
+  "generatedAt": "2026-08-14T14:54:37.457Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 48,
     "follow-up": 2,
-    "in-progress": 2,
-    "planned": 25
+    "in-progress": 4,
+    "planned": 23
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 470,
+      "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/470",
+      "detail": "Day-2 Spec 06 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 468,
+      "title": "feat(rooms): add Matrix polls",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/468",
+      "detail": "Day-2 Spec 03 · ready for review"
+    },
     {
       "type": "issue",
       "number": 416,
@@ -152,8 +166,8 @@
       "counts": {
         "shipped": 3,
         "follow-up": 0,
-        "in-progress": 0,
-        "planned": 11
+        "in-progress": 2,
+        "planned": 9
       }
     }
   ],
@@ -1050,6 +1064,14 @@
       "status": "shipped",
       "pullRequests": [
         {
+          "number": 466,
+          "title": "docs: mark Spec 31 shipped on roadmap",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/466",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-08-14T01:15:09Z"
+        },
+        {
           "number": 463,
           "title": "Day-1 Spec 31: room upgrades",
           "url": "https://github.com/CloudHub-Social/Charm/pull/463",
@@ -1792,8 +1814,17 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 468,
+          "title": "feat(rooms): add Matrix polls",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/468",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-14T12:06:27Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1831,8 +1862,17 @@
       "number": 6,
       "title": "Room directory and public room browser",
       "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 470,
+          "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/470",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-08-14T14:54:33Z"
+        }
+      ],
       "issues": []
     },
     {

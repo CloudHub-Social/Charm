@@ -13,6 +13,39 @@ function enableFlags(flags: Record<string, boolean>) {
   );
 }
 
+test("public room directory searches the homeserver", async ({ page }) => {
+  await page.addInitScript(enableFlags, { room_directory: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+    publicRooms: [
+      {
+        room_id: "!matrix-hq:cloudhub.social",
+        name: "Matrix HQ",
+        topic: "Public discussion for Matrix contributors and client developers.",
+        canonical_alias: "#matrix:cloudhub.social",
+        avatar_url: null,
+        joined_members: 842,
+      },
+      {
+        room_id: "!charm-community:cloudhub.social",
+        name: "Charm Community",
+        topic: "News, help, and conversation about Charm.",
+        canonical_alias: "#charm:cloudhub.social",
+        avatar_url: null,
+        joined_members: 126,
+      },
+    ],
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Browse public rooms" }).click();
+  await expect(page.getByText("Matrix HQ")).toBeVisible();
+  await expect(page.getByText("842 members")).toBeVisible();
+  await captureSnapshot(page, "feature-room-directory");
+});
+
 test("full emoji picker opens from the composer", async ({ page }) => {
   await page.addInitScript(enableFlags, { full_emoji_picker: true });
   await page.addInitScript(installMockTauri, {

@@ -114,6 +114,8 @@ export function installMockTauri(seed: {
   quickSwitcher?: boolean;
   /** Enable Day-2 Spec 11's room-header date navigation. */
   jumpToDate?: boolean;
+  /** Public rooms returned by Day-2 Spec 06's homeserver directory. */
+  publicRooms?: Record<string, unknown>[];
 }) {
   if (
     seed.registrationUia ||
@@ -831,6 +833,11 @@ export function installMockTauri(seed: {
       pushRoomListUpdate();
       return { room_id: roomId, is_space: true };
     },
+    search_public_rooms: () => ({
+      rooms: seed.publicRooms ?? [],
+      next_batch: null,
+      total_room_count_estimate: seed.publicRooms?.length ?? 0,
+    }),
     accept_invite: (args) => {
       const target = findRoom(args.roomId as string);
       if (!target || target.membership !== "invite") throw new Error("invite not found");
