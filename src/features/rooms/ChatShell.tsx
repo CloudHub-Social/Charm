@@ -1191,9 +1191,7 @@ export function ChatShell({
         onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />
-      {pollsEnabled && (
-        <PollDialog open={pollOpen} roomId={roomId} onOpenChange={setPollOpen} />
-      )}
+      {pollsEnabled && <PollDialog open={pollOpen} roomId={roomId} onOpenChange={setPollOpen} />}
     </div>
   );
 }

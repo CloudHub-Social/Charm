@@ -16,7 +16,9 @@ vi.mock("@/lib/matrix", async () => {
   };
 });
 
-function pollMessage(overrides: Partial<NonNullable<MatrixModule.RoomMessageSummary["poll"]>> = {}) {
+function pollMessage(
+  overrides: Partial<NonNullable<MatrixModule.RoomMessageSummary["poll"]>> = {},
+) {
   return makeMessageSummary({
     event_id: "$poll",
     sender: "@alice:example.org",
@@ -49,9 +51,7 @@ describe("PollMessage", () => {
     expect(screen.getByText("2 · 67%")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Pizza/ }));
 
-    await waitFor(() =>
-      expect(voteOnPoll).toHaveBeenCalledWith("!room:example.org", "$poll", "0"),
-    );
+    await waitFor(() => expect(voteOnPoll).toHaveBeenCalledWith("!room:example.org", "$poll", "0"));
   });
 
   it("hides undisclosed results until the poll closes", () => {

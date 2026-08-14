@@ -12,12 +12,7 @@ interface PollMessageProps {
   mutationsDisabled?: boolean;
 }
 
-export function PollMessage({
-  message,
-  roomId,
-  own,
-  mutationsDisabled = false,
-}: PollMessageProps) {
+export function PollMessage({ message, roomId, own, mutationsDisabled = false }: PollMessageProps) {
   const poll = message.poll;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
@@ -107,7 +102,10 @@ export function PollMessage({
               <span className="relative flex w-full items-center justify-between gap-3">
                 <span className="min-w-0 break-words">{answer.text}</span>
                 {pending ? (
-                  <LoaderCircle className="size-4 shrink-0 animate-spin" aria-label="Sending vote" />
+                  <LoaderCircle
+                    className="size-4 shrink-0 animate-spin"
+                    aria-label="Sending vote"
+                  />
                 ) : showResults ? (
                   <span className="shrink-0 text-xs font-medium text-muted-foreground">
                     {answer.votes} · {percentage}%

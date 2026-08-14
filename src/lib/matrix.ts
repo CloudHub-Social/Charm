@@ -541,11 +541,7 @@ export function createPoll(
 }
 
 /** Sends a response relation; the latest valid response from a user wins. */
-export function voteOnPoll(
-  roomId: string,
-  pollEventId: string,
-  answerId: string,
-): Promise<string> {
+export function voteOnPoll(roomId: string, pollEventId: string, answerId: string): Promise<string> {
   return invokeMatrix("vote_on_poll", { roomId, pollEventId, answerId });
 }
 
