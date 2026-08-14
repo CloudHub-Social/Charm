@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
@@ -147,9 +147,9 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
     wasHidingTyping.current = hideTyping;
   }, [hideTyping, roomId]);
 
-  function stopTyping() {
+  const stopTyping = useCallback(() => {
     if (roomId) sendTyping(roomId, false).catch(logAndIgnore);
-  }
+  }, [roomId]);
 
   const typingText = useMemo(() => typingLabel(typingUserIds), [typingUserIds]);
 

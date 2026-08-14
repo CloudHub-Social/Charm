@@ -158,6 +158,48 @@ test("timeline membership changes collapse into expandable notices", async ({ pa
   await captureSnapshot(page, "feature-timeline-state-events");
 });
 
+test("upgraded rooms direct members to the replacement", async ({ page }) => {
+  await page.addInitScript(enableFlags, { room_upgrades: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByText("No messages yet")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__e2eListenerCount("timeline:update")))
+    .toBeGreaterThan(0);
+
+  await page.evaluate((roomId) => {
+    window.__e2eEmit("timeline:update", {
+      room_id: roomId,
+      messages: [],
+      items: [
+        {
+          kind: "state",
+          event_id: "$room-upgrade",
+          sender: "@admin:cloudhub.social",
+          timestamp_ms: 1735689600000,
+          state_key: "",
+          change: {
+            type: "tombstone",
+            body: "Continue in the upgraded room",
+            replacement_room_id: "!upgraded-room:e2e",
+          },
+        },
+      ],
+    });
+  }, ROOM.room_id);
+
+  await expect(page.getByText("This room has been upgraded")).toBeVisible();
+  await expect(page.getByTestId("composer-shell")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Go to upgraded room" })).toBeVisible();
+  await captureSnapshot(page, "feature-room-upgrades");
+});
+
 test("room aliases render in the full room settings flow", async ({ page }) => {
   await page.addInitScript(enableFlags, { room_alias_management: true });
   await page.addInitScript(installMockTauri, {

@@ -2,6 +2,7 @@
 //! iteration. Room-list snapshotting itself (`RoomSummary`/`snapshot_rooms`)
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
+use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,16 @@ pub enum SyncStateEvent {
     Syncing,
     Idle,
     Error { message: String },
+}
+
+fn should_seed_room_upgrade_scan(enabled: bool, was_enabled: bool) -> bool {
+    enabled && !was_enabled
+}
+
+fn room_upgrades_enabled(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    })
 }
 
 // Spec 14 removed `spawn_send_queue_listener` (and the `send_queue:update`
@@ -115,9 +126,27 @@ async fn emit_room_updates(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
     seq_before_response: &std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>,
+    room_detail_retries: &mut std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    room_upgrades_was_enabled: &mut bool,
 ) {
+    const ROOM_DETAILS_CONCURRENCY: usize = 8;
     let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
+    let authoritative_tombstone = room_upgrades_enabled(app);
+    if !authoritative_tombstone {
+        super::actions::resume_all_room_upgrade_queues(client).await;
+        room_detail_retries.clear();
+    }
+    let mut room_details_room_ids = std::collections::HashSet::new();
+    if should_seed_room_upgrade_scan(authoritative_tombstone, *room_upgrades_was_enabled) {
+        room_details_room_ids.extend(
+            client
+                .joined_rooms()
+                .into_iter()
+                .map(|room| room.room_id().to_owned()),
+        );
+    }
+    *room_upgrades_was_enabled = authoritative_tombstone;
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
@@ -289,9 +318,109 @@ async fn emit_room_updates(
             // caught up — leaving the panel showing a stale pinned list
             // until some unrelated later refresh. Reconciling first means
             // any refetch this event triggers already sees the fresh cache.
-            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
-                let _ = app.emit("room_details:update", details);
+            room_details_room_ids.insert(room_id.to_owned());
+        }
+    }
+
+    if authoritative_tombstone {
+        room_details_room_ids.extend(room_detail_retries.iter().cloned());
+    }
+
+    // Authoritative tombstone reads may hit the homeserver once per room.
+    // Bound them outside the serial response loop so a multi-room state
+    // batch costs a small number of network rounds instead of one per room.
+    if authoritative_tombstone {
+        // Drop cached writable permissions before any homeserver request
+        // begins. Otherwise a slow successful refresh leaves settings and
+        // member mutations open throughout the request window.
+        for room_id in &room_details_room_ids {
+            let _ = app.emit("room_details:unresolved", room_id.to_string());
+            let _ = super::actions::set_room_send_queue_read_only_if_enabled(
+                app,
+                client,
+                Some(&state),
+                room_id.as_str(),
+                true,
+                false,
+            )
+            .await;
+        }
+    }
+    let detail_updates = futures_util::stream::iter(room_details_room_ids)
+        .map(|room_id| async move {
+            let result =
+                room_admin::build_room_details(client, room_id.as_str(), authoritative_tombstone)
+                    .await;
+            (room_id, result)
+        })
+        .buffer_unordered(ROOM_DETAILS_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    for (room_id, result) in detail_updates {
+        match result {
+            Ok(details) => {
+                if !authoritative_tombstone {
+                    let _ = app.emit("room_details:update", details);
+                    continue;
+                }
+                let read_only = details.tombstone.is_some();
+                // The refresh above may have crossed a kill-switch change.
+                // The gated transition rechecks under the same room/global
+                // admission locks used for the destructive drain.
+                let barrier_result = if read_only {
+                    super::actions::set_room_send_queue_read_only_if_enabled(
+                        app,
+                        client,
+                        Some(&state),
+                        room_id.as_str(),
+                        true,
+                        true,
+                    )
+                    .await
+                } else {
+                    super::actions::set_room_send_queue_read_only_impl(
+                        client,
+                        Some(&state),
+                        room_id.as_str(),
+                        false,
+                        false,
+                    )
+                    .await
+                    .map(Some)
+                };
+                match barrier_result {
+                    Ok(Some(_)) => {
+                        room_detail_retries.remove(&room_id);
+                        let _ = app.emit("room_details:update", details);
+                    }
+                    Ok(None) => {
+                        super::actions::resume_all_room_upgrade_queues(client).await;
+                        room_detail_retries.clear();
+                        let _ = app.emit("room_details:update", details);
+                    }
+                    Err(error) => {
+                        room_detail_retries.insert(room_id.clone());
+                        tracing::warn!(
+                            %error,
+                            room_id = %room_id,
+                            "room queue barrier transition failed; retrying after next sync"
+                        );
+                    }
+                }
             }
+            Err(error) if authoritative_tombstone && room_upgrades_enabled(app) => {
+                room_detail_retries.insert(room_id.clone());
+                tracing::warn!(
+                    %error,
+                    room_id = %room_id,
+                    "authoritative room details refresh failed; retrying after next sync"
+                );
+            }
+            Err(_) if authoritative_tombstone => {
+                super::actions::resume_all_room_upgrade_queues(client).await;
+                room_detail_retries.clear();
+            }
+            Err(_) => {}
         }
     }
 }
@@ -649,6 +778,8 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+        let mut room_detail_retries = std::collections::HashSet::new();
+        let mut room_upgrades_was_enabled = false;
 
         // Review fix: this used to unconditionally call
         // `set_presence_online`, ignoring a persisted `appear_offline`
@@ -744,7 +875,15 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
             .await
             .clone();
         emit_room_list_and_badge(&app, &client).await;
-        emit_room_updates(&app, &client, &initial_response, &seq_before_response).await;
+        emit_room_updates(
+            &app,
+            &client,
+            &initial_response,
+            &seq_before_response,
+            &mut room_detail_retries,
+            &mut room_upgrades_was_enabled,
+        )
+        .await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
         // the `SyncSettings` passed to its *first* call for the whole
@@ -832,7 +971,15 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                         .await
                         .clone();
                     emit_room_list_and_badge(&app, &client).await;
-                    emit_room_updates(&app, &client, &response, &seq_before_response).await;
+                    emit_room_updates(
+                        &app,
+                        &client,
+                        &response,
+                        &seq_before_response,
+                        &mut room_detail_retries,
+                        &mut room_upgrades_was_enabled,
+                    )
+                    .await;
                     notify_unopened_room_messages(&app, &client, &response).await;
                     if app.path().app_data_dir().is_ok_and(|dir| {
                         crate::feature_flags::flag(
@@ -885,6 +1032,19 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         .replace(handle);
     if let Some(previous) = previous {
         previous.abort();
+    }
+}
+
+#[cfg(test)]
+mod room_upgrade_scan_tests {
+    use super::should_seed_room_upgrade_scan;
+
+    #[test]
+    fn seeds_on_startup_or_transition_to_enabled_only() {
+        assert!(should_seed_room_upgrade_scan(true, false));
+        assert!(!should_seed_room_upgrade_scan(true, true));
+        assert!(!should_seed_room_upgrade_scan(false, true));
+        assert!(!should_seed_room_upgrade_scan(false, false));
     }
 }
 

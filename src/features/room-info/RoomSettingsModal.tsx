@@ -1,18 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useFlag } from "@/featureFlags";
+import {
+  useFeatureFlagPersistenceSettled,
+  useFeatureFlagPersistenceVersion,
+  useFlag,
+} from "@/featureFlags";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { cn } from "@/lib/utils";
+import { isWebBuild } from "@/lib/platform";
 import { roomSettingsAtom, type RoomSettingsSection } from "./roomInfoAtoms";
 import { useRoomDetails } from "./useRoomDetails";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { PowerLevelThresholdsEditor } from "./PowerLevelEditor";
 import { MemberList } from "./MemberList";
 import { SpaceChildrenSettings } from "./SpaceChildrenSettings";
+import { withRoomMutationsDisabled } from "./roomMutationBarrier";
 import type { RoomSummary } from "@/lib/matrix";
 
 const SECTIONS: { value: RoomSettingsSection; label: string }[] = [
@@ -26,6 +32,7 @@ interface RoomSettingsModalProps {
   rooms?: RoomSummary[];
   onSpaceChildrenChanged?: () => void;
   onNavigateToRoom?: (roomId: string) => void;
+  onRoomUpgraded?: (replacementRoomId: string) => void | Promise<void>;
 }
 
 const EMPTY_ROOMS: RoomSummary[] = [];
@@ -44,15 +51,25 @@ export function RoomSettingsModal({
   rooms = EMPTY_ROOMS,
   onSpaceChildrenChanged,
   onNavigateToRoom,
+  onRoomUpgraded,
 }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const targetRoomId = target?.roomId ?? null;
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
+  const roomUpgradesPersistenceVersion = useFeatureFlagPersistenceVersion("room_upgrades");
+  const roomUpgradesPersistenceSettled = useFeatureFlagPersistenceSettled("room_upgrades");
   const {
     data: details,
     isLoading,
     isError,
     isFetching,
-  } = useRoomDetails(targetRoomId, target?.kind === "space");
+    isRefetchError,
+    refetch,
+  } = useRoomDetails(targetRoomId, target?.kind === "space" || roomUpgradesEnabled);
+  const [authoritativeRoomDetails, setAuthoritativeRoomDetails] = useState<{
+    roomId: string;
+    persistenceVersion: number;
+  } | null>(null);
   // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
   // only ~320-375px wide — a fixed `w-48` side nav left too little room for
   // the settings pane (Room name/topic, Members search/sort) to be usable.
@@ -82,7 +99,42 @@ export function RoomSettingsModal({
     }
   }, [setTarget, spaceHierarchyEnabled, target?.kind]);
 
+  useEffect(() => {
+    if (!roomUpgradesEnabled || !roomUpgradesPersistenceSettled || !targetRoomId) {
+      return;
+    }
+    let cancelled = false;
+    const persistenceVersion = roomUpgradesPersistenceVersion;
+    void refetch().then((result) => {
+      if (!cancelled && result.isSuccess) {
+        setAuthoritativeRoomDetails({ roomId: targetRoomId, persistenceVersion });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    refetch,
+    roomUpgradesEnabled,
+    roomUpgradesPersistenceSettled,
+    roomUpgradesPersistenceVersion,
+    target?.kind,
+    targetRoomId,
+  ]);
+
   const visibleTarget = target?.kind === "space" && !spaceHierarchyEnabled ? null : target;
+  const roomMutationsBlocked =
+    roomUpgradesEnabled &&
+    (!roomUpgradesPersistenceSettled ||
+      authoritativeRoomDetails?.roomId !== targetRoomId ||
+      authoritativeRoomDetails.persistenceVersion !== roomUpgradesPersistenceVersion ||
+      isFetching ||
+      isRefetchError ||
+      Boolean(details?.tombstone));
+  const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
+  roomMutationsBlockedRef.current = roomMutationsBlocked;
+  const renderedDetails =
+    details && roomMutationsBlocked ? withRoomMutationsDisabled(details) : details;
 
   return (
     <Dialog open={visibleTarget !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -126,7 +178,7 @@ export function RoomSettingsModal({
           </div>
         )}
 
-        {details && target && (
+        {renderedDetails && target && (
           <TooltipProvider>
             <Tabs
               orientation={isMobile ? "horizontal" : "vertical"}
@@ -149,9 +201,9 @@ export function RoomSettingsModal({
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <span className="truncate text-base font-bold text-foreground">
                     {/* Prefer the room name, then (behind the room_alias_management flag) a canonical alias (Spec 32), over the raw room id — the id is the least human-readable fallback. */}
-                    {details.name ??
-                      (roomAliasManagementEnabled ? details.canonical_alias : null) ??
-                      details.room_id}
+                    {renderedDetails.name ??
+                      (roomAliasManagementEnabled ? renderedDetails.canonical_alias : null) ??
+                      renderedDetails.room_id}
                   </span>
                   <button
                     type="button"
@@ -180,6 +232,13 @@ export function RoomSettingsModal({
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto">
+                {roomMutationsBlocked && (
+                  <output className="m-4 block rounded-md border border-border bg-secondary px-3 py-2 text-sm text-muted-foreground">
+                    {isFetching && !details?.tombstone
+                      ? "Checking current room state. Settings changes are temporarily unavailable."
+                      : "This room is read-only. Settings changes are unavailable here."}
+                  </output>
+                )}
                 {/* `forceMount` + `data-[state=inactive]:hidden` keeps
                     General/Permissions mounted rather than letting Radix
                     unmount the inactive `TabsContent` — without this,
@@ -193,12 +252,21 @@ export function RoomSettingsModal({
                     Permissions would fetch the full member roster before
                     the user ever asks for it. */}
                 <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
-                  <RoomSettingsForm details={details} isSpace={target.kind === "space"} />
+                  <RoomSettingsForm
+                    details={renderedDetails}
+                    isSpace={target.kind === "space"}
+                    mutationsBlockedRef={roomMutationsBlockedRef}
+                    onRoomUpgraded={async (replacementRoomId) => {
+                      await onRoomUpgraded?.(replacementRoomId);
+                      setTarget(null);
+                    }}
+                  />
                 </TabsContent>
                 <TabsContent value="members">
                   <MemberList
-                    details={details}
+                    details={renderedDetails}
                     currentUserId={currentUserId}
+                    mutationsBlocked={roomMutationsBlocked}
                     onNavigateToRoom={onNavigateToRoom}
                   />
                 </TabsContent>
@@ -207,15 +275,20 @@ export function RoomSettingsModal({
                   forceMount
                   className="data-[state=inactive]:hidden"
                 >
-                  <PowerLevelThresholdsEditor details={details} />
+                  <PowerLevelThresholdsEditor details={renderedDetails} />
                 </TabsContent>
                 {spaceHierarchyEnabled && target.kind === "space" && (
                   <TabsContent value="children">
                     <SpaceChildrenSettings
-                      spaceId={details.room_id}
-                      spaceName={details.name}
+                      spaceId={renderedDetails.room_id}
+                      spaceName={renderedDetails.name}
                       rooms={rooms}
-                      canEdit={details.can.set_space_child && !isFetching && !isError}
+                      canEdit={
+                        renderedDetails.can.set_space_child &&
+                        !roomMutationsBlocked &&
+                        !isFetching &&
+                        !isError
+                      }
                       onChanged={onSpaceChildrenChanged}
                     />
                   </TabsContent>

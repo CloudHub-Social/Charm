@@ -154,5 +154,11 @@
     "default": false,
     "description": "Open a calendar from the room header and jump to the first event on that date.",
     "owner": "Day-2 Spec 11 (jump to date)"
+  },
+  {
+    "key": "room_upgrades",
+    "default": false,
+    "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
+    "owner": "Spec 31 (room upgrades)"
   }
 ]

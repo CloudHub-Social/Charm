@@ -44,10 +44,12 @@ const ADMIN_DETAILS: RoomDetails = {
     set_pinned_events: true,
     set_space_child: true,
     set_space_parent: true,
+    upgrade_room: true,
   },
   canonical_alias: null,
   alt_aliases: [],
   pinned_event_ids: [],
+  tombstone: null,
 };
 
 const READ_ONLY_DETAILS: RoomDetails = {
@@ -68,10 +70,12 @@ const READ_ONLY_DETAILS: RoomDetails = {
     set_pinned_events: false,
     set_space_child: false,
     set_space_parent: false,
+    upgrade_room: false,
   },
   canonical_alias: null,
   alt_aliases: [],
   pinned_event_ids: [],
+  tombstone: null,
 };
 
 const MEMBERS: RoomMemberSummary[] = [

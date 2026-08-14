@@ -8,6 +8,8 @@ import {
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { isWebBuild } from "@/lib/platform";
+import { useFlag } from "@/featureFlags";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
 import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
@@ -38,6 +40,8 @@ function timelineMessageSignature(message: RoomMessageSummary): string {
 
 interface PinnedMessagesPanelProps {
   roomId: string;
+  /** False while the active room's authoritative state is unresolved or its refetch failed. */
+  roomStateResolved?: boolean;
   onClose: () => void;
   /** Reuses `ChatShell`'s `handleJumpToMessage` — the same loaded-messages
    * scroll-to mechanism the reply-preview "jump to source" click and
@@ -73,9 +77,11 @@ function formatTimestamp(timestampMs: number): string {
  */
 export function PinnedMessagesPanel({
   roomId,
+  roomStateResolved = true,
   onClose,
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const { data: details } = useRoomDetails(roomId);
   // Review fix: `details?.pinned_event_ids` is a fresh array reference on
   // every `room_details:update` (even one unrelated to pinning, e.g. a
@@ -99,7 +105,8 @@ export function PinnedMessagesPanel({
     [pinnedEventIdsKey],
   );
   const { data: pinnedMessages, isLoading, isError } = usePinnedMessages(roomId, pinnedEventIds);
-  const canUnpin = details?.can.set_pinned_events ?? false;
+  const upgradeBarrierOpen = !roomUpgradesEnabled || (roomStateResolved && !details?.tombstone);
+  const canUnpin = upgradeBarrierOpen && (details?.can.set_pinned_events ?? false);
   const queryClient = useQueryClient();
 
   // Review fix: `usePinnedMessages`'s query key only covers the pinned id

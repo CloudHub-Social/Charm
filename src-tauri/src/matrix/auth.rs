@@ -368,6 +368,7 @@ pub async fn login(
         };
 
         super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
+        super::actions::clear_room_upgrade_queue_barriers().await;
         *state.client.lock().await = Some(client.clone());
         sync::spawn_sync_loop(app, client);
 
@@ -498,6 +499,7 @@ pub async fn try_restore_session(
             device_id: saved.session.meta.device_id.to_string(),
         };
 
+        super::actions::clear_room_upgrade_queue_barriers().await;
         *state.client.lock().await = Some(client.clone());
         sync::spawn_sync_loop(app.clone(), client);
 
@@ -543,6 +545,7 @@ async fn restore_oauth_session(
     // qr_login::start_qr_login).
     let _ = persistence::clear_session(account_key);
 
+    super::actions::clear_room_upgrade_queue_barriers().await;
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app.clone(), client);
 
@@ -897,6 +900,7 @@ async fn finish_registration(
     }
     drop(client_slot);
     super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
+    super::actions::clear_room_upgrade_queue_barriers().await;
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
 
@@ -3843,6 +3847,7 @@ pub async fn complete_sso_login(
     };
 
     super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
+    super::actions::clear_room_upgrade_queue_barriers().await;
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
 

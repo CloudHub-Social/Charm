@@ -13,7 +13,8 @@ mod common;
 use std::time::Duration;
 
 use charm_lib::matrix::room_admin::{
-    build_room_details, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
+    build_room_details, upgrade_room_impl, HistoryVisibilityKind, JoinRuleKind,
+    PowerLevelThresholds,
 };
 use charm_lib::matrix::timeline::{
     items_to_timeline_items, TimelineItemSummary, TimelineMembershipChange, TimelineStateChange,
@@ -28,7 +29,7 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
-use matrix_sdk::ruma::{int, Int};
+use matrix_sdk::ruma::{int, Int, RoomVersionId};
 use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::RoomExt as _;
 use tokio::time::timeout;
@@ -52,6 +53,20 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
     let admin = synced_client().await;
     let room = create_test_room(&admin).await;
     let timeline = room.timeline().await.expect("build room timeline");
+
+    let default_version_details = build_room_details(&admin, room.room_id().as_str(), true)
+        .await
+        .expect("build default-version room details");
+    assert!(
+        !default_version_details.can.upgrade_room,
+        "the UI must hide upgrade when the room already uses the target version"
+    );
+    assert_eq!(
+        upgrade_room_impl(&admin, room.room_id().as_str())
+            .await
+            .expect_err("a room at the default version needs no upgrade"),
+        "This room already uses the homeserver's default room version."
+    );
 
     // --- Room settings: name, topic, join rule, history visibility ---
     room.set_name("Spec 07 Test Room".to_string())
@@ -239,7 +254,7 @@ async fn room_admin_round_trips_against_a_real_homeserver() {
     .expect("power level thresholds observed");
 
     // --- RoomDetails/RoomPermissions as the admin sees them ---
-    let details = build_room_details(&admin, room.room_id().as_str())
+    let details = build_room_details(&admin, room.room_id().as_str(), false)
         .await
         .expect("build room details as admin");
     assert!(
@@ -403,7 +418,7 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
         .get_room(room.room_id())
         .expect("room known to second client");
 
-    let details = build_room_details(&second, room.room_id().as_str())
+    let details = build_room_details(&second, room.room_id().as_str(), false)
         .await
         .expect("build room details as low-PL member");
     assert!(!details.can.set_name);
@@ -411,6 +426,13 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
     assert!(!details.can.set_power_levels);
     assert!(!details.can.kick);
     assert!(!details.can.ban);
+    assert!(!details.can.upgrade_room);
+
+    let upgrade_result = upgrade_room_impl(&second, room.room_id().as_str()).await;
+    assert!(
+        upgrade_result.is_err(),
+        "a low-PL user's room-upgrade attempt should be rejected"
+    );
 
     let result = second_room
         .set_name(format!("renamed by {}", test_username_2()))
@@ -419,4 +441,50 @@ async fn low_power_level_user_is_denied_room_admin_actions() {
         result.is_err(),
         "a low-PL user's rename attempt should be rejected"
     );
+}
+
+#[tokio::test]
+async fn room_upgrade_uses_the_homeserver_default_version() {
+    let admin = synced_client().await;
+    let mut request = create_room::v3::Request::new();
+    request.room_version = Some(RoomVersionId::V9);
+    let room = admin.create_room(request).await.expect("create v9 room");
+    admin
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync before room upgrade");
+
+    let replacement_room_id = upgrade_room_impl(&admin, room.room_id().as_str())
+        .await
+        .expect("upgrade room");
+
+    assert_ne!(replacement_room_id, room.room_id().as_str());
+
+    // Deliberately retry before syncing: the SDK state store is still stale,
+    // so this proves the duplicate-upgrade guard reads current homeserver
+    // state rather than trusting the local room cache.
+    let repeated_upgrade = upgrade_room_impl(&admin, room.room_id().as_str()).await;
+    assert_eq!(
+        repeated_upgrade.expect_err("an existing tombstone must reject a repeat upgrade"),
+        "This room has already been upgraded.",
+        "an existing tombstone must prevent creating a second replacement room"
+    );
+
+    // RoomDetails uses the same authoritative server-state read, so the UI's
+    // write barrier must also close before the next sync reaches this client.
+    let details = build_room_details(&admin, room.room_id().as_str(), true)
+        .await
+        .expect("build upgraded room details before syncing the tombstone");
+    assert_eq!(
+        details
+            .tombstone
+            .as_ref()
+            .map(|tombstone| tombstone.replacement_room_id.as_str()),
+        Some(replacement_room_id.as_str())
+    );
+
+    admin
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("sync tombstone after room upgrade");
 }

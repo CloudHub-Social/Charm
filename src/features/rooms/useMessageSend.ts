@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { editMessage, runCommand, sendMessage, sendReply } from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import type { ParsedSlashCommand } from "./slashCommands";
@@ -16,6 +16,7 @@ interface UseMessageSendOptions {
   setEditingEventId: (eventId: string | null) => void;
   setReplyTarget: (reply: ReplyRef | null) => void;
   stopTyping: () => void;
+  mutationsBlockedRef?: RefObject<boolean>;
 }
 
 export function useMessageSend({
@@ -25,6 +26,7 @@ export function useMessageSend({
   setEditingEventId,
   setReplyTarget,
   stopTyping,
+  mutationsBlockedRef,
 }: UseMessageSendOptions) {
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const roomId = room?.room_id ?? "";
@@ -108,10 +110,11 @@ export function useMessageSend({
   // (`/topic`, `/invite`, `/kick`, `/ban`, ...) never send a
   // `RoomMessageSummary` even on success, and a failed `/me` doesn't either.
   async function handleSlashCommand(parsed: ParsedSlashCommand): Promise<boolean> {
-    if (!room) return false;
+    if (!room || mutationsBlockedRef?.current) return false;
     const targetRoomId = room.room_id;
     stopTyping();
     try {
+      if (mutationsBlockedRef?.current) return false;
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale

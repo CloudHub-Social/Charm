@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,7 @@ const NONE_VALUE = "__none__";
 
 interface RoomAliasManagementProps {
   details: RoomDetails;
+  mutationsBlockedRef?: RefObject<boolean>;
 }
 
 /**
@@ -55,7 +56,7 @@ interface RoomAliasManagementProps {
  * check — see that field's doc comment in `room_admin.rs` for why Matrix has
  * no distinct power-level requirement for directory publish/unpublish.
  */
-export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
+export function RoomAliasManagement({ details, mutationsBlockedRef }: RoomAliasManagementProps) {
   const actions = useRoomAdminActions(details.room_id);
   const { data: aliases, isLoading, isError } = useRoomAliases(details.room_id);
   const { data: profile } = useProfile();
@@ -90,6 +91,10 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
       return;
     }
     setCheckingAvailability(false);
+    if (mutationsBlockedRef?.current) {
+      setAddError("This room became read-only before the alias could be added");
+      return;
+    }
     if (!available) {
       setAddError("That alias is already in use");
       return;
@@ -104,6 +109,12 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
   function handleRemoveAlias(alias: string) {
     actions.removeAlias.mutate(alias, {
       onSuccess: () => {
+        if (mutationsBlockedRef?.current) {
+          setAddError(
+            "Alias removed, but the room became read-only before its state could be updated",
+          );
+          return;
+        }
         // If the removed alias was canonical or alt, clear it out of that
         // state too — `remove_room_alias` only unpublishes from the
         // directory, it doesn't touch `m.room.canonical_alias` (see
@@ -151,6 +162,7 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
               <DropdownMenuRadioGroup
                 value={details.canonical_alias ?? NONE_VALUE}
                 onValueChange={(value) => {
+                  if (mutationsBlockedRef?.current) return;
                   // Disabling the trigger while a mutation is pending (above)
                   // prevents overlapping calls from racing on stale
                   // `alt_aliases` state server-side — see room_admin.rs.

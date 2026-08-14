@@ -23,6 +23,7 @@ import {
 interface MemberListProps {
   details: RoomDetails;
   currentUserId: string;
+  mutationsBlocked?: boolean;
   onNavigateToRoom?: (roomId: string) => void;
 }
 
@@ -55,7 +56,12 @@ function matchesFilter(membership: MembershipKind, filter: MembershipFilter): bo
  * real benefit, matching Spec 17's scope (member management UX, not a new
  * backend paging API).
  */
-export function MemberList({ details, currentUserId, onNavigateToRoom }: MemberListProps) {
+export function MemberList({
+  details,
+  currentUserId,
+  mutationsBlocked = false,
+  onNavigateToRoom,
+}: MemberListProps) {
   const { data: members, isLoading } = useRoomMembers(details.room_id);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<MembershipFilter>("join");
@@ -176,6 +182,7 @@ export function MemberList({ details, currentUserId, onNavigateToRoom }: MemberL
         currentUserId={currentUserId}
         roomId={details.room_id}
         detailed={profileCardsEnabled}
+        roomMutationsBlocked={mutationsBlocked}
         onNavigateToRoom={onNavigateToRoom}
         moderationActions={
           selectedMember && selectedMember.user_id !== currentUserId
@@ -200,7 +207,7 @@ export function MemberList({ details, currentUserId, onNavigateToRoom }: MemberL
         }
         onClose={() => setProfile(null)}
       />
-      {powerLevelMember && (
+      {powerLevelMember && details.can.set_power_levels && (
         <MemberPowerLevelDialog
           roomId={details.room_id}
           userId={powerLevelMember.user_id}

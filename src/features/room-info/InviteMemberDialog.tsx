@@ -27,6 +27,7 @@ export function InviteMemberDialog({ roomId, disabled }: InviteMemberDialogProps
   const [error, setError] = useState<string | null>(null);
 
   function handleInvite() {
+    if (disabled) return;
     if (!MXID_PATTERN.test(userId)) {
       setError("Enter a valid Matrix ID, e.g. @user:example.org");
       return;
@@ -43,7 +44,7 @@ export function InviteMemberDialog({ roomId, disabled }: InviteMemberDialogProps
 
   return (
     <Dialog
-      open={open}
+      open={open && !disabled}
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) {
@@ -79,7 +80,9 @@ export function InviteMemberDialog({ roomId, disabled }: InviteMemberDialogProps
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button onClick={handleInvite}>Send invite</Button>
+          <Button onClick={handleInvite} disabled={disabled}>
+            Send invite
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

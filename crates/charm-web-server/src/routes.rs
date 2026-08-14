@@ -2984,7 +2984,8 @@ async fn get_room_details(
     Path(room_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let details = build_room_details(&session.client, &room_id)
+    // Spec 31 is native-only until the web transport grows feature flags.
+    let details = build_room_details(&session.client, &room_id, false)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(details))

@@ -82,6 +82,10 @@ export interface MessageActionsProps {
    * needs the body text.
    */
   disableRelationActions?: boolean;
+  /** Disables local actions that require a stable server event id. */
+  disableStableEventActions?: boolean;
+  /** Disables server mutations not already covered by relation-action gating. */
+  mutationsDisabled?: boolean;
   /**
    * Set when the message's `body` is still the fixed "Unable to decrypt
    * message" placeholder (see `UNABLE_TO_DECRYPT_BODY` in
@@ -160,6 +164,8 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDiscard,
       className,
       disableRelationActions = false,
+      disableStableEventActions = disableRelationActions,
+      mutationsDisabled = false,
       isUndecrypted = false,
       isError = false,
       onForward,
@@ -332,7 +338,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 {messageActionParityEnabled && (
                   <DropdownMenuItem
                     onSelect={onCopyLink}
-                    disabled={disableRelationActions || isUndecrypted}
+                    disabled={disableStableEventActions || isUndecrypted}
                   >
                     <Link2 />
                     Copy link
@@ -341,14 +347,14 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 {messageActionParityEnabled && onForward && !isError && (
                   <DropdownMenuItem
                     onSelect={onForward}
-                    disabled={disableRelationActions || isUndecrypted}
+                    disabled={disableStableEventActions || isUndecrypted}
                   >
                     <Forward />
                     Forward
                   </DropdownMenuItem>
                 )}
                 {messageActionParityEnabled && onViewSource && (
-                  <DropdownMenuItem onSelect={onViewSource} disabled={disableRelationActions}>
+                  <DropdownMenuItem onSelect={onViewSource} disabled={disableStableEventActions}>
                     <FileJson />
                     View source
                   </DropdownMenuItem>
@@ -378,7 +384,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                   (isBookmarked && onUnbookmark ? (
                     <DropdownMenuItem
                       onSelect={onUnbookmark}
-                      disabled={disableRelationActions || isUndecrypted}
+                      disabled={disableStableEventActions || isUndecrypted}
                     >
                       <BookmarkX />
                       Remove bookmark
@@ -387,7 +393,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                     onBookmark && (
                       <DropdownMenuItem
                         onSelect={onBookmark}
-                        disabled={disableRelationActions || isUndecrypted}
+                        disabled={disableStableEventActions || isUndecrypted}
                       >
                         <Bookmark />
                         Bookmark
@@ -395,7 +401,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                     )
                   ))}
                 {messageActionParityEnabled && isError && onResend && (
-                  <DropdownMenuItem onSelect={onResend}>
+                  <DropdownMenuItem onSelect={onResend} disabled={mutationsDisabled}>
                     <RotateCw />
                     Resend
                   </DropdownMenuItem>
@@ -409,7 +415,11 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               </>
             )}
             {messageActionParityEnabled && !isOwn && onReport && !isError && (
-              <DropdownMenuItem variant="destructive" onSelect={onReport}>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={onReport}
+                disabled={mutationsDisabled}
+              >
                 <Flag />
                 Report
               </DropdownMenuItem>

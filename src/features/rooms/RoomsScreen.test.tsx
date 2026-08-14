@@ -7,13 +7,30 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockUseFlag = vi.fn(() => true);
+const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
+const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
+const mockIsWebBuild = vi.fn(() => false);
+const mockRefetchRoomDetails = vi.fn().mockResolvedValue({ isError: false });
+const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false) => {
+  void roomId;
+  void refetchOnMount;
+  return {
+    data: undefined,
+    isSuccess: false,
+    isFetching: false,
+    isRefetchError: false,
+  };
+});
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 
 vi.mock("@/featureFlags", () => ({
   useFlag: () => mockUseFlag(),
+  useFeatureFlagPersistenceVersion: () => mockUseFeatureFlagPersistenceVersion(),
+  useFeatureFlagPersistenceSettled: () => mockUseFeatureFlagPersistenceSettled(),
 }));
+vi.mock("@/lib/platform", () => ({ isWebBuild: () => mockIsWebBuild() }));
 
 const listRooms = vi.fn();
 const onRoomListUpdate = vi.fn();
@@ -21,10 +38,12 @@ const resolveRoomAlias = vi.fn();
 const setFocusedRoom = vi.fn();
 const acceptInvite = vi.fn();
 const declineInvite = vi.fn();
+const joinRoom = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   acceptInvite: (...args: unknown[]) => acceptInvite(...args),
   declineInvite: (...args: unknown[]) => declineInvite(...args),
+  joinRoom: (...args: unknown[]) => joinRoom(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   onRoomListUpdate: (...args: unknown[]) => onRoomListUpdate(...args),
   resolveRoomAlias: (...args: unknown[]) => resolveRoomAlias(...args),
@@ -75,7 +94,10 @@ vi.mock("@/features/room-info/RoomSettingsModal", () => ({
 // these tests, which aren't exercising that data-fetching behavior, don't need a
 // `QueryClientProvider` in the tree.
 vi.mock("@/features/room-info/useRoomDetails", () => ({
-  useRoomDetails: () => ({ data: undefined, isLoading: false }),
+  useRoomDetails: (roomId: string | null, refetchOnMount?: boolean) => ({
+    ...mockUseRoomDetails(roomId, refetchOnMount),
+    refetch: mockRefetchRoomDetails,
+  }),
 }));
 
 // Same rationale as `useRoomDetails` above — `usePrivacySettings` is also a
@@ -92,6 +114,8 @@ vi.mock("./ChatShell", () => ({
     onBack,
     onNavigateToRoom,
     onNavigateToProfileRoom,
+    onFollowRoomUpgrade,
+    currentRoomStateResolved,
     jumpToEventId,
     onJumpHandled,
   }: {
@@ -99,11 +123,14 @@ vi.mock("./ChatShell", () => ({
     onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
     onNavigateToProfileRoom: (roomId: string) => void;
+    onFollowRoomUpgrade: (roomId: string) => Promise<void>;
+    currentRoomStateResolved?: boolean;
     jumpToEventId?: string | null;
     onJumpHandled?: () => void;
   }) => (
     <div>
       chat-content:{activeRoom?.room_id ?? "none"}
+      <div>room-state-resolved:{String(currentRoomStateResolved)}</div>
       <div>jump-to-event:{jumpToEventId ?? "none"}</div>
       <button type="button" onClick={onBack}>
         back-to-chats
@@ -116,6 +143,9 @@ vi.mock("./ChatShell", () => ({
       </button>
       <button type="button" onClick={() => onNavigateToProfileRoom("!new-dm:example.org")}>
         timeline-profile-new-dm
+      </button>
+      <button type="button" onClick={() => onFollowRoomUpgrade("!upgraded:example.org")}>
+        follow-room-upgrade
       </button>
       {onJumpHandled && (
         <button type="button" onClick={onJumpHandled}>
@@ -269,12 +299,23 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
   mockUseFlag.mockReset().mockReturnValue(true);
+  mockUseFeatureFlagPersistenceVersion.mockReset().mockReturnValue(0);
+  mockUseFeatureFlagPersistenceSettled.mockReset().mockReturnValue(true);
+  mockIsWebBuild.mockReset().mockReturnValue(false);
+  mockRefetchRoomDetails.mockReset().mockResolvedValue({ isError: false });
+  mockUseRoomDetails.mockReset().mockReturnValue({
+    data: undefined,
+    isSuccess: false,
+    isFetching: false,
+    isRefetchError: false,
+  });
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
   setFocusedRoom.mockReset().mockResolvedValue(undefined);
   acceptInvite.mockReset().mockResolvedValue(undefined);
   declineInvite.mockReset().mockResolvedValue(undefined);
+  joinRoom.mockReset().mockResolvedValue({ room_id: "!upgraded:example.org", is_space: false });
 });
 
 function renderRoomsScreen() {
@@ -289,6 +330,107 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("refetches details on room activation and fails closed while they refresh", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: true,
+      isRefetchError: false,
+    });
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!a:example.org");
+    expect(mockUseRoomDetails).toHaveBeenLastCalledWith("!a:example.org", true);
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+  });
+
+  it("stays fail-closed when an activation refetch fails over cached state", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: true,
+    });
+
+    renderRoomsScreen();
+
+    await screen.findByText("chat-content:!a:example.org");
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+  });
+
+  it("refetches and blocks mutations when the persisted room-upgrades flag changes", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: false,
+    });
+    let resolveRefresh: ((value: { isError: boolean }) => void) | undefined;
+    mockRefetchRoomDetails
+      .mockResolvedValueOnce({ isError: false })
+      .mockImplementationOnce(
+        () => new Promise<{ isError: boolean }>((resolve) => (resolveRefresh = resolve)),
+      );
+    const view = renderRoomsScreen();
+
+    await screen.findByText("room-state-resolved:true");
+    mockUseFeatureFlagPersistenceVersion.mockReturnValue(1);
+    view.rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(mockRefetchRoomDetails).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+    await act(async () => resolveRefresh?.({ isError: false }));
+    expect(await screen.findByText("room-state-resolved:true")).toBeInTheDocument();
+  });
+
+  it("does not trust a refetch while room-upgrades enablement is still optimistic", async () => {
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: false,
+    });
+    const view = renderRoomsScreen();
+    await screen.findByText("room-state-resolved:true");
+    mockRefetchRoomDetails.mockClear();
+
+    mockUseFeatureFlagPersistenceSettled.mockReturnValue(false);
+    view.rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("room-state-resolved:false")).toBeInTheDocument();
+    expect(mockRefetchRoomDetails).not.toHaveBeenCalled();
+  });
+
+  it("keeps room upgrades disabled on web until the transport supports authoritative state", async () => {
+    mockIsWebBuild.mockReturnValue(true);
+    mockUseRoomDetails.mockReturnValue({
+      data: undefined,
+      isSuccess: true,
+      isFetching: false,
+      isRefetchError: false,
+    });
+
+    renderRoomsScreen();
+
+    expect(await screen.findByText("room-state-resolved:true")).toBeInTheDocument();
+    expect(mockRefetchRoomDetails).not.toHaveBeenCalled();
+  });
+
   it("keeps an explicitly quick-switched space selected without auto-selecting a room", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!space:example.org", name: "Space", is_space: true }),
@@ -1261,6 +1403,23 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "timeline-profile-new-dm" }));
 
     expect(await screen.findByText(`chat-content:${newDm.room_id}`)).toBeInTheDocument();
+    expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins and refreshes a replacement room before following an upgrade", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const replacement = room({ room_id: "!upgraded:example.org" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockResolvedValueOnce([firstRoom, replacement]);
+
+    renderRoomsScreen();
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "follow-room-upgrade" }));
+
+    await waitFor(() => expect(joinRoom).toHaveBeenCalledWith(replacement.room_id));
+    expect(await screen.findByText(`chat-content:${replacement.room_id}`)).toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
   });
 

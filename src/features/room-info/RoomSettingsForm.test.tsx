@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 
 /**
  * Scopes the Save button lookup to whichever field's row it sits in — the
@@ -21,8 +21,9 @@ const setRoomAvatar = vi.fn().mockResolvedValue(undefined);
 const setRoomJoinRule = vi.fn().mockResolvedValue(undefined);
 const setRoomHistoryVisibility = vi.fn().mockResolvedValue(undefined);
 const enableRoomEncryption = vi.fn().mockResolvedValue(undefined);
+const upgradeRoom = vi.fn().mockResolvedValue("!replacement:example.org");
 
-const featureFlagMocks = vi.hoisted(() => ({ roomAliasManagement: false }));
+const featureFlagMocks = vi.hoisted(() => ({ roomAliasManagement: false, roomUpgrades: false }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openFileDialog(...args),
@@ -30,7 +31,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) =>
-    key === "room_alias_management" ? featureFlagMocks.roomAliasManagement : false,
+    key === "room_alias_management"
+      ? featureFlagMocks.roomAliasManagement
+      : key === "room_upgrades"
+        ? featureFlagMocks.roomUpgrades
+        : false,
 }));
 
 // `useRoomAdminActions` calls `useMutation` for every action unconditionally,
@@ -45,6 +50,7 @@ vi.mock("@/lib/matrix", () => ({
   setRoomJoinRule: (...args: unknown[]) => setRoomJoinRule(...args),
   setRoomHistoryVisibility: (...args: unknown[]) => setRoomHistoryVisibility(...args),
   enableRoomEncryption: (...args: unknown[]) => enableRoomEncryption(...args),
+  upgradeRoom: (...args: unknown[]) => upgradeRoom(...args),
   setMemberPowerLevel: vi.fn().mockResolvedValue(undefined),
   setRoomPowerLevelThresholds: vi.fn().mockResolvedValue(undefined),
   inviteMember: vi.fn().mockResolvedValue(undefined),
@@ -66,6 +72,8 @@ vi.mock("@/lib/matrix", () => ({
 
 beforeEach(() => {
   featureFlagMocks.roomAliasManagement = false;
+  featureFlagMocks.roomUpgrades = false;
+  upgradeRoom.mockReset().mockResolvedValue("!replacement:example.org");
 });
 
 describe("RoomSettingsForm", () => {
@@ -125,6 +133,26 @@ describe("RoomSettingsForm", () => {
     });
   });
 
+  it("does not upload a picked avatar after the room becomes read-only", async () => {
+    setRoomAvatar.mockClear();
+    let resolveDialog: ((value: string) => void) | undefined;
+    openFileDialog.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveDialog = resolve)),
+    );
+    const mutationsBlockedRef = { current: false };
+    const details = makeRoomDetails();
+    renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload new avatar" }));
+    await waitFor(() => expect(openFileDialog).toHaveBeenCalled());
+    mutationsBlockedRef.current = true;
+    resolveDialog?.("/tmp/stale-avatar.png");
+
+    expect(setRoomAvatar).not.toHaveBeenCalled();
+  });
+
   it("changes the join rule via the dropdown", async () => {
     const details = makeRoomDetails({ join_rule: "invite" });
     renderWithProviders(<RoomSettingsForm details={details} />);
@@ -147,6 +175,29 @@ describe("RoomSettingsForm", () => {
     await waitFor(() => {
       expect(setRoomHistoryVisibility).toHaveBeenCalledWith(details.room_id, "joined");
     });
+  });
+
+  it("does not submit an already-open options menu after the room becomes read-only", async () => {
+    setRoomJoinRule.mockClear();
+    setRoomHistoryVisibility.mockClear();
+    const mutationsBlockedRef = { current: false };
+    const details = makeRoomDetails({ join_rule: "invite", history_visibility: "shared" });
+    renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    openDropdownMenu("Invite only");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(await screen.findByText("Public — anyone can join"));
+
+    expect(setRoomJoinRule).not.toHaveBeenCalled();
+
+    mutationsBlockedRef.current = false;
+    openDropdownMenu("Members, including before they joined");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(await screen.findByText("Members, from when they joined"));
+
+    expect(setRoomHistoryVisibility).not.toHaveBeenCalled();
   });
 
   it("hides the Addresses section when room_alias_management is off", () => {
@@ -172,5 +223,122 @@ describe("RoomSettingsForm", () => {
     expect(screen.queryByText("Addresses")).not.toBeInTheDocument();
 
     vi.unstubAllEnvs();
+  });
+
+  it("confirms a room upgrade and reports the replacement room", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const onRoomUpgraded = vi.fn();
+    const details = makeRoomDetails();
+    renderWithProviders(<RoomSettingsForm details={details} onRoomUpgraded={onRoomUpgraded} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    expect(upgradeRoom).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade room" }));
+
+    await waitFor(() => {
+      expect(upgradeRoom).toHaveBeenCalledWith(details.room_id);
+      expect(onRoomUpgraded).toHaveBeenCalledWith("!replacement:example.org");
+    });
+  });
+
+  it("disables an open upgrade confirmation when room state becomes unresolved", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails();
+    const mutationsBlockedRef = { current: false };
+    const rendered = renderWithProviders(
+      <RoomSettingsForm details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    mutationsBlockedRef.current = true;
+    rendered.rerender(
+      wrapWithProviders(
+        <RoomSettingsForm
+          details={{ ...details, can: { ...details.can, upgrade_room: false } }}
+          mutationsBlockedRef={mutationsBlockedRef}
+        />,
+        rendered.client,
+      ),
+    );
+
+    expect(within(dialog).getByRole("button", { name: "Upgrade room" })).toBeDisabled();
+    expect(upgradeRoom).not.toHaveBeenCalled();
+  });
+
+  it("keeps settings open and reports a replacement-room navigation failure", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const onRoomUpgraded = vi.fn().mockRejectedValueOnce(new Error("join denied"));
+    const details = makeRoomDetails();
+    const { rerender, client } = renderWithProviders(
+      <RoomSettingsForm details={details} onRoomUpgraded={onRoomUpgraded} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't open the upgraded room. Check your access and try again.",
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(
+      wrapWithProviders(
+        <RoomSettingsForm
+          details={{
+            ...details,
+            tombstone: {
+              body: "Room upgraded",
+              replacement_room_id: "!replacement:example.org",
+            },
+          }}
+          onRoomUpgraded={onRoomUpgraded}
+        />,
+        client,
+      ),
+    );
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try upgraded room again" }));
+    await waitFor(() => expect(onRoomUpgraded).toHaveBeenCalledTimes(2));
+  });
+
+  it("closes the confirmation so an upgrade failure is visible", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    upgradeRoom.mockRejectedValueOnce(new Error("upgrade failed"));
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade room" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("upgrade failed");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("disables the room upgrade action without tombstone permission", () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails({
+      can: { ...makeRoomDetails().can, upgrade_room: false },
+    });
+    renderWithProviders(<RoomSettingsForm details={details} />);
+
+    expect(screen.getByRole("button", { name: "Upgrade room" })).toBeDisabled();
+  });
+
+  it("hides the room upgrade action after the room is tombstoned", () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails({
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+
+    renderWithProviders(<RoomSettingsForm details={details} />);
+
+    expect(screen.queryByRole("button", { name: "Upgrade room" })).not.toBeInTheDocument();
   });
 });

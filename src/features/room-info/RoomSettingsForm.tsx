@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import * as Sentry from "@sentry/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,15 +80,45 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
 interface RoomSettingsFormProps {
   details: RoomDetails;
   isSpace?: boolean;
+  onRoomUpgraded?: (replacementRoomId: string) => void | Promise<void>;
+  mutationsBlockedRef?: RefObject<boolean>;
 }
 
-export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormProps) {
+export function RoomSettingsForm({
+  details,
+  isSpace = false,
+  onRoomUpgraded,
+  mutationsBlockedRef,
+}: RoomSettingsFormProps) {
   const actions = useRoomAdminActions(details.room_id);
   const [name, setName] = useState(details.name ?? "");
   const [topic, setTopic] = useState(details.topic ?? "");
   const [confirmingEncryption, setConfirmingEncryption] = useState(false);
+  const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
+  const [followingUpgrade, setFollowingUpgrade] = useState(false);
+  const [followUpgradeError, setFollowUpgradeError] = useState<string | null>(null);
+  const [failedReplacementRoomId, setFailedReplacementRoomId] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const fallbackMutationsBlockedRef = useRef(false);
+  const liveMutationsBlockedRef = mutationsBlockedRef ?? fallbackMutationsBlockedRef;
   const roomAliasManagementEnabled = useFlag("room_alias_management");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
+
+  async function followUpgradedRoom(replacementRoomId: string) {
+    setFollowingUpgrade(true);
+    setFollowUpgradeError(null);
+    try {
+      await onRoomUpgraded?.(replacementRoomId);
+      setConfirmingUpgrade(false);
+      setFailedReplacementRoomId(null);
+    } catch {
+      setConfirmingUpgrade(false);
+      setFailedReplacementRoomId(replacementRoomId);
+      setFollowUpgradeError("Couldn't open the upgraded room. Check your access and try again.");
+    } finally {
+      setFollowingUpgrade(false);
+    }
+  }
 
   useEffect(() => {
     setName(details.name ?? "");
@@ -106,7 +137,7 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
       multiple: false,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
     }).then((selected) => {
-      if (typeof selected === "string") {
+      if (typeof selected === "string" && !liveMutationsBlockedRef.current) {
         actions.setAvatar.mutate(selected);
       }
     });
@@ -115,7 +146,7 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
   function handleAvatarInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (file) {
+    if (file && !liveMutationsBlockedRef.current) {
       actions.setAvatar.mutate(file);
     }
   }
@@ -215,7 +246,10 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
               <DropdownMenuContent>
                 <DropdownMenuRadioGroup
                   value={details.join_rule}
-                  onValueChange={(value) => actions.setJoinRule.mutate(value as JoinRuleKind)}
+                  onValueChange={(value) => {
+                    if (liveMutationsBlockedRef.current) return;
+                    actions.setJoinRule.mutate(value as JoinRuleKind);
+                  }}
                 >
                   {SELECTABLE_JOIN_RULES.map((rule) => (
                     <DropdownMenuRadioItem key={rule} value={rule}>
@@ -240,9 +274,10 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
               <DropdownMenuContent>
                 <DropdownMenuRadioGroup
                   value={details.history_visibility}
-                  onValueChange={(value) =>
-                    actions.setHistoryVisibility.mutate(value as HistoryVisibilityKind)
-                  }
+                  onValueChange={(value) => {
+                    if (liveMutationsBlockedRef.current) return;
+                    actions.setHistoryVisibility.mutate(value as HistoryVisibilityKind);
+                  }}
                 >
                   {(Object.keys(HISTORY_VISIBILITY_LABELS) as HistoryVisibilityKind[]).map(
                     (visibility) => (
@@ -261,7 +296,7 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
       {roomAliasManagementEnabled && !isWebBuild() && (
         <section className="flex flex-col gap-6">
           <h3 className="text-sm font-semibold text-foreground">Addresses</h3>
-          <RoomAliasManagement details={details} />
+          <RoomAliasManagement details={details} mutationsBlockedRef={liveMutationsBlockedRef} />
         </section>
       )}
 
@@ -286,7 +321,10 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
                 </Button>
               </PermissionGate>
             )}
-            <Dialog open={confirmingEncryption} onOpenChange={setConfirmingEncryption}>
+            <Dialog
+              open={confirmingEncryption && details.can.set_encryption}
+              onOpenChange={setConfirmingEncryption}
+            >
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Enable encryption?</DialogTitle>
@@ -301,7 +339,9 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
                   </Button>
                   <Button
                     variant="destructive"
+                    disabled={!details.can.set_encryption}
                     onClick={() => {
+                      if (!details.can.set_encryption) return;
                       actions.enableEncryption.mutate(undefined);
                       setConfirmingEncryption(false);
                     }}
@@ -312,6 +352,97 @@ export function RoomSettingsForm({ details, isSpace = false }: RoomSettingsFormP
               </DialogContent>
             </Dialog>
           </div>
+          {roomUpgradesEnabled && !isWebBuild() && !details.tombstone && (
+            <div className="flex flex-col gap-2">
+              <Label>Room version</Label>
+              <p className="text-sm text-muted-foreground">
+                Move this room to the homeserver's recommended version.
+              </p>
+              <PermissionGate allowed={details.can.upgrade_room}>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!details.can.upgrade_room}
+                  onClick={() => setConfirmingUpgrade(true)}
+                >
+                  Upgrade room
+                </Button>
+              </PermissionGate>
+              {actions.upgrade.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {actions.upgrade.error.message}
+                </p>
+              )}
+              <Dialog open={confirmingUpgrade} onOpenChange={setConfirmingUpgrade}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Upgrade this room?</DialogTitle>
+                    <DialogDescription>
+                      Matrix will create a replacement room and make this room read-only. Members
+                      will need to continue the conversation in the replacement room.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      disabled={actions.upgrade.isPending || followingUpgrade}
+                      onClick={() => setConfirmingUpgrade(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={
+                        !details.can.upgrade_room || actions.upgrade.isPending || followingUpgrade
+                      }
+                      onClick={() => {
+                        if (liveMutationsBlockedRef.current || !details.can.upgrade_room) {
+                          setConfirmingUpgrade(false);
+                          return;
+                        }
+                        Sentry.addBreadcrumb({
+                          category: "ui.room-upgrade",
+                          level: "info",
+                          message: "Room upgrade confirmed",
+                        });
+                        setFollowUpgradeError(null);
+                        actions.upgrade.mutate(undefined, {
+                          onSuccess: async (replacementRoomId) => {
+                            await followUpgradedRoom(replacementRoomId);
+                          },
+                          onError: () => setConfirmingUpgrade(false),
+                        });
+                      }}
+                    >
+                      {actions.upgrade.isPending
+                        ? "Upgrading…"
+                        : followingUpgrade
+                          ? "Opening upgraded room…"
+                          : "Upgrade room"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+          )}
+          {roomUpgradesEnabled &&
+            !isWebBuild() &&
+            followUpgradeError &&
+            failedReplacementRoomId && (
+              <div className="flex flex-col items-start gap-2">
+                <p role="alert" className="text-sm text-destructive">
+                  {followUpgradeError}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={followingUpgrade}
+                  onClick={() => void followUpgradedRoom(failedReplacementRoomId)}
+                >
+                  {followingUpgrade ? "Opening upgraded room…" : "Try upgraded room again"}
+                </Button>
+              </div>
+            )}
         </section>
       )}
     </div>

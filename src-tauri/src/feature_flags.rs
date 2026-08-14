@@ -167,6 +167,8 @@ define_feature_flag_keys!(
         AvatarPresenceVisuals,
         /// Day-2 Spec 11 room-history navigation by calendar date.
         JumpToDate,
+        /// Spec 31 admin-triggered room upgrades and tombstoned-room handling.
+        RoomUpgrades,
     }
 );
 
@@ -201,6 +203,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FullEmojiPicker => false,
             FeatureFlagKey::AvatarPresenceVisuals => false,
             FeatureFlagKey::JumpToDate => false,
+            FeatureFlagKey::RoomUpgrades => false,
         }
     }
 
@@ -286,6 +289,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => {
                 "Open a calendar from the room header and jump to the first event on that date."
             }
+            FeatureFlagKey::RoomUpgrades => {
+                "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
+            }
         }
     }
 
@@ -329,6 +335,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FullEmojiPicker => "Spec 38 (full emoji picker)",
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
+            FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
         }
     }
 
@@ -362,6 +369,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FullEmojiPicker => "full_emoji_picker",
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
             FeatureFlagKey::JumpToDate => "jump_to_date",
+            FeatureFlagKey::RoomUpgrades => "room_upgrades",
         }
     }
 }

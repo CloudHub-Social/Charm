@@ -15,15 +15,22 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
 
 const featureFlagMocks = vi.hoisted(() => ({
   roomAliasManagement: false,
+  roomUpgrades: false,
+  roomUpgradesPersistenceSettled: true,
+  roomUpgradesPersistenceVersion: 0,
   spaceHierarchy: true,
 }));
 vi.mock("@/featureFlags", () => ({
+  useFeatureFlagPersistenceSettled: () => featureFlagMocks.roomUpgradesPersistenceSettled,
+  useFeatureFlagPersistenceVersion: () => featureFlagMocks.roomUpgradesPersistenceVersion,
   useFlag: (key: string) =>
     key === "room_alias_management"
       ? featureFlagMocks.roomAliasManagement
-      : key === "space_hierarchy_reorganization"
-        ? featureFlagMocks.spaceHierarchy
-        : false,
+      : key === "room_upgrades"
+        ? featureFlagMocks.roomUpgrades
+        : key === "space_hierarchy_reorganization"
+          ? featureFlagMocks.spaceHierarchy
+          : false,
 }));
 
 const getRoomDetails = vi.fn();
@@ -33,6 +40,7 @@ vi.mock("@/lib/matrix", () => ({
   getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
   getRoomMemberList: (...args: unknown[]) => getRoomMemberList(...args),
   onRoomDetailsUpdate: vi.fn().mockResolvedValue(() => {}),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   setRoomName: vi.fn().mockResolvedValue(undefined),
   setRoomTopic: vi.fn().mockResolvedValue(undefined),
   setRoomAvatar: vi.fn().mockResolvedValue(undefined),
@@ -75,6 +83,7 @@ function renderModal(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     store,
+    client,
     ...render(
       <AppProviders client={client} store={store}>
         <TooltipProvider>
@@ -87,7 +96,11 @@ function renderModal(
 
 describe("RoomSettingsModal", () => {
   beforeEach(() => {
+    getRoomDetails.mockReset();
     featureFlagMocks.roomAliasManagement = false;
+    featureFlagMocks.roomUpgrades = false;
+    featureFlagMocks.roomUpgradesPersistenceSettled = true;
+    featureFlagMocks.roomUpgradesPersistenceVersion = 0;
     featureFlagMocks.spaceHierarchy = true;
   });
 
@@ -139,6 +152,58 @@ describe("RoomSettingsModal", () => {
     expect(screen.getByRole("tab", { name: "General" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Members" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Permissions", selected: true })).toBeInTheDocument();
+  });
+
+  it("keeps every room mutation disabled after the room is tombstoned", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    const details = makeRoomDetails({
+      name: "Old room",
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+
+    expect(
+      await screen.findByText("This room is read-only. Settings changes are unavailable here."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Room name")).toBeDisabled();
+
+    const permissionsTab = screen.getByRole("tab", { name: "Permissions" });
+    permissionsTab.focus();
+    fireEvent.click(permissionsTab);
+    expect(await screen.findByRole("button", { name: "Save thresholds" })).toBeDisabled();
+
+    const membersTab = screen.getByRole("tab", { name: "Members" });
+    membersTab.focus();
+    fireEvent.click(membersTab);
+    expect(await screen.findByRole("button", { name: "Invite" })).toBeDisabled();
+  });
+
+  it("keeps room mutations blocked until native flag persistence and authoritative refresh settle", async () => {
+    featureFlagMocks.roomUpgrades = true;
+    featureFlagMocks.roomUpgradesPersistenceSettled = false;
+    const details = makeRoomDetails({ name: "Upgrade candidate" });
+    getRoomDetails.mockResolvedValue(details);
+    const rendered = renderModal({ roomId: details.room_id, section: "general" });
+
+    expect(await screen.findByLabelText("Room name")).toBeDisabled();
+
+    featureFlagMocks.roomUpgradesPersistenceSettled = true;
+    featureFlagMocks.roomUpgradesPersistenceVersion = 1;
+    rendered.rerender(
+      <AppProviders client={rendered.client} store={rendered.store}>
+        <TooltipProvider>
+          <RoomSettingsModal currentUserId="@evie:localhost" />
+        </TooltipProvider>
+      </AppProviders>,
+    );
+
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Room name")).toBeEnabled());
   });
 
   it("reuses the shell with space labels and without the room-only encryption control", async () => {

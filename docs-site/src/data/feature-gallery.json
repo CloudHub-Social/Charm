@@ -336,6 +336,26 @@
       }
     },
     {
+      "slug": "room-upgrades",
+      "title": "Room upgrades",
+      "summary": "Upgrade a room to the homeserver's preferred Matrix version, keep the old room read-only, and direct members to its replacement.",
+      "status": "preview",
+      "spec": "Spec 31",
+      "specLinks": [
+        {
+          "label": "Spec 31",
+          "href": "/specs/day-1/spec-31--room-upgrades/"
+        }
+      ],
+      "flag": "room_upgrades",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-room-upgrades",
+        "alt": "Charm conversation showing a read-only upgraded-room notice and a button to open the replacement room",
+        "caption": "The E2E fixture emits a Matrix room tombstone, removes the old composer, and exposes the replacement-room action."
+      }
+    },
+    {
       "slug": "spaces",
       "title": "Spaces and room organization",
       "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages.",

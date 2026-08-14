@@ -5,7 +5,11 @@
 //! duplicates — see [`super::members::RoomMemberSummary`]).
 
 use matrix_sdk::room::power_levels::RoomPowerLevelChanges;
-use matrix_sdk::ruma::api::client::room::aliases;
+use matrix_sdk::ruma::api::client::{
+    room::{aliases, upgrade_room},
+    state::get_state_event_for_key,
+};
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
 use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
@@ -14,11 +18,12 @@ use matrix_sdk::ruma::events::room::history_visibility::{
 use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinRulesEventContent};
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
+use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
 use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::members;
@@ -211,6 +216,10 @@ pub struct RoomPermissions {
     pub set_space_child: bool,
     /// Gates reparenting a space by sending `m.space.parent` in this room.
     pub set_space_parent: bool,
+    /// Gates Spec 31's disruptive room-upgrade action. The Matrix endpoint
+    /// sends an `m.room.tombstone`, so this is the authoritative power-level
+    /// check rather than a hard-coded administrator threshold.
+    pub upgrade_room: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -248,6 +257,17 @@ pub struct RoomDetails {
     /// push every other `RoomDetails` field already relies on — no new
     /// sync-side plumbing needed (Spec day-2/04's stated data flow).
     pub pinned_event_ids: Vec<String>,
+    /// Authoritative current `m.room.tombstone` state. Unlike a timeline
+    /// window, room state retains this after newer events arrive and when the
+    /// original tombstone falls outside the loaded history.
+    pub tombstone: Option<RoomTombstoneDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RoomTombstoneDetails {
+    pub body: String,
+    pub replacement_room_id: String,
 }
 
 /// Room v12+ creators have an "infinite" power level (see [`UserPowerLevel::Infinite`]),
@@ -275,14 +295,53 @@ pub(crate) fn require_room(client: &Client, room_id: &str) -> Result<Room, Strin
         .ok_or_else(|| format!("room {room_id} not found"))
 }
 
+/// Reads the homeserver's current tombstone instead of the SDK's eventually
+/// consistent sync cache. The keyed endpoint avoids downloading every state
+/// event for every state-bearing room in the serial sync loop.
+async fn fetch_current_tombstone(
+    client: &Client,
+    room_id: &RoomId,
+) -> Result<Option<RoomTombstoneDetails>, String> {
+    let request = get_state_event_for_key::v3::Request::new(
+        room_id.to_owned(),
+        StateEventType::RoomTombstone,
+        String::new(),
+    );
+    match client.send(request).await {
+        Ok(response) => match response
+            .into_content()
+            .deserialize_as_unchecked::<RoomTombstoneEventContent>()
+        {
+            Ok(content) => Ok(Some(RoomTombstoneDetails {
+                body: content.body,
+                replacement_room_id: content.replacement_room.to_string(),
+            })),
+            Err(_) => Ok(Some(RoomTombstoneDetails {
+                // A present but redacted/malformed tombstone still proves
+                // the room was upgraded; fail closed without a follow link.
+                body: "Room upgraded".to_string(),
+                replacement_room_id: String::new(),
+            })),
+        },
+        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Builds the full [`RoomDetails`] snapshot for `room_id` — shared by
 /// [`get_room_details`] and the sync loop's `room_details:update` emission in
-/// `mod.rs`, so both read the identical fields off the identical live `Room`.
+/// `mod.rs`. Most fields come from the live SDK `Room`; the tombstone comes
+/// from the homeserver's current state so a delayed sync cannot reopen a room
+/// that another client has already upgraded.
 ///
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/room_admin.rs` rather than the `--lib` unit-test target CI runs
 /// without a local Synapse available — same rationale as [`super::resolve_alias`].
-pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDetails, String> {
+pub async fn build_room_details(
+    client: &Client,
+    room_id: &str,
+    authoritative_tombstone: bool,
+) -> Result<RoomDetails, String> {
     let room = require_room(client, room_id)?;
     let own_user_id = client
         .user_id()
@@ -290,6 +349,20 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
 
     let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
     let my_power_level = user_power_level_to_i64(power_levels.for_user(own_user_id));
+    let can_upgrade_room_by_power =
+        power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone);
+    let can_upgrade_room = if authoritative_tombstone && can_upgrade_room_by_power {
+        let target_version = client
+            .homeserver_capabilities()
+            .room_versions()
+            .await
+            .map_err(|e| e.to_string())?
+            .default;
+        room.create_content()
+            .is_some_and(|content| content.room_version != target_version)
+    } else {
+        can_upgrade_room_by_power
+    };
 
     let can = RoomPermissions {
         set_name: power_levels.user_can_send_state(own_user_id, StateEventType::RoomName),
@@ -313,6 +386,7 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         set_space_child: power_levels.user_can_send_state(own_user_id, StateEventType::SpaceChild),
         set_space_parent: power_levels
             .user_can_send_state(own_user_id, StateEventType::SpaceParent),
+        upgrade_room: can_upgrade_room,
     };
 
     let is_encrypted = room
@@ -322,6 +396,23 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         .unwrap_or(false);
 
     let join_rule = room.join_rule().unwrap_or(JoinRule::Invite);
+    let tombstone = if authoritative_tombstone {
+        fetch_current_tombstone(client, room.room_id()).await?
+    } else {
+        room.get_state_event_static::<RoomTombstoneEventContent>()
+            .await
+            .map_err(|e| e.to_string())?
+            .and_then(|raw| raw.deserialize().ok())
+            .and_then(|event| match event {
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(event),
+                ) => Some(RoomTombstoneDetails {
+                    body: event.content.body,
+                    replacement_room_id: event.content.replacement_room.to_string(),
+                }),
+                _ => None,
+            })
+    };
 
     Ok(RoomDetails {
         room_id: room.room_id().to_string(),
@@ -347,16 +438,21 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
             .into_iter()
             .map(|id| id.to_string())
             .collect(),
+        tombstone,
     })
 }
 
 #[tauri::command]
 pub async fn get_room_details(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<RoomDetails, String> {
     let client = state.require_client().await?;
-    build_room_details(&client, &room_id).await
+    let authoritative_tombstone = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    build_room_details(&client, &room_id, authoritative_tombstone).await
 }
 
 /// Active + banned memberships, unlike [`members::get_room_members`]'s
@@ -399,6 +495,7 @@ pub async fn set_room_name(
     room_id: String,
     name: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_name_impl(&client, &room_id, name).await
 }
@@ -420,6 +517,7 @@ pub async fn set_room_topic(
     room_id: String,
     topic: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_topic_impl(&client, &room_id, &topic).await
 }
@@ -443,6 +541,7 @@ pub async fn set_room_avatar(
     room_id: String,
     file_path: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_avatar_impl(&client, &room_id, &file_path).await
 }
@@ -474,6 +573,7 @@ pub async fn remove_room_avatar(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     remove_room_avatar_impl(&client, &room_id).await
 }
@@ -493,6 +593,7 @@ pub async fn set_room_join_rule(
     room_id: String,
     join_rule: JoinRuleKind,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_join_rule_impl(&client, &room_id, join_rule).await
 }
@@ -516,6 +617,7 @@ pub async fn set_room_history_visibility(
     room_id: String,
     visibility: HistoryVisibilityKind,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_history_visibility_impl(&client, &room_id, visibility).await
 }
@@ -541,6 +643,7 @@ pub async fn enable_room_encryption(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     enable_room_encryption_impl(&client, &room_id).await
 }
@@ -552,6 +655,123 @@ pub async fn enable_room_encryption_impl(client: &Client, room_id: &str) -> Resu
     Ok(())
 }
 
+/// Upgrades a joined room to the homeserver's advertised default room
+/// version and returns the replacement room id. Matrix performs the copy and
+/// tombstone operation atomically at the endpoint; Charm never tries to
+/// reproduce that protocol operation with a sequence of state-event writes.
+#[tauri::command]
+pub async fn upgrade_room(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<String, String> {
+    let enabled = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    });
+    if !enabled {
+        return Err("Room upgrades are not enabled.".to_string());
+    }
+    let client = state.require_client().await?;
+    // Serialize the authoritative upgrade and immediate old-room drain with
+    // mutations and sync-driven barrier admission for this room.
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
+    // Pause the SDK worker before the request: it does not participate in the
+    // command-side admission locks and could otherwise deliver an existing
+    // local echo after the server installs the tombstone. Hold the global
+    // lock only for this queue transition, never across homeserver I/O.
+    {
+        let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+        super::actions::set_room_send_queue_read_only_impl_locked(
+            &client,
+            Some(&state),
+            &room_id,
+            true,
+            false,
+        )
+        .await?;
+    }
+    let replacement_room_id = match upgrade_room_impl(&client, &room_id).await {
+        Ok(replacement_room_id) => replacement_room_id,
+        Err(error) => {
+            let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+            // Resume only when Charm owned the pause; pre-disabled queues stay
+            // disabled through the resume-ownership bookkeeping.
+            if let Err(resume_error) = super::actions::set_room_send_queue_read_only_impl_locked(
+                &client,
+                Some(&state),
+                &room_id,
+                false,
+                false,
+            )
+            .await
+            {
+                return Err(format!(
+                    "{error}; the room send queue could not be resumed: {resume_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
+    if !_mutation_guard.session_is_current() {
+        super::actions::discard_pending_room_sends(&client, &room_id).await?;
+        return Err("The signed-in session changed while the room was being upgraded.".to_string());
+    }
+    // The successful endpoint response is authoritative: close the old room
+    // immediately instead of waiting for a later sync to publish its tombstone.
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    super::actions::set_room_send_queue_read_only_impl_locked(
+        &client,
+        Some(&state),
+        &room_id,
+        true,
+        true,
+    )
+    .await?;
+    Ok(replacement_room_id)
+}
+
+/// Core logic behind [`upgrade_room`].
+pub async fn upgrade_room_impl(client: &Client, room_id: &str) -> Result<String, String> {
+    let room = require_room(client, room_id)?;
+    let own_user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let power_levels = room.power_levels().await.map_err(|e| e.to_string())?;
+    if !power_levels.user_can_send_state(own_user_id, StateEventType::RoomTombstone) {
+        return Err("You do not have permission to upgrade this room.".to_string());
+    }
+
+    let room_versions = client
+        .homeserver_capabilities()
+        .room_versions()
+        .await
+        .map_err(|e| e.to_string())?;
+    let current_room_version = room
+        .create_content()
+        .map(|content| content.room_version)
+        .ok_or_else(|| "Unable to determine the room's current version.".to_string())?;
+    if current_room_version == room_versions.default {
+        return Err("This room already uses the homeserver's default room version.".to_string());
+    }
+    // Keep this authoritative guard immediately next to the upgrade write.
+    // Capabilities and power-level reads above may await the network long
+    // enough for another administrator to upgrade the room first.
+    if fetch_current_tombstone(client, room.room_id())
+        .await?
+        .is_some()
+    {
+        return Err("This room has already been upgraded.".to_string());
+    }
+    let response = client
+        .send(upgrade_room::v3::Request::new(
+            room.room_id().to_owned(),
+            room_versions.default,
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response.replacement_room.to_string())
+}
+
 #[tauri::command]
 pub async fn set_member_power_level(
     state: State<'_, MatrixState>,
@@ -559,6 +779,7 @@ pub async fn set_member_power_level(
     user_id: String,
     power_level: i64,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_member_power_level_impl(&client, &room_id, &user_id, power_level).await
 }
@@ -585,6 +806,7 @@ pub async fn set_room_power_level_thresholds(
     room_id: String,
     changes: PowerLevelThresholds,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_room_power_level_thresholds_impl(&client, &room_id, changes).await
 }
@@ -608,6 +830,7 @@ pub async fn invite_member(
     room_id: String,
     user_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     invite_member_impl(&client, &room_id, &user_id).await
 }
@@ -633,6 +856,7 @@ pub async fn kick_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     kick_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -659,6 +883,7 @@ pub async fn ban_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     ban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -685,6 +910,7 @@ pub async fn unban_member(
     user_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     unban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
 }
@@ -1037,6 +1263,7 @@ pub async fn pin_event(
     room_id: String,
     event_id: String,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     // Review fix: captured before this command's own network send below —
     // if a logout/re-login/account-switch happens while that send is still
@@ -1191,6 +1418,7 @@ pub async fn unpin_event(
     room_id: String,
     event_id: String,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     // Review fix: same session-generation guard as `pin_event` — see that
     // command's own comment.
@@ -1446,6 +1674,7 @@ pub async fn add_room_alias(
     room_id: String,
     alias: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     add_room_alias_impl(&client, &room_id, &alias).await
 }
@@ -1473,6 +1702,12 @@ pub async fn add_room_alias_impl(
 #[tauri::command]
 pub async fn remove_room_alias(state: State<'_, MatrixState>, alias: String) -> Result<(), String> {
     let client = state.require_client().await?;
+    let parsed_alias = RoomAliasId::parse(&alias).map_err(|e| e.to_string())?;
+    let resolved = client
+        .resolve_room_alias(&parsed_alias)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _guard = super::actions::lock_room_mutation(resolved.room_id.as_str()).await?;
     remove_room_alias_impl(&client, &alias).await
 }
 
@@ -1496,6 +1731,7 @@ pub async fn set_canonical_alias(
     room_id: String,
     alias: Option<String>,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     set_canonical_alias_impl(&client, &room_id, alias.as_deref()).await
 }
@@ -1536,6 +1772,7 @@ pub async fn remove_alt_alias(
     room_id: String,
     alias: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     remove_alt_alias_impl(&client, &room_id, &alias).await
 }
@@ -1572,6 +1809,7 @@ pub async fn leave_room(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
+    let _guard = super::actions::lock_room_mutation(&room_id).await?;
     let (client, search_generation) = state.require_client_with_search_generation().await?;
     leave_room_impl(&client, &room_id).await?;
     let purge_result =

@@ -105,6 +105,15 @@ pub async fn run_command_impl(
     args: Vec<String>,
 ) -> Result<CommandResult, String> {
     let room = get_room(client, room_id)?;
+    // `/me` already goes through the serialized send helper below. Every
+    // other command mutates room state or membership directly, so keep the
+    // same admission lock across its homeserver action: either the command
+    // starts first or a sync-driven room barrier rejects it.
+    let _mutation_guard = if command == SlashCommand::Me {
+        None
+    } else {
+        Some(super::actions::lock_room_mutation(room_id).await?)
+    };
 
     match command {
         SlashCommand::Me => {

@@ -11,6 +11,7 @@ import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
 import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents";
+import { resetRoomSendQueueBarrier } from "@/features/rooms/useRoomSendQueueBarrier";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -98,6 +99,11 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
         // session. Bumps the write generation so any such queued write
         // becomes a no-op instead of actually calling into Rust.
         resetPrivacySettingsWriteQueue();
+        // Module-owned room queue barriers survive RoomsScreen unmounts so
+        // mobile navigation cannot accidentally resume a tombstoned room.
+        // Logout is the ownership boundary: clear them and invalidate any
+        // queued commands before another account can sign in.
+        resetRoomSendQueueBarrier();
         // Logout/deactivate unmount SettingsScreen directly rather than via
         // closeSettings, so a lingering `#/settings/<section>` hash would
         // otherwise make the next sign-in's `useSettingsHashSync` reopen

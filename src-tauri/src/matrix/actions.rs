@@ -8,7 +8,9 @@
 //! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
 //! `resend_message`/`discard_failed_message`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
@@ -18,14 +20,87 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
-use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, RoomId};
+use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedRoomId, OwnedTransactionId, RoomId};
 use matrix_sdk::send_queue::{LocalEchoContent, SendHandle};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 use super::MatrixState;
+
+static ROOM_UPGRADE_BARRIER_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
+static ROOM_UPGRADE_RESUME_ROOMS: LazyLock<tokio::sync::Mutex<HashSet<OwnedRoomId>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashSet::new()));
+static ROOM_MUTATION_LOCKS: LazyLock<
+    tokio::sync::Mutex<HashMap<OwnedRoomId, Arc<tokio::sync::Mutex<()>>>>,
+> = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+static ROOM_UPGRADE_SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(super) struct RoomMutationGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    generation: u64,
+}
+
+impl RoomMutationGuard {
+    pub(super) fn session_is_current(&self) -> bool {
+        self.generation == ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire)
+    }
+}
+
+pub(super) async fn clear_room_upgrade_queue_barriers() {
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    ROOM_UPGRADE_SESSION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
+    ROOM_UPGRADE_RESUME_ROOMS.lock().await.clear();
+    ROOM_MUTATION_LOCKS.lock().await.clear();
+}
+
+pub(super) async fn room_upgrade_queue_is_paused(room_id: &RoomId) -> bool {
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.contains(room_id)
+}
+
+pub(super) async fn lock_room_mutation(room_id: &str) -> Result<RoomMutationGuard, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let generation = ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire);
+    let lock = room_mutation_lock(&parsed_room_id).await;
+    let guard = lock.lock_owned().await;
+    if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+        return Err("The signed-in session changed before the room mutation began.".to_string());
+    }
+    if room_upgrade_queue_is_paused(&parsed_room_id).await {
+        return Err("This room is read-only while its current state is verified.".to_string());
+    }
+    Ok(RoomMutationGuard {
+        _guard: guard,
+        generation,
+    })
+}
+
+async fn room_mutation_lock(room_id: &RoomId) -> Arc<tokio::sync::Mutex<()>> {
+    ROOM_MUTATION_LOCKS
+        .lock()
+        .await
+        .entry(room_id.to_owned())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+pub(super) async fn resume_all_room_upgrade_queues(client: &Client) {
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    ROOM_UPGRADE_BARRIER_ROOMS.lock().await.clear();
+    let room_ids = ROOM_UPGRADE_RESUME_ROOMS
+        .lock()
+        .await
+        .drain()
+        .collect::<Vec<_>>();
+    for room_id in room_ids {
+        if let Some(room) = client.get_room(&room_id) {
+            room.send_queue().set_enabled(true);
+        }
+    }
+}
 
 fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> {
     let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
@@ -208,6 +283,7 @@ pub async fn redact_event(
     event_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _guard = lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     redact_event_impl(&client, &room_id, &event_id, reason.as_deref()).await
 }
@@ -397,6 +473,7 @@ pub async fn toggle_reaction_impl(
     }
 
     if let Some(reaction_event_id) = existing_reaction_event_id {
+        let _guard = lock_room_mutation(room_id).await?;
         room.redact(&reaction_event_id, None, None)
             .await
             .map_err(|e| e.to_string())?;
@@ -517,6 +594,274 @@ async fn find_local_echo_send_handle(
         }))
 }
 
+/// Makes a room's SDK send queue read-only. Closing the queue first prevents
+/// offline local echoes from being delivered while authoritative state is
+/// unresolved. Once a tombstone is confirmed, `discard_pending` aborts every
+/// kind of pending send while the queue remains paused.
+/// Reopening the queue is explicit so an authoritative active-room refresh (or
+/// disabling the feature) can resume normal delivery.
+#[tauri::command]
+pub async fn set_room_send_queue_read_only(
+    app: tauri::AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<u64, String> {
+    if read_only {
+        let client = state.require_client().await?;
+        return set_room_send_queue_read_only_if_enabled(
+            &app,
+            &client,
+            Some(&state),
+            &room_id,
+            true,
+            discard_pending,
+        )
+        .await?
+        .ok_or_else(|| "Room upgrades are not enabled.".to_string());
+    }
+    let client = state.require_client().await?;
+    set_room_send_queue_read_only_impl(&client, Some(&state), &room_id, read_only, discard_pending)
+        .await
+}
+
+pub(super) async fn set_room_send_queue_read_only_if_enabled(
+    app: &tauri::AppHandle,
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<Option<u64>, String> {
+    set_room_send_queue_read_only_transition(
+        Some(app),
+        client,
+        state,
+        room_id,
+        read_only,
+        discard_pending,
+    )
+    .await
+}
+
+pub async fn set_room_send_queue_read_only_impl(
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<u64, String> {
+    set_room_send_queue_read_only_transition(
+        None,
+        client,
+        state,
+        room_id,
+        read_only,
+        discard_pending,
+    )
+    .await?
+    .ok_or_else(|| "Room upgrades are not enabled.".to_string())
+}
+
+async fn set_room_send_queue_read_only_transition(
+    app: Option<&tauri::AppHandle>,
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<Option<u64>, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let generation = ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire);
+    let mutation_lock = room_mutation_lock(&parsed_room_id).await;
+
+    if read_only {
+        // Publish the barrier and stop the SDK worker before waiting for an
+        // already-running same-room mutation. The worker does not acquire the
+        // room mutex, so waiting first would leave pending echoes deliverable.
+        {
+            let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+            if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+                return Err("The signed-in session changed before the queue barrier began.".into());
+            }
+            if app.is_some_and(|app| {
+                !app.path().app_data_dir().is_ok_and(|dir| {
+                    crate::feature_flags::flag(
+                        &dir,
+                        crate::feature_flags::FeatureFlagKey::RoomUpgrades,
+                    )
+                })
+            }) {
+                return Ok(None);
+            }
+            set_room_send_queue_read_only_impl_locked(client, state, room_id, true, false).await?;
+        }
+        if !discard_pending {
+            return Ok(Some(0));
+        }
+    }
+
+    let _mutation_guard = mutation_lock.lock_owned().await;
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
+    if generation != ROOM_UPGRADE_SESSION_GENERATION.load(Ordering::Acquire) {
+        return Err("The signed-in session changed during the queue barrier transition.".into());
+    }
+    set_room_send_queue_read_only_impl_locked(client, state, room_id, read_only, discard_pending)
+        .await
+        .map(Some)
+}
+
+pub(super) async fn set_room_send_queue_read_only_impl_locked(
+    client: &Client,
+    state: Option<&MatrixState>,
+    room_id: &str,
+    read_only: bool,
+    discard_pending: bool,
+) -> Result<u64, String> {
+    let room = get_room(client, room_id)?;
+    let queue = room.send_queue();
+    let mut barrier_rooms = ROOM_UPGRADE_BARRIER_ROOMS.lock().await;
+    let mut resume_rooms = ROOM_UPGRADE_RESUME_ROOMS.lock().await;
+
+    if !read_only {
+        barrier_rooms.remove(room.room_id());
+        if resume_rooms.remove(room.room_id()) {
+            queue.set_enabled(true);
+        }
+        return Ok(0);
+    }
+
+    barrier_rooms.insert(room.room_id().to_owned());
+    if let Some(state) = state {
+        super::send::cancel_attachment_uploads_for_room(state, room.room_id());
+    }
+    if queue.is_enabled() {
+        queue.set_enabled(false);
+        resume_rooms.insert(room.room_id().to_owned());
+    }
+    if !discard_pending {
+        return Ok(0);
+    }
+    abort_pending_room_queue(&room).await
+}
+
+async fn abort_pending_room_queue(room: &matrix_sdk::Room) -> Result<u64, String> {
+    let queue = room.send_queue();
+    let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
+    let mut aborted = 0;
+    for echo in local_echoes {
+        let was_aborted = match echo.content {
+            LocalEchoContent::Event { send_handle, .. } => send_handle.abort().await,
+            LocalEchoContent::React { send_handle, .. } => send_handle.abort().await,
+            LocalEchoContent::Redaction { send_handle, .. } => send_handle.abort().await,
+        }
+        .map_err(|e| e.to_string())?;
+        if was_aborted {
+            aborted += 1;
+        }
+    }
+
+    Ok(aborted)
+}
+
+pub(super) async fn discard_pending_room_sends(
+    client: &Client,
+    room_id: &str,
+) -> Result<u64, String> {
+    let room = get_room(client, room_id)?;
+    room.send_queue().set_enabled(false);
+    abort_pending_room_queue(&room).await
+}
+
+#[cfg(test)]
+mod room_send_queue_barrier_tests {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn read_only_barrier_aborts_pending_messages_and_pauses_the_queue() {
+        let room_id = room_id!("!owned-barrier:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+        room.send_queue()
+            .send(AnyMessageLikeEventContent::RoomMessage(
+                RoomMessageEventContent::text_plain("offline message"),
+            ))
+            .await
+            .expect("queue pending message");
+
+        assert_eq!(
+            set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, false)
+                .await
+                .expect("pause unresolved room queue"),
+            0
+        );
+        let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
+        assert_eq!(local_echoes.len(), 1);
+        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
+            "blocked while pre-disabled",
+        ));
+        assert!(
+            super::super::send::send_and_capture_transaction_id(&client, &room, content)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, true)
+                .await
+                .expect("close room queue"),
+            1
+        );
+        assert!(!room.send_queue().is_enabled());
+        let (local_echoes, _updates) = room.send_queue().subscribe().await.unwrap();
+        assert!(local_echoes.is_empty());
+
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), false, false)
+            .await
+            .expect("reopen room queue");
+        assert!(!room.send_queue().is_enabled());
+    }
+
+    #[tokio::test]
+    async fn owned_barrier_rejects_new_sends_and_resumes_the_queue() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        assert!(room.send_queue().is_enabled());
+
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), true, false)
+            .await
+            .expect("pause room queue");
+        assert!(!room.send_queue().is_enabled());
+        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
+            "blocked message",
+        ));
+        assert!(
+            super::super::send::send_and_capture_transaction_id(&client, &room, content)
+                .await
+                .is_err()
+        );
+
+        set_room_send_queue_read_only_impl(&client, None, room_id.as_str(), false, false)
+            .await
+            .expect("resume owned room queue");
+        assert!(room.send_queue().is_enabled());
+    }
+}
+
 /// Retries sending a message local echo that's parked in a failed
 /// ("wedged") state — Charm 1.0's `onResend` (`message/Message.tsx:666-713`)
 /// equivalent. Uses matrix-rust-sdk's own send-queue retry primitive
@@ -541,7 +886,15 @@ pub async fn resend_message_impl(
     room_id: &str,
     transaction_id: &str,
 ) -> Result<(), String> {
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
+    if ROOM_UPGRADE_BARRIER_ROOMS
+        .lock()
+        .await
+        .contains(room.room_id())
+    {
+        return Err("This room is read-only while its current state is verified.".to_string());
+    }
     let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
         return Ok(());
     };
@@ -582,6 +935,7 @@ pub async fn discard_failed_message_impl(
     room_id: &str,
     transaction_id: &str,
 ) -> Result<bool, String> {
+    let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
     let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
         return Ok(false);
@@ -593,7 +947,13 @@ pub async fn discard_failed_message_impl(
     // *other* message the user sends in this room afterward would sit as a
     // local echo forever, never actually reaching the queue's background
     // task.
-    room.send_queue().set_enabled(true);
+    if !ROOM_UPGRADE_BARRIER_ROOMS
+        .lock()
+        .await
+        .contains(room.room_id())
+    {
+        room.send_queue().set_enabled(true);
+    }
     Ok(aborted)
 }
 
@@ -612,6 +972,7 @@ pub async fn report_event(
     reason: Option<String>,
     score: Option<i32>,
 ) -> Result<(), String> {
+    let _guard = lock_room_mutation(&room_id).await?;
     let client = state.require_client().await?;
     report_event_impl(&client, &room_id, &event_id, reason, score).await
 }

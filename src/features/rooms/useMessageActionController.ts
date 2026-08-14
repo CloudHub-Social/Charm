@@ -20,6 +20,7 @@ interface UseMessageActionControllerOptions {
   currentUserId: string;
   setReplyTarget: (reply: ReplyRef | null) => void;
   setEditingEventId: (eventId: string | null) => void;
+  mutationsDisabled?: boolean;
 }
 
 export function useMessageActionController({
@@ -27,6 +28,7 @@ export function useMessageActionController({
   currentUserId,
   setReplyTarget,
   setEditingEventId,
+  mutationsDisabled = false,
 }: UseMessageActionControllerOptions) {
   const messageActionParityEnabled = useFlag("message_action_parity");
   const [dialogTarget, setDialogTarget] = useState<MessageActionDialogTarget | null>(null);
@@ -47,10 +49,10 @@ export function useMessageActionController({
   const visibleDialogTarget = dialogTarget?.roomId === roomId ? dialogTarget : null;
   useEffect(() => {
     setDialogTarget(null);
-  }, [roomId]);
+  }, [roomId, mutationsDisabled]);
 
   function openDialog(kind: MessageActionDialogKind, eventId: string) {
-    if (!roomId) return;
+    if (!roomId || (mutationsDisabled && (kind === "delete" || kind === "report"))) return;
     setDialogTarget({ kind, roomId, eventId });
   }
 
@@ -62,7 +64,7 @@ export function useMessageActionController({
     target: MessageActionDialogTarget,
     reason: string | null,
   ): Promise<boolean> {
-    if (target.roomId !== roomId) return false;
+    if (mutationsDisabled || target.roomId !== roomId) return false;
     if (target.kind === "delete") return actions.handleDelete(target.eventId, reason);
     if (target.kind === "report") return actions.handleReport(target.eventId, reason);
     return false;
@@ -80,15 +82,20 @@ export function useMessageActionController({
   function rowActions(message: RoomMessageSummary) {
     return {
       onReply: () => actions.handleReply(message),
-      onReact: (emoji: string) => actions.handleToggleReaction(message.event_id, emoji),
+      onReact: (emoji: string) => {
+        if (!mutationsDisabled) actions.handleToggleReaction(message.event_id, emoji);
+      },
       onEdit: () => actions.handleEdit(message.event_id),
       onDelete: () => {
+        if (mutationsDisabled) return;
         if (messageActionParityEnabled) openDialog("delete", message.event_id);
         else void actions.handleDelete(message.event_id);
       },
       onCopy: () => navigator.clipboard?.writeText(message.body),
       onResend: () => {
-        if (message.transaction_id) void actions.handleResend(message.transaction_id);
+        if (!mutationsDisabled && message.transaction_id) {
+          void actions.handleResend(message.transaction_id);
+        }
       },
       onDiscard: () => {
         if (message.transaction_id) void actions.handleDiscard(message.transaction_id);
@@ -99,8 +106,12 @@ export function useMessageActionController({
           .writeText(eventPermalink(roomId, message.event_id, permalinkViaServer))
           .catch(logAndIgnore);
       },
-      onPin: () => void actions.handlePin(message.event_id),
-      onUnpin: () => void actions.handleUnpin(message.event_id),
+      onPin: () => {
+        if (!mutationsDisabled) void actions.handlePin(message.event_id);
+      },
+      onUnpin: () => {
+        if (!mutationsDisabled) void actions.handleUnpin(message.event_id);
+      },
       onForward: messageActionParityEnabled
         ? () => openDialog("forward", message.event_id)
         : undefined,

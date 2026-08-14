@@ -17,6 +17,15 @@ use ts_rs::TS;
 
 use super::{media, profiles, shell, MatrixState};
 
+fn timeline_items_enabled(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
+        ) || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomUpgrades)
+    })
+}
+
 /// The fixed placeholder body used for an as-yet-undecrypted message (see
 /// `MsgLikeKind::UnableToDecrypt` below). `RoomMessageSummary::is_undecrypted`
 /// is the authoritative signal for this state — this constant only sets the
@@ -1219,12 +1228,7 @@ pub(crate) fn spawn_timeline_listener(
         let initial_summaries = message_summaries(&initial_items);
         let mut seen_undecrypted = std::collections::HashSet::new();
         observe_newly_decrypted(&mut seen_undecrypted, &initial_summaries);
-        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
-            crate::feature_flags::flag(
-                &dir,
-                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
-            )
-        });
+        let include_timeline_items = timeline_items_enabled(&app);
         // Seed with every event id (and the latest timestamp) already present
         // before this listener subscribed — the initial `timeline:update` for
         // a room the user just opened is existing history, never a "new
@@ -1266,12 +1270,7 @@ pub(crate) fn spawn_timeline_listener(
             // Labs and remote-rollout changes apply to an already-open room.
             // Capturing the initial value would make the next live diff erase
             // notices after the flag changes until this Timeline is evicted.
-            let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
-                crate::feature_flags::flag(
-                    &dir,
-                    crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
-                )
-            });
+            let include_timeline_items = timeline_items_enabled(&app);
 
             let new_messages: Vec<&RoomMessageSummary> =
                 summaries.iter().filter(|m| dedup.is_new(m)).collect();
@@ -1448,12 +1447,7 @@ pub async fn get_timeline_page(
             .await?;
         let media_cache = state.require_media_cache(&app).await.ok();
 
-        let include_timeline_items = app.path().app_data_dir().is_ok_and(|dir| {
-            crate::feature_flags::flag(
-                &dir,
-                crate::feature_flags::FeatureFlagKey::TimelineStateEvents,
-            )
-        });
+        let include_timeline_items = timeline_items_enabled(&app);
         let page = get_timeline_page_impl(
             &client,
             &timeline,

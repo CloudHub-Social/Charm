@@ -424,6 +424,7 @@ pub async fn set_room_profile_impl(
     display_name: Option<String>,
     avatar_url: Option<String>,
 ) -> Result<(), String> {
+    let _mutation_guard = super::actions::lock_room_mutation(room_id).await?;
     let room_id = RoomId::parse(room_id).map_err(|error| error.to_string())?;
     let room = client
         .get_room(&room_id)

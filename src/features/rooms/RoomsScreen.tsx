@@ -21,6 +21,7 @@ import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
   acceptInvite,
   declineInvite,
+  joinRoom,
   listRooms,
   onRoomListUpdate,
   resolveRoomAlias,
@@ -40,7 +41,11 @@ import {
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { useFlag } from "@/featureFlags";
+import {
+  useFeatureFlagPersistenceSettled,
+  useFeatureFlagPersistenceVersion,
+  useFlag,
+} from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 import { useIdlePresence } from "@/features/settings/useIdlePresence";
 import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
@@ -92,6 +97,11 @@ export function RoomsScreen({
   // two definitions in sync avoids it becoming one the next time either
   // file's gating logic changes.
   const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
+  // Spec 31 is native-only until the web transport can perform the same
+  // authoritative tombstone read as the Tauri command.
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
+  const roomUpgradesPersistenceVersion = useFeatureFlagPersistenceVersion("room_upgrades");
+  const roomUpgradesPersistenceSettled = useFeatureFlagPersistenceSettled("room_upgrades");
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
   const messageSearchEnabled = useFlag("encrypted_local_message_search");
   const quickSwitcherEnabled = useFlag("quick_switcher");
@@ -244,6 +254,16 @@ export function RoomsScreen({
     }
     // If the immediate SDK snapshot is also behind, retain the already-armed
     // intent until the normal room-list stream publishes this specific target.
+  }
+
+  async function followRoomUpgrade(roomId: string) {
+    const alreadyJoined = roomsRef.current.some(
+      (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+    );
+    if (!alreadyJoined) {
+      await joinRoom(roomId);
+    }
+    await navigateToProfileRoom(roomId);
   }
 
   function selectHome() {
@@ -598,7 +618,56 @@ export function RoomsScreen({
   // while visible, so without this always-on subscription here a remote
   // membership change while both are closed would go un-invalidated,
   // leaving `useRoomMembers`' cache stale until it naturally expires.
-  useRoomDetails(activeRoom?.room_id ?? null);
+  const {
+    data: activeRoomDetails,
+    isSuccess: activeRoomStateLoaded,
+    isFetching: activeRoomStateFetching,
+    isRefetchError: activeRoomStateRefetchFailed,
+    refetch: refetchActiveRoomState,
+  } = useRoomDetails(activeRoom?.room_id ?? null, true);
+  const [authoritativeRoomState, setAuthoritativeRoomState] = useState<{
+    roomId: string;
+    persistenceVersion: number;
+  } | null>(null);
+  useEffect(() => {
+    const roomId = activeRoom?.room_id;
+    if (!roomUpgradesEnabled || !roomId || !roomUpgradesPersistenceSettled) {
+      setAuthoritativeRoomState(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setAuthoritativeRoomState(null);
+    void refetchActiveRoomState()
+      .then((result) => {
+        if (!cancelled && !result.isError) {
+          setAuthoritativeRoomState({
+            roomId,
+            persistenceVersion: roomUpgradesPersistenceVersion,
+          });
+        }
+      })
+      .catch(logAndIgnore);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeRoom?.room_id,
+    refetchActiveRoomState,
+    roomUpgradesEnabled,
+    roomUpgradesPersistenceSettled,
+    roomUpgradesPersistenceVersion,
+  ]);
+  const authoritativeRoomStateResolved =
+    !roomUpgradesEnabled ||
+    (roomUpgradesPersistenceSettled &&
+      authoritativeRoomState?.roomId === activeRoom?.room_id &&
+      authoritativeRoomState?.persistenceVersion === roomUpgradesPersistenceVersion);
+  const activeRoomStateResolved =
+    activeRoomStateLoaded &&
+    !activeRoomStateFetching &&
+    !activeRoomStateRefetchFailed &&
+    authoritativeRoomStateResolved;
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
   );
@@ -703,6 +772,9 @@ export function RoomsScreen({
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
             onNavigateToProfileRoom={navigateToProfileRoom}
+            currentTombstone={activeRoomDetails?.tombstone ?? null}
+            currentRoomStateResolved={activeRoomStateResolved}
+            onFollowRoomUpgrade={followRoomUpgrade}
             jumpToEventId={
               jumpTarget && activeRoom?.room_id === jumpTarget.roomId ? jumpTarget.eventId : null
             }
@@ -713,6 +785,7 @@ export function RoomsScreen({
           activeRoom && messagePinningEnabled && pinnedMessagesDrawerOpen ? (
             <PinnedMessagesPanel
               roomId={activeRoom.room_id}
+              roomStateResolved={activeRoomStateResolved}
               onClose={() => setPinnedMessagesDrawerOpen(false)}
               // Review fix: this used to call `ChatShell`'s own imperative
               // `scrollToMessage` (a plain in-loaded-window `scrollToIndex`,
@@ -734,6 +807,10 @@ export function RoomsScreen({
             <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
+              mutationsBlocked={
+                roomUpgradesEnabled &&
+                (!activeRoomStateResolved || Boolean(activeRoomDetails?.tombstone))
+              }
               onNavigateToRoom={navigateToProfileRoom}
               onClose={() => setMembersDrawerOpen(false)}
             />
@@ -777,6 +854,7 @@ export function RoomsScreen({
         currentUserId={currentUserId}
         rooms={joinedRooms}
         onNavigateToRoom={navigateToProfileRoom}
+        onRoomUpgraded={followRoomUpgrade}
         onSpaceChildrenChanged={() => {
           setHierarchyRefreshToken((token) => token + 1);
         }}

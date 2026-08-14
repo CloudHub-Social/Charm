@@ -279,6 +279,11 @@ async fn clear_local_session(
     // slot already empty (this function had taken it) and have nothing left
     // to await, but the task itself could still be running.
     sync::abort_current_sync_loop(app).await;
+    // The sync task is one of the writers of the process-wide room-upgrade
+    // barrier sets. Clear only after its awaited shutdown so an in-flight
+    // authoritative details refresh cannot repopulate old-account state
+    // behind this cleanup and leak it into the next session.
+    super::actions::clear_room_upgrade_queue_barriers().await;
 
     // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
     // iteration and isn't tied to any particular client — without resetting

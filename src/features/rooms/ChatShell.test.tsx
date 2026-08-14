@@ -23,6 +23,7 @@ import {
   showHiddenEventsAtom,
 } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
+import { resetRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 
 // LinkPreviewForMessage (Spec 29) reads the room-details query cache via
 // `useQuery`, which needs a QueryClientProvider ancestor even when its own
@@ -67,6 +68,7 @@ const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
 const resendMessage = vi.fn().mockResolvedValue(undefined);
 const discardFailedMessage = vi.fn().mockResolvedValue(true);
+const setRoomSendQueueReadOnly = vi.fn().mockResolvedValue(0);
 const canRedactOthers = vi.fn().mockResolvedValue(true);
 const pinEvent = vi.fn().mockResolvedValue(undefined);
 const unpinEvent = vi.fn().mockResolvedValue(undefined);
@@ -214,6 +216,7 @@ vi.mock("@/lib/matrix", () => ({
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
   resendMessage: (...args: unknown[]) => resendMessage(...args),
   discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
+  setRoomSendQueueReadOnly: (...args: unknown[]) => setRoomSendQueueReadOnly(...args),
   canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
   pinEvent: (...args: unknown[]) => pinEvent(...args),
   unpinEvent: (...args: unknown[]) => unpinEvent(...args),
@@ -246,6 +249,7 @@ vi.mock("@/lib/matrix", () => ({
     roomDetailsCallbacks.push(callback);
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   // Spec 29: LinkPreviewForMessage reads room encryption state before ever
   // fetching a preview. None of ChatShell's own tests exercise link
   // previews, so default to "encrypted" (the safe suppress-by-default
@@ -391,6 +395,7 @@ describe("ChatShell", () => {
   });
 
   beforeEach(() => {
+    resetRoomSendQueueBarrier();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWriteText },
@@ -406,6 +411,7 @@ describe("ChatShell", () => {
     toggleReaction.mockReset();
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
+    setRoomSendQueueReadOnly.mockReset().mockResolvedValue(0);
     pinEvent.mockReset().mockResolvedValue(undefined);
     unpinEvent.mockReset().mockResolvedValue(undefined);
     getRoomDetails
@@ -452,6 +458,354 @@ describe("ChatShell", () => {
   it("prompts to select a room when none is active", () => {
     render(<ChatShell room={null} currentUserId="@me:localhost" />);
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
+  });
+
+  it("makes a tombstoned room read-only and navigates to its replacement", async () => {
+    const onFollowRoomUpgrade = vi.fn().mockResolvedValue(undefined);
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [
+        {
+          kind: "state",
+          event_id: "$tombstone",
+          sender: "@admin:localhost",
+          timestamp_ms: 1,
+          state_key: "",
+          change: {
+            type: "tombstone",
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          onFollowRoomUpgrade={onFollowRoomUpgrade}
+        />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText("This room has been upgraded")).toBeVisible();
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, true),
+    );
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to upgraded room" }));
+    expect(onFollowRoomUpgrade).toHaveBeenCalledWith("!replacement:localhost");
+  });
+
+  it("ignores tombstone-shaped timeline state with a non-empty state key", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [],
+      items: [
+        {
+          kind: "state",
+          event_id: "$not-the-room-tombstone",
+          sender: "@admin:localhost",
+          timestamp_ms: 1,
+          state_key: "unrelated",
+          change: {
+            type: "tombstone",
+            body: "Not the canonical room upgrade",
+            replacement_room_id: "!unrelated:localhost",
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+
+    renderChatShell();
+
+    expect(await screen.findByTestId("composer-shell")).toBeInTheDocument();
+    expect(screen.queryByText("This room has been upgraded")).not.toBeInTheDocument();
+  });
+
+  it("uses authoritative current tombstone state when the timeline window omits it", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$newer", sender: "@alice:localhost", body: "after upgrade" }),
+      ],
+      items: [
+        {
+          kind: "message",
+          message: summary({
+            event_id: "$newer",
+            sender: "@alice:localhost",
+            body: "after upgrade",
+          }),
+        },
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText("This room has been upgraded")).toBeVisible();
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+  });
+
+  it("disables server-mutating message actions in a tombstoned room", async () => {
+    getRoomDetails.mockResolvedValue({
+      room_id: room.room_id,
+      is_encrypted: false,
+      pinned_event_ids: [],
+      can: { set_pinned_events: true },
+    });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$old:localhost",
+          sender: "@alice:localhost",
+          body: "old room message",
+          reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
+        }),
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const reaction = await screen.findByRole("button", { name: /👍/, pressed: false });
+    expect(reaction).toBeDisabled();
+    fireEvent.click(reaction);
+    expect(toggleReaction).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(await screen.findByText("Reply")).toHaveAttribute("data-disabled");
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+    const bookmark = screen.getByText("Bookmark").closest("[role=menuitem]");
+    expect(bookmark).not.toHaveAttribute("data-disabled");
+    fireEvent.click(bookmark!);
+    await waitFor(() => expect(addBookmark).toHaveBeenCalledWith(room.room_id, "$old:localhost"));
+  });
+
+  it("blocks attachment drops after authoritative tombstone state closes the room", async () => {
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const shell = await screen.findByTestId("chat-shell");
+    const file = new File(["fake"], "stale-room.png", { type: "image/png" });
+    Object.defineProperty(file, "path", { value: "/Users/me/stale-room.png" });
+    fireEvent.drop(shell, {
+      dataTransfer: { files: [file], types: ["Files"], dropEffect: "none" },
+    });
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
+  it("keeps sending unavailable until authoritative room state has loaded", async () => {
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+
+    expect(await screen.findByText(/Checking whether this room is still active/)).toBeVisible();
+    expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
+  });
+
+  it("withdraws typing when authoritative room state becomes read-only", async () => {
+    const store = createStore();
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByTestId("composer-shell");
+    sendTyping.mockClear();
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(sendTyping).toHaveBeenCalledWith(room.room_id, false));
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, true, false),
+    );
+
+    setRoomSendQueueReadOnly.mockRejectedValueOnce(new Error("resume failed"));
+    view.unmount();
+    const writableView = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenLastCalledWith(room.room_id, false, false),
+    );
+
+    writableView.unmount();
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => !readOnly)).toHaveLength(
+        2,
+      ),
+    );
+  });
+
+  it("drops queue ownership and pending transitions between signed-in sessions", async () => {
+    let settlePause: (() => void) | undefined;
+    setRoomSendQueueReadOnly.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          settlePause = () => resolve(0);
+        }),
+    );
+    const store = createStore();
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@first:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, false),
+    );
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@first:localhost" currentRoomStateResolved />
+      </JotaiProvider>,
+    );
+    resetRoomSendQueueBarrier();
+    view.unmount();
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@second:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => readOnly)).toHaveLength(
+        2,
+      ),
+    );
+    settlePause?.();
+    await act(async () => undefined);
+    expect(setRoomSendQueueReadOnly.mock.calls.some(([, readOnly]) => !readOnly)).toBe(false);
+  });
+
+  it("retries a failed queue pause when the read-only room remounts", async () => {
+    setRoomSendQueueReadOnly.mockRejectedValueOnce(new Error("client unavailable"));
+    const firstView = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly).toHaveBeenCalledWith(room.room_id, true, false),
+    );
+    firstView.unmount();
+
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(setRoomSendQueueReadOnly.mock.calls.filter(([, readOnly]) => readOnly)).toHaveLength(
+        2,
+      ),
+    );
+  });
+
+  it("transfers a pending queue retry to a remounted room", async () => {
+    let rejectPause: ((error: Error) => void) | undefined;
+    setRoomSendQueueReadOnly.mockImplementationOnce(
+      () =>
+        new Promise<number>((_resolve, reject) => {
+          rejectPause = reject;
+        }),
+    );
+    const firstView = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledTimes(1));
+    firstView.unmount();
+
+    setRoomSendQueueReadOnly.mockResolvedValue(0);
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" currentRoomStateResolved={false} />
+      </JotaiProvider>,
+    );
+    await act(async () => rejectPause?.(new Error("pause failed")));
+
+    await waitFor(() => expect(setRoomSendQueueReadOnly).toHaveBeenCalledTimes(2));
+  });
+
+  it("reports a replacement-room access failure instead of silently doing nothing", async () => {
+    const onFollowRoomUpgrade = vi.fn().mockRejectedValue(new Error("forbidden"));
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+          onFollowRoomUpgrade={onFollowRoomUpgrade}
+        />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Go to upgraded room" }));
+    expect(
+      await screen.findByText("Couldn't open the upgraded room. Check your access and try again."),
+    ).toBeVisible();
   });
 
   it("renders mobile chat navigation, compact formatting, and room actions", async () => {
@@ -4781,6 +5135,40 @@ describe("ChatShell", () => {
     );
   });
 
+  it("does not stage a native-picker result after the room becomes tombstoned", async () => {
+    let resolveDialog: ((value: string) => void) | undefined;
+    openFileDialog.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveDialog = resolve)),
+    );
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    await act(async () => {
+      resolveDialog?.("/Users/me/stale-room.png");
+    });
+
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("shows an upload progress bar that reacts to upload:progress and clears on completion", async () => {
     sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test
     openFileDialog.mockResolvedValue("/Users/me/video.mp4");
@@ -4850,6 +5238,72 @@ describe("ChatShell", () => {
 
     await waitFor(() => expect(screen.queryByText("room-a.mp4")).not.toBeInTheDocument());
     expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
+  });
+
+  it("cancels an in-flight upload when the room becomes read-only", async () => {
+    sendAttachment.mockImplementation(() => new Promise(() => {}));
+    openFileDialog.mockResolvedValue("/Users/me/upgrade-race.mp4");
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_001);
+    vi.spyOn(Math, "random").mockReturnValue(0.23456789);
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    await screen.findByText("upgrade-race.mp4");
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    const expectedTxnId = `local-1700000000001-${(0.23456789).toString(36).slice(2)}`;
+    await waitFor(() => expect(cancelAttachmentUpload).toHaveBeenCalledWith(expectedTxnId));
+    expect(screen.queryByText("upgrade-race.mp4")).not.toBeInTheDocument();
+    vi.restoreAllMocks();
+  });
+
+  it("does not start an upload when the room becomes read-only during preflight", async () => {
+    openFileDialog.mockResolvedValue("/Users/me/preflight-race.mp4");
+    let resolveSize: ((value: number) => void) | undefined;
+    getFileSize.mockImplementation(() => new Promise<number>((resolve) => (resolveSize = resolve)));
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    await waitFor(() => expect(getFileSize).toHaveBeenCalled());
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          currentTombstone={{
+            body: "Room upgraded",
+            replacement_room_id: "!replacement:localhost",
+          }}
+        />
+      </JotaiProvider>,
+    );
+
+    await act(async () => resolveSize?.(1024));
+    expect(sendAttachment).not.toHaveBeenCalled();
   });
 
   it("does not confirm a staged attachment into a newly selected room", async () => {

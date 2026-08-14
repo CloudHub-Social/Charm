@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
+import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
@@ -30,7 +30,11 @@ import {
 import { useReadReceipts } from "./useReadReceipts";
 import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
+import {
+  attachmentUploadPayload,
+  hasDraggedFiles,
+  useAttachmentUploads,
+} from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
 import { useChatTyping } from "./useChatTyping";
 import { useMessageSend } from "./useMessageSend";
@@ -48,49 +52,11 @@ import {
 } from "@/features/appearance/atoms";
 import { bucketTimelineNotices, TimelineNoticeList } from "./TimelineNotices";
 import { JumpToDateDialog } from "./JumpToDateDialog";
-
-interface ChatShellProps {
-  room: RoomSummary | null;
-  currentUserId: string;
-  onBack?: () => void;
-  onNavigateToRoom?: (roomIdentifier: string) => void;
-  onNavigateToProfileRoom?: (roomId: string) => void;
-  /**
-   * An event id to scroll to as soon as it's loaded in this room's timeline
-   * (Spec 12's Saved Messages "jump to message"). Set by the caller after
-   * selecting the bookmark's room; cleared via `onJumpHandled` once the jump
-   * completes (found and scrolled to) or definitively fails (not reachable
-   * even after `loadTimelineAroundEvent`), so a stale target doesn't
-   * re-trigger a jump on some unrelated later render.
-   */
-  jumpToEventId?: string | null;
-  onJumpHandled?: () => void;
-}
-
-/** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
- * Virtuoso's `context` prop rather than closing over component state, so it's
- * a stable reference across renders instead of being redefined on every one. */
-function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean; hasMore: boolean } }) {
-  if (context?.loadingMore) {
-    return (
-      <p className="pb-2 text-center text-xs text-muted-foreground">Loading older messages…</p>
-    );
-  }
-  if (context && !context.hasMore) {
-    return (
-      <div className="flex items-center gap-3 pb-3 text-[11px] font-medium text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        <span>You're all caught up</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-    );
-  }
-  return null;
-}
-
-function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
-  return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
-}
+import { RoomUpgradeBanner, RoomUpgradeStatePending } from "./RoomUpgradeBanner";
+import { useRoomTombstone } from "./useRoomTombstone";
+import type { ChatShellProps } from "./ChatShellProps";
+import { LoadingOlderHeader } from "./LoadingOlderHeader";
+import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -210,6 +176,9 @@ export function ChatShell({
   onBack,
   onNavigateToRoom,
   onNavigateToProfileRoom,
+  currentTombstone = null,
+  currentRoomStateResolved = true,
+  onFollowRoomUpgrade,
   jumpToEventId = null,
   onJumpHandled,
 }: ChatShellProps) {
@@ -218,6 +187,7 @@ export function ChatShell({
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
+  const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
   const timelineStateEventsPersistenceVersion =
     useFeatureFlagPersistenceVersion("timeline_state_events");
   const messageLayout = useAtomValue(messageLayoutAtom);
@@ -328,10 +298,23 @@ export function ChatShell({
     room,
     roomSettingsOpen,
     activeJumpToEventId !== null,
-    timelineStateEventsEnabled,
+    timelineStateEventsEnabled || roomUpgradesEnabled,
     hideMembershipEvents,
     showHiddenEvents,
   );
+  const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
+  const replacementRoomId = tombstone?.replacement_room_id ?? null;
+  const roomMutationsBlocked =
+    Boolean(tombstone) || (roomUpgradesEnabled && !currentRoomStateResolved);
+  const roomMutationsBlockedRef = useRef(roomMutationsBlocked);
+  roomMutationsBlockedRef.current = roomMutationsBlocked;
+  useRoomSendQueueBarrier(activeRoomId, roomUpgradesEnabled, roomMutationsBlocked, !!tombstone);
+  useEffect(() => {
+    if (!roomMutationsBlocked) return;
+    setPendingAttachment(null);
+    setPendingAttachmentCaption("");
+    setFileDragActive(false);
+  }, [roomMutationsBlocked]);
   const noticeBuckets = useMemo(
     () =>
       timelineStateEventsEnabled
@@ -533,13 +516,23 @@ export function ChatShell({
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
   const { typingText, handleTypingInput, stopTyping } = useChatTyping(activeRoomId, currentUserId);
+  useEffect(() => {
+    if (roomMutationsBlocked) stopTyping();
+  }, [roomMutationsBlocked, stopTyping]);
   const participants = useRoomParticipants(activeRoomId, currentUserId);
   useEffect(() => {
     setFollowingExpanded(false);
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
-  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
+  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(
+    activeRoomId,
+    roomMutationsBlockedRef,
+  );
+  useEffect(() => {
+    if (!roomMutationsBlocked || uploads.length === 0) return;
+    for (const upload of uploads) dismissUpload(upload.txnId);
+  }, [dismissUpload, roomMutationsBlocked, uploads]);
   const { commandFeedback, setCommandFeedback, handleComposerSubmit, handleSlashCommand } =
     useMessageSend({
       room,
@@ -548,12 +541,14 @@ export function ChatShell({
       setEditingEventId,
       setReplyTarget,
       stopTyping,
+      mutationsBlockedRef: roomMutationsBlockedRef,
     });
   const messageActionController = useMessageActionController({
     roomId: activeRoomId,
     currentUserId,
     setReplyTarget,
     setEditingEventId,
+    mutationsDisabled: roomMutationsBlocked,
   });
 
   // No `send_queue:update` listener here: the live `Timeline` (Spec 14)
@@ -606,6 +601,10 @@ export function ChatShell({
   // otherwise (or if the polish flag never lands for this build) they upload
   // immediately, matching pre-Spec-42 behavior.
   function stageOrSendAttachment(file: string | File) {
+    // The native picker resolves asynchronously. Re-read the current gate so
+    // a tombstone received while the dialog was open cannot stage or send a
+    // file through the stale click handler closure.
+    if (roomMutationsBlockedRef.current) return;
     if (!mediaSendPolishEnabled) {
       handleAttachFile(file);
       return;
@@ -616,7 +615,7 @@ export function ChatShell({
   }
 
   function handleConfirmPendingAttachment() {
-    if (!pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
+    if (roomMutationsBlocked || !pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
       setPendingAttachment(null);
       setPendingAttachmentCaption("");
       return;
@@ -718,7 +717,7 @@ export function ChatShell({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {mediaSendPolishEnabled && fileDragActive && (
+      {mediaSendPolishEnabled && !roomMutationsBlocked && fileDragActive && (
         <output
           aria-live="polite"
           className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-solid bg-background/90 text-center shadow-lg backdrop-blur-sm"
@@ -755,14 +754,9 @@ export function ChatShell({
         jumpToDateEnabled={jumpToDateEnabled}
         onJumpToDate={() => setJumpToDateOpen(true)}
       />
-
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* While `messages` is empty but `hasMore` is true (and no request
-            has failed), older pages are being auto-fetched (see the effect
-            above) looking for a renderable message — keep showing the
-            loading state rather than "No messages yet", which would
-            otherwise flash misleadingly for a room whose *newest* page
-            happened to be entirely unsupported item types. */}
+        {/* Keep loading while older pages are auto-fetched for a renderable message;
+            the newest page may contain only unsupported item types. */}
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
@@ -868,14 +862,17 @@ export function ChatShell({
                     roomId={room.room_id}
                     currentUserId={currentUserId}
                     unreadStartIndex={unreadStartIdx}
-                    canRedact={canRedactBySender[message.sender] ?? false}
-                    canPin={canPinMessages}
+                    canRedact={
+                      !roomMutationsBlocked && (canRedactBySender[message.sender] ?? false)
+                    }
+                    canPin={!roomMutationsBlocked && canPinMessages}
                     isPinned={pinnedEventIds.includes(message.event_id)}
                     readers={readers}
                     senderNameByUserId={senderNameByUserId}
                     newMessageKeys={newMessageKeys}
                     highlightedEventId={highlightedEventId}
                     controller={messageActionController}
+                    mutationsDisabled={roomMutationsBlocked}
                     onJumpToMessage={handleJumpToMessage}
                     onSenderClick={
                       userProfileCardsEnabled
@@ -921,13 +918,11 @@ export function ChatShell({
           </button>
         )}
       </div>
-
       <MessageActionDialogs
         target={messageActionController.visibleDialogTarget}
         onClose={messageActionController.closeDialog}
         onConfirm={messageActionController.confirmDialog}
       />
-
       {jumpToDateEnabled && room && (
         <JumpToDateDialog
           open={jumpToDateOpen}
@@ -936,7 +931,6 @@ export function ChatShell({
           onResolved={setDateJumpTarget}
         />
       )}
-
       {typingText && (
         <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">
           <span className="flex items-center gap-[3px]" aria-hidden="true">
@@ -957,7 +951,7 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && visiblePendingAttachment && (
+      {mediaSendPolishEnabled && !roomMutationsBlocked && visiblePendingAttachment && (
         <div className="flex flex-col gap-2 px-4 pb-2">
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
             <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>
@@ -1069,94 +1063,103 @@ export function ChatShell({
           )}
         </button>
       )}
-      <div
-        data-testid="composer-shell"
-        className={cn(
-          "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
-          mobile ? "px-2" : "px-3",
-        )}
-      >
-        <input
-          ref={attachmentInputRef}
-          type="file"
-          className="hidden"
-          onChange={handleAttachmentInputChange}
+      {tombstone ? (
+        <RoomUpgradeBanner
+          replacementRoomId={replacementRoomId}
+          onFollowUpgrade={onFollowRoomUpgrade}
         />
+      ) : roomUpgradesEnabled && !currentRoomStateResolved ? (
+        <RoomUpgradeStatePending />
+      ) : (
         <div
+          data-testid="composer-shell"
           className={cn(
-            "flex items-end border border-border bg-card",
-            mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+            "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+            mobile ? "px-2" : "px-3",
           )}
-          onPaste={handlePaste}
         >
-          <button
-            aria-label="Attach"
-            onClick={handleAttachClick}
-            className={cn(
-              "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
-              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-            )}
-          >
-            <Paperclip size={18} />
-          </button>
-          <Composer
-            accountId={currentUserId}
-            key={`${room.room_id}-${editingEventId ?? "new"}`}
-            ref={composerRef}
-            roomId={room.room_id}
-            mode={composerMode}
-            initialHtml={
-              editingMessage
-                ? editingMessage.formatted_body
-                  ? sanitizeMatrixHtml(editingMessage.formatted_body)
-                  : escapeHtmlText(editingMessage.body)
-                : undefined
-            }
-            placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
-            onSubmit={handleComposerSubmitAndScroll}
-            onSlashCommand={handleSlashCommandAndScroll}
-            onEscape={() => {
-              if (editingEventId) setEditingEventId(null);
-              else if (replyTarget) setReplyTarget(null);
-            }}
-            onTypingInput={handleTypingInput}
-            onBlur={stopTyping}
-            onEmptyChange={setIsComposerEmpty}
-            showFormattingToolbar={!mobile || showMobileFormatting}
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleAttachmentInputChange}
           />
-          {mobile && (
+          <div
+            className={cn(
+              "flex items-end border border-border bg-card",
+              mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+            )}
+            onPaste={handlePaste}
+          >
             <button
-              type="button"
-              aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
-              aria-pressed={showMobileFormatting}
-              onClick={() => setShowMobileFormatting((visible) => !visible)}
+              aria-label="Attach"
+              onClick={handleAttachClick}
               className={cn(
-                "flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent",
-                showMobileFormatting && "bg-accent text-accent-foreground",
+                "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
+                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
               )}
             >
-              <Type className="size-5" />
+              <Paperclip size={18} />
             </button>
-          )}
-          {/* `bg-primary-solid` (not `bg-primary`): solid fill under
+            <Composer
+              accountId={currentUserId}
+              key={`${room.room_id}-${editingEventId ?? "new"}`}
+              ref={composerRef}
+              roomId={room.room_id}
+              mode={composerMode}
+              initialHtml={
+                editingMessage
+                  ? editingMessage.formatted_body
+                    ? sanitizeMatrixHtml(editingMessage.formatted_body)
+                    : escapeHtmlText(editingMessage.body)
+                  : undefined
+              }
+              placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
+              onSubmit={handleComposerSubmitAndScroll}
+              onSlashCommand={handleSlashCommandAndScroll}
+              onEscape={() => {
+                if (editingEventId) setEditingEventId(null);
+                else if (replyTarget) setReplyTarget(null);
+              }}
+              onTypingInput={handleTypingInput}
+              onBlur={stopTyping}
+              onEmptyChange={setIsComposerEmpty}
+              showFormattingToolbar={!mobile || showMobileFormatting}
+            />
+            {mobile && (
+              <button
+                type="button"
+                aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
+                aria-pressed={showMobileFormatting}
+                onClick={() => setShowMobileFormatting((visible) => !visible)}
+                className={cn(
+                  "flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent",
+                  showMobileFormatting && "bg-accent text-accent-foreground",
+                )}
+              >
+                <Type className="size-5" />
+              </button>
+            )}
+            {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css.
               Disabled while there's no text to send — this composer has no
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
-          <button
-            type="button"
-            aria-label="Send"
-            onClick={() => composerRef.current?.submit()}
-            disabled={isComposerEmpty}
-            className={cn(
-              "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
-              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-            )}
-          >
-            <Send size={16} />
-          </button>
+            <button
+              type="button"
+              aria-label="Send"
+              onClick={() => composerRef.current?.submit()}
+              disabled={isComposerEmpty}
+              className={cn(
+                "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
+                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+              )}
+            >
+              <Send size={16} />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
       {!mobile && participants.length > 0 && (
         <button
           type="button"
@@ -1188,6 +1191,7 @@ export function ChatShell({
         currentUserId={currentUserId}
         roomId={roomId}
         detailed={userProfileCardsEnabled}
+        roomMutationsBlocked={roomMutationsBlocked}
         onNavigateToRoom={onNavigateToProfileRoom}
         onClose={() => setPillProfile(null)}
       />

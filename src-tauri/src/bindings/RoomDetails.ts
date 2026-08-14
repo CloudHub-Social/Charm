@@ -3,6 +3,7 @@ import type { HistoryVisibilityKind } from "./HistoryVisibilityKind";
 import type { JoinRuleKind } from "./JoinRuleKind";
 import type { PowerLevelThresholds } from "./PowerLevelThresholds";
 import type { RoomPermissions } from "./RoomPermissions";
+import type { RoomTombstoneDetails } from "./RoomTombstoneDetails";
 
 export type RoomDetails = { room_id: string, name: string | null, topic: string | null, avatar_url: string | null, is_encrypted: boolean, join_rule: JoinRuleKind, history_visibility: HistoryVisibilityKind, member_count: number, my_power_level: number, power_levels: PowerLevelThresholds, can: RoomPermissions, 
 /**
@@ -29,4 +30,10 @@ alt_aliases: Array<string>,
  * push every other `RoomDetails` field already relies on — no new
  * sync-side plumbing needed (Spec day-2/04's stated data flow).
  */
-pinned_event_ids: Array<string>, };
+pinned_event_ids: Array<string>, 
+/**
+ * Authoritative current `m.room.tombstone` state. Unlike a timeline
+ * window, room state retains this after newer events arrive and when the
+ * original tombstone falls outside the loaded history.
+ */
+tombstone: RoomTombstoneDetails | null, };

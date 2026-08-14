@@ -1161,6 +1161,20 @@ export function enableRoomEncryption(roomId: string): Promise<void> {
   return invoke("enable_room_encryption", { roomId });
 }
 
+/** Upgrades a room to the homeserver's recommended version and returns the replacement room id. */
+export function upgradeRoom(roomId: string): Promise<string> {
+  return invoke("upgrade_room", { roomId });
+}
+
+/** Pauses or resumes a room queue, optionally aborting pending echoes after a confirmed tombstone. */
+export function setRoomSendQueueReadOnly(
+  roomId: string,
+  readOnly: boolean,
+  discardPending: boolean,
+): Promise<number> {
+  return invoke("set_room_send_queue_read_only", { roomId, readOnly, discardPending });
+}
+
 export function setMemberPowerLevel(
   roomId: string,
   userId: string,
@@ -1267,6 +1281,11 @@ export function removeAltAlias(roomId: string, alias: string): Promise<void> {
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
 export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
+}
+
+/** Fires when an enabled authoritative room-state refresh fails, so mutation surfaces can fail closed while retrying. */
+export function onRoomDetailsUnresolved(callback: (roomId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("room_details:unresolved", (e) => callback(e.payload));
 }
 
 /** Fires only when a joined space receives an m.space.child state update. */

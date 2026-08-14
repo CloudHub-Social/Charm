@@ -49,6 +49,8 @@ export interface MessageRowLayoutProps {
   senderNameByUserId: Map<string, string>;
   /** Whether this message just arrived (not part of the initial/paginated load) — plays a slide-up+fade entrance. */
   isNew: boolean;
+  /** Disables actions that would mutate server state for a read-only room. */
+  mutationsDisabled?: boolean;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */
   getActionsHandle: (key: string) => MessageActionsHandle | undefined;
   /** Registers/unregisters this row's `MessageActions` handle as it mounts/unmounts. */
@@ -84,6 +86,8 @@ export interface MessageRowLayoutProps {
   isPending: boolean;
   isError: boolean;
   disableRelationActions: boolean;
+  /** Disables local actions that still require a stable Matrix event id. */
+  disableStableEventActions?: boolean;
   isUndecrypted: boolean;
   rowKey: string;
   /** Forwards this message to another room. */

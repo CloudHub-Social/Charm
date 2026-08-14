@@ -29,6 +29,8 @@ interface MessageRowProps {
   senderNameByUserId: Map<string, string>;
   /** Whether this message just arrived (not part of the initial/paginated load) — plays a slide-up+fade entrance. */
   isNew: boolean;
+  /** Disables server-mutating actions when the room is no longer writable. */
+  mutationsDisabled?: boolean;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */
   getActionsHandle: (key: string) => MessageActionsHandle | undefined;
   /** Registers/unregisters this row's `MessageActions` handle as it mounts/unmounts. */
@@ -81,7 +83,7 @@ interface MessageRowProps {
  */
 export function MessageRow(props: MessageRowProps) {
   const messageLayout = useAtomValue(messageLayoutAtom);
-  const { message } = props;
+  const { message, mutationsDisabled = false, ...rowProps } = props;
 
   const isPending = message.send_state.state === "pending";
   const isError = message.send_state.state === "error";
@@ -92,7 +94,8 @@ export function MessageRow(props: MessageRowProps) {
   // permanently). Real Matrix event ids always start with "$", so this is a
   // reliable way to tell the two apart without depending on send_state timing.
   const hasRealEventId = message.event_id.startsWith("$");
-  const disableRelationActions = isPending || !hasRealEventId;
+  const disableRelationActions = mutationsDisabled || isPending || !hasRealEventId;
+  const disableStableEventActions = isPending || !hasRealEventId;
   // `is_undecrypted` is the authoritative signal, set server-side only for a
   // `MsgLikeKind::UnableToDecrypt` timeline item — never derive this from
   // `body` text (a real decrypted message can legitimately contain the
@@ -103,10 +106,13 @@ export function MessageRow(props: MessageRowProps) {
   const rowKey = messageRowKey(message);
 
   const layoutProps: MessageRowLayoutProps = {
-    ...props,
+    ...rowProps,
+    message,
+    mutationsDisabled,
     isPending,
     isError,
     disableRelationActions,
+    disableStableEventActions,
     isUndecrypted,
     rowKey,
   };

@@ -16,6 +16,7 @@ import {
   setRoomName,
   setRoomPowerLevelThresholds,
   setRoomTopic,
+  upgradeRoom,
   unbanMember,
   type HistoryVisibilityKind,
   type JoinRuleKind,
@@ -33,10 +34,10 @@ import { roomMembersQueryKey } from "./useRoomMembers";
  * state always comes from a re-read, this is just a belt-and-suspenders nudge
  * to refetch promptly rather than waiting on the next sync tick.
  */
-function useRoomAdminMutation<TVariables>(
+function useRoomAdminMutation<TResult, TVariables>(
   roomId: string,
-  mutationFn: (variables: TVariables) => Promise<void>,
-): UseMutationResult<void, Error, TVariables> {
+  mutationFn: (variables: TVariables) => Promise<TResult>,
+): UseMutationResult<TResult, Error, TVariables> {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
@@ -62,6 +63,7 @@ export function useRoomAdminActions(roomId: string) {
       setRoomHistoryVisibility(roomId, visibility),
     ),
     enableEncryption: useRoomAdminMutation(roomId, () => enableRoomEncryption(roomId)),
+    upgrade: useRoomAdminMutation(roomId, () => upgradeRoom(roomId)),
     setMemberPowerLevel: useRoomAdminMutation(
       roomId,
       (vars: { userId: string; powerLevel: number }) =>

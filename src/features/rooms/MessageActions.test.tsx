@@ -202,6 +202,29 @@ describe("MessageActions", () => {
     expect(copyLink).toHaveAttribute("data-disabled");
   });
 
+  it("keeps stable read-only utilities enabled when room mutations are blocked", async () => {
+    const onForward = vi.fn();
+    const onViewSource = vi.fn();
+    renderActions({
+      disableRelationActions: true,
+      disableStableEventActions: false,
+      mutationsDisabled: true,
+      onForward,
+      onViewSource,
+    });
+    openMenu();
+
+    const reply = (await screen.findByText("Reply")).closest('[role="menuitem"]');
+    const copyLink = screen.getByText("Copy link").closest('[role="menuitem"]');
+    const forward = screen.getByText("Forward").closest('[role="menuitem"]');
+    const viewSource = screen.getByText("View source").closest('[role="menuitem"]');
+
+    expect(reply).toHaveAttribute("data-disabled");
+    expect(copyLink).not.toHaveAttribute("data-disabled");
+    expect(forward).not.toHaveAttribute("data-disabled");
+    expect(viewSource).not.toHaveAttribute("data-disabled");
+  });
+
   it("disables Edit, Copy, Reply, and React for an undecrypted message, but not Delete", async () => {
     renderActions({ isOwn: true, canRedact: true, isUndecrypted: true });
     openMenu();

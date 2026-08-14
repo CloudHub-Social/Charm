@@ -20,6 +20,7 @@ const ADMIN_PERMISSIONS: RoomPermissions = {
   set_pinned_events: true,
   set_space_child: true,
   set_space_parent: true,
+  upgrade_room: true,
 };
 
 const READ_ONLY_PERMISSIONS: RoomPermissions = {
@@ -37,6 +38,7 @@ const READ_ONLY_PERMISSIONS: RoomPermissions = {
   set_pinned_events: false,
   set_space_child: false,
   set_space_parent: false,
+  upgrade_room: false,
 };
 
 const MEMBER: RoomMemberSummary = {

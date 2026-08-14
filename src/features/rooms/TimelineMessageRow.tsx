@@ -22,6 +22,7 @@ interface TimelineMessageRowProps {
   newMessageKeys: Set<string>;
   highlightedEventId?: string | null;
   controller: MessageActionController;
+  mutationsDisabled?: boolean;
   onJumpToMessage: (eventId: string) => void;
   onSenderClick?: (userId: string, label: string) => void;
   onUserPillClick: (userId: string, label: string) => void;
@@ -46,6 +47,7 @@ export function TimelineMessageRow({
   newMessageKeys,
   highlightedEventId = null,
   controller,
+  mutationsDisabled = false,
   onJumpToMessage,
   onSenderClick,
   onUserPillClick,
@@ -107,6 +109,7 @@ export function TimelineMessageRow({
         // Own local echoes change identity once acknowledged; excluding them
         // prevents the acknowledgement from replaying the entrance animation.
         isNew={!own && newMessageKeys.has(messageRowKey(message))}
+        mutationsDisabled={mutationsDisabled}
         getActionsHandle={controller.getActionsHandle}
         registerActionsRef={controller.registerActionsRef}
         {...controller.rowActions(message)}

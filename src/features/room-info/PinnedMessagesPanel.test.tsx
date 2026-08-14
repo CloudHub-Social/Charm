@@ -1,9 +1,10 @@
 import { act, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { makeRoomDetails } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
 import type { PinnedMessageSummary, RoomDetails, RoomTimelineUpdate } from "@/lib/matrix";
+import { featureFlagTestHooks } from "@/featureFlags";
 
 const getRoomDetails = vi.fn();
 const getPinnedMessages = vi.fn();
@@ -20,6 +21,7 @@ vi.mock("@/lib/matrix", () => ({
     roomDetailsUpdateCallbacks.push(callback);
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUnresolved: vi.fn().mockResolvedValue(() => {}),
   getPinnedMessages: (...args: unknown[]) => getPinnedMessages(...args),
   unpinEvent: (...args: unknown[]) => unpinEvent(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
@@ -44,10 +46,14 @@ function pinnedMessage(overrides: Partial<PinnedMessageSummary> = {}): PinnedMes
 
 describe("PinnedMessagesPanel", () => {
   beforeEach(() => {
+    featureFlagTestHooks.reset();
+    featureFlagTestHooks.setCache({ room_upgrades: true });
     unpinEvent.mockReset().mockResolvedValue(undefined);
     timelineUpdateCallback = undefined;
     roomDetailsUpdateCallbacks = [];
   });
+
+  afterEach(() => featureFlagTestHooks.reset());
 
   it("lists resolved pinned messages in order and calls onClose", async () => {
     const details = makeRoomDetails({ pinned_event_ids: ["$1", "$2"] });
@@ -85,6 +91,71 @@ describe("PinnedMessagesPanel", () => {
     );
 
     expect(await screen.findByText("No pinned messages yet.")).toBeInTheDocument();
+  });
+
+  it("hides the unpin mutation after the room is tombstoned", async () => {
+    const details = makeRoomDetails({
+      pinned_event_ids: ["$1"],
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([pinnedMessage({ event_id: "$1" })]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    await screen.findByText("Read the room rules before posting");
+    expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
+  });
+
+  it("hides the unpin mutation while authoritative room state is unresolved", async () => {
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([pinnedMessage({ event_id: "$1" })]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        roomStateResolved={false}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    await screen.findByText("Read the room rules before posting");
+    expect(screen.queryByRole("button", { name: "Unpin message" })).not.toBeInTheDocument();
+  });
+
+  it("keeps existing unpin behavior when room upgrades are disabled", async () => {
+    featureFlagTestHooks.setCache({ room_upgrades: false });
+    const details = makeRoomDetails({
+      pinned_event_ids: ["$1"],
+      tombstone: {
+        body: "Room upgraded",
+        replacement_room_id: "!replacement:example.org",
+      },
+    });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([pinnedMessage({ event_id: "$1" })]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        roomStateResolved={false}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Unpin message" })).toBeInTheDocument();
   });
 
   it("shows an error message when the fetch fails", async () => {

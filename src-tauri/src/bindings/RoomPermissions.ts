@@ -29,4 +29,10 @@ set_space_child: boolean,
 /**
  * Gates reparenting a space by sending `m.space.parent` in this room.
  */
-set_space_parent: boolean, };
+set_space_parent: boolean, 
+/**
+ * Gates Spec 31's disruptive room-upgrade action. The Matrix endpoint
+ * sends an `m.room.tombstone`, so this is the authoritative power-level
+ * check rather than a hard-coded administrator threshold.
+ */
+upgrade_room: boolean, };

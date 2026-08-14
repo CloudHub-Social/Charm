@@ -49,6 +49,8 @@ export function BubbleMessageRow({
   isPending,
   isError,
   disableRelationActions,
+  disableStableEventActions,
+  mutationsDisabled = false,
   isUndecrypted,
   rowKey,
   onForward,
@@ -183,6 +185,8 @@ export function BubbleMessageRow({
               canPin={canPin}
               isPinned={isPinned}
               disableRelationActions={disableRelationActions}
+              disableStableEventActions={disableStableEventActions}
+              mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}
               className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"

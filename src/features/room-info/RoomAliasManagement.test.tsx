@@ -1,5 +1,5 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomAliasManagement } from "./RoomAliasManagement";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
@@ -43,6 +43,20 @@ vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
 }));
 
+beforeEach(() => {
+  getRoomLocalAliases.mockReset();
+  checkRoomAliasAvailable.mockReset().mockResolvedValue(true);
+  addRoomAlias.mockReset().mockResolvedValue(undefined);
+  removeRoomAlias.mockReset().mockResolvedValue(undefined);
+  setCanonicalAlias.mockReset().mockResolvedValue(undefined);
+  removeAltAlias.mockReset().mockResolvedValue(undefined);
+  getProfile.mockReset().mockResolvedValue({
+    user_id: "@me:example.org",
+    display_name: null,
+    avatar_url: null,
+  });
+});
+
 describe("RoomAliasManagement", () => {
   it("renders the room's published aliases", async () => {
     getRoomLocalAliases.mockResolvedValue(["#general:example.org", "#lobby:example.org"]);
@@ -81,6 +95,33 @@ describe("RoomAliasManagement", () => {
     await waitFor(() => {
       expect(addRoomAlias).toHaveBeenCalledWith(details.room_id, "#team-room:example.org");
     });
+  });
+
+  it("does not add an alias after the room becomes read-only during availability checking", async () => {
+    addRoomAlias.mockClear();
+    let resolveAvailability: ((value: boolean) => void) | undefined;
+    checkRoomAliasAvailable.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => (resolveAvailability = resolve)),
+    );
+    getRoomLocalAliases.mockResolvedValue([]);
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement
+        details={makeRoomDetails({ room_id: "!test:example.org" })}
+        mutationsBlockedRef={mutationsBlockedRef}
+      />,
+    );
+
+    await screen.findByText("No published addresses yet.");
+    fireEvent.change(screen.getByLabelText("New alias local part"), {
+      target: { value: "team-room" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    mutationsBlockedRef.current = true;
+    await act(async () => resolveAvailability?.(true));
+
+    expect(await screen.findByText(/became read-only/)).toBeInTheDocument();
+    expect(addRoomAlias).not.toHaveBeenCalled();
   });
 
   it("uses the signed-in user's homeserver, not the room's, for federated rooms", async () => {
@@ -153,6 +194,29 @@ describe("RoomAliasManagement", () => {
     });
   });
 
+  it("does not mutate canonical state after alias removal if the room became read-only", async () => {
+    removeRoomAlias.mockClear();
+    setCanonicalAlias.mockClear();
+    let resolveRemoval: (() => void) | undefined;
+    removeRoomAlias.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveRemoval = resolve)),
+    );
+    getRoomLocalAliases.mockResolvedValue(["#general:example.org"]);
+    const details = makeRoomDetails({ canonical_alias: "#general:example.org" });
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement details={details} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeRoomAlias).toHaveBeenCalledWith("#general:example.org"));
+    mutationsBlockedRef.current = true;
+    await act(async () => resolveRemoval?.());
+
+    expect(await screen.findByText(/became read-only/)).toBeInTheDocument();
+    expect(setCanonicalAlias).not.toHaveBeenCalled();
+  });
+
   it("clears a removed alias from alt_aliases when it wasn't canonical", async () => {
     getRoomLocalAliases.mockResolvedValue(["#alt:example.org"]);
     const details = makeRoomDetails({
@@ -199,6 +263,24 @@ describe("RoomAliasManagement", () => {
     await waitFor(() => {
       expect(setCanonicalAlias).toHaveBeenCalledWith(details.room_id, "#general:example.org");
     });
+  });
+
+  it("does not submit an already-open canonical menu after the room becomes read-only", async () => {
+    setCanonicalAlias.mockClear();
+    getRoomLocalAliases.mockResolvedValue(["#general:example.org"]);
+    const mutationsBlockedRef = { current: false };
+    renderWithProviders(
+      <RoomAliasManagement details={makeRoomDetails()} mutationsBlockedRef={mutationsBlockedRef} />,
+    );
+
+    await screen.findByText("#general:example.org");
+    openDropdownMenu("None");
+    mutationsBlockedRef.current = true;
+    fireEvent.click(
+      await screen.findByText("#general:example.org", { selector: "[role=menuitemradio]" }),
+    );
+
+    expect(setCanonicalAlias).not.toHaveBeenCalled();
   });
 
   it("clears the canonical alias via the None option", async () => {

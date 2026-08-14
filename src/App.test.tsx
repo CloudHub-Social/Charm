@@ -7,6 +7,7 @@ const tryRestoreSession = vi.fn();
 const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
+const resetRoomSendQueueBarrier = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   tryRestoreSession: (...args: unknown[]) => tryRestoreSession(...args),
@@ -33,6 +34,10 @@ vi.mock("@/features/rooms/RoomsScreen", () => ({
   ),
 }));
 
+vi.mock("@/features/rooms/useRoomSendQueueBarrier", () => ({
+  resetRoomSendQueueBarrier: () => resetRoomSendQueueBarrier(),
+}));
+
 vi.mock("@/features/verification/VerificationOverlay", () => ({
   VerificationOverlay: () => null,
 }));
@@ -56,6 +61,7 @@ beforeEach(() => {
   listRooms.mockReset().mockResolvedValue([{ room_id: "!seeded:localhost", membership: "join" }]);
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
+  resetRoomSendQueueBarrier.mockReset();
 });
 
 describe("App", () => {
@@ -68,6 +74,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
 
     expect(clearSpy).toHaveBeenCalled();
+    expect(resetRoomSendQueueBarrier).toHaveBeenCalledOnce();
     expect(await screen.findByText("login screen")).toBeInTheDocument();
 
     clearSpy.mockRestore();
