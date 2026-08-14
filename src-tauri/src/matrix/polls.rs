@@ -42,7 +42,8 @@ fn normalize_poll(question: String, options: Vec<String>) -> Result<(String, Vec
     if options.iter().any(String::is_empty) {
         return Err("Poll options cannot be empty".to_string());
     }
-    let unique: std::collections::HashSet<&str> = options.iter().map(String::as_str).collect();
+    let unique: std::collections::HashSet<String> =
+        options.iter().map(|option| option.to_lowercase()).collect();
     if unique.len() != options.len() {
         return Err("Poll options must be unique".to_string());
     }
@@ -191,5 +192,8 @@ mod tests {
     fn rejects_duplicate_or_too_few_options() {
         assert!(poll_start_content("Q".into(), vec!["A".into()], false).is_err());
         assert!(poll_start_content("Q".into(), vec!["A".into(), " A ".into()], false).is_err());
+        assert!(
+            poll_start_content("Q".into(), vec!["Pizza".into(), "pizza".into()], false).is_err()
+        );
     }
 }

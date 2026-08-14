@@ -88,17 +88,6 @@ export function MessageRow(props: MessageRowProps) {
   const pollsEnabled = useFlag("polls");
   const { message, mutationsDisabled = false, ...rowProps } = props;
 
-  if (pollsEnabled && message.poll) {
-    return (
-      <PollMessage
-        message={message}
-        roomId={props.roomId}
-        own={props.own}
-        mutationsDisabled={mutationsDisabled}
-      />
-    );
-  }
-
   const isPending = message.send_state.state === "pending";
   const isError = message.send_state.state === "error";
   // `send_state` flips to "sent" as soon as the homeserver acks the event,
@@ -130,6 +119,18 @@ export function MessageRow(props: MessageRowProps) {
     isUndecrypted,
     rowKey,
   };
+
+  if (pollsEnabled && message.poll) {
+    return (
+      <PollMessage
+        message={message}
+        roomId={props.roomId}
+        own={props.own}
+        mutationsDisabled={mutationsDisabled}
+        rowActions={layoutProps}
+      />
+    );
+  }
 
   switch (messageLayout) {
     case "discord":

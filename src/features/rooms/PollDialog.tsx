@@ -67,7 +67,10 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
       setError("Add a question and fill in every option.");
       return;
     }
-    if (new Set(normalizedOptions).size !== normalizedOptions.length) {
+    if (
+      new Set(normalizedOptions.map((option) => option.toLowerCase())).size !==
+      normalizedOptions.length
+    ) {
       setError("Each option must be unique.");
       return;
     }

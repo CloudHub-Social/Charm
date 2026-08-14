@@ -36,6 +36,8 @@ export interface MessageActionsProps {
   /** Matrix account owning local quick-reaction history. */
   accountId: string;
   isOwn: boolean;
+  /** Defaults to `isOwn`; disable for event types without an edit composer. */
+  canEdit?: boolean;
   canRedact: boolean;
   onReply: () => void;
   onReact: (emoji: string) => void;
@@ -145,6 +147,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
   function MessageActions(
     {
       isOwn,
+      canEdit = isOwn,
       accountId,
       canRedact,
       onReply,
@@ -322,7 +325,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                   <Reply />
                   Reply
                 </DropdownMenuItem>
-                {isOwn && (
+                {canEdit && (
                   <DropdownMenuItem
                     onSelect={onEdit}
                     disabled={disableRelationActions || isUndecrypted}

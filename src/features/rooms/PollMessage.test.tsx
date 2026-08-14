@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import { PollMessage } from "./PollMessage";
 import { makeMessageSummary } from "./testFixtures";
+import type { MessageRowLayoutProps } from "./messageRowShared";
 
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
@@ -39,6 +40,42 @@ function pollMessage(
   });
 }
 
+function rowActions(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLayoutProps {
+  return {
+    message: pollMessage(),
+    roomId: "!room:example.org",
+    currentUserId: "@moderator:example.org",
+    own: false,
+    sameSenderAsPrev: false,
+    sameSenderAsNext: false,
+    canRedact: false,
+    canPin: false,
+    isPinned: false,
+    readers: [],
+    senderNameByUserId: new Map(),
+    isNew: false,
+    getActionsHandle: () => undefined,
+    registerActionsRef: vi.fn(),
+    onReply: vi.fn(),
+    onReact: vi.fn(),
+    onEdit: vi.fn(),
+    onDelete: vi.fn(),
+    onCopy: vi.fn(),
+    onCopyLink: vi.fn(),
+    onPin: vi.fn(),
+    onUnpin: vi.fn(),
+    onResend: vi.fn(),
+    onDiscard: vi.fn(),
+    onJumpToMessage: vi.fn(),
+    isPending: false,
+    isError: false,
+    disableRelationActions: false,
+    isUndecrypted: false,
+    rowKey: "$poll",
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
@@ -70,6 +107,20 @@ describe("PollMessage", () => {
 
   it("lets the poll creator end an open poll", async () => {
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+
+    await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));
+  });
+
+  it("lets a moderator end another user's poll", async () => {
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own={false}
+        rowActions={rowActions({ canRedact: true })}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: "End poll" }));
 
     await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));

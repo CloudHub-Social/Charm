@@ -67,6 +67,14 @@ describe("MessageActions", () => {
     expect(await screen.findByText("Edit")).toBeInTheDocument();
   });
 
+  it("can hide Edit for own event types without an edit composer", async () => {
+    renderActions({ isOwn: true, canEdit: false });
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+  });
+
   it("shows Delete only when canRedact is true", async () => {
     renderActions({ isOwn: false, canRedact: true });
     openMenu();

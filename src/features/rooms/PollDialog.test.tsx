@@ -39,7 +39,7 @@ describe("PollDialog", () => {
     render(<PollDialog open roomId="!room:example.org" onOpenChange={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Lunch?" } });
     fireEvent.change(screen.getByLabelText("Option 1"), { target: { value: "Pizza" } });
-    fireEvent.change(screen.getByLabelText("Option 2"), { target: { value: "Pizza" } });
+    fireEvent.change(screen.getByLabelText("Option 2"), { target: { value: "pizza" } });
     fireEvent.click(screen.getByRole("button", { name: "Create poll" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("Each option must be unique.");
