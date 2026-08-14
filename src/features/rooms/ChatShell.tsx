@@ -465,8 +465,7 @@ export function ChatShell({
     messages.length > 0
       ? (noticeBuckets.beforeMessage.get(messages.at(-1)?.event_id ?? "")?.length ?? 0)
       : 0;
-  const hasFinalNoticeRegion =
-    noticeBuckets.trailing.length > 0 || finalLeadingNoticeCount > 0;
+  const hasFinalNoticeRegion = noticeBuckets.trailing.length > 0 || finalLeadingNoticeCount > 0;
   useEffect(() => {
     if (
       room &&
