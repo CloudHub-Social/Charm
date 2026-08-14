@@ -30,7 +30,9 @@ fn normalize_poll(question: String, options: Vec<String>) -> Result<(String, Vec
         return Err("Poll question cannot be empty".to_string());
     }
     if options.len() < MIN_OPTIONS || options.len() > MAX_OPTIONS {
-        return Err(format!("Polls require between {MIN_OPTIONS} and {MAX_OPTIONS} options"));
+        return Err(format!(
+            "Polls require between {MIN_OPTIONS} and {MAX_OPTIONS} options"
+        ));
     }
 
     let options: Vec<String> = options
@@ -40,8 +42,7 @@ fn normalize_poll(question: String, options: Vec<String>) -> Result<(String, Vec
     if options.iter().any(String::is_empty) {
         return Err("Poll options cannot be empty".to_string());
     }
-    let unique: std::collections::HashSet<&str> =
-        options.iter().map(String::as_str).collect();
+    let unique: std::collections::HashSet<&str> = options.iter().map(String::as_str).collect();
     if unique.len() != options.len() {
         return Err("Poll options must be unique".to_string());
     }
@@ -189,8 +190,6 @@ mod tests {
     #[test]
     fn rejects_duplicate_or_too_few_options() {
         assert!(poll_start_content("Q".into(), vec!["A".into()], false).is_err());
-        assert!(
-            poll_start_content("Q".into(), vec!["A".into(), " A ".into()], false).is_err()
-        );
+        assert!(poll_start_content("Q".into(), vec!["A".into(), " A ".into()], false).is_err());
     }
 }

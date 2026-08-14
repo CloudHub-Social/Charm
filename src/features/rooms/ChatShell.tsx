@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, ListChecks, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
+import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
@@ -58,6 +58,7 @@ import type { ChatShellProps } from "./ChatShellProps";
 import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 import { PollDialog } from "./PollDialog";
+import { PollComposerAction } from "./PollComposerAction";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -1090,18 +1091,11 @@ export function ChatShell({
               <Paperclip size={18} />
             </button>
             {pollsEnabled && composerMode === "send" && (
-              <button
-                type="button"
-                aria-label="Create poll"
-                onClick={() => setPollOpen(true)}
+              <PollComposerAction
+                mobile={mobile}
                 disabled={roomMutationsBlocked}
-                className={cn(
-                  "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50",
-                  mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-                )}
-              >
-                <ListChecks size={18} />
-              </button>
+                onClick={() => setPollOpen(true)}
+              />
             )}
             <Composer
               accountId={currentUserId}

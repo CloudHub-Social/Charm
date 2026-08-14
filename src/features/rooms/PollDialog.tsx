@@ -19,15 +19,24 @@ interface PollDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const EMPTY_OPTIONS = ["", ""];
+interface DraftOption {
+  id: number;
+  value: string;
+}
+
+const EMPTY_OPTIONS: DraftOption[] = [
+  { id: 0, value: "" },
+  { id: 1, value: "" },
+];
 
 export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
   const [question, setQuestion] = useState("");
-  const [options, setOptions] = useState<string[]>(EMPTY_OPTIONS);
+  const [options, setOptions] = useState<DraftOption[]>(EMPTY_OPTIONS);
   const [disclosed, setDisclosed] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
+  const nextOptionId = useRef(2);
 
   useEffect(() => {
     requestId.current += 1;
@@ -35,6 +44,7 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
     setError(null);
     setQuestion("");
     setOptions(EMPTY_OPTIONS);
+    nextOptionId.current = 2;
     setDisclosed(true);
   }, [open, roomId]);
 
@@ -43,14 +53,16 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
     onOpenChange(nextOpen);
   }
 
-  function updateOption(index: number, value: string) {
-    setOptions((current) => current.map((option, i) => (i === index ? value : option)));
+  function updateOption(id: number, value: string) {
+    setOptions((current) =>
+      current.map((option) => (option.id === id ? { ...option, value } : option)),
+    );
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     const normalizedQuestion = question.trim();
-    const normalizedOptions = options.map((option) => option.trim());
+    const normalizedOptions = options.map((option) => option.value.trim());
     if (!normalizedQuestion || normalizedOptions.some((option) => !option)) {
       setError("Add a question and fill in every option.");
       return;
@@ -93,21 +105,20 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
               maxLength={500}
               required
               disabled={pending}
-              autoFocus
             />
           </div>
 
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium text-foreground">Options</legend>
             {options.map((option, index) => (
-              <div key={index} className="flex items-center gap-2">
+              <div key={option.id} className="flex items-center gap-2">
                 <Label className="sr-only" htmlFor={`poll-option-${index}`}>
                   Option {index + 1}
                 </Label>
                 <Input
                   id={`poll-option-${index}`}
-                  value={option}
-                  onChange={(event) => updateOption(index, event.currentTarget.value)}
+                  value={option.value}
+                  onChange={(event) => updateOption(option.id, event.currentTarget.value)}
                   placeholder={`Option ${index + 1}`}
                   maxLength={200}
                   required
@@ -121,7 +132,9 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
                     aria-label={`Remove option ${index + 1}`}
                     disabled={pending}
                     onClick={() =>
-                      setOptions((current) => current.filter((_, i) => i !== index))
+                      setOptions((current) =>
+                        current.filter((candidate) => candidate.id !== option.id),
+                      )
                     }
                   >
                     <Trash2 className="size-4" />
@@ -135,7 +148,11 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
                 variant="outline"
                 size="sm"
                 disabled={pending}
-                onClick={() => setOptions((current) => [...current, ""])}
+                onClick={() => {
+                  const id = nextOptionId.current;
+                  nextOptionId.current += 1;
+                  setOptions((current) => [...current, { id, value: "" }]);
+                }}
               >
                 <Plus className="size-4" />
                 Add option
@@ -143,8 +160,9 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
             )}
           </fieldset>
 
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3">
+          <div className="flex items-start gap-3 rounded-lg border border-border p-3">
             <input
+              id="poll-disclosed"
               type="checkbox"
               checked={disclosed}
               onChange={(event) => setDisclosed(event.currentTarget.checked)}
@@ -152,12 +170,12 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
               className="mt-0.5 size-4 accent-primary"
             />
             <span>
-              <span className="block text-sm font-medium text-foreground">Show live results</span>
-              <span className="block text-xs text-muted-foreground">
+              <Label htmlFor="poll-disclosed">Show live results</Label>
+              <span className="mt-1 block text-xs text-muted-foreground">
                 Turn this off to hide totals until the poll is ended.
               </span>
             </span>
-          </label>
+          </div>
 
           {error && (
             <p role="alert" className="text-sm text-destructive">
