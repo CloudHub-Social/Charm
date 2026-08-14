@@ -107,14 +107,13 @@ describe("PollMessage", () => {
     expect(screen.getByText("Selected")).toBeInTheDocument();
   });
 
-  it("marks edited poll content and keeps edit history available", async () => {
-    const onViewEditHistory = vi.fn();
+  it("marks edited poll content without offering unsupported message actions", async () => {
     render(
       <PollMessage
         message={pollMessage({ edited: true })}
         roomId="!room:example.org"
         own
-        rowActions={rowActions({ onViewEditHistory })}
+        rowActions={rowActions({ onForward: vi.fn(), onViewEditHistory: vi.fn() })}
       />,
     );
 
@@ -124,8 +123,10 @@ describe("PollMessage", () => {
       ctrlKey: false,
       pointerType: "mouse",
     });
-    fireEvent.click(await screen.findByText("Edit history"));
-    expect(onViewEditHistory).toHaveBeenCalledOnce();
+    expect(await screen.findByText("Copy")).toBeInTheDocument();
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+    expect(screen.queryByText("Forward")).not.toBeInTheDocument();
+    expect(screen.queryByText("Edit history")).not.toBeInTheDocument();
   });
 
   it("lets the poll creator end an open poll", async () => {

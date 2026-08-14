@@ -75,6 +75,14 @@ describe("MessageActions", () => {
     expect(screen.queryByText("Edit")).not.toBeInTheDocument();
   });
 
+  it("can hide Reply for event types the reply backend cannot target", async () => {
+    renderActions({ canReply: false });
+    openMenu();
+
+    expect(await screen.findByText("Copy")).toBeInTheDocument();
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+  });
+
   it("shows Delete only when canRedact is true", async () => {
     renderActions({ isOwn: false, canRedact: true });
     openMenu();

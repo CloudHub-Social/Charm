@@ -23,11 +23,12 @@ MSC3381 is still an accepted but unstable proposal, so the wire events are
 renders disclosed live tallies, keeps undisclosed totals hidden until close,
 shows the current user's selected option, and allows the poll creator to end an
 open poll. Room moderators with permission to redact other users' events can
-also close stale or abusive polls. Poll cards retain the standard reply,
-reaction, copy, redact, report, pin, bookmark, forward, link, and source actions.
-Poll content edited by another Matrix client is visibly marked as edited and
-offers the existing edit-history action. When the feature flag is disabled, the
-fallback event row does not offer the ordinary text-message editor for a poll.
+also close stale or abusive polls. Poll cards retain reaction, copy, redact,
+report, pin, bookmark, link, and source actions. Reply, Forward, text Edit, and
+Edit history remain hidden because their current backend paths accept only
+`m.room.message`, not poll-start events. Poll content edited by another Matrix
+client is still visibly marked as edited. When the feature flag is disabled,
+the fallback event row also omits the ordinary text-message editor for a poll.
 New polls support 2–20 case-insensitively unique options and one selection per
 voter.
 
@@ -91,8 +92,8 @@ parallel protocol logic.
   single-selection semantics and duplicate/too-few option rejection.
 - Frontend CI covers disclosed and undisclosed rendering, vote submission,
   creator/moderator ending, case-insensitive creation-form validation, standard
-  message actions, edited-state disclosure, feature-disabled edit gating, and
-  both web transport routes.
+  supported message actions, unsupported-action gating, edited-state disclosure,
+  feature-disabled edit gating, and both web transport routes.
 - Cross-client owner acceptance remains useful after enabling the flag: create a
   poll in Element, vote from Charm, then reverse the direction and compare totals.
 

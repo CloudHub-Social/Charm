@@ -187,6 +187,7 @@ export function PollMessage({
           ref={(element) => rowActions.registerActionsRef(rowActions.rowKey, element)}
           accountId={rowActions.currentUserId ?? ""}
           isOwn={own}
+          canReply={false}
           canEdit={false}
           canRedact={rowActions.canRedact}
           canPin={rowActions.canPin}
@@ -209,11 +210,11 @@ export function PollMessage({
           isBookmarked={rowActions.isBookmarked}
           onResend={rowActions.onResend}
           onDiscard={rowActions.onDiscard}
-          onForward={rowActions.onForward}
+          onForward={undefined}
           onViewSource={rowActions.onViewSource}
           onReport={rowActions.onReport}
-          isEdited={poll.edited}
-          onViewEditHistory={rowActions.onViewEditHistory}
+          isEdited={false}
+          onViewEditHistory={undefined}
         />
       )}
     </div>
