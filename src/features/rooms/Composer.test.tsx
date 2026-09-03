@@ -45,6 +45,7 @@ describe("Composer", () => {
     expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bold/ })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Message general")).toBeInTheDocument());
+    expect(screen.getByLabelText("Message general")).toHaveAttribute("spellcheck", "true");
   });
 
   it("can collapse the formatting toolbar for a compact mobile composer", async () => {

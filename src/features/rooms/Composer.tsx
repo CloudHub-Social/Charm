@@ -347,6 +347,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // real browsers, but not one axe's static analysis infers on its
         // own, so it's spelled out here rather than relied on implicitly.
         role: "textbox",
+        // Keep native OS/webview correction available without a custom
+        // dictionary or sending draft text to an application service.
+        spellcheck: "true",
         "aria-multiline": "true",
         "aria-label": placeholder,
         // Not a native HTML placeholder (contenteditable has none) — kept

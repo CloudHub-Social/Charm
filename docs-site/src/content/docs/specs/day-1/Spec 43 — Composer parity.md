@@ -117,6 +117,13 @@ addition. No DTO changes for formatting (rides `formatted_body`).
   the spoiler/block-code/strike this spec adds) has no "insert link" button. Add one
   (select text → add URL → `<a>` mark) alongside the other formatting marks.
 
+## Implementation progress
+
+The editable surface explicitly enables native `spellcheck`, with a DOM regression
+assertion. Platform-native underline and correction behavior still requires manual
+verification. The formatting, slash-command, and ArrowUp requirements above remain
+open; this initial change does not establish full composer parity.
+
 ## What I'd revisit as this grows
 
 - Custom/user-defined command aliases — not in Charm 1.0, not built now.
