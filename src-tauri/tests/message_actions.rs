@@ -120,15 +120,24 @@ async fn wait_for_summary(
     .expect("expected condition reflected in the timeline before timeout");
 }
 
-async fn step_edit_message_replaces_body_and_marks_edited(client: &Client, timeline: &Timeline) {
-    let event_id = send_and_wait_for_event_id(client, timeline, "hello").await;
+async fn step_edit_message_replaces_body_and_marks_edited(
+    client: &Client,
+    timeline: &Timeline,
+    formatted: bool,
+) {
+    let original = if formatted {
+        "hello formatted"
+    } else {
+        "hello plain"
+    };
+    let event_id = send_and_wait_for_event_id(client, timeline, original).await;
 
     edit_message_impl(
         client,
         timeline.room().room_id().as_str(),
         &event_id,
         "hello world".to_string(),
-        Some("<span data-mx-spoiler>hello world</span>".to_string()),
+        formatted.then(|| "<span data-mx-spoiler>hello world</span>".to_string()),
         None,
     )
     .await
@@ -137,10 +146,14 @@ async fn step_edit_message_replaces_body_and_marks_edited(client: &Client, timel
     wait_for_summary(client, timeline, &event_id, |found| {
         found.edited
             && found.body == "hello world"
-            && found
-                .formatted_body
-                .as_deref()
-                .is_some_and(|html| html.contains("data-mx-spoiler"))
+            && if formatted {
+                found
+                    .formatted_body
+                    .as_deref()
+                    .is_some_and(|html| html.contains("data-mx-spoiler"))
+            } else {
+                found.formatted_body.is_none()
+            }
     })
     .await;
 }
@@ -286,15 +299,24 @@ async fn step_toggle_reaction_adds_then_removes(client: &Client, timeline: &Time
     assert!(matches!(removed, ReactionToggleResult::Removed));
 }
 
-async fn step_send_reply_carries_in_reply_to(client: &Client, timeline: &Timeline) {
-    let original_event_id = send_and_wait_for_event_id(client, timeline, "original message").await;
+async fn step_send_reply_carries_in_reply_to(
+    client: &Client,
+    timeline: &Timeline,
+    formatted: bool,
+) {
+    let original = if formatted {
+        "original formatted reply target"
+    } else {
+        "original plain reply target"
+    };
+    let original_event_id = send_and_wait_for_event_id(client, timeline, original).await;
 
     send_reply_impl(
         client,
         timeline.room().room_id().as_str(),
         &original_event_id,
         "reply body".to_string(),
-        Some("<span data-mx-spoiler>reply body</span>".to_string()),
+        formatted.then(|| "<span data-mx-spoiler>reply body</span>".to_string()),
         None,
     )
     .await
@@ -313,10 +335,13 @@ async fn step_send_reply_carries_in_reply_to(client: &Client, timeline: &Timelin
                     .is_some_and(|r| r.event_id == original_event_id)
             });
             if reply.is_some_and(|message| {
-                message
-                    .formatted_body
-                    .as_deref()
-                    .is_some_and(|html| html.contains("data-mx-spoiler"))
+                message.body == "reply body"
+                    && message.event_id.starts_with('$')
+                    && (message
+                        .formatted_body
+                        .as_deref()
+                        .is_some_and(|html| html.contains("data-mx-spoiler"))
+                        == formatted)
             }) {
                 return;
             }
@@ -476,12 +501,14 @@ async fn message_actions_round_trip_against_a_real_homeserver() {
     let very_first_event_id =
         send_and_wait_for_event_id(&client, &timeline, "the very first message").await;
 
-    step_edit_message_replaces_body_and_marks_edited(&client, &timeline).await;
+    step_edit_message_replaces_body_and_marks_edited(&client, &timeline, false).await;
+    step_edit_message_replaces_body_and_marks_edited(&client, &timeline, true).await;
     step_redact_event_clears_body_and_sets_redacted(&client, &timeline).await;
     step_can_redact_true_for_own_and_for_others_via_power_level(&client, &timeline).await;
     step_can_redact_false_for_a_genuinely_low_power_member(&client, &timeline).await;
     step_toggle_reaction_adds_then_removes(&client, &timeline).await;
-    step_send_reply_carries_in_reply_to(&client, &timeline).await;
+    step_send_reply_carries_in_reply_to(&client, &timeline, false).await;
+    step_send_reply_carries_in_reply_to(&client, &timeline, true).await;
     step_send_message_reaches_a_real_event_id(&client, &timeline).await;
     step_send_shows_exactly_one_bubble_pending_then_sent(&client, &timeline).await;
     // By now several other messages have been sent/edited/redacted/reacted to
