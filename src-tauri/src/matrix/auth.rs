@@ -3179,10 +3179,11 @@ mod registration_uia_tests {
     use super::{
         check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
         is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
-        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
-        sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
-        PasswordResetChallenge, PendingPasswordReset, PendingRegistrationEmail,
-        RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
+        registration_auth_data, registration_fallback_url, revoke_cancelled_sso_device,
+        sanitize_password_reset_submit_url, sanitized_provider_name,
+        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
+        PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
+        AUTH_MAILS_PER_ADDRESS,
     };
     use crate::matrix::MatrixState;
 
