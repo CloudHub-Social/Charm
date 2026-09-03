@@ -5131,6 +5131,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5368,6 +5369,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5455,6 +5457,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5504,6 +5507,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         expect.any(AbortSignal),
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
