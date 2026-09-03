@@ -144,6 +144,11 @@ connection: the SDK owns that schema and migration lifecycle.
   GitHub Actions verification remains required. A late
   edit/redaction, backfill, or replay therefore converges without retaining or
   resurrecting stale or redacted text.
+  Filtering an ignored original also queues plaintext-free cleanup of every
+  candidate linked to that original, including unverified edits from another
+  sender. This is reliable removal work, not a permanent redaction tombstone;
+  unignore and replay remain possible. An ignored edit cannot authorize purging
+  the original it claims to replace. Regression coverage remains CI-gated.
 - Backfill: on first login, and on the first index open after the feature flag
   becomes enabled for an already-active account/session, index whatever history
   is already locally available in the SDK's store;
