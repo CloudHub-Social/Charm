@@ -52,6 +52,8 @@ interface ComposerProps {
    * emptiness is the only signal Send's disabled state needs.
    */
   onEmptyChange?: (isEmpty: boolean) => void;
+  /** Returns true only when an editable message was found. Empty send mode only. */
+  onEditLastMessage?: () => boolean;
   /** Mobile chat keeps formatting available without permanently spending a full toolbar row. */
   showFormattingToolbar?: boolean;
 }
@@ -173,6 +175,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onTypingInput,
     onBlur,
     onEmptyChange,
+    onEditLastMessage,
     showFormattingToolbar = true,
   },
   ref,
@@ -360,7 +363,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         class:
           "max-h-30 min-h-6 flex-1 resize-none bg-transparent px-1 py-2 text-[15px] text-foreground outline-none",
       },
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
         if (menuOpenRef.current) {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -383,6 +386,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             return true;
           }
           return false;
+        }
+
+        if (
+          event.key === "ArrowUp" &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey &&
+          !event.isComposing &&
+          !view.composing &&
+          mode === "send" &&
+          view.state.doc.childCount === 1 &&
+          view.state.doc.firstChild?.type.name === "paragraph" &&
+          view.state.doc.firstChild.content.size === 0 &&
+          onEditLastMessage?.()
+        ) {
+          event.preventDefault();
+          return true;
         }
 
         if (event.key === "Enter") {

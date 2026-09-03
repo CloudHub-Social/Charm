@@ -1107,6 +1107,7 @@ export function ChatShell({
               onTypingInput={handleTypingInput}
               onBlur={stopTyping}
               onEmptyChange={setIsComposerEmpty}
+              onEditLastMessage={() => messageActionController.editLastMessage(messages)}
               showFormattingToolbar={!mobile || showMobileFormatting}
             />
             {mobile && (

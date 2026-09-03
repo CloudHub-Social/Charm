@@ -29,6 +29,55 @@ function pasteText(editable: Element, text: string) {
 }
 
 describe("Composer", () => {
+  it("edits on bare ArrowUp only while the send composer is truly empty", async () => {
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    for (const modifier of ["shiftKey", "ctrlKey", "altKey", "metaKey", "isComposing"]) {
+      fireEvent.keyDown(editable, { key: "ArrowUp", [modifier]: true });
+    }
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(editable, { key: "ArrowUp" })).toBe(false);
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+    onEditLastMessage.mockClear();
+    pasteText(editable, "draft");
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("draft");
+  });
+
+  it.each(["reply", "edit"] as const)(
+    "does not replace an empty %s composer on ArrowUp",
+    async (mode) => {
+      const onEditLastMessage = vi.fn(() => true);
+      render(
+        <Composer
+          roomId={`!arrow-up-${mode}:example.org`}
+          mode={mode}
+          placeholder="Message"
+          onSubmit={vi.fn()}
+          onSlashCommand={vi.fn()}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+          onEditLastMessage={onEditLastMessage}
+        />,
+      );
+      fireEvent.keyDown(await screen.findByLabelText("Message"), { key: "ArrowUp" });
+      expect(onEditLastMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders the formatting toolbar and an editable region", async () => {
     render(
       <Composer

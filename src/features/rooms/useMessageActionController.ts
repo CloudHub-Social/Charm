@@ -31,6 +31,7 @@ export function useMessageActionController({
   mutationsDisabled = false,
 }: UseMessageActionControllerOptions) {
   const messageActionParityEnabled = useFlag("message_action_parity");
+  const composerParityEnabled = useFlag("composer_parity");
   const [dialogTarget, setDialogTarget] = useState<MessageActionDialogTarget | null>(null);
   const actionsRegistryRef = useRef<{
     roomId: string | null;
@@ -77,6 +78,27 @@ export function useMessageActionController({
   function registerActionsRef(key: string, handle: MessageActionsHandle | null) {
     if (handle) actionsRegistryRef.current.handles.set(key, handle);
     else actionsRegistryRef.current.handles.delete(key);
+  }
+
+  /** The loaded timeline is chronological. Never edit a local echo or a placeholder. */
+  function editLastMessage(messages: readonly RoomMessageSummary[]): boolean {
+    if (!composerParityEnabled || mutationsDisabled || !roomId) return false;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message.sender !== currentUserId ||
+        !message.event_id.startsWith("$") ||
+        message.send_state.state !== "sent" ||
+        message.redacted ||
+        message.is_undecrypted ||
+        message.media !== null
+      ) {
+        continue;
+      }
+      actions.handleEdit(message.event_id);
+      return true;
+    }
+    return false;
   }
 
   function rowActions(message: RoomMessageSummary) {
@@ -138,6 +160,7 @@ export function useMessageActionController({
     confirmDialog,
     getActionsHandle,
     registerActionsRef,
+    editLastMessage,
     rowActions,
   };
 }
