@@ -70,6 +70,7 @@ describe("native recorded audio handoff", () => {
 
   it("does not read an already-cancelled recording into memory", async () => {
     const file = recording();
+    const readRecording = vi.spyOn(file, "arrayBuffer");
     const controller = new AbortController();
     controller.abort();
     await expect(
@@ -83,7 +84,7 @@ describe("native recorded audio handoff", () => {
         voice,
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
-    expect(file.arrayBuffer).not.toHaveBeenCalled();
+    expect(readRecording).not.toHaveBeenCalled();
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
