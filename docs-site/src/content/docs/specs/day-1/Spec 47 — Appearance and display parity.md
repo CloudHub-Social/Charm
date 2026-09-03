@@ -85,11 +85,14 @@ The owner ruled these **in** (they were previously flagged optional):
 
 ## Data flow
 
-All are local appearance settings in the same store Spec 09 uses, consumed by
-rendering (message rows, dividers, emoji, media). Custom-theme import may need a
-small persistence addition for stored theme definitions. No Matrix sync (Charm
-2.0's appearance is local, per Spec 09 — Charm 1.0's cross-device settings sync is
-a separate, lower-priority gap tracked under Spec 48).
+Appearance settings use Spec 09's local store for immediate rendering (message
+rows, dividers, emoji, media). Their portable values, including the global font
+family, are required inputs to [Spec 50 — Cross-device settings sync](./Spec%2050%20%E2%80%94%20Cross-device%20settings%20sync.md).
+Spec 50 owns per-setting classification, account-data transport, opt-in behavior,
+and export/import; synchronization is required, not an optional Spec 48 follow-up.
+Device-specific values stay local under that classification. Custom-theme import
+may need persistence for constrained theme definitions; arbitrary CSS and external
+asset URLs must not enter the synced settings payload.
 
 ## API/contract changes
 
