@@ -25,14 +25,19 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
   vi.resetModules();
   // Re-register after resetting the module graph: reconciliation imports the
   // transport lazily, including while initialization and a write overlap.
   vi.doMock("@/lib/matrixTransport", () => ({
-    invoke: (...args: unknown[]) => mocks.invoke(...args),
+    invoke: mocks.invoke,
   }));
+  // Resolve the mocked dependency before overlapping lazy imports begin.
+  // Assert the boundary itself rather than masking accidental native IPC
+  // with additional platform or telemetry stubs.
+  const transport = await import("@/lib/matrixTransport");
+  expect(transport.invoke).toBe(mocks.invoke);
   mocks.isTauri.mockReturnValue(false);
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   mocks.invoke.mockReset().mockResolvedValue(undefined);
