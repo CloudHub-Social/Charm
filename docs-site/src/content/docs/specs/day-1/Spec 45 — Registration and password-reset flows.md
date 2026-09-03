@@ -176,6 +176,9 @@ homeservers. The parity audit (2026-07-13) found:
   signing in again; marker-removal errors remain failures, not silent success.
   The startup sweep rechecks marker existence under the same relocation lock so
   an already-retired marker cannot authorize deletion of a newer session.
+- Marker creation must not follow or truncate existing symlinks. If recording
+  the marker fails, cleanup is still attempted; failure of both operations is
+  reported rather than treated as durable cancellation.
 - During startup account discovery, an unreadable cancellation marker excludes
   only its associated account. Other readable, non-cancelled account directories
   remain eligible; a marker lookup failure must neither make the affected account

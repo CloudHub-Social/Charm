@@ -194,7 +194,21 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
 pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let marker =
         matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    std::fs::write(marker, []).map_err(|error| error.to_string())
+    create_cancelled_account_marker(&marker)
+}
+
+fn create_cancelled_account_marker(marker: &Path) -> Result<(), String> {
+    // create_new never follows or truncates an existing symlink. Any existing
+    // marker shape already vetoes restore, so retries need not rewrite it.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
@@ -641,11 +655,24 @@ fn discard_cancelled_account_session_at(
     // Record cancellation before touching the keychain: a failed cleanup must
     // not leave an otherwise valid session eligible for restoration.
     let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    std::fs::write(&marker, []).map_err(|error| error.to_string())?;
-    cleanup()?;
+    let marker_result = create_cancelled_account_marker(&marker);
+    // Even if the filesystem cannot record a restore veto, keychain/store
+    // cleanup may still succeed. Never strand both by returning early here.
+    if let Err(cleanup_error) = cleanup() {
+        return Err(match marker_result {
+            Ok(()) => cleanup_error,
+            Err(marker_error) => format!(
+                "cancellation marker failed: {marker_error}; cleanup failed: {cleanup_error}"
+            ),
+        });
+    }
     // Keep the marker until every artifact is gone. Do not leave a successful
     // cleanup marker around to delete a later legitimate login on startup.
-    std::fs::remove_file(marker).map_err(|error| error.to_string())
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Caller holds RELOCATE_LOCK from the marker check through cleanup.
@@ -2088,6 +2115,54 @@ mod tests {
         assert!(old_store.join("old").exists());
         assert!(temp_store.join("new").exists());
         assert!(marker.exists());
+    }
+
+    #[test]
+    fn cancelled_cleanup_runs_even_when_marker_creation_fails() {
+        let root = ScratchRoot::new("cancelled-marker-write-failure");
+        let missing_root = root.0.join("missing-parent");
+        let called = std::cell::Cell::new(false);
+        discard_cancelled_account_session_at(&missing_root, "account", || {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(called.get());
+    }
+
+    #[test]
+    fn cancelled_cleanup_reports_failure_without_a_marker_or_completed_cleanup() {
+        let root = ScratchRoot::new("cancelled-marker-and-cleanup-failure");
+        let result =
+            discard_cancelled_account_session_at(&root.0.join("missing-parent"), "account", || {
+                Err("simulated keychain failure".to_string())
+            });
+        assert!(result
+            .unwrap_err()
+            .contains("cleanup failed: simulated keychain failure"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_cleanup_does_not_truncate_a_symlink_marker_target() {
+        let root = ScratchRoot::new("cancelled-marker-symlink");
+        let outside = root.0.join("unrelated-private-file");
+        std::fs::write(&outside, "preserve this data").unwrap();
+        let marker = root
+            .0
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+        std::os::unix::fs::symlink(&outside, &marker).unwrap();
+        create_cancelled_account_marker(&marker).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "preserve this data"
+        );
+        discard_cancelled_account_session_at(&root.0, "account", || Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "preserve this data"
+        );
+        assert!(!marker.exists());
     }
 
     #[test]
