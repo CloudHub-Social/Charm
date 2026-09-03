@@ -3839,6 +3839,7 @@ pub async fn complete_sso_login(
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
+    let previous_timelines = state.snapshot_timelines_for_rollback().await;
     sync::abort_current_sync_loop(&app).await;
     // Cancellation remains authoritative until the irreversible store/session
     // relocation begins. If it arrived while the completion lock or old sync
@@ -3846,6 +3847,17 @@ pub async fn complete_sso_login(
     if pending.cancellation.is_cancelled() {
         if let Some(previous_client) = previous_client.as_ref() {
             *state.client.lock().await = Some(previous_client.clone());
+            state
+                .restore_timeline_snapshot(previous_timelines, |room_id, timeline| {
+                    super::timeline::spawn_timeline_listener(
+                        app.clone(),
+                        room_id.to_owned(),
+                        std::sync::Arc::downgrade(timeline),
+                        previous_client.clone(),
+                        previous_client.user_id().map(ToOwned::to_owned),
+                    )
+                })
+                .await;
             sync::spawn_sync_task(app.clone(), previous_client.clone());
         }
         revoke_cancelled_sso_device(&client).await;
@@ -3853,6 +3865,8 @@ pub async fn complete_sso_login(
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err("single sign-on cancelled".to_string());
     }
+    // No rollback snapshots may retain SQLite handles during relocation.
+    drop(previous_timelines);
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,

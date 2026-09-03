@@ -67,6 +67,12 @@ type TimelineEntry = (
     bool,
 );
 
+pub(crate) type TimelineRollbackEntry = (
+    matrix_sdk::ruma::OwnedRoomId,
+    std::sync::Arc<matrix_sdk_ui::Timeline>,
+    bool,
+);
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing (multiple
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
@@ -1142,6 +1148,50 @@ impl MatrixState {
     /// `sync::abort_current_sync_loop`, immediately before a login
     /// supersedes the account's store — need that guarantee now, not up to
     /// 30 seconds from now.
+    /// Retain the exact views only until cancellation has been decided. These
+    /// Arcs hold SDK stores open and must be dropped before session relocation.
+    pub(crate) async fn snapshot_timelines_for_rollback(&self) -> Vec<TimelineRollbackEntry> {
+        self.timelines
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .map(|(room_id, (timeline, _, focused))| {
+                (room_id.clone(), std::sync::Arc::clone(timeline), *focused)
+            })
+            .collect()
+    }
+
+    /// Reattach listeners to the same views (including event-focused views).
+    /// The caller holds the login completion lock and has restored the client.
+    pub(crate) async fn restore_timeline_snapshot(
+        &self,
+        snapshot: Vec<TimelineRollbackEntry>,
+        mut spawn_listener: impl FnMut(
+            &matrix_sdk::ruma::RoomId,
+            &std::sync::Arc<matrix_sdk_ui::Timeline>,
+        ) -> tokio::task::JoinHandle<()>,
+    ) {
+        let mut timelines = self.timelines.lock().await;
+        let mut evicted_handles = Vec::new();
+        for (room_id, timeline, focused) in snapshot {
+            // A room-open request may already have installed a replacement.
+            if timelines.contains(&room_id) {
+                continue;
+            }
+            let handle = spawn_listener(&room_id, &timeline);
+            if let Some((_, (_, evicted, _))) = timelines.push(room_id, (timeline, handle, focused))
+            {
+                evicted.abort();
+                evicted_handles.push(evicted);
+            }
+        }
+        drop(timelines);
+        for handle in evicted_handles {
+            let _ = handle.await;
+        }
+    }
+
     pub(crate) async fn clear_timelines(&self) {
         let mut timelines = self.timelines.lock().await;
         let mut handles = Vec::new();
@@ -1239,6 +1289,65 @@ impl MatrixState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_session_transition_restores_exact_timeline_and_listener() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_ui::timeline::RoomExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!rollback:example.org");
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+        let room = client.get_room(room_id).expect("joined room");
+        let timeline = std::sync::Arc::new(room.timeline().await.expect("timeline"));
+
+        for focused in [false, true] {
+            let state = MatrixState::default();
+            let old_listener = tokio::spawn(std::future::pending::<()>());
+            let old_abort = old_listener.abort_handle();
+            state.timelines.lock().await.push(
+                room_id.to_owned(),
+                (std::sync::Arc::clone(&timeline), old_listener, focused),
+            );
+            let snapshot = state.snapshot_timelines_for_rollback().await;
+            state.clear_timelines().await;
+            assert!(
+                old_abort.is_finished(),
+                "old listener must stop before restart"
+            );
+            assert!(state.timelines.lock().await.is_empty());
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let mut started_tx = Some(started_tx);
+            state
+                .restore_timeline_snapshot(snapshot, |restored_room, restored_timeline| {
+                    assert_eq!(restored_room, room_id);
+                    assert!(std::sync::Arc::ptr_eq(restored_timeline, &timeline));
+                    let started_tx = started_tx.take().expect("one replacement listener");
+                    tokio::spawn(async move {
+                        let _ = started_tx.send(());
+                        std::future::pending::<()>().await;
+                    })
+                })
+                .await;
+            started_rx.await.expect("replacement listener runs");
+            {
+                let entries = state.timelines.lock().await;
+                let (restored, handle, restored_focus) = entries.peek(room_id).expect("restored");
+                assert!(std::sync::Arc::ptr_eq(restored, &timeline));
+                assert_eq!(*restored_focus, focused);
+                assert!(!handle.is_finished());
+            }
+            // A concurrent room-open replacement must not gain a second listener.
+            let snapshot = state.snapshot_timelines_for_rollback().await;
+            state
+                .restore_timeline_snapshot(snapshot, |_, _| panic!("duplicate listener"))
+                .await;
+            state.clear_timelines().await;
+        }
+    }
 
     #[test]
     fn mark_notified_returns_true_only_the_first_time() {

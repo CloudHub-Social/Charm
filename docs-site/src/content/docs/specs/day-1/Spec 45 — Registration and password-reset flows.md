@@ -309,7 +309,14 @@ with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
 Native SSO cancellation before durable adoption restores both the prior client
-slot and its sync loop if shutdown had begun. If callback exchange already
+slot and its sync loop if shutdown had begun. The cancellation window retains
+the exact cached timeline objects and their focused/live view markers, then
+reattaches listeners on rollback so the open room continues receiving updates
+without navigation. These temporary strong references are dropped before store
+relocation when adoption proceeds. Regression coverage verifies listener
+shutdown/restart, view identity, focus preservation, and duplicate prevention;
+GitHub Actions and real-client cancellation checks remain required.
+If callback exchange already
 authenticated a device, cancellation attempts Matrix logout with the bounded
 auth-network timeout before discarding the temporary local store. Offline or
 failed revocation remains best-effort and is reported without session details;
