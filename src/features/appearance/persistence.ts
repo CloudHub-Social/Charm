@@ -185,6 +185,17 @@ export function pickNewerEnvelope(
 export function mergeAppearance(partial: Partial<AppearanceState> | null): AppearanceState {
   if (!partial) return DEFAULT_APPEARANCE;
   return {
+    clockFormat: isValid(partial.clockFormat, ["locale", "12h", "24h"] as const)
+      ? partial.clockFormat
+      : DEFAULT_APPEARANCE.clockFormat,
+    dateFormat: isValid(partial.dateFormat, [
+      "locale",
+      "day-first",
+      "month-first",
+      "year-first",
+    ] as const)
+      ? partial.dateFormat
+      : DEFAULT_APPEARANCE.dateFormat,
     theme: isValid<Theme>(partial.theme, VALID_THEMES) ? partial.theme : DEFAULT_APPEARANCE.theme,
     fontSize: isValid<FontSize>(partial.fontSize, VALID_FONT_SIZES)
       ? partial.fontSize

@@ -2,6 +2,8 @@ import { useAtom, useStore } from "jotai";
 import { useCallback } from "react";
 import {
   autoplayGifsAtom,
+  clockFormatAtom,
+  dateFormatAtom,
   densityAtom,
   fontSizeAtom,
   groupPresenceRingAtom,
@@ -23,6 +25,7 @@ import {
 } from "./atoms";
 import { applyAppearanceToDom } from "./dom";
 import { persistAppearance } from "./persistence";
+import type { ClockFormat, DateFormat } from "./dateTime";
 
 /**
  * Reads and writes the current appearance settings. Every setter here is the
@@ -38,6 +41,8 @@ import { persistAppearance } from "./persistence";
  */
 export function useAppearance() {
   const store = useStore();
+  const [clockFormat, setClockFormatAtom] = useAtom(clockFormatAtom);
+  const [dateFormat, setDateFormatAtom] = useAtom(dateFormatAtom);
   const [theme, setThemeAtom] = useAtom(themeAtom);
   const [fontSize, setFontSizeAtom] = useAtom(fontSizeAtom);
   const [density, setDensityAtom] = useAtom(densityAtom);
@@ -54,6 +59,8 @@ export function useAppearance() {
   const commit = useCallback(
     (patch: Partial<AppearanceState>) => {
       const next: AppearanceState = {
+        clockFormat: store.get(clockFormatAtom),
+        dateFormat: store.get(dateFormatAtom),
         theme: store.get(themeAtom),
         fontSize: store.get(fontSizeAtom),
         density: store.get(densityAtom),
@@ -72,6 +79,22 @@ export function useAppearance() {
       void persistAppearance(next);
     },
     [store],
+  );
+
+  const setClockFormat = useCallback(
+    (next: ClockFormat) => {
+      setClockFormatAtom(next);
+      commit({ clockFormat: next });
+    },
+    [commit, setClockFormatAtom],
+  );
+
+  const setDateFormat = useCallback(
+    (next: DateFormat) => {
+      setDateFormatAtom(next);
+      commit({ dateFormat: next });
+    },
+    [commit, setDateFormatAtom],
   );
 
   const setTheme = useCallback(
@@ -171,6 +194,10 @@ export function useAppearance() {
   );
 
   return {
+    clockFormat,
+    dateFormat,
+    setClockFormat,
+    setDateFormat,
     theme,
     fontSize,
     density,

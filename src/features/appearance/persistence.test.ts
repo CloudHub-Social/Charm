@@ -170,6 +170,8 @@ describe("mergeAppearance", () => {
 
   it("passes through a fully-specified partial", () => {
     const full: AppearanceState = {
+      clockFormat: "24h",
+      dateFormat: "year-first",
       theme: "midnight",
       fontSize: "xl",
       density: "compact",
@@ -191,6 +193,25 @@ describe("mergeAppearance", () => {
     // or a store file written by an incompatible build) — `theme` is a
     // string, just not one of the supported values.
     const corrupted = { theme: "banana" } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it.each(["locale", "12h", "24h"] as const)("accepts clock format %s", (clockFormat) => {
+    expect(mergeAppearance({ clockFormat }).clockFormat).toBe(clockFormat);
+  });
+
+  it.each(["locale", "day-first", "month-first", "year-first"] as const)(
+    "accepts date format %s",
+    (dateFormat) => {
+      expect(mergeAppearance({ dateFormat }).dateFormat).toBe(dateFormat);
+    },
+  );
+
+  it.each(["unsupported", null, 24, {}, []])("rejects invalid time/date preference %j", (value) => {
+    const corrupted = {
+      clockFormat: value,
+      dateFormat: value,
+    } as unknown as Partial<AppearanceState>;
     expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
   });
 
