@@ -333,6 +333,7 @@ async fn clear_local_session_locked(
         crate::push::PushStatus::default();
 
     let search_index = std::sync::Arc::clone(&state.search_index);
+    let search_account_key = account_key.clone();
     let cleanup = match app.path().app_data_dir() {
         Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
             let active = search_index
@@ -350,7 +351,7 @@ async fn clear_local_session_locked(
                     if let Some(device_id) = search_device_id {
                         super::search::SearchIndex::delete_for_source(
                             &app_data_dir,
-                            &account_key,
+                            &search_account_key,
                             &device_id,
                         )
                     } else {
@@ -358,7 +359,10 @@ async fn clear_local_session_locked(
                     }
                 }
                 SearchCleanupScope::EntireAccount => {
-                    super::search::SearchIndex::delete_for_account(&app_data_dir, &account_key)
+                    super::search::SearchIndex::delete_for_account(
+                        &app_data_dir,
+                        &search_account_key,
+                    )
                 }
             };
             if let Err(error) = scoped_cleanup {
