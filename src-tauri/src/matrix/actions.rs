@@ -16,7 +16,7 @@ use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, Relation, ReplacementMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplacementMetadata,
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
