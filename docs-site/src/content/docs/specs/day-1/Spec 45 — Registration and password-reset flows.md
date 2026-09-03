@@ -309,6 +309,12 @@ completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
+Companion registration, password-reset, token-login, and SSO admission cancels
+both server-derived browser cookie owners and inserts the replacement attempt
+under one transition lock. Routes do not split cancellation from admission for
+these flows; the replacement remains addressable for cancellation throughout
+network setup and finalization.
+
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
 defaulting to `false`. The existing legacy dummy registration and generic SSO

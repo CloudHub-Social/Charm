@@ -141,6 +141,22 @@ pub struct PendingAuthStore {
     capacity: Arc<Semaphore>,
 }
 
+/// Server-derived browser ownership, including both pre-auth cookie namespaces.
+#[derive(Clone)]
+pub struct AuthOwner {
+    pub id: String,
+    pub superseded: Vec<String>,
+}
+
+impl From<String> for AuthOwner {
+    fn from(id: String) -> Self {
+        Self {
+            id,
+            superseded: Vec::new(),
+        }
+    }
+}
+
 impl Default for PendingAuthStore {
     fn default() -> Self {
         Self {
@@ -160,17 +176,25 @@ impl Default for PendingAuthStore {
 impl PendingAuthStore {
     async fn admit_owner_attempt(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         attempt_id: String,
         cancellation: CancellationToken,
     ) {
+        let owner = owner.into();
         let completed = {
             let _transition = self.transitions.lock().await;
-            let completed = self.clear_owner_attempts(&owner).await;
+            let mut owners = owner.superseded;
+            owners.push(owner.id.clone());
+            owners.sort_unstable();
+            owners.dedup();
+            let mut completed = Vec::new();
+            for previous in owners {
+                completed.extend(self.clear_owner_attempts(&previous).await);
+            }
             self.cancellations
                 .lock()
                 .await
-                .insert(attempt_id, (owner, cancellation));
+                .insert(attempt_id, (owner.id, cancellation));
             completed
         };
         for completion in completed {
@@ -238,17 +262,19 @@ impl PendingAuthStore {
 
     pub async fn start_sso(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         idp_id: Option<String>,
         callback_url: String,
         has_persistence: bool,
     ) -> Result<(String, String), String> {
+        let owner = owner.into();
         let capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
         self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
             .await;
+        let owner = owner.id;
         let (client, crypto) = match tokio::select! {
             result = crate::auth::build_client(&homeserver_url, has_persistence) => result,
             () = cancellation.cancelled() => {
@@ -467,7 +493,7 @@ impl PendingAuthStore {
 
     pub async fn login_with_token(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         token: String,
         has_persistence: bool,
@@ -489,16 +515,18 @@ impl PendingAuthStore {
 
     pub async fn begin_registration(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         request: RegisterRequest,
         has_persistence: bool,
     ) -> Result<BeginRegistrationResult, String> {
+        let owner = owner.into();
         let capacity = self.reserve_capacity()?;
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
         self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
             .await;
+        let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let homeserver_url = request.homeserver_url.clone();
         let build_result = tokio::select! {
@@ -818,10 +846,11 @@ impl PendingAuthStore {
     pub async fn request_password_reset(
         &self,
         source: String,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
+        let owner = owner.into();
         let capacity = self.reserve_capacity()?;
         let delivery_email = email.trim().to_owned();
         let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
@@ -836,6 +865,7 @@ impl PendingAuthStore {
         let cancellation = CancellationToken::new();
         self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
             .await;
+        let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
             result = async {
@@ -2051,6 +2081,40 @@ mod tests {
         drop(transition);
         admission.await;
         assert!(store.cancellations.lock().await.contains_key("attempt"));
+    }
+
+    #[tokio::test]
+    async fn replacement_admission_cancels_both_cookie_owners() {
+        let store = PendingAuthStore::default();
+        let preauth = CancellationToken::new();
+        let discovery = CancellationToken::new();
+        store
+            .admit_owner_attempt("preauth".to_owned(), "old-a".to_owned(), preauth.clone())
+            .await;
+        store
+            .admit_owner_attempt(
+                "discovery".to_owned(),
+                "old-b".to_owned(),
+                discovery.clone(),
+            )
+            .await;
+        let replacement = CancellationToken::new();
+        store
+            .admit_owner_attempt(
+                AuthOwner {
+                    id: "preauth".to_owned(),
+                    superseded: vec!["preauth".to_owned(), "discovery".to_owned()],
+                },
+                "replacement".to_owned(),
+                replacement.clone(),
+            )
+            .await;
+        assert!(preauth.is_cancelled());
+        assert!(discovery.is_cancelled());
+        assert!(!replacement.is_cancelled());
+        let cancellations = store.cancellations.lock().await;
+        assert_eq!(cancellations.len(), 1);
+        assert!(cancellations.contains_key("replacement"));
     }
 
     #[test]

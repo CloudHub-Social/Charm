@@ -1750,6 +1750,16 @@ async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
     }
 }
 
+fn browser_auth_owner(jar: &CookieJar, id: String) -> crate::pending_auth::AuthOwner {
+    crate::pending_auth::AuthOwner {
+        id,
+        superseded: [PREAUTH_COOKIE, DISCOVERY_COOKIE]
+            .into_iter()
+            .filter_map(|name| jar.get(name).map(|cookie| cookie.value().to_owned()))
+            .collect(),
+    }
+}
+
 async fn begin_registration(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1762,10 +1772,13 @@ async fn begin_registration(
     } else {
         new_preauth_owner()
     };
-    cancel_browser_preauth(&state, &jar).await;
     match state
         .pending_auth
-        .begin_registration(owner.clone(), request, state.persistence.is_some())
+        .begin_registration(
+            browser_auth_owner(&jar, owner.clone()),
+            request,
+            state.persistence.is_some(),
+        )
         .await
         .map_err(ApiError::bad_request)?
     {
@@ -1894,12 +1907,11 @@ async fn request_password_reset(
     } else {
         new_preauth_owner()
     };
-    cancel_browser_preauth(&state, &jar).await;
     let challenge = state
         .pending_auth
         .request_password_reset(
             trusted_client_source(source, &headers),
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.email,
         )
@@ -2056,11 +2068,10 @@ async fn login_with_token(
         .get(DISCOVERY_COOKIE)
         .map(|cookie| cookie.value().to_owned())
         .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
-    cancel_browser_preauth(&state, &jar).await;
     let (completed, attempt_id) = state
         .pending_auth
         .login_with_token(
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.token,
             state.persistence.is_some(),
@@ -2121,11 +2132,10 @@ async fn start_browser_sso(
     let callback_url = public_url
         .join("/api/auth/sso/callback")
         .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
-    cancel_browser_preauth(&state, &jar).await;
     let (attempt_id, redirect_url) = state
         .pending_auth
         .start_sso(
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.idp_id,
             callback_url.to_string(),
