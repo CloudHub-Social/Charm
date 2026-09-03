@@ -128,6 +128,26 @@
       }
     },
     {
+      "slug": "composer-parity",
+      "title": "Composer formatting and shortcuts",
+      "summary": "Opt into spoiler, strikethrough, code-block and link controls, additional slash commands, and editing your latest message from an empty composer.",
+      "status": "preview",
+      "spec": "Spec 43",
+      "specLinks": [
+        {
+          "label": "Spec 43",
+          "href": "/specs/day-1/spec-43--composer-parity/"
+        }
+      ],
+      "flag": "composer_parity",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "composer-parity-controls-on",
+        "alt": "Charm composer with the optional formatting controls enabled",
+        "caption": "The preview flag exposes additional composer controls; the feature remains off by default."
+      }
+    },
+    {
       "slug": "rich-message-rendering",
       "title": "Rich message rendering",
       "summary": "Render formatted Matrix content including code, tables, pills, mentions, math, and jumbo emoji.",
