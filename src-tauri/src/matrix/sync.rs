@@ -690,6 +690,19 @@ async fn notify_new_room_invites(
 /// microseconds. `MatrixState::clear_timelines` applies the same rigor to
 /// the timeline listeners.
 pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
+    abort_current_sync_loop_inner(app, false).await;
+}
+
+pub(crate) async fn abort_current_sync_loop_for_rollback(
+    app: &AppHandle,
+) -> Vec<super::TimelineRollbackEntry> {
+    abort_current_sync_loop_inner(app, true).await
+}
+
+async fn abort_current_sync_loop_inner(
+    app: &AppHandle,
+    retain_views: bool,
+) -> Vec<super::TimelineRollbackEntry> {
     let previous_sync = app
         .state::<MatrixState>()
         .sync_loop_handle
@@ -700,7 +713,12 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         previous_sync.abort();
         let _ = previous_sync.await;
     }
-    app.state::<MatrixState>().clear_timelines().await;
+    let snapshot = if retain_views {
+        app.state::<MatrixState>().drain_timelines(true).await
+    } else {
+        app.state::<MatrixState>().clear_timelines().await;
+        Vec::new()
+    };
     // Review fix: see `clear_pinned_event_cache`'s own doc comment — same
     // "nothing from the old session carries over" cleanup as
     // `clear_timelines` above, for pin/unpin's own cache instead of the
@@ -713,6 +731,7 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // shared supersession boundary, so no queued/deferred task from the old
     // client can borrow the replacement session's generation or index slot.
     super::search::invalidate_for_session_replacement(&state).await;
+    snapshot
 }
 
 /// Decides what the sync loop's next `sync_once` call should report as this

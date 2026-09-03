@@ -316,7 +316,8 @@ override, pending GitHub Actions verification.
 
 Native SSO cancellation before durable adoption restores both the prior client
 slot and its sync loop if shutdown had begun. The cancellation window retains
-the exact cached timeline objects and their focused/live view markers, then
+the exact cached timeline objects and their focused/live view markers, capturing
+them atomically when draining the cache rather than before shutdown, then
 reattaches listeners on rollback so the open room continues receiving updates
 without navigation. These temporary strong references are dropped before store
 relocation when adoption proceeds. Regression coverage verifies listener

@@ -3839,8 +3839,7 @@ pub async fn complete_sso_login(
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    let previous_timelines = state.snapshot_timelines_for_rollback().await;
-    sync::abort_current_sync_loop(&app).await;
+    let previous_timelines = sync::abort_current_sync_loop_for_rollback(&app).await;
     // Cancellation remains authoritative until the irreversible store/session
     // relocation begins. If it arrived while the completion lock or old sync
     // loop was draining, restore that loop and leave the prior client current.

@@ -1150,6 +1150,7 @@ impl MatrixState {
     /// 30 seconds from now.
     /// Retain the exact views only until cancellation has been decided. These
     /// Arcs hold SDK stores open and must be dropped before session relocation.
+    #[cfg(test)]
     pub(crate) async fn snapshot_timelines_for_rollback(&self) -> Vec<TimelineRollbackEntry> {
         self.timelines
             .lock()
@@ -1193,9 +1194,19 @@ impl MatrixState {
     }
 
     pub(crate) async fn clear_timelines(&self) {
+        self.drain_timelines(false).await;
+    }
+
+    /// Capture the rollback views in the same critical section that removes
+    /// their listeners. A separate snapshot can miss a newly opened room.
+    pub(crate) async fn drain_timelines(&self, retain_views: bool) -> Vec<TimelineRollbackEntry> {
         let mut timelines = self.timelines.lock().await;
         let mut handles = Vec::new();
-        while let Some((_, (_, handle, _))) = timelines.pop_lru() {
+        let mut snapshot = Vec::new();
+        while let Some((room_id, (timeline, handle, focused))) = timelines.pop_lru() {
+            if retain_views {
+                snapshot.push((room_id, timeline, focused));
+            }
             handle.abort();
             handles.push(handle);
         }
@@ -1203,6 +1214,7 @@ impl MatrixState {
         for handle in handles {
             let _ = handle.await;
         }
+        snapshot
     }
 
     /// Clears this module's authoritative pinned-events cache and its
@@ -1311,8 +1323,12 @@ mod tests {
                 room_id.to_owned(),
                 (std::sync::Arc::clone(&timeline), old_listener, focused),
             );
-            let snapshot = state.snapshot_timelines_for_rollback().await;
-            state.clear_timelines().await;
+            let snapshot = state.drain_timelines(true).await;
+            assert_eq!(
+                snapshot.len(),
+                1,
+                "drained view must be available for rollback"
+            );
             assert!(
                 old_abort.is_finished(),
                 "old listener must stop before restart"
