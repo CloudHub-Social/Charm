@@ -193,13 +193,6 @@ pub(crate) fn global_app_handle() -> Option<AppHandle> {
 /// Selects the platform transport by `cfg`. Returns `None` on desktop (no
 /// remote-push transport there — see this module's doc comment).
 ///
-/// Also returns `None` on iOS for now, even though `ios::ApnsTransport`
-/// exists: it's currently a documented stub whose `register()` always
-/// returns an error (see that module's doc comment for why — it needs real
-/// Tauri mobile-plugin scaffolding this environment couldn't safely
-/// produce). Advertising it as `available` would show a "Turn on push
-/// notifications" button on every iOS install that can only ever fail.
-/// Flip this back on once `ApnsTransport::register` actually works.
 pub fn active_transport(
     #[allow(unused_variables)] app: &AppHandle,
 ) -> Option<Arc<dyn NotificationTransport>> {
@@ -207,7 +200,16 @@ pub fn active_transport(
     {
         Some(Arc::new(android::UnifiedPushTransport::new()) as Arc<dyn NotificationTransport>)
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        let app_data_dir = app.path().app_data_dir().ok()?;
+        crate::feature_flags::flag(
+            &app_data_dir,
+            crate::feature_flags::FeatureFlagKey::IosPushNotifications,
+        )
+        .then(|| Arc::new(ios::ApnsTransport::new(app.clone())) as Arc<dyn NotificationTransport>)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let _ = app;
         None
@@ -807,13 +809,12 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         return Ok(());
     }
 
-    use tauri_plugin_notification::NotificationExt;
-    let show_result = app
-        .notification()
-        .builder()
-        .title(&notification.title)
-        .body(&notification.body)
-        .show();
+    let show_result = shell::show_native_notification(
+        app,
+        notification.title.clone(),
+        notification.body.clone(),
+    )
+    .await;
     if let Err(e) = show_result {
         app.state::<MatrixState>()
             .forget_notified(&notification.event_id);

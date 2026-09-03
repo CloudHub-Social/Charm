@@ -16,6 +16,79 @@ use tauri::{AppHandle, Manager, State};
 use super::rooms::RoomSummary;
 use super::MatrixState;
 
+/// One async notification boundary for both plugins. iOS uses the pinned
+/// SableClient plugin because it also owns APNs callbacks; every other target
+/// keeps Tauri's official local-notification plugin.
+pub(crate) async fn show_native_notification(
+    app: &AppHandle,
+    title: impl Into<String>,
+    body: impl Into<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        use tauri_plugin_notifications::NotificationsExt;
+        app.notifications()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .await
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        app.notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn request_notification_permission(app: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "ios")]
+    {
+        use tauri_plugin_notifications::NotificationsExt;
+        app.notifications()
+            .request_permission()
+            .await
+            .map(|state| state.to_string())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        app.notification()
+            .request_permission()
+            .map(|state| state.to_string())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn is_notification_permission_granted(app: AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "ios")]
+    {
+        use tauri_plugin_notifications::{NotificationsExt, PermissionState};
+        app.notifications()
+            .permission_state()
+            .await
+            .map(|state| state == PermissionState::Granted)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        use tauri_plugin_notification::{NotificationExt, PermissionState};
+        app.notification()
+            .permission_state()
+            .map(|state| state == PermissionState::Granted)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Total unread state across every room, derived from the same
 /// [`super::rooms::has_unread`] signal `RoomSummary`/the room list already
 /// use — never re-derived from a naive per-room message count, so a muted
@@ -353,8 +426,6 @@ pub async fn maybe_send_notification<F, Fut>(
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Option<matrix_sdk::ruma::events::Mentions>>,
 {
-    use tauri_plugin_notification::NotificationExt;
-
     let NewMessageNotification {
         event_id,
         sender,
@@ -455,12 +526,7 @@ pub async fn maybe_send_notification<F, Fut>(
         app.state::<MatrixState>().forget_notified(event_id);
         return;
     }
-    let show_result = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(notif_body)
-        .show();
+    let show_result = show_native_notification(app, title, notif_body).await;
     if let Err(e) = show_result {
         eprintln!("failed to show local notification: {e}");
         app.state::<MatrixState>().forget_notified(event_id);

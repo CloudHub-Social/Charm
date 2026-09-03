@@ -3,7 +3,7 @@ title: "Charm 2.0 Spec — Push notifications"
 type: spec
 project: Charm 2.0
 created: "2026-07-04"
-status: shipped
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. **Tier:** Day-1 launch-critical.
@@ -22,17 +22,21 @@ workstream in the launch set.
 
 ## Current state (in repo)
 
-- Session + crypto persistence exist: matrix-sdk `sqlite` + `e2e-encryption` features
-  (`src-tauri/Cargo.toml`), SQLCipher store + keychain key (`matrix/persistence.rs`), sync
-  loop in `matrix/mod.rs` (`spawn_sync_loop`) emitting `sync:state` / `room_list:update` /
-  `timeline:update`.
-- **Local** OS notifications are Spec 10 (`tauri-plugin-notification`, fired in-app on new
-  messages). **No** pusher registration, **no** push gateway integration, **no** UnifiedPush
-  or APNs plumbing, **no** background/headless decrypt path.
-- No mobile capability files yet; `capabilities/default.json` is desktop-scoped.
-- `matrix-sdk` is present; its `push` module (`Ruleset` / `m.push_rules`) and
-  `HttpPusherData` / `set_pusher` client APIs are available but unused.
-- No `NotificationTransport` abstraction exists yet.
+- The cross-platform `NotificationTransport`, Matrix `event_id_only` pusher lifecycle,
+  persisted endpoint cleanup, push status UI, encrypted-event fetch/decrypt, safe generic
+  fallback, push-rule evaluation, and notification dedupe are implemented.
+- Android has its UnifiedPush/FCM native bridge and headless decrypt entry point. Its killed-app
+  delivery and gateway paths still require the real-device/integration gates below.
+- iOS APNs token registration is implemented behind the default-off
+  `ios_push_notifications` flag using the pinned SableClient notification plugin revision
+  `758156fd9b1cbc99c83062194a2a59c411b5907f` (MIT). The plugin supplies the Swift
+  application-delegate bridge; Charm owns the Matrix pusher and privacy lifecycle.
+- iOS killed/background delivery is **not complete**: the Notification Service Extension target,
+  shared App Group crypto access, and extension-to-Rust decrypt bridge remain to be implemented
+  and verified.
+- Live iOS delivery remains externally gated on a paid Apple Developer team, a Push-enabled App
+  ID/profile, and a matching APNs provider credential in the gateway. Personal Team
+  AltStore/SideStore re-signing cannot provide that remote-push capability.
 
 ## Scope (in)
 
@@ -123,6 +127,20 @@ workstream in the launch set.
 - **iOS**: enable Push Notifications + Background Modes capabilities in the Xcode project Tauri
   generates; add a **Notification Service Extension** target that links the Rust core; register
   for remote notifications to get the APNs token via Tauri v2 mobile push APIs.
+
+### iOS upstream provenance
+
+- Audited source: `SableClient/Sable` at `1873c32984529ebac1d350933a5088873abe960c`
+  (retrieved 2026-09-03). Sable pins `SableClient/tauri-plugin-notifications` at
+  `758156fd9b1cbc99c83062194a2a59c411b5907f`; Charm pins the same commit rather than a
+  floating branch.
+- The plugin is MIT licensed. The imported seam is limited to its maintained Tauri/Swift APNs
+  registration bridge; no AGPL Sable application code or assets are copied.
+- Sable's open issue #376 documents that its own AltStore build still lacks operational push
+  because APNs provider credentials and eligible signing are unresolved. Charm therefore treats
+  this as reusable client plumbing, not evidence of end-to-end delivery.
+- The APNs token is device/app scoped. Charm does not log it or send it to telemetry; it is used
+  only as the Matrix pusher key and is removed on push disable/logout.
 - Capability files: add `src-tauri/capabilities/mobile.json` (or per-platform) granting
   `notification:default` and any push permissions; keep desktop capabilities unchanged.
 
@@ -236,10 +254,10 @@ delivery, and push-triggered background decrypt/display. APNs requires the
 app's App ID/provisioning profile to carry the Push Notifications
 capability, and the gateway needs an Apple push key/certificate — both are
 paid-Apple-Developer-Program-only. Separately (not a signing-tier issue):
-**this repo's iOS APNs Rust/Swift bridge is still a documented stub** —
-confirm current state before assuming this is purely a signing-tier
-limitation; the settings UI should report no available iOS push transport
-until that native plugin work actually lands.
+The iOS APNs Rust/Swift registration bridge is now implemented behind the
+default-off `ios_push_notifications` flag, but enabling that flag does not
+remove either the paid signing/provider requirement or the still-missing
+Notification Service Extension background-decrypt path.
 
 **Testable on Personal Team signing regardless:** app launch, WebView
 rendering, Matrix login, normal foreground sync, local storage/Keychain

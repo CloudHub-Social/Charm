@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { requestPermission } from "@tauri-apps/plugin-notification";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import {
   listRooms,
+  requestNotificationPermission,
   type PusherKind,
   type RoomNotificationModeKind,
   type RoomSummary,
@@ -40,13 +40,13 @@ function PushTransportTile() {
 
   // The homeserver can only deliver a push if the OS has also granted the
   // notification permission — without this, `register_push` can succeed
-  // while `app.notification().show()` still silently shows nothing (Android
+  // while the native notification API still silently shows nothing (Android
   // 13+/iOS both gate on it separately from push registration itself). Only
   // proceed to register if the user actually granted it — registering a
   // pusher the OS won't let us show anything for just generates server
   // traffic with no visible result until they separately fix permissions.
   async function handleEnable() {
-    const permission = await requestPermission();
+    const permission = await requestNotificationPermission();
     if (permission !== "granted") return;
     register.mutate();
   }

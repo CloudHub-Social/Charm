@@ -37,7 +37,6 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
-tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
 rand = "0.10.2"
@@ -83,6 +82,15 @@ exif = { version = "0.6", package = "kamadak-exif" }
 # (Independently fixed on `main` in #46 as well as here — same finding.)
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# SableClient's MIT-licensed Tauri notification plugin supplies the supported
+# Swift mobile-plugin bridge for APNs registration. Pin the audited revision so
+# an upstream force-push or API change cannot silently alter release builds.
+tauri-plugin-notifications = { git = "https://github.com/SableClient/tauri-plugin-notifications.git", rev = "758156fd9b1cbc99c83062194a2a59c411b5907f", default-features = false, features = ["push-notifications"] }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+tauri-plugin-notification = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

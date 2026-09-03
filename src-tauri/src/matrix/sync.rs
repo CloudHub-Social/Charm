@@ -611,8 +611,6 @@ async fn notify_new_room_invites(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
 ) {
-    use tauri_plugin_notification::NotificationExt;
-
     // Review fix: this dispatch path posts notifications directly and never
     // ran through `shell::maybe_send_notification`'s DND guard, so a user
     // with `room_invites` and `focus_mode` both enabled would still get
@@ -656,7 +654,7 @@ async fn notify_new_room_invites(
         if super::dnd::is_dnd_active(app) {
             continue;
         }
-        if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        if let Err(error) = shell::show_native_notification(app, title, body).await {
             tracing::warn!(%error, room_id = %room_id, "failed to show room-invite notification");
         }
     }

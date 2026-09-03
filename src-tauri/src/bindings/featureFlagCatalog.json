@@ -160,5 +160,11 @@
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "key": "ios_push_notifications",
+    "default": false,
+    "description": "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider.",
+    "owner": "Spec 11 (push notifications)"
   }
 ]

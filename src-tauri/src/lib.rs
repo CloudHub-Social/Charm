@@ -1205,17 +1205,20 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_window_state::Builder::new().build());
 
-    #[cfg(target_os = "ios")]
-    let builder = builder.plugin(push::ios::init());
-
-    builder
+    let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build());
+
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_notifications::init());
+    #[cfg(not(target_os = "ios"))]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
+    builder
         .manage(matrix::MatrixState::default())
         .setup(|app| {
             // Read once and pass to both calls below, rather than letting
@@ -1578,6 +1581,8 @@ pub fn run() {
             matrix::notifications::set_sound_enabled,
             matrix::shell::set_focused_room,
             matrix::shell::set_badge_count,
+            matrix::shell::request_notification_permission,
+            matrix::shell::is_notification_permission_granted,
             matrix::shell::is_desktop_platform,
             matrix::shell::get_autostart,
             matrix::shell::set_autostart,

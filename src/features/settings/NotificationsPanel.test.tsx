@@ -16,7 +16,7 @@ const getPushStatus = vi.fn();
 const onPushStatus = vi.fn();
 const registerPush = vi.fn();
 const unregisterPush = vi.fn();
-const requestPermission = vi.fn();
+const requestNotificationPermission = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getNotificationSettings: (...args: unknown[]) => getNotificationSettings(...args),
@@ -31,10 +31,8 @@ vi.mock("@/lib/matrix", () => ({
   onPushStatus: (...args: unknown[]) => onPushStatus(...args),
   registerPush: (...args: unknown[]) => registerPush(...args),
   unregisterPush: (...args: unknown[]) => unregisterPush(...args),
-}));
-
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  requestPermission: (...args: unknown[]) => requestPermission(...args),
+  requestNotificationPermission: (...args: unknown[]) =>
+    requestNotificationPermission(...args),
 }));
 
 beforeEach(() => {
@@ -64,7 +62,7 @@ beforeEach(() => {
     endpoint_present: false,
   });
   unregisterPush.mockReset().mockResolvedValue(undefined);
-  requestPermission.mockReset().mockResolvedValue("granted");
+  requestNotificationPermission.mockReset().mockResolvedValue("granted");
 });
 
 describe("NotificationsPanel", () => {
@@ -271,7 +269,7 @@ describe("NotificationsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
 
-    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(requestNotificationPermission).toHaveBeenCalled());
     await waitFor(() => expect(registerPush).toHaveBeenCalled());
   });
 
@@ -283,12 +281,12 @@ describe("NotificationsPanel", () => {
       last_error: null,
       available: true,
     });
-    requestPermission.mockResolvedValue("denied");
+    requestNotificationPermission.mockResolvedValue("denied");
     renderWithProviders(<NotificationsPanel />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
 
-    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(requestNotificationPermission).toHaveBeenCalled());
     // Give the denied-permission branch a turn to (not) call registerPush.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(registerPush).not.toHaveBeenCalled();

@@ -1304,6 +1304,14 @@ export function registerPush(): Promise<PushRegistration> {
   return invoke("register_push");
 }
 
+export function requestNotificationPermission(): Promise<string> {
+  return invoke("request_notification_permission");
+}
+
+export function isNotificationPermissionGranted(): Promise<boolean> {
+  return invoke("is_notification_permission_granted");
+}
+
 export function unregisterPush(): Promise<void> {
   return invoke("unregister_push");
 }
