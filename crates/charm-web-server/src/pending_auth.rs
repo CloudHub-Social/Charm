@@ -179,9 +179,21 @@ impl PendingAuthStore {
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
+        self.cancel_owners(&[owner]).await;
+    }
+
+    /// Cancels every attempt belonging to the browser's pre-authentication
+    /// owner cookies under one transition lock. This prevents a new flow from
+    /// being admitted between clearing the discovery and active-flow owners.
+    pub async fn cancel_owners(&self, owners: &[&str]) {
         let completed = {
             let _transition = self.transitions.lock().await;
-            self.clear_owner_attempts(owner).await
+            let mut unique = HashSet::new();
+            let mut completed = Vec::new();
+            for owner in owners.iter().copied().filter(|owner| unique.insert(*owner)) {
+                completed.extend(self.clear_owner_attempts(owner).await);
+            }
+            completed
         };
         for completion in completed {
             discard_completed_sso(completion).await;
@@ -2125,6 +2137,32 @@ mod tests {
         store.cancel_owner("browser-a").await;
 
         assert!(cancellation.is_cancelled());
+        assert!(store.cancellations.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn browser_owner_cancellation_supersedes_both_cookie_namespaces() {
+        let store = PendingAuthStore::default();
+        let preauth = CancellationToken::new();
+        let discovery = CancellationToken::new();
+        {
+            let mut cancellations = store.cancellations.lock().await;
+            cancellations.insert(
+                "preauth-attempt".to_owned(),
+                ("preauth-owner".to_owned(), preauth.clone()),
+            );
+            cancellations.insert(
+                "discovery-attempt".to_owned(),
+                ("discovery-owner".to_owned(), discovery.clone()),
+            );
+        }
+
+        store
+            .cancel_owners(&["preauth-owner", "discovery-owner"])
+            .await;
+
+        assert!(preauth.is_cancelled());
+        assert!(discovery.is_cancelled());
         assert!(store.cancellations.lock().await.is_empty());
     }
 

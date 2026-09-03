@@ -8,6 +8,7 @@ use charm_lib::matrix::auth::{
     client_encryption_settings, register_with_dummy_auth, LoginRequest, LoginResponse,
     RegisterRequest,
 };
+use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 use std::time::Duration;
@@ -91,6 +92,7 @@ struct ClientWellKnownHomeserver {
 }
 
 async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> {
+    const MAX_WELL_KNOWN_BYTES: usize = 64 * 1024;
     let origin = reqwest::Url::parse(&format!("https://{server_name}"))
         .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
     if origin.path() != "/"
@@ -128,12 +130,18 @@ async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> 
         if !response.status().is_success() {
             return Ok(origin);
         }
-        let body = response
-            .bytes()
-            .await
-            .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
-        if body.len() > 64 * 1024 {
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_WELL_KNOWN_BYTES as u64)
+        {
             return Err("homeserver discovery response was too large".to_string());
+        }
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
+            append_bounded_chunk(&mut body, &chunk, MAX_WELL_KNOWN_BYTES)?;
         }
         let discovered: ClientWellKnown = match serde_json::from_slice(&body) {
             Ok(discovered) => discovered,
@@ -143,6 +151,14 @@ async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> 
             .map_err(|_| "homeserver discovery returned an invalid base URL".to_string());
     }
     unreachable!("the bounded discovery loop always returns")
+}
+
+fn append_bounded_chunk(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<(), String> {
+    if buffer.len().saturating_add(chunk.len()) > limit {
+        return Err("homeserver discovery response was too large".to_string());
+    }
+    buffer.extend_from_slice(chunk);
+    Ok(())
 }
 
 async fn validated_url_client(
@@ -345,6 +361,18 @@ pub async fn register(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_body_limit_is_enforced_while_streaming() {
+        let mut body = vec![0; 4];
+        super::append_bounded_chunk(&mut body, &[1, 2], 6).expect("chunk reaches exact limit");
+        assert_eq!(body.len(), 6);
+
+        let error = super::append_bounded_chunk(&mut body, &[3], 6)
+            .expect_err("chunk beyond limit must be rejected before buffering");
+        assert_eq!(error, "homeserver discovery response was too large");
+        assert_eq!(body.len(), 6, "rejected bytes must never enter the buffer");
+    }
+
     #[tokio::test]
     async fn bare_server_names_reject_paths_before_discovery() {
         let error = super::discover_homeserver("example.org/not-a-server-name")

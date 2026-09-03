@@ -34,6 +34,14 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+Homeserver `.well-known` discovery is read as a bounded stream: an oversized
+declared length is rejected up front, and chunked responses are stopped before
+more than 64 KiB enters memory. Starting a replacement browser auth flow clears
+attempts owned by both the discovery and active pre-auth cookies under one store
+transition, preventing a new attempt from entering between those two cleanup
+operations. The separate password-mutation cancellation boundary is tracked in
+[#386](https://github.com/CloudHub-Social/Charm/issues/386).
+
 The implementation slices have merged in
 [#330](https://github.com/CloudHub-Social/Charm/pull/330),
 [#331](https://github.com/CloudHub-Social/Charm/pull/331),

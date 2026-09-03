@@ -1737,12 +1737,12 @@ fn require_preauth_owner(jar: &CookieJar) -> Result<String, ApiError> {
 }
 
 async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
-    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
-    }
-    if let Some(previous) = jar.get(DISCOVERY_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
-    }
+    let owners = [
+        jar.get(PREAUTH_COOKIE).map(|cookie| cookie.value()),
+        jar.get(DISCOVERY_COOKIE).map(|cookie| cookie.value()),
+    ];
+    let owners = owners.into_iter().flatten().collect::<Vec<_>>();
+    state.pending_auth.cancel_owners(&owners).await;
 }
 
 async fn begin_registration(
@@ -1753,11 +1753,11 @@ async fn begin_registration(
     require_registration_and_recovery(&state)?;
     let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
         owner
     } else {
         new_preauth_owner()
     };
+    cancel_browser_preauth(&state, &jar).await;
     match state
         .pending_auth
         .begin_registration(owner.clone(), request, state.persistence.is_some())
@@ -1885,11 +1885,11 @@ async fn request_password_reset(
     require_registration_and_recovery(&state)?;
     let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
         owner
     } else {
         new_preauth_owner()
     };
+    cancel_browser_preauth(&state, &jar).await;
     let challenge = state
         .pending_auth
         .request_password_reset(
@@ -2028,6 +2028,7 @@ async fn get_login_flows(
     } else {
         new_preauth_owner()
     };
+    cancel_browser_preauth(&state, &jar).await;
     crate::pending_auth::get_login_flows(&request.homeserver_url)
         .await
         .map(|flows| (jar.add(discovery_cookie(owner)), Json(flows)))
@@ -2050,6 +2051,7 @@ async fn login_with_token(
         .get(DISCOVERY_COOKIE)
         .map(|cookie| cookie.value().to_owned())
         .ok_or_else(|| ApiError::unauthorized("login options are no longer current"))?;
+    cancel_browser_preauth(&state, &jar).await;
     let (completed, attempt_id) = state
         .pending_auth
         .login_with_token(
@@ -2114,7 +2116,7 @@ async fn start_browser_sso(
     let callback_url = public_url
         .join("/api/auth/sso/callback")
         .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
-    state.pending_auth.cancel_owner(&owner).await;
+    cancel_browser_preauth(&state, &jar).await;
     let (attempt_id, redirect_url) = state
         .pending_auth
         .start_sso(
