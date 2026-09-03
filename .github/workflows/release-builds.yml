@@ -180,6 +180,26 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/linux-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Generate Linux SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-linux.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux
+          path: |
+            ${{ steps.cargo-target.outputs.dir }}/release/bundle/deb/*.deb
+            ${{ steps.cargo-target.outputs.dir }}/release/bundle/rpm/*.rpm
+            charm-linux.spdx.json
+          if-no-files-found: error
+
       - name: Upload Linux size report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -348,6 +368,25 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/apple-build-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Generate macOS SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-macos.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos
+          path: |
+            ${{ steps.apple-debug-files.outputs.bundle-path }}/dmg/*.dmg
+            charm-macos.spdx.json
+          if-no-files-found: error
+
       - name: Upload Apple size report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -440,6 +479,26 @@ jobs:
             ${{ steps.windows-debug-files.outputs.bundle-path }}
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/windows-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Generate Windows SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-windows.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows
+          path: |
+            ${{ steps.windows-debug-files.outputs.bundle-path }}/msi/*.msi
+            ${{ steps.windows-debug-files.outputs.bundle-path }}/nsis/*.exe
+            charm-windows.spdx.json
+          if-no-files-found: error
 
       - name: Upload Windows size report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -584,6 +643,26 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/android-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Generate Android SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-android.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload Android release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-android
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+            charm-android.spdx.json
+          if-no-files-found: error
+
       - name: Upload Android size report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -653,3 +732,80 @@ jobs:
           --build-configuration Release
           --base-sha "${{ steps.sentry-size-base.outputs.sha }}"
           --log-level info
+
+  publish-release-artifacts:
+    name: Publish signed release artifacts
+    needs: [rust-linux-debug-files, apple-debug-files, windows-debug-files, android-debug-files]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify complete artifact and SBOM set
+        run: |
+          set -euo pipefail
+          for pattern in '*.deb' '*.rpm' '*.dmg' '*.msi' '*.exe' '*.apk' '*.aab' \
+            'charm-linux.spdx.json' 'charm-macos.spdx.json' \
+            'charm-windows.spdx.json' 'charm-android.spdx.json'; do
+            if ! find artifacts -type f -name "$pattern" -print -quit | grep -q .; then
+              echo "::error::Missing release asset matching $pattern"
+              exit 1
+            fi
+          done
+
+      - name: Generate signed checksum manifest
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          duplicate_names=$(find . -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicate_names" ]; then
+            echo "::error::Release asset basenames collide"
+            printf '%s\n' "$duplicate_names"
+            exit 1
+          fi
+          manifest=$(mktemp)
+          while IFS= read -r -d '' file; do
+            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")")
+          done < <(find . -type f -print0 | sort -z) > "$manifest"
+          mv "$manifest" SHA256SUMS.txt
+
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "::error::Stable releases require GPG_PRIVATE_KEY"
+            exit 1
+          fi
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            --local-user "$key_id" --detach-sign --armor SHA256SUMS.txt
+          gpg --batch --armor --export "$key_id" > charm-release-signing-key.asc
+
+      - name: Attach assets to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::GitHub release $GITHUB_REF_NAME was not created in time"
+              exit 1
+            fi
+            sleep 10
+          done
+          mapfile -d '' assets < <(find artifacts -type f -print0)
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"

@@ -34,12 +34,22 @@ daily cron plus manual dispatch, off the current tip of `main`.
 than gating anyone's work. Builds in release profile so the published
 nightly and Sentry symbolication both reflect what actually ships.
 
-## Tier 4 — Production release _(partially implemented)_
+## Tier 4 — Production release _(signing-dependent)_
 
 Triggered by pushing a version tag (`v*`). Debug-symbol/release-artifact
-upload to Sentry is wired up; producing signed and notarized shipping
-bundles and publishing them is designed but not yet built (needs signing
-credentials not present in CI).
+upload to Sentry is wired up. Linux, macOS, Windows, and Android jobs publish
+their distributable bundles plus platform-named SPDX JSON SBOMs to the matching
+GitHub release. The publication job requires the complete artifact/SBOM set,
+includes every file in `SHA256SUMS.txt`, and signs that manifest with the
+repository release key. Platform-native production signing and Apple
+notarization remain gated on their provider credentials; an iOS simulator build
+is verification evidence, not a distributable release asset.
+
+Nightly publication uses the same four SBOM names. Because the SBOMs are present
+before checksum and detached-signature generation, they are covered by the same
+integrity chain and retained alongside the binaries. SBOM generation scans the
+checked-out, lockfile-pinned workspace after dependencies are installed; it does
+not receive signing, Sentry, or store credentials.
 
 For the full rationale and supporting-infrastructure details (rust-cache,
 sccache, the Moonrepo backlog item), see

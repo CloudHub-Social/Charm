@@ -356,12 +356,25 @@ jobs:
       # `gh release create`'s asset upload expect plain files. The .dmg
       # already contains the .app, so uploading both is redundant as well as
       # broken.
+      - name: Generate macOS SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-macos.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload macOS artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-macos
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            charm-macos.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -539,6 +552,17 @@ jobs:
 
       # Only published for main — see the macOS job's "Upload macOS
       # artifacts" step for the same reasoning.
+      - name: Generate Windows SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-windows.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Windows artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -547,6 +571,7 @@ jobs:
           path: |
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
+            charm-windows.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -813,6 +838,17 @@ jobs:
       # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
       # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
       # begin with — apt/rpm install unsigned packages fine.
+      - name: Generate Linux SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-linux.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Linux artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -822,6 +858,7 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
+            charm-linux.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1023,12 +1060,25 @@ jobs:
       # Android happily installs the APK once the device has "install
       # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
       # equivalent block to work around.
+      - name: Generate Android SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-android.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Android artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-android
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            charm-android.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1256,6 +1306,16 @@ jobs:
           pattern: nightly-*
           path: artifacts
           merge-multiple: true
+
+      - name: Verify complete nightly SBOM set
+        run: |
+          set -euo pipefail
+          for sbom in charm-macos.spdx.json charm-windows.spdx.json charm-linux.spdx.json charm-android.spdx.json; do
+            if ! find artifacts -type f -name "$sbom" -print -quit | grep -q .; then
+              echo "::error::Missing nightly SBOM $sbom"
+              exit 1
+            fi
+          done
 
       # Centralized here (one ubuntu-latest job, where gpg is already known
       # to be present) rather than duplicated per-platform-job: signing

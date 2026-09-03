@@ -99,6 +99,13 @@ gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
 gpg --verify Charm_<version>_amd64.deb.asc Charm_<version>_amd64.deb
 ```
 
+Each nightly and stable release also includes platform-named SPDX JSON
+software bills of materials (`charm-<platform>.spdx.json`). Verify an SBOM
+through the same signed checksum manifest before importing it into an
+SPDX-compatible inventory or vulnerability scanner. It describes the
+lockfile-pinned workspace used by that platform build and intentionally
+contains dependency metadata, not CI credentials or signing material.
+
 This is a self-issued key, not backed by a CA or Apple/Microsoft's
 notarization chains — it proves the file matches what this pipeline
 produced, not that "this pipeline" is an identity you already trust from
