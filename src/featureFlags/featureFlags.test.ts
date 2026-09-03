@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
+vi.mock("@/lib/platform", () => ({
+  isTauri: () => mocks.isTauri(),
+  isWebBuild: () => false,
+}));
 
 vi.mock("@sentry/react", () => ({
   getClient: () => mocks.getClient(),
