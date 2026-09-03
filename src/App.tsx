@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
@@ -6,7 +7,7 @@ import { RoomsScreen } from "@/features/rooms/RoomsScreen";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
-import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
+import { onSessionInvalidated, tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
@@ -32,16 +33,60 @@ interface AppProps {
 function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
   const [crashRecoveryPromptOpen, setCrashRecoveryPromptOpen] = useState(showCrashRecoveryPrompt);
   const onboarding = useOnboardingGate(session?.user_id ?? null);
+  const onLoggedOutRef = useRef(onLoggedOut);
+  const sessionRef = useRef(session);
+  onLoggedOutRef.current = onLoggedOut;
+  sessionRef.current = session;
+
+  const handleLoggedOut = useCallback(() => {
+    if (sessionRef.current) clearQuickSwitcherRecents(sessionRef.current.user_id);
+    queryClient.clear();
+    resetPrivacySettingsWriteQueue();
+    resetRoomSendQueueBarrier();
+    clearSettingsHash();
+    onLoggedOutRef.current?.();
+    setSession(null);
+  }, []);
 
   useEffect(() => {
-    tryRestoreSession()
-      .then(setSession)
-      .catch(logAndIgnore)
-      .finally(() => setRestoring(false));
-  }, []);
+    let active = true;
+    let invalidated = false;
+    let stopListening: (() => void) | undefined;
+
+    setRestoring(true);
+    setRestoreError(null);
+    onSessionInvalidated(() => {
+      invalidated = true;
+      if (active) handleLoggedOut();
+    })
+      .then((unlisten) => {
+        if (!active) {
+          unlisten();
+          return null;
+        }
+        stopListening = unlisten;
+        return tryRestoreSession();
+      })
+      .then((restoredSession) => {
+        if (active && !invalidated) setSession(restoredSession);
+      })
+      .catch((cause) => {
+        if (active) setRestoreError(String(cause));
+      })
+      .finally(() => {
+        if (active) setRestoring(false);
+      });
+
+    return () => {
+      active = false;
+      stopListening?.();
+    };
+  }, [handleLoggedOut, restoreAttempt]);
 
   useEffect(() => {
     // Held here (above the login gate) so a deep link received before sign-in
@@ -54,6 +99,20 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
 
   if (restoring) {
     return <div className="flex min-h-[100dvh] items-center justify-center bg-background" />;
+  }
+
+  if (restoreError) {
+    return (
+      <main className="flex min-h-[100dvh] items-center justify-center bg-background p-6">
+        <div className="max-w-sm space-y-4 text-center">
+          <h1 className="text-lg font-semibold">Couldn’t restore your session</h1>
+          <p className="text-sm text-muted-foreground">
+            Charm couldn’t safely finish startup. Your saved local data has not been removed.
+          </p>
+          <Button onClick={() => setRestoreAttempt((attempt) => attempt + 1)}>Try again</Button>
+        </div>
+      </main>
+    );
   }
 
   if (!session) {
@@ -84,34 +143,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
       crashRecoveryPromptOpen={crashRecoveryPromptOpen}
       onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
-      onLoggedOut={() => {
-        clearQuickSwitcherRecents(session.user_id);
-        // Clears every account-scoped cache entry (profile, devices,
-        // notification settings, room list, ...) so a subsequent sign-in as
-        // a *different* account in the same app session never shows stale
-        // data from this one before its own queries have refetched.
-        queryClient.clear();
-        // Review fix: a privacy-settings write can still be queued (not
-        // yet executed — behind an earlier one) at the moment of logout.
-        // Without this, it would still run once its turn came, saving this
-        // account's full settings snapshot (and its `appear_offline`
-        // choice) onto whatever account signs in next in the same
-        // session. Bumps the write generation so any such queued write
-        // becomes a no-op instead of actually calling into Rust.
-        resetPrivacySettingsWriteQueue();
-        // Module-owned room queue barriers survive RoomsScreen unmounts so
-        // mobile navigation cannot accidentally resume a tombstoned room.
-        // Logout is the ownership boundary: clear them and invalidate any
-        // queued commands before another account can sign in.
-        resetRoomSendQueueBarrier();
-        // Logout/deactivate unmount SettingsScreen directly rather than via
-        // closeSettings, so a lingering `#/settings/<section>` hash would
-        // otherwise make the next sign-in's `useSettingsHashSync` reopen
-        // settings straight away.
-        clearSettingsHash();
-        onLoggedOut?.();
-        setSession(null);
-      }}
+      onLoggedOut={handleLoggedOut}
     />
   );
 }

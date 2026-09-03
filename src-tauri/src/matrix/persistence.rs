@@ -58,6 +58,8 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
 const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
+const LOGOUT_TOMBSTONE_PREFIX: &str = ".logout-pending-";
+const FALLBACK_LOGOUT_TOMBSTONE_PREFIX: &str = ".matrix-logout-pending-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -136,18 +138,37 @@ pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Pure, `AppHandle`-free variant of [`known_account_keys`].
 pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
+    let mut logout_tombstones = HashSet::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            continue;
-        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX) && !name.ends_with(STALE_BACKUP_SUFFIX) {
+        if let Some(account_key) = name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+            continue;
+        }
+        if file_type.is_dir()
+            && !name.starts_with(TEMP_STORE_PREFIX)
+            && !name.ends_with(STALE_BACKUP_SUFFIX)
+        {
             keys.push(name);
         }
     }
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    for entry in std::fs::read_dir(app_data_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(account_key) = name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX) {
+            logout_tombstones.insert(account_key.to_string());
+        }
+    }
+    keys.retain(|key| !logout_tombstones.contains(key));
     // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
     // isn't creation order) — sort so callers that iterate multiple known
     // accounts (e.g. `try_restore_session`) get a stable, reproducible
@@ -175,6 +196,101 @@ pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Res
     let marker =
         matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
     std::fs::write(marker, []).map_err(|error| error.to_string())
+}
+
+/// Durably suppresses restoration before logout starts mutating credentials.
+/// The app-data sibling is a fallback when `matrix_store` is unwritable.
+pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
+    if std::fs::write(
+        root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        [],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    std::fs::write(
+        app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        [],
+    )
+    .map_err(|_| "failed to persist local sign-out intent".to_string())
+}
+
+pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    clear_logout_tombstones_at(
+        &app_data_dir.join("matrix_store"),
+        &app_data_dir,
+        account_key,
+    )
+}
+
+fn clear_logout_tombstones_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    for marker in [
+        root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+    ] {
+        match std::fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("failed to clear local sign-out intent".to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
+    let mut account_keys = HashSet::new();
+    for directory in [root, app_data_dir] {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(account_key) = name
+                .strip_prefix(LOGOUT_TOMBSTONE_PREFIX)
+                .or_else(|| name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX))
+            {
+                account_keys.insert(account_key.to_string());
+            }
+        }
+    }
+    for account_key in account_keys {
+        clear_session(&account_key)?;
+        clear_oauth_session(&account_key)?;
+        super::search::SearchIndex::delete_for_account(app_data_dir, &account_key)?;
+        clear_logout_tombstones_at(root, app_data_dir, &account_key)?;
+    }
+    Ok(())
+}
+
+pub fn clear_cancelled_account_cleanup_marker(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
+    let marker =
+        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
@@ -266,8 +382,13 @@ pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
 pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
     std::time::Duration::from_secs(5 * 60);
 
-/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
+/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`]. Also
+/// completes durable logout cleanup before a headless caller can restore.
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    sweep_logout_tombstones_at(root, app_data_dir)?;
     sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
 }
 
@@ -409,6 +530,11 @@ pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscard
     // wrapper (which production startup intentionally does not call).
     sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_logout_tombstones_at(&root, &app_data_dir)?;
     let entries = recover_stale_backups_at(&root)?;
     Ok(DeferredTempStoreDiscards(entries))
 }
@@ -847,12 +973,15 @@ pub fn relocate_store_and_save_session(
     session: &MatrixSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_session(account_key, homeserver_url, session),
-    )
+    )?;
+    clear_oauth_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
@@ -866,12 +995,15 @@ pub fn relocate_store_and_save_oauth_session(
     session: &OAuthSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_oauth_session(account_key, homeserver_url, session),
-    )
+    )?;
+    clear_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// Error from a failed [`relocate_store_and_save_session`]/
@@ -898,6 +1030,13 @@ impl RelocationFailure {
         Self {
             message: message.to_string(),
             safe_to_resume_previous: true,
+        }
+    }
+
+    fn committed(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            safe_to_resume_previous: false,
         }
     }
 }
@@ -1657,6 +1796,30 @@ mod tests {
         let temp = temp_store_key();
         assert!(temp.starts_with(TEMP_STORE_PREFIX));
         assert_ne!(temp, account_key(TEST_MXID_A));
+    }
+
+    #[test]
+    fn known_accounts_fail_closed_behind_primary_or_fallback_logout_markers() {
+        let app_data = ScratchRoot::new("known-logout-markers");
+        let root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("primary-account")).unwrap();
+        std::fs::create_dir(root.join("fallback-account")).unwrap();
+        std::fs::create_dir(root.join("visible-account")).unwrap();
+        std::fs::write(
+            root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}primary-account")),
+            [],
+        )
+        .unwrap();
+        std::fs::write(
+            app_data.0.join(format!(
+                "{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}fallback-account"
+            )),
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(known_account_keys_at(&root).unwrap(), ["visible-account"]);
     }
 
     /// Exercises the real OS keychain, not a mock — this is the actual

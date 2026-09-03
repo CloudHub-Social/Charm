@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { queryClient } from "./providers";
@@ -8,6 +8,8 @@ const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
 const resetRoomSendQueueBarrier = vi.fn();
+const onSessionInvalidated = vi.fn();
+let sessionInvalidatedCallback: (() => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
   tryRestoreSession: (...args: unknown[]) => tryRestoreSession(...args),
@@ -18,6 +20,7 @@ vi.mock("@/lib/matrix", () => ({
   setLocalOnboardingFlag: () => Promise.resolve(),
   onVerificationRequest: () => Promise.resolve(() => {}),
   onSasUpdate: () => Promise.resolve(() => {}),
+  onSessionInvalidated: (callback: () => void) => onSessionInvalidated(callback),
 }));
 
 vi.mock("@/lib/deepLink", () => ({
@@ -62,9 +65,60 @@ beforeEach(() => {
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
   resetRoomSendQueueBarrier.mockReset();
+  sessionInvalidatedCallback = undefined;
+  onSessionInvalidated.mockReset().mockImplementation((callback: () => void) => {
+    sessionInvalidatedCallback = callback;
+    return Promise.resolve(() => {});
+  });
 });
 
 describe("App", () => {
+  it("waits for the invalidation listener before restoring the session", async () => {
+    let markListenerReady: (() => void) | undefined;
+    onSessionInvalidated.mockImplementation((callback: () => void) => {
+      sessionInvalidatedCallback = callback;
+      return new Promise<() => void>((resolve) => {
+        markListenerReady = () => resolve(() => {});
+      });
+    });
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+
+    render(<App />);
+    expect(tryRestoreSession).not.toHaveBeenCalled();
+    markListenerReady?.();
+
+    await waitFor(() => expect(tryRestoreSession).toHaveBeenCalledOnce());
+  });
+
+  it("shows a retryable startup error when the invalidation listener cannot be installed", async () => {
+    onSessionInvalidated.mockRejectedValue(new Error("listener unavailable"));
+    render(<App />);
+
+    expect(await screen.findByText("Couldn’t restore your session")).toBeInTheDocument();
+    expect(tryRestoreSession).not.toHaveBeenCalled();
+
+    onSessionInvalidated.mockImplementation((callback: () => void) => {
+      sessionInvalidatedCallback = callback;
+      return Promise.resolve(() => {});
+    });
+    tryRestoreSession.mockResolvedValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+  });
+
+  it("returns to login and clears account state when the backend invalidates the session", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const clearSpy = vi.spyOn(queryClient, "clear");
+
+    render(<App />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    sessionInvalidatedCallback?.();
+
+    expect(clearSpy).toHaveBeenCalled();
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+    clearSpy.mockRestore();
+  });
+
   it("clears the shared query cache and returns to the login screen on logout", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
     const clearSpy = vi.spyOn(queryClient, "clear");
@@ -99,6 +153,21 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
 
     expect(onLoggedOut).toHaveBeenCalled();
+  });
+
+  it("uses the latest outer reset callback without restarting session restore", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const firstReset = vi.fn();
+    const latestReset = vi.fn();
+
+    const { rerender } = render(<App onLoggedOut={firstReset} />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    rerender(<App onLoggedOut={latestReset} />);
+    fireEvent.click(screen.getByRole("button", { name: "trigger logout" }));
+
+    expect(latestReset).toHaveBeenCalledOnce();
+    expect(firstReset).not.toHaveBeenCalled();
+    expect(tryRestoreSession).toHaveBeenCalledOnce();
   });
 
   it("routes an account with zero rooms and no onboarding flags to OnboardingScreen instead of RoomsScreen", async () => {

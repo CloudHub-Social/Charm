@@ -4,6 +4,7 @@
 
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +12,7 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
     verification, MatrixState,
 };
 
@@ -765,6 +766,58 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     spawn_sync_task(app, client);
 }
 
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    matches!(
+        error.client_api_error_kind(),
+        Some(ErrorKind::UnknownToken(_))
+    )
+}
+
+async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
+    let (Some(user_id), Some(device_id)) = (client.user_id(), client.device_id()) else {
+        return;
+    };
+    let account_key = persistence::account_key(user_id.as_str());
+    let state = app.state::<MatrixState>();
+    let _completion_guard = state.login_completion_lock.lock().await;
+    let is_active = state.client.lock().await.as_ref().is_some_and(|active| {
+        active.user_id() == client.user_id() && active.device_id() == client.device_id()
+    });
+    if !is_active {
+        return;
+    }
+
+    let tombstone_marked = persistence::mark_logout_tombstone(app, &account_key).is_ok();
+    let mut credentials_cleared = false;
+    if tombstone_marked {
+        let matrix_cleared = persistence::clear_session(&account_key).is_ok();
+        let oauth_cleared = persistence::clear_oauth_session(&account_key).is_ok();
+        credentials_cleared = matrix_cleared && oauth_cleared;
+    }
+    let index_cleared = app.path().app_data_dir().is_ok_and(|app_data_dir| {
+        search::SearchIndex::delete_for_source(&app_data_dir, &account_key, device_id.as_str())
+            .is_ok()
+    });
+    if tombstone_marked && credentials_cleared && index_cleared {
+        let _ = persistence::clear_logout_tombstone(app, &account_key);
+    }
+
+    *state.client.lock().await = None;
+    search::reset_index_lifecycle(&state);
+    state.clear_timelines().await;
+    state.clear_pinned_event_cache().await;
+    *state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    *state
+        .push_status
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = crate::push::PushStatus::default();
+    let _ = shell::apply_native_badge(app, 0);
+    let _ = app.emit("session:invalidated", ());
+}
+
 /// The sync-task-spawning half of [`spawn_sync_loop`], without the
 /// `register_*_handler` calls — use this (not `spawn_sync_loop`) to *resume*
 /// a `Client` that already had those registered by an earlier
@@ -852,6 +905,9 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         {
             Ok(response) => response,
             Err(e) => {
+                if is_terminal_auth_error(&e) {
+                    teardown_terminal_auth_session(&app, &client).await;
+                }
                 let _ = app.emit(
                     "sync:state",
                     SyncStateEvent::Error {
@@ -991,6 +1047,21 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        tracing::error!(
+                            command = "sync_loop",
+                            status = "terminal_authentication_error",
+                            "Sync session was revoked"
+                        );
+                        teardown_terminal_auth_session(&app, &client).await;
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         tracing::error!(

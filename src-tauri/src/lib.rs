@@ -1592,6 +1592,7 @@ pub fn run() {
             matrix::room_admin::pin_event,
             matrix::room_admin::unpin_event,
             matrix::account::logout,
+            matrix::account::forget_local_data,
             matrix::account::get_profile,
             matrix::account::resolve_avatar,
             matrix::account::set_display_name,

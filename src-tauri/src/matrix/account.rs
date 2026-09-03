@@ -16,7 +16,8 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use ts_rs::TS;
 
 use super::media;
@@ -232,6 +233,11 @@ async fn clear_local_session(
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    // Serialize the durable sign-out intent and credential deletion against
+    // login completion. A newly committed session clears this marker only
+    // after its SDK store and credential pair are both installed.
+    let _completion_guard = state.login_completion_lock.lock().await;
+    let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
         .await
@@ -248,8 +254,15 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    persistence::clear_session(&account_key)?;
-    persistence::clear_oauth_session(&account_key)?;
+    let mut credential_error = tombstone_result.err();
+    if credential_error.is_none() {
+        if let Err(error) = persistence::clear_session(&account_key) {
+            credential_error = Some(error);
+        }
+        if let Err(error) = persistence::clear_oauth_session(&account_key) {
+            credential_error.get_or_insert(error);
+        }
+    }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -353,6 +366,18 @@ async fn clear_local_session(
     if !cleanup {
         tracing::warn!(command = "message_search_logout", status = "cleanup_failed");
     }
+    if credential_error.is_none() && cleanup {
+        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+            credential_error = Some(error);
+        }
+    }
+    if let Some(error) = credential_error {
+        // The active client is already gone. Notify the renderer even though
+        // the initiating command rejects, while the durable marker (when it
+        // could be written) owns startup retry.
+        let _ = app.emit("session:invalidated", ());
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -388,6 +413,110 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         SearchCleanupScope::CurrentDevice,
     )
     .await
+}
+
+/// Explicit device wipe for the active account. Unlike ordinary logout this
+/// removes the retained matrix-sdk store, its keychain passphrase, and every
+/// device-scoped search index for the account. Cleanup intent is recorded
+/// before the session closes so a filesystem/keychain failure is retried at
+/// startup instead of leaving an unexplained restorable account behind.
+#[tauri::command]
+pub async fn forget_local_data(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    confirmed: bool,
+) -> Result<(), String> {
+    require_local_data_confirmation(confirmed)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    if !crate::feature_flags::flag(
+        &app_data_dir,
+        crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+    ) {
+        return Err("forget local data is unavailable".to_string());
+    }
+    let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(
+            "Permanently remove this account's retained Matrix store, cached encryption keys, and encrypted search indexes from this device?",
+        )
+        .title("Forget local data")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Forget local data".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |accepted| {
+            let _ = confirmation_tx.send(accepted);
+        });
+    if !confirmation_rx.await.unwrap_or(false) {
+        return Err("local data deletion was cancelled".to_string());
+    }
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let account_key = persistence::account_key(user_id.as_str());
+
+    // A best-effort remote revoke matches ordinary logout, but local custody
+    // deletion remains authoritative even when the homeserver is offline.
+    let revoke_client = client.clone();
+    tokio::spawn(async move {
+        if revoke_client.matrix_auth().logged_in() {
+            let _ = revoke_client.matrix_auth().logout().await;
+        } else {
+            let _ = revoke_client.oauth().logout().await;
+        }
+    });
+
+    persistence::mark_cancelled_account_cleanup(&app, &account_key)?;
+    clear_local_session(
+        &app,
+        &state,
+        user_id.as_str(),
+        SearchCleanupScope::EntireAccount,
+    )
+    .await?;
+
+    let cleanup_app = app.clone();
+    let cleanup_account_key = account_key.clone();
+    let cleanup = tokio::task::spawn_blocking(move || {
+        let mut first_error = None;
+        if let Err(error) =
+            persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
+        {
+            first_error = Some(error);
+        }
+        if let Err(error) =
+            super::search::SearchIndex::delete_for_account(&app_data_dir, &cleanup_account_key)
+        {
+            first_error.get_or_insert(error);
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => persistence::clear_cancelled_account_cleanup_marker(
+                &cleanup_app,
+                &cleanup_account_key,
+            ),
+        }
+    })
+    .await;
+    if !matches!(cleanup, Ok(Ok(()))) {
+        // The session is already closed and the durable marker owns retries;
+        // do not strand the UI in an authenticated shell that no longer has
+        // a client merely because physical deletion needs another attempt.
+        tracing::warn!(command = "forget_local_data", status = "cleanup_pending");
+    }
+    Ok(())
+}
+
+fn require_local_data_confirmation(confirmed: bool) -> Result<(), String> {
+    confirmed
+        .then_some(())
+        .ok_or_else(|| "local data deletion requires confirmation".to_string())
 }
 
 #[tauri::command]
@@ -705,14 +834,40 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(
+    let account_key = persistence::account_key(user_id.as_str());
+    let marker_error = persistence::mark_cancelled_account_cleanup(&app, &account_key).err();
+    let teardown_result = clear_local_session(
         &app,
         &state,
         user_id.as_str(),
         SearchCleanupScope::EntireAccount,
     )
+    .await;
+
+    // The remote account is gone, so unlike ordinary logout there is no
+    // reason to retain the SDK store. Attempt physical removal now; either
+    // the cancelled-account marker or clear_local_session's logout marker
+    // keeps startup fail-closed and owns retry after a partial failure.
+    let cleanup_app = app.clone();
+    let cleanup_account_key = account_key.clone();
+    let cleanup_result = tokio::task::spawn_blocking(move || {
+        persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)?;
+        persistence::clear_cancelled_account_cleanup_marker(&cleanup_app, &cleanup_account_key)
+    })
     .await
-    .map_err(UiaCommandError::from)
+    .map_err(|_| "local account cleanup task failed".to_string())
+    .and_then(|result| result);
+
+    if let Some(error) = marker_error {
+        // `clear_local_session` may have completed its own logout marker.
+        // Re-establish durable account-wide retry intent before surfacing
+        // the original marker failure from this already-deactivated account.
+        persistence::mark_logout_tombstone(&app, &account_key).map_err(UiaCommandError::from)?;
+        let _ = app.emit("session:invalidated", ());
+        return Err(UiaCommandError::from(error));
+    }
+    teardown_result.map_err(UiaCommandError::from)?;
+    cleanup_result.map_err(UiaCommandError::from)
 }
 
 #[cfg(test)]
@@ -723,6 +878,12 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn forget_local_data_requires_an_explicit_confirmation_bit() {
+        assert!(require_local_data_confirmation(false).is_err());
+        assert!(require_local_data_confirmation(true).is_ok());
+    }
 
     #[tokio::test]
     async fn validate_avatar_path_accepts_a_real_image() {
