@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
-import nativeConfig from "../src-tauri/tauri.conf.json";
+import nativeConfig from "../src-tauri/tauri.conf.json" with { type: "json" };
 
 const ROOM = { room_id: "!voice:localhost", name: "Voice Room", unread_count: 0 };
 
