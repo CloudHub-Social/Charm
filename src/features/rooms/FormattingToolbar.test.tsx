@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Editor } from "@tiptap/react";
 import { FormattingToolbar } from "./FormattingToolbar";
 
-const flags = vi.hoisted(() => ({ fullEmojiPicker: false }));
+const flags = vi.hoisted(() => ({ fullEmojiPicker: false, composerParity: false }));
 
 vi.mock("@/featureFlags", () => ({
-  useFlag: (key: string) => key === "full_emoji_picker" && flags.fullEmojiPicker,
+  useFlag: (key: string) =>
+    (key === "full_emoji_picker" && flags.fullEmojiPicker) ||
+    (key === "composer_parity" && flags.composerParity),
 }));
 
 vi.mock("./EmojiPicker", () => ({
@@ -35,6 +37,8 @@ function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
     toggleBold: () => chainable,
     toggleItalic: () => chainable,
     toggleCode: () => chainable,
+    toggleStrike: vi.fn(() => chainable),
+    toggleCodeBlock: vi.fn(() => chainable),
     toggleBlockquote: () => chainable,
     toggleBulletList: () => chainable,
     toggleOrderedList: () => chainable,
@@ -50,11 +54,32 @@ function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
 describe("FormattingToolbar", () => {
   beforeEach(() => {
     flags.fullEmojiPicker = false;
+    flags.composerParity = false;
   });
 
   it("renders a disabled toolbar when there is no editor yet", () => {
     render(<FormattingToolbar editor={null} />);
     expect(screen.getByRole("button", { name: /Bold/ })).toBeDisabled();
+  });
+
+  it("keeps extended formatting hidden until enabled", () => {
+    render(<FormattingToolbar editor={fakeEditor()} />);
+    expect(screen.queryByRole("button", { name: "Strikethrough" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Code block" })).not.toBeInTheDocument();
+  });
+
+  it("dispatches distinct strike and code-block commands when enabled", () => {
+    flags.composerParity = true;
+    const editor = fakeEditor(new Set(["strike", "codeBlock"]));
+    render(<FormattingToolbar editor={editor} />);
+    fireEvent.click(screen.getByRole("button", { name: "Strikethrough" }));
+    fireEvent.click(screen.getByRole("button", { name: "Code block" }));
+    expect(editor.chain().toggleStrike).toHaveBeenCalledOnce();
+    expect(editor.chain().toggleCodeBlock).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Code block" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("reflects active marks via aria-pressed", () => {

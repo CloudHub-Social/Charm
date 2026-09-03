@@ -169,6 +169,8 @@ define_feature_flag_keys!(
         JumpToDate,
         /// Spec 31 admin-triggered room upgrades and tombstoned-room handling.
         RoomUpgrades,
+        /// Spec 43 extended composer formatting and command controls.
+        ComposerParity,
     }
 );
 
@@ -204,6 +206,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => false,
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
+            FeatureFlagKey::ComposerParity => false,
         }
     }
 
@@ -292,6 +295,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
+            FeatureFlagKey::ComposerParity => "Use extended composer formatting and command controls.",
         }
     }
 
@@ -336,6 +340,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
+            FeatureFlagKey::ComposerParity => "Spec 43 (composer parity)",
         }
     }
 
@@ -370,6 +375,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
+            FeatureFlagKey::ComposerParity => "composer_parity",
         }
     }
 }

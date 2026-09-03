@@ -1,5 +1,15 @@
 import type { Editor } from "@tiptap/react";
-import { Bold, Code, Italic, List, ListOrdered, Quote, Smile } from "lucide-react";
+import {
+  Bold,
+  Code,
+  CodeSquare,
+  Italic,
+  List,
+  ListOrdered,
+  Quote,
+  Smile,
+  Strikethrough,
+} from "lucide-react";
 import { useFlag } from "@/featureFlags";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
@@ -62,13 +72,32 @@ const BUTTONS: ToolbarButtonSpec[] = [
   },
 ];
 
-/** Bold/italic/code/quote/list toggle buttons bound to TipTap commands. */
+const EXTENDED_BUTTONS: ToolbarButtonSpec[] = [
+  {
+    key: "strike",
+    label: "Strikethrough",
+    icon: Strikethrough,
+    isActive: (e) => e.isActive("strike"),
+    run: (e) => e.chain().focus().toggleStrike().run(),
+  },
+  {
+    key: "codeBlock",
+    label: "Code block",
+    icon: CodeSquare,
+    isActive: (e) => e.isActive("codeBlock"),
+    run: (e) => e.chain().focus().toggleCodeBlock().run(),
+  },
+];
+
+/** Formatting controls bound to the existing TipTap extensions. */
 export function FormattingToolbar({ accountId = "anonymous", editor }: FormattingToolbarProps) {
   const fullEmojiPickerEnabled = useFlag("full_emoji_picker");
+  const composerParityEnabled = useFlag("composer_parity");
+  const buttons = composerParityEnabled ? [...BUTTONS, ...EXTENDED_BUTTONS] : BUTTONS;
 
   return (
     <div className="flex items-center gap-0.5" role="toolbar" aria-label="Formatting">
-      {BUTTONS.map(({ key, label, icon: Icon, isActive, run }) => (
+      {buttons.map(({ key, label, icon: Icon, isActive, run }) => (
         <button
           key={key}
           type="button"
