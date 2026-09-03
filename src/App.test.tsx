@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
+import type { LoginResponse } from "@/lib/matrix";
 import App from "./App";
 import { queryClient } from "./providers";
 
@@ -8,6 +10,8 @@ const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
 const resetRoomSendQueueBarrier = vi.fn();
+const roomSessionMounted = vi.fn();
+const roomSessionDisposed = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   tryRestoreSession: (...args: unknown[]) => tryRestoreSession(...args),
@@ -25,13 +29,24 @@ vi.mock("@/lib/deepLink", () => ({
 }));
 
 vi.mock("@/features/auth/LoginScreen", () => ({
-  LoginScreen: () => <div>login screen</div>,
+  LoginScreen: ({ onSignedIn }: { onSignedIn: (session: LoginResponse) => void }) => (
+    <div>
+      login screen
+      <button onClick={() => onSignedIn({ user_id: "@me:localhost", device_id: "DEVICE2" })}>
+        sign in again
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/features/rooms/RoomsScreen", () => ({
-  RoomsScreen: ({ onLoggedOut }: { onLoggedOut: () => void }) => (
-    <button onClick={onLoggedOut}>trigger logout</button>
-  ),
+  RoomsScreen: function RoomSession({ onLoggedOut }: { onLoggedOut: () => void }) {
+    useEffect(() => {
+      roomSessionMounted();
+      return () => roomSessionDisposed();
+    }, []);
+    return <button onClick={onLoggedOut}>trigger logout</button>;
+  },
 }));
 
 vi.mock("@/features/rooms/useRoomSendQueueBarrier", () => ({
@@ -62,9 +77,24 @@ beforeEach(() => {
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
   resetRoomSendQueueBarrier.mockReset();
+  roomSessionMounted.mockReset();
+  roomSessionDisposed.mockReset();
 });
 
 describe("App", () => {
+  it("disposes room-owned resources before a same-account login on a new device", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
+    expect(roomSessionDisposed).toHaveBeenCalledOnce();
+    expect(resetRoomSendQueueBarrier).toHaveBeenCalledOnce();
+
+    fireEvent.click(await screen.findByRole("button", { name: "sign in again" }));
+    await screen.findByRole("button", { name: "trigger logout" });
+    expect(roomSessionMounted).toHaveBeenCalledTimes(2);
+    expect(roomSessionDisposed).toHaveBeenCalledOnce();
+  });
+
   it("clears the shared query cache and returns to the login screen on logout", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
     const clearSpy = vi.spyOn(queryClient, "clear");
