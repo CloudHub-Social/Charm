@@ -159,8 +159,10 @@ requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
 The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
-existing membership, global display-name, and ignored-user IPC operations on
-native and web. Missing arguments show usage; ignore/unignore require exactly
+existing membership, global display-name, and ignored-user IPC operations.
+Unban and display-name operations already have web transport mappings; ignored-user
+mutations still need companion HTTP routes before web parity is complete.
+Missing arguments show usage; ignore/unignore require exactly
 one user identifier. Backend validation and authorization remain authoritative.
 Failures show inline feedback without logging action arguments, and completion
 does not update feedback after a room switch. Parsing and dispatch regressions
