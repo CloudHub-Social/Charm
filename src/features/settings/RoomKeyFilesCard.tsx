@@ -30,7 +30,12 @@ export function RoomKeyFilesCard() {
     },
     onSuccess: (summary) => {
       if (!summary.completed) return;
-      if ("imported_count" in summary) {
+      if (
+        "imported_count" in summary &&
+        typeof summary.imported_count === "number" &&
+        "total_count" in summary &&
+        typeof summary.total_count === "number"
+      ) {
         setResult(`Imported ${summary.imported_count} of ${summary.total_count} room keys.`);
       } else {
         setResult("Encrypted room keys exported successfully.");
@@ -72,11 +77,7 @@ export function RoomKeyFilesCard() {
               Export keys
             </Button>
           </div>
-          {result && (
-            <p className="mt-3 text-sm text-muted-foreground" role="status">
-              {result}
-            </p>
-          )}
+          {result && <output className="mt-3 block text-sm text-muted-foreground">{result}</output>}
         </SettingTile>
       </SettingsCard>
 

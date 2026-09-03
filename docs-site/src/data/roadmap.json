@@ -1420,7 +1420,7 @@
       "number": 44,
       "title": "Crypto key backup setup and key import/export",
       "route": "/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": []
     },
