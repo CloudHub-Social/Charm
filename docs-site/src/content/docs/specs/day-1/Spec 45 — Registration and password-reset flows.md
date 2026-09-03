@@ -308,6 +308,12 @@ completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
+Resuming a retained native session preserves its current presence choice rather
+than reseeding it to online. Appear Offline still applies before the first resumed
+sync request; a genuinely fresh session starts online unless that privacy setting
+applies. Regression tests cover fresh/resumed initialization and the privacy
+override, pending GitHub Actions verification.
+
 Native SSO cancellation before durable adoption restores both the prior client
 slot and its sync loop if shutdown had begun. The cancellation window retains
 the exact cached timeline objects and their focused/live view markers, then

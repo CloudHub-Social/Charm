@@ -762,7 +762,7 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
     profiles::register_self_profile_handler(app.clone(), &client);
-    spawn_sync_task(app, client);
+    spawn_sync_task_with_presence(app, client, true);
 }
 
 /// The sync-task-spawning half of [`spawn_sync_loop`], without the
@@ -775,6 +775,24 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
 /// duplicate presence/profile updates and verification requests on every
 /// subsequent event.
 pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
+    spawn_sync_task_with_presence(app, client, false);
+}
+
+fn initial_sync_presence(
+    fresh_session: bool,
+    appear_offline: bool,
+    current: PresenceStateDto,
+) -> PresenceStateDto {
+    if appear_offline {
+        PresenceStateDto::Offline
+    } else if fresh_session {
+        PresenceStateDto::Online
+    } else {
+        current
+    }
+}
+
+fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: bool) {
     let app_for_handle = app.clone();
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
@@ -810,15 +828,18 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         // without reopening the ordering race the two earlier fixes above
         // exist to avoid.
         let privacy = privacy_settings::current_settings(&app, &app.state::<MatrixState>()).await;
-        let initial_presence = if privacy.appear_offline {
-            PresenceStateDto::Offline
-        } else {
-            PresenceStateDto::Online
+        let initial_presence = {
+            let state = app.state::<MatrixState>();
+            let mut current = state
+                .sync_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // A rollback resumes this same session, including its away state.
+            // Read and update under one lock so a concurrent presence change
+            // is not overwritten with a value captured before settings loaded.
+            *current = initial_sync_presence(fresh_session, privacy.appear_offline, *current);
+            *current
         };
-        *app.state::<MatrixState>()
-            .sync_presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = initial_presence;
 
         // Subscribing spawns the task that listens to
         // `client.subscribe_to_all_room_updates()` — the event cache (and
@@ -1089,7 +1110,36 @@ mod invite_notification_tests {
 
 #[cfg(test)]
 mod reconciled_sync_presence_tests {
-    use super::{reconciled_sync_presence, PresenceStateDto};
+    use super::{initial_sync_presence, reconciled_sync_presence, PresenceStateDto};
+
+    #[test]
+    fn resumed_session_preserves_its_presence_choice() {
+        for current in [
+            PresenceStateDto::Online,
+            PresenceStateDto::Unavailable,
+            PresenceStateDto::Offline,
+        ] {
+            assert_eq!(initial_sync_presence(false, false, current), current);
+        }
+    }
+
+    #[test]
+    fn fresh_session_does_not_inherit_the_previous_sessions_away_state() {
+        assert_eq!(
+            initial_sync_presence(true, false, PresenceStateDto::Unavailable),
+            PresenceStateDto::Online
+        );
+    }
+
+    #[test]
+    fn appear_offline_applies_before_both_fresh_and_resumed_initial_sync() {
+        for fresh_session in [true, false] {
+            assert_eq!(
+                initial_sync_presence(fresh_session, true, PresenceStateDto::Unavailable),
+                PresenceStateDto::Offline
+            );
+        }
+    }
 
     #[test]
     fn lifts_a_cached_offline_when_the_flag_is_disabled_regardless_of_appear_offline() {
