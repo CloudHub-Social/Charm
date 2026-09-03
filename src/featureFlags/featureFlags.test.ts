@@ -25,19 +25,17 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
-beforeEach(async () => {
+// Exercise the real transport routing, but stop at its native IPC boundary.
+// In particular, overlapping reconciliation imports must never call Tauri
+// or Sentry's metrics wrapper from this flag-cache unit test.
+vi.mock("@/observability/ipc", () => ({
+  IPC_OPERATION_ID_HEADER: "x-charm-operation-id",
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
+
+beforeEach(() => {
   localStorage.clear();
   vi.resetModules();
-  // Re-register after resetting the module graph: reconciliation imports the
-  // transport lazily, including while initialization and a write overlap.
-  vi.doMock("@/lib/matrixTransport", () => ({
-    invoke: mocks.invoke,
-  }));
-  // Resolve the mocked dependency before overlapping lazy imports begin.
-  // Assert the boundary itself rather than masking accidental native IPC
-  // with additional platform or telemetry stubs.
-  const transport = await import("@/lib/matrixTransport");
-  expect(transport.invoke).toBe(mocks.invoke);
   mocks.isTauri.mockReturnValue(false);
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   mocks.invoke.mockReset().mockResolvedValue(undefined);
@@ -168,7 +166,11 @@ describe("feature-flag client", () => {
     });
     await Promise.all([initialization, update]);
 
-    expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "reconcile_message_search_flag",
+      undefined,
+      undefined,
+    );
     expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
     expect(mod.getFlag("canary")).toBe(true);
   });
