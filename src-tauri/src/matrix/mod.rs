@@ -124,7 +124,9 @@ pub struct MatrixState {
     /// step, so there's no window where "which client is currently active"
     /// is ambiguous. A `tokio::sync::Mutex`, not `std::sync::Mutex`, because
     /// this needs to be held across `.await` points.
-    pub(crate) login_completion_lock: Mutex<()>,
+    /// Arc ownership lets a non-cancellable cleanup worker retain this guard
+    /// even if the sync task awaiting it is aborted.
+    pub(crate) login_completion_lock: std::sync::Arc<Mutex<()>>,
     /// Set by `auth::start_sso_login`, consumed by `auth::complete_sso_login`.
     /// Built once and carried across the two calls (rather than rebuilt in
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
@@ -428,7 +430,7 @@ impl Default for MatrixState {
             search_pagination_seed_running: std::sync::atomic::AtomicBool::default(),
             search_pending_seed_rooms: std::sync::Mutex::default(),
             search_pagination_seed_done: tokio::sync::Notify::new(),
-            login_completion_lock: Mutex::default(),
+            login_completion_lock: std::sync::Arc::default(),
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
