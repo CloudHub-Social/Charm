@@ -3169,7 +3169,16 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
 fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
     transaction
         .execute_batch(
-            "DELETE FROM searchable_messages;
+            "DELETE FROM message_versions AS edit
+             WHERE edit.version_event_id != edit.original_event_id
+               AND EXISTS (
+                    SELECT 1 FROM message_versions AS original
+                    WHERE original.room_id = edit.room_id
+                      AND original.version_event_id = edit.original_event_id
+                      AND original.original_event_id = edit.original_event_id
+                      AND original.sender != edit.sender
+               );
+             DELETE FROM searchable_messages;
              INSERT INTO searchable_messages (
                 body, room_id, event_id, version_event_id, sender, origin_server_ts
              )
@@ -3177,6 +3186,13 @@ fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationEr
                     selected.version_event_id, selected.sender, selected.origin_server_ts
              FROM message_versions AS selected
              WHERE selected.body IS NOT NULL
+               AND EXISTS (
+                    SELECT 1 FROM message_versions AS original
+                    WHERE original.room_id = selected.room_id
+                      AND original.version_event_id = selected.original_event_id
+                      AND original.original_event_id = selected.original_event_id
+                      AND original.sender = selected.sender
+               )
                AND selected.version_event_id = (
                     SELECT candidate.version_event_id
                     FROM message_versions AS candidate
@@ -4947,6 +4963,13 @@ mod tests {
         assert_eq!(index.visible_body("!room:example.org", "$original"), None);
 
         index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 4", [])
+            .unwrap();
+        migrate(&index.connection).expect("migrate pending edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
             .apply_document(&document(Some("original later"), "$original"))
             .expect("insert original");
         assert_eq!(
@@ -4966,6 +4989,13 @@ mod tests {
         index
             .apply_document(&forged)
             .expect("retain unverified edit as non-visible provenance");
+
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 4", [])
+            .unwrap();
+        migrate(&index.connection).expect("migrate unverified edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
 
         index
             .apply_document(&document(Some("authentic"), "$original"))
