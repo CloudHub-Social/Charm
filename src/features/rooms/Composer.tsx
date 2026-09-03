@@ -500,7 +500,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="flex flex-1 flex-col gap-1">
-      {showFormattingToolbar && <FormattingToolbar accountId={accountId} editor={editor} />}
+      {showFormattingToolbar && (
+        <FormattingToolbar key={`${accountId}:${roomId}`} accountId={accountId} editor={editor} />
+      )}
       <EditorContent editor={editor} />
       {menu.state.open && (
         <AutocompletePopover

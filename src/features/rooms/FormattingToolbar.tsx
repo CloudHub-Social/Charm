@@ -13,6 +13,7 @@ import {
 import { useFlag } from "@/featureFlags";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
+import { ComposerLinkButton } from "./ComposerLinkButton";
 
 interface FormattingToolbarProps {
   accountId?: string;
@@ -114,6 +115,7 @@ export function FormattingToolbar({ accountId = "anonymous", editor }: Formattin
           <Icon size={16} />
         </button>
       ))}
+      {composerParityEnabled && <ComposerLinkButton editor={editor} />}
       {fullEmojiPickerEnabled && (
         <EmojiPicker
           accountId={accountId}

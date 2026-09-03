@@ -125,7 +125,11 @@ verification. Strikethrough and code-block toolbar controls use the existing
 TipTap StarterKit extensions behind the default-off `composer_parity` flag.
 Their command dispatch and hidden-by-default behavior have regression tests.
 The new flag's generated frontend catalog/type still needs CI-generated output
-committed before this draft is buildable. Spoiler, link insertion, slash-command,
+committed before this draft is buildable. Link insertion uses the existing TipTap
+link mark and an accessible dialog, validates absolute web/mail/telephone URLs,
+rejects embedded credentials, and refuses stale selections after draft changes.
+Room/account changes remount the toolbar and close its dialog. These behaviors
+have regression tests but remain pending CI verification. Spoiler, slash-command,
 and ArrowUp requirements remain open; this does not establish full composer parity.
 
 ## What I'd revisit as this grows
