@@ -290,6 +290,11 @@ Surfaces changed:
     a blocking worker. That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
     the durable retry marker.
+    Logout, local-data removal, and deactivation workers likewise retain shared
+    ownership of login exclusion through blocking cleanup, even if their caller
+    is cancelled. The caller retains exclusion after a worker panic so recovery
+    cannot race a replacement login. Cancellation and panic regressions are
+    included; GitHub Actions verification is pending.
 
 ## Testing
 

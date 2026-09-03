@@ -218,17 +218,28 @@ enum SearchCleanupScope {
     EntireAccount,
 }
 
-/// Tears down the local session for `logout` and `deactivate_account`: clears
-/// both keychain-backed session kinds
-/// (password/SSO's `MatrixSession` and QR login's `OAuthSession` — matching
-/// the dual-path handling in `mod::try_restore_session`) and drops the
-/// in-memory client. Deliberately does *not* delete the account's SQLCipher
-/// store — see Spec 08's "Logout store retention": this is a sign-out, not a
-/// device wipe, so a later re-login onto the same account reuses the
-/// existing store instead of starting cold.
-async fn begin_session_teardown(
-    state: &MatrixState,
-) -> Result<(tokio::sync::OwnedMutexGuard<()>, Client), String> {
+/// Shared ownership of one acquired login-exclusion lock, not another mutex.
+type TeardownGuard = std::sync::Arc<tokio::sync::OwnedMutexGuard<()>>;
+
+/// Both the command and any blocking worker retain login exclusion. Aborting
+/// the command cannot unlock a still-running filesystem cleanup, and a worker
+/// failure cannot unlock the command's remaining recovery steps.
+async fn run_account_cleanup<T, F>(
+    guard: TeardownGuard,
+    cleanup: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        cleanup()
+    })
+    .await
+}
+
+async fn begin_session_teardown(state: &MatrixState) -> Result<(TeardownGuard, Client), String> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -247,13 +258,15 @@ async fn begin_session_teardown(
         active.device_id().map(|id| id.as_str()),
     )
     .map_err(|_| "session changed; retry the account action".to_string())?;
-    Ok((guard, client))
+    Ok((std::sync::Arc::new(guard), client))
 }
 
-/// Caller holds the login completion lock through teardown and any device wipe.
+/// Clears session credentials and in-memory state, retaining the SDK store for
+/// ordinary logout. The caller holds login exclusion through any later wipe.
 async fn clear_local_session_locked(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
+    completion_guard: &TeardownGuard,
     user_id: &str,
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
@@ -346,46 +359,48 @@ async fn clear_local_session_locked(
     let search_index = std::sync::Arc::clone(&state.search_index);
     let search_account_key = account_key.clone();
     let cleanup = match app.path().app_data_dir() {
-        Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
-            let active = search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            let mut first_error = None;
-            if let Some(active) = active {
-                if let Err(error) = active.index.delete() {
-                    first_error = Some(error);
-                }
-            }
-            let scoped_cleanup = match search_cleanup_scope {
-                SearchCleanupScope::CurrentDevice => {
-                    if let Some(device_id) = search_device_id {
-                        super::search::SearchIndex::delete_for_source(
-                            &app_data_dir,
-                            &search_account_key,
-                            &device_id,
-                        )
-                    } else {
-                        Ok(())
+        Ok(app_data_dir) => {
+            run_account_cleanup(std::sync::Arc::clone(completion_guard), move || {
+                let active = search_index
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let mut first_error = None;
+                if let Some(active) = active {
+                    if let Err(error) = active.index.delete() {
+                        first_error = Some(error);
                     }
                 }
-                SearchCleanupScope::EntireAccount => {
-                    super::search::SearchIndex::delete_for_account(
-                        &app_data_dir,
-                        &search_account_key,
-                    )
+                let scoped_cleanup = match search_cleanup_scope {
+                    SearchCleanupScope::CurrentDevice => {
+                        if let Some(device_id) = search_device_id {
+                            super::search::SearchIndex::delete_for_source(
+                                &app_data_dir,
+                                &search_account_key,
+                                &device_id,
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    SearchCleanupScope::EntireAccount => {
+                        super::search::SearchIndex::delete_for_account(
+                            &app_data_dir,
+                            &search_account_key,
+                        )
+                    }
+                };
+                if let Err(error) = scoped_cleanup {
+                    first_error.get_or_insert(error);
                 }
-            };
-            if let Err(error) = scoped_cleanup {
-                first_error.get_or_insert(error);
-            }
-            match first_error {
-                Some(error) => Err(error),
-                None => Ok(()),
-            }
-        })
-        .await
-        .is_ok_and(|result| result.is_ok()),
+                match first_error {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                }
+            })
+            .await
+            .is_ok_and(|result| result.is_ok())
+        }
         Err(_) => false,
     };
     if !cleanup {
@@ -423,7 +438,7 @@ async fn clear_local_session_locked(
 pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     // Revalidate the requested target after excluding login completion so an
     // old request cannot clear a replacement client.
-    let (_completion_guard, client) = begin_session_teardown(&state).await?;
+    let (completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -441,6 +456,7 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
     clear_local_session_locked(
         &app,
         &state,
+        &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::CurrentDevice,
     )
@@ -499,7 +515,11 @@ pub async fn forget_local_data(
     }
     // Keep this lock through physical deletion: a new login must not install
     // a store underneath the wipe after the old client has been cleared.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let completion_guard = std::sync::Arc::new(
+        std::sync::Arc::clone(&state.login_completion_lock)
+            .lock_owned()
+            .await,
+    );
     let active = state.require_client().await?;
     require_confirmed_session(
         user_id.as_str(),
@@ -525,6 +545,7 @@ pub async fn forget_local_data(
     clear_local_session_locked(
         &app,
         &state,
+        &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::EntireAccount,
     )
@@ -532,7 +553,7 @@ pub async fn forget_local_data(
 
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
-    let cleanup = tokio::task::spawn_blocking(move || {
+    let cleanup = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
         let mut first_error = None;
         if let Err(error) =
             persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
@@ -887,7 +908,7 @@ pub async fn deactivate_account(
     // Remote deactivation and local deletion form one session transition.
     // A UIA challenge returns from this call (releasing the lock); we never
     // retain it while the user is entering a password between requests.
-    let (_completion_guard, client) = begin_session_teardown(&state).await?;
+    let (completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -899,11 +920,16 @@ pub async fn deactivate_account(
     })
     .await?;
 
+    // Release our SDK handles before attempting to remove its store files.
+    drop(account);
+    drop(client);
+
     let account_key = persistence::account_key(user_id.as_str());
     let marker_error = persistence::mark_cancelled_account_cleanup(&app, &account_key).err();
     let teardown_result = clear_local_session_locked(
         &app,
         &state,
+        &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::EntireAccount,
     )
@@ -915,7 +941,7 @@ pub async fn deactivate_account(
     // keeps startup fail-closed and owns retry after a partial failure.
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
-    let cleanup_result = tokio::task::spawn_blocking(move || {
+    let cleanup_result = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
         persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)?;
         persistence::clear_cancelled_account_cleanup_marker(&cleanup_app, &cleanup_account_key)
     })
@@ -943,6 +969,42 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn account_cleanup_keeps_login_excluded_after_caller_cancellation() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::new(std::sync::Arc::clone(&lock).lock_owned().await);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(run_account_cleanup(guard, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.await.unwrap();
+        caller.abort();
+        let result = caller.await;
+        let replacement_blocked = lock.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        assert!(result.unwrap_err().is_cancelled());
+        assert!(replacement_blocked);
+        let _replacement = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock())
+            .await
+            .expect("finished cleanup must release login exclusion");
+    }
+
+    #[tokio::test]
+    async fn account_cleanup_panic_preserves_callers_recovery_exclusion() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::new(std::sync::Arc::clone(&lock).lock_owned().await);
+        let result = run_account_cleanup(std::sync::Arc::clone(&guard), || {
+            panic!("simulated filesystem worker failure");
+        })
+        .await;
+        assert!(result.unwrap_err().is_panic());
+        assert!(lock.try_lock().is_err());
+        drop(guard);
+        assert!(lock.try_lock().is_ok());
+    }
 
     #[tokio::test]
     async fn teardown_rejects_a_session_change_while_waiting_for_login_exclusion() {
