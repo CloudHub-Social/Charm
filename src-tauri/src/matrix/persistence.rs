@@ -621,9 +621,26 @@ fn discard_cancelled_account_store_locked(
 /// relocation commit writes its session credentials.
 pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    clear_session(account_key)?;
-    clear_oauth_session(account_key)?;
-    discard_cancelled_account_store_locked(app, account_key)
+    discard_cancelled_account_session_at(&matrix_store_root(app)?, account_key, || {
+        clear_session(account_key)?;
+        clear_oauth_session(account_key)?;
+        discard_cancelled_account_store_locked(app, account_key)
+    })
+}
+
+fn discard_cancelled_account_session_at(
+    root: &Path,
+    account_key: &str,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // Record cancellation before touching the keychain: a failed cleanup must
+    // not leave an otherwise valid session eligible for restoration.
+    let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    std::fs::write(&marker, []).map_err(|error| error.to_string())?;
+    cleanup()?;
+    // Keep the marker until every artifact is gone. Do not leave a successful
+    // cleanup marker around to delete a later legitimate login on startup.
+    std::fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
 /// One-time dev-only migration for the pre-Spec-15 layout, where
@@ -1990,6 +2007,33 @@ mod tests {
         let malformed = "a".repeat(250);
         std::fs::create_dir(root.0.join(&malformed)).unwrap();
         assert!(cancelled_account_cleanup_pending_at(&root.0, &malformed).is_err());
+        assert_eq!(known_account_keys_at(&root.0).unwrap(), vec![healthy]);
+    }
+
+    #[test]
+    fn cancelled_session_cleanup_failure_prevents_restore_until_cleanup_succeeds() {
+        let root = ScratchRoot::new("cancelled-session-cleanup-failure");
+        let cancelled = account_key("@cancelled:localhost");
+        let healthy = account_key("@healthy:localhost");
+        let cancelled_store = store_path_at(&root.0, &cancelled).unwrap();
+        store_path_at(&root.0, &healthy).unwrap();
+        let result = discard_cancelled_account_session_at(&root.0, &cancelled, || {
+            assert!(cancelled_account_cleanup_pending_at(&root.0, &cancelled).unwrap());
+            Err("simulated keychain unavailable".to_string())
+        });
+        assert!(result.is_err());
+        assert!(cancelled_store.exists());
+        assert!(cancelled_account_cleanup_pending_at(&root.0, &cancelled).unwrap());
+        assert_eq!(
+            known_account_keys_at(&root.0).unwrap(),
+            vec![healthy.clone()]
+        );
+
+        discard_cancelled_account_session_at(&root.0, &cancelled, || {
+            std::fs::remove_dir_all(&cancelled_store).map_err(|error| error.to_string())
+        })
+        .unwrap();
+        assert!(!cancelled_account_cleanup_pending_at(&root.0, &cancelled).unwrap());
         assert_eq!(known_account_keys_at(&root.0).unwrap(), vec![healthy]);
     }
 
