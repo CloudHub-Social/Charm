@@ -85,6 +85,21 @@ The owner ruled these **in** (they were previously flagged optional):
 
 ## Data flow
 
+## Implementation progress (2026-09-03)
+
+The in-progress branch adds locale/12-hour/24-hour clock choices and locale,
+day-first, month-first, and year-first date choices. These use the platform Intl
+formatter, validated local persistence, and the default-off `appearance_parity`
+flag. Message layouts and message/state-notice date dividers consume the settings;
+relative Today/Yesterday labels remain unchanged. Disabling the flag restores
+locale presentation without erasing saved preferences.
+
+This is not completion of Spec 47. The other scope items above, settings sync under
+Spec 50, generated catalog reconciliation, end-to-end coverage, visual review, and
+manual verification remain outstanding. CI is the verification environment.
+
+## Settings ownership
+
 Appearance settings use Spec 09's local store for immediate rendering (message
 rows, dividers, emoji, media). Their portable values, including the global font
 family, are required inputs to [Spec 50 — Cross-device settings sync](./Spec%2050%20%E2%80%94%20Cross-device%20settings%20sync.md).
