@@ -212,9 +212,14 @@ fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
         let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
             continue;
         };
-        // The cleanup owns marker removal under RELOCATE_LOCK. Removing it
-        // again here could erase a newer cancellation written after it returns.
-        let _ = discard_cancelled_account_session(app, account_key);
+        // Recheck after taking the relocation lock: this directory entry may
+        // predate completed cleanup and a newer successful login.
+        let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = retry_cancelled_account_cleanup_at(&root, account_key, || {
+            clear_session(account_key)?;
+            clear_oauth_session(account_key)?;
+            discard_cancelled_account_store_locked(app, account_key)
+        });
     }
     Ok(())
 }
@@ -643,6 +648,18 @@ fn discard_cancelled_account_session_at(
     std::fs::remove_file(marker).map_err(|error| error.to_string())
 }
 
+/// Caller holds RELOCATE_LOCK from the marker check through cleanup.
+fn retry_cancelled_account_cleanup_at(
+    root: &Path,
+    account_key: &str,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !cancelled_account_cleanup_pending_at(root, account_key)? {
+        return Ok(());
+    }
+    discard_cancelled_account_session_at(root, account_key, cleanup)
+}
+
 /// One-time dev-only migration for the pre-Spec-15 layout, where
 /// `matrix_store/` *was* a single account's SQLCipher store directly (no
 /// per-account subdirectory) and its passphrase/session/oauth-session
@@ -1008,6 +1025,16 @@ fn relocate_store_at_locked_with(
     account_key: &str,
     on_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<RelocateOutcome, RelocationFailure> {
+    // Do not commit a replacement beneath a marker that the startup sweep
+    // would interpret as permission to delete it. Cleanup must finish first.
+    // An unreadable marker is also fail-closed, and a cancelled previous client
+    // must not be resumed on this error path.
+    if cancelled_account_cleanup_pending_at(root, account_key).unwrap_or(true) {
+        return Err(RelocationFailure {
+            message: "Previous cancelled login cleanup is pending. Restart Charm to retry cleanup before signing in to this account.".to_string(),
+            safe_to_resume_previous: false,
+        });
+    }
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
     let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
@@ -2035,6 +2062,48 @@ mod tests {
         .unwrap();
         assert!(!cancelled_account_cleanup_pending_at(&root.0, &cancelled).unwrap());
         assert_eq!(known_account_keys_at(&root.0).unwrap(), vec![healthy]);
+    }
+
+    #[test]
+    fn relocation_does_not_commit_over_pending_cancelled_cleanup() {
+        let root = ScratchRoot::new("cancelled-cleanup-relocation");
+        let key = account_key("@cancelled-retry:localhost");
+        let temp_key = "tmp_cancelled_retry";
+        let old_store = store_path_at(&root.0, &key).unwrap();
+        let temp_store = store_path_at(&root.0, temp_key).unwrap();
+        std::fs::write(old_store.join("old"), "cancelled").unwrap();
+        std::fs::write(temp_store.join("new"), "replacement").unwrap();
+        let marker = root
+            .0
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{key}"));
+        std::fs::write(&marker, []).unwrap();
+
+        let result = relocate_store_at_locked_with(&root.0, temp_key, &key, || {
+            panic!("a replacement session must not be saved beneath a cleanup marker")
+        });
+        let Err(failure) = result else {
+            panic!("relocation must reject pending cancellation cleanup");
+        };
+        assert!(!failure.safe_to_resume_previous);
+        assert!(old_store.join("old").exists());
+        assert!(temp_store.join("new").exists());
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn stale_sweep_entry_does_not_cleanup_a_replacement_session() {
+        let root = ScratchRoot::new("cancelled-cleanup-stale-sweep");
+        let key = account_key("@cancelled-sweep:localhost");
+        let store = store_path_at(&root.0, &key).unwrap();
+        std::fs::write(store.join("new"), "replacement").unwrap();
+        // The sweep enumerated a marker before another cleanup retired it.
+        // By the time it holds the lock, a fresh login may own this store.
+        retry_cancelled_account_cleanup_at(&root.0, &key, || {
+            panic!("a stale directory entry is not authorization to delete a new session")
+        })
+        .unwrap();
+        assert!(store.join("new").exists());
+        assert!(!cancelled_account_cleanup_pending_at(&root.0, &key).unwrap());
     }
 
     #[test]

@@ -171,6 +171,11 @@ homeservers. The parity audit (2026-07-13) found:
   push-session restore until the encrypted store and credentials are removed.
   Cleanup failure can therefore delay restoration but cannot resurrect a cancelled
   account.
+- A pending or unreadable cancellation marker also prevents a replacement login
+  from committing for that account. The user must restart to retry cleanup before
+  signing in again; marker-removal errors remain failures, not silent success.
+  The startup sweep rechecks marker existence under the same relocation lock so
+  an already-retired marker cannot authorize deletion of a newer session.
 - During startup account discovery, an unreadable cancellation marker excludes
   only its associated account. Other readable, non-cancelled account directories
   remain eligible; a marker lookup failure must neither make the affected account
