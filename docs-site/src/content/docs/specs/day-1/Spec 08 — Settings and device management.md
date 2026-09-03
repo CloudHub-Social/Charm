@@ -273,6 +273,9 @@ Surfaces changed:
 14. The renderer installs `session:invalidated` before starting restore. Listener or
     restore setup failures preserve local data and show a retryable startup error rather
     than silently presenting an unexplained logged-out screen.
+    Local teardown publishes invalidation while login completion is excluded,
+    including successful teardown followed by a physical-cleanup failure, so
+    the renderer cannot remain authenticated after the active client is gone.
 15. The default-off **Forget local data** action requires typed and native-system
     confirmation, signs out, and physically removes the retained Matrix store, keychain
     passphrase, and every encrypted search index for the account on this device without

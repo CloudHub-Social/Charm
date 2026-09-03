@@ -388,6 +388,11 @@ async fn clear_local_session_locked(
         let _ = app.emit("session:invalidated", ());
         return Err(error);
     }
+    // The session is already gone even if a caller's subsequent physical
+    // store cleanup fails (notably remote account deactivation). Publish
+    // invalidation before releasing login exclusion rather than relying on
+    // the initiating command eventually returning success to the renderer.
+    let _ = app.emit("session:invalidated", ());
     Ok(())
 }
 
