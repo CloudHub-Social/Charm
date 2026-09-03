@@ -295,7 +295,21 @@ pub fn clear_cancelled_account_cleanup_marker(
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
     let root = matrix_store_root(app)?;
-    let entries = match std::fs::read_dir(&root) {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_cancelled_account_cleanups_at(&root, &app_data_dir, |account_key| {
+        discard_cancelled_account_session(app, account_key)
+    })
+}
+
+fn sweep_cancelled_account_cleanups_at(
+    root: &Path,
+    app_data_dir: &Path,
+    mut discard_session: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
@@ -308,7 +322,12 @@ fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
         let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
             continue;
         };
-        if discard_cancelled_account_session(app, account_key).is_ok() {
+        // A wipe marker covers derived search data as well as the SDK store.
+        // Retain it after either failure so the next startup retries both.
+        let cleanup = discard_session(account_key).and_then(|()| {
+            super::search::SearchIndex::delete_for_account(app_data_dir, account_key)
+        });
+        if cleanup.is_ok() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -1721,6 +1740,54 @@ mod tests {
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
+
+    #[test]
+    fn cancelled_cleanup_sweep_removes_search_before_clearing_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+        std::fs::write(&marker, []).unwrap();
+        let index = super::super::search::SearchIndex::open_with_source_secret(
+            directory.path(),
+            "account",
+            "DEVICE",
+            "test-secret",
+        )
+        .unwrap();
+        let database = index.database_path().to_path_buf();
+        drop(index);
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| Ok(())).unwrap();
+        assert!(!database.exists());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn cancelled_cleanup_sweep_keeps_marker_when_search_cleanup_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+        std::fs::write(&marker, []).unwrap();
+        let invalid_app_data = directory.path().join("not-a-directory");
+        std::fs::write(&invalid_app_data, []).unwrap();
+        sweep_cancelled_account_cleanups_at(&root, &invalid_app_data, |_| Ok(())).unwrap();
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn cancelled_cleanup_sweep_keeps_marker_when_session_cleanup_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory
+            .path()
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+        std::fs::write(&marker, []).unwrap();
+        sweep_cancelled_account_cleanups_at(directory.path(), directory.path(), |_| {
+            Err("injected keychain failure".to_string())
+        })
+        .unwrap();
+        assert!(marker.exists());
+    }
 
     const TEST_MXID_A: &str = "@charm-persistence-test-a:localhost";
     const TEST_MXID_B: &str = "@charm-persistence-test-b:localhost";
