@@ -672,13 +672,25 @@ mod tests {
 
     #[test]
     fn generated_frontend_catalog_matches_rust_catalog() {
+        let expected =
+            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize");
+        // Export before asserting parity so CI-only contributors can import
+        // the authoritative catalog even when the committed version is stale.
+        let output =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".artifacts/generated-bindings");
+        std::fs::create_dir_all(&output).expect("create generated catalog directory");
+        std::fs::write(
+            output.join("featureFlagCatalog.json"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&expected).expect("serialize catalog")
+            ),
+        )
+        .expect("export generated catalog");
         let generated: Value =
             serde_json::from_str(include_str!("bindings/featureFlagCatalog.json"))
                 .expect("generated frontend feature flag catalog must be valid JSON");
-        assert_eq!(
-            generated,
-            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize")
-        );
+        assert_eq!(generated, expected);
     }
 
     #[test]
