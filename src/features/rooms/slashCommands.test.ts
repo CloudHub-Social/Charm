@@ -3,6 +3,15 @@ import { parseSlashCommand } from "./slashCommands";
 import { filterSlashCommands } from "./composerSuggestions";
 
 describe("staged message-style commands", () => {
+  it("stages notice parsing and suggestions without converting it to plain text", () => {
+    expect(parseSlashCommand("/notice hello")).toBeNull();
+    expect(filterSlashCommands("notice")).toEqual([]);
+    expect(parseSlashCommand("/notice hello", true)).toEqual({
+      command: "notice",
+      args: ["hello"],
+    });
+    expect(filterSlashCommands("notice", true).map((spec) => spec.name)).toEqual(["notice"]);
+  });
   it.each(["unban", "nick", "ignore", "unignore"])(
     "stages /%s parsing and suggestions",
     (command) => {

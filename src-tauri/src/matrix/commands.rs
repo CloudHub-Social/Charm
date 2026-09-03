@@ -29,6 +29,7 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
 #[serde(rename_all = "snake_case")]
 pub enum SlashCommand {
     Me,
+    Notice,
     Topic,
     Invite,
     Kick,
@@ -81,6 +82,14 @@ fn me_text_from_args(args: &[String]) -> Result<String, CommandResult> {
     }
 }
 
+fn notice_content_from_args(args: &[String]) -> Result<RoomMessageEventContent, CommandResult> {
+    let text = args.join(" ");
+    if text.trim().is_empty() {
+        return Err(bad_args("/notice needs text to send"));
+    }
+    Ok(RoomMessageEventContent::notice_plain(text))
+}
+
 /// Runs a resolved slash command against `room_id`. `args` is the
 /// whitespace-split remainder of the command line after the `/word` (e.g.
 /// `/kick @bob:example.org spamming` -> `args = ["@bob:example.org",
@@ -109,13 +118,26 @@ pub async fn run_command_impl(
     // other command mutates room state or membership directly, so keep the
     // same admission lock across its homeserver action: either the command
     // starts first or a sync-driven room barrier rejects it.
-    let _mutation_guard = if command == SlashCommand::Me {
+    let _mutation_guard = if matches!(command, SlashCommand::Me | SlashCommand::Notice) {
         None
     } else {
         Some(super::actions::lock_room_mutation(room_id).await?)
     };
 
     match command {
+        SlashCommand::Notice => {
+            let content = match notice_content_from_args(&args) {
+                Ok(content) => content,
+                Err(result) => return Ok(result),
+            };
+            super::send::send_and_capture_transaction_id(
+                client,
+                &room,
+                AnyMessageLikeEventContent::RoomMessage(content),
+            )
+            .await?;
+            Ok(CommandResult::Success)
+        }
         SlashCommand::Me => {
             let text = match me_text_from_args(&args) {
                 Ok(text) => text,
@@ -184,6 +206,21 @@ pub async fn run_command_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notice_is_a_literal_matrix_notice_not_a_text_message() {
+        let content = notice_content_from_args(&["<b>literal</b>".to_owned()]).unwrap();
+        let json = serde_json::to_value(content).unwrap();
+        assert_eq!(json["msgtype"], "m.notice");
+        assert_eq!(json["body"], "<b>literal</b>");
+        assert!(json.get("formatted_body").is_none());
+    }
+
+    #[test]
+    fn notice_rejects_missing_or_blank_text() {
+        assert!(notice_content_from_args(&[]).is_err());
+        assert!(notice_content_from_args(&["  ".to_owned()]).is_err());
+    }
 
     #[test]
     fn me_with_empty_args_is_bad_args() {

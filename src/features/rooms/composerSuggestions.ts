@@ -3,6 +3,7 @@ import {
   SLASH_COMMANDS,
   MESSAGE_STYLE_COMMANDS,
   LOCAL_ACTION_COMMANDS,
+  STAGED_BACKEND_COMMANDS,
   type SlashCommandSpec,
 } from "./slashCommands";
 
@@ -27,7 +28,12 @@ export function filterSlashCommands(query: string, extended = false): SlashComma
   const q = query.toLowerCase();
   return (
     extended
-      ? [...SLASH_COMMANDS, ...MESSAGE_STYLE_COMMANDS, ...LOCAL_ACTION_COMMANDS]
+      ? [
+          ...SLASH_COMMANDS,
+          ...MESSAGE_STYLE_COMMANDS,
+          ...LOCAL_ACTION_COMMANDS,
+          ...STAGED_BACKEND_COMMANDS,
+        ]
       : SLASH_COMMANDS
   ).filter((c) => c.name.startsWith(q));
 }

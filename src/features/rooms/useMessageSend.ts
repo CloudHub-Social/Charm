@@ -194,6 +194,7 @@ export function useMessageSend({
         setCommandFeedback(null);
         return true;
       }
+      if (parsed.command === "notice" && !composerParityEnabled) return false;
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale

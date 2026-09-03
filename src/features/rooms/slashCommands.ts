@@ -40,6 +40,15 @@ export const MESSAGE_STYLE_COMMANDS: SlashCommandSpec[] = [
   },
 ];
 
+export const STAGED_BACKEND_COMMANDS: (SlashCommandSpec & { name: SlashCommand })[] = [
+  {
+    name: "notice",
+    trigger: "/notice",
+    argsHint: "<message>",
+    description: "Send a notice message",
+  },
+];
+
 export const LOCAL_ACTION_COMMANDS: (SlashCommandSpec & { name: LocalActionCommand })[] = [
   {
     name: "unban",
@@ -92,14 +101,16 @@ export function parseSlashCommand(body: string, extended = false): ParsedSlashCo
       text: body.slice(word.length + 1).replace(/^\s/, ""),
     };
   }
-  const spec = SLASH_COMMANDS.find((c) => c.name === word);
+  const spec = [...SLASH_COMMANDS, ...(extended ? STAGED_BACKEND_COMMANDS : [])].find(
+    (c) => c.name === word,
+  );
   if (!spec) return null;
 
   return { command: spec.name, args: rest.filter((a) => a.length > 0) };
 }
 
 export function isMessageSendingCommand(parsed: ParsedSlashCommand): boolean {
-  return parsed.command === "me" || "text" in parsed;
+  return parsed.command === "me" || parsed.command === "notice" || "text" in parsed;
 }
 
 /**

@@ -119,6 +119,13 @@ addition. No DTO changes for formatting (rides `formatted_body`).
 
 ## Implementation progress
 
+`/notice` is staged behind `composer_parity` and dispatches through `run_command`
+on native and web. The backend uses Ruma's `notice_plain` constructor and the
+existing serialized send helper, preserving `m.notice` semantics and refusing
+blank text. Parser and wire-content regressions are included. The updated
+`SlashCommand` union requires CI-generated bindings; generation and end-to-end
+verification remain pending.
+
 The editable surface explicitly enables native `spellcheck`, with a DOM regression
 assertion. Platform-native underline and correction behavior still requires manual
 verification. Strikethrough and code-block toolbar controls use the existing
