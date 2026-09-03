@@ -54,7 +54,11 @@ for (const enabled of [false, true]) {
         await composer.fill("updated via keyboard");
         await composer.press("Enter");
         await expect(page.getByText("updated via keyboard", { exact: true })).toBeVisible();
-        await expect(page.getByText("(edited)", { exact: true })).toBeVisible();
+        // Bubble layout shares the edited suffix with its timestamp; it is
+        // not a standalone text node (see BubbleMessageRow).
+        await expect(page.getByText(/\(edited\)$/)).toBeVisible();
+        await expect(page.getByText("original composer message", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("Editing message", { exact: true })).toHaveCount(0);
       } else {
         await expect(page.getByText("Editing message", { exact: true })).toHaveCount(0);
         await expect(composer).toHaveText("");
