@@ -212,9 +212,9 @@ fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
         let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
             continue;
         };
-        if discard_cancelled_account_session(app, account_key).is_ok() {
-            let _ = std::fs::remove_file(entry.path());
-        }
+        // The cleanup owns marker removal under RELOCATE_LOCK. Removing it
+        // again here could erase a newer cancellation written after it returns.
+        let _ = discard_cancelled_account_session(app, account_key);
     }
     Ok(())
 }
