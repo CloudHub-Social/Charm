@@ -739,11 +739,13 @@ export async function sendAttachment(
     if (!voice) throw new Error("Native in-memory attachments require recording metadata");
     if (filePath.size === 0 || filePath.size > 32 * 1024 * 1024)
       throw new Error("Voice recording exceeds the in-memory upload limit");
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    const bytes = await filePath.arrayBuffer();
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
     recording = {
       mime_type: filePath.type,
-      bytes: Array.from(new Uint8Array(await filePath.arrayBuffer())),
+      bytes: Array.from(new Uint8Array(bytes)),
     };
-    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
   }
   return invoke(
     "send_attachment",

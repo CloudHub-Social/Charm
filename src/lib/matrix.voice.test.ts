@@ -68,6 +68,25 @@ describe("native recorded audio handoff", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
+  it("does not read an already-cancelled recording into memory", async () => {
+    const file = recording();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      sendAttachment(
+        "!room:example.org",
+        file,
+        "voice-1",
+        undefined,
+        false,
+        controller.signal,
+        voice,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(file.arrayBuffer).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
   it("preserves the path-based native attachment contract", async () => {
     await sendAttachment("!room:example.org", "/picked/file.png", "file-1");
     expect(mocks.invoke).toHaveBeenCalledWith(
