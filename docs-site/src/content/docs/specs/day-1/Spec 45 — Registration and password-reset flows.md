@@ -166,6 +166,11 @@ homeservers. The parity audit (2026-07-13) found:
 - Cancellation, app exit, superseding login/registration, and timeout must release
   the pending client and clean its temporary store using Spec 15's existing
   reservation/sweep rules.
+- If cancellation races successful registration relocation, the durable cleanup
+  marker excludes that account from both interactive startup restore and headless
+  push-session restore until the encrypted store and credentials are removed.
+  Cleanup failure can therefore delay restoration but cannot resurrect a cancelled
+  account.
 - The companion persists enough pending-store ownership metadata to sweep
   abandoned unauthenticated crypto-store directories on startup after a crash.
   Restart tests interrupt registration after store creation and verify that the

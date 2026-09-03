@@ -591,6 +591,9 @@ pub(crate) async fn restore_session_for_push_at(
     store_root: &std::path::Path,
     account_key: &str,
 ) -> Result<Option<Client>, String> {
+    if persistence::cancelled_account_cleanup_pending_at(store_root, account_key)? {
+        return Ok(None);
+    }
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
         let client =
             build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;

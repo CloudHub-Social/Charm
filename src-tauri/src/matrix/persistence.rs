@@ -144,7 +144,10 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX) && !name.ends_with(STALE_BACKUP_SUFFIX) {
+        if !name.starts_with(TEMP_STORE_PREFIX)
+            && !name.ends_with(STALE_BACKUP_SUFFIX)
+            && !cancelled_account_cleanup_pending_at(root, &name)?
+        {
             keys.push(name);
         }
     }
@@ -155,6 +158,21 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     // filesystem happens to hand back first.
     keys.sort();
     Ok(keys)
+}
+
+/// Returns whether an account has durable cancellation cleanup still pending.
+/// Restore callers treat any marker shape as authoritative so a malformed or
+/// symlinked marker cannot be used to resurrect a cancelled registration.
+pub(crate) fn cancelled_account_cleanup_pending_at(
+    root: &Path,
+    account_key: &str,
+) -> Result<bool, String> {
+    let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    match std::fs::symlink_metadata(marker) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Best-effort cleanup of every in-flight temp store under `matrix_store/`
@@ -1933,7 +1951,7 @@ mod tests {
     }
 
     #[test]
-    fn known_account_keys_excludes_temp_stores_and_stale_backups() {
+    fn known_account_keys_excludes_temp_stores_backups_and_cancelled_accounts() {
         let root = ScratchRoot::new("known-keys");
         let account_key = account_key("@charm-persistence-test-known:localhost");
         let temp_key = temp_store_key();
@@ -1942,9 +1960,15 @@ mod tests {
         store_path_at(&root.0, &account_key).unwrap();
         store_path_at(&root.0, &temp_key).unwrap();
         std::fs::create_dir_all(root.0.join(&backup_key)).unwrap();
+        std::fs::write(
+            root.0
+                .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}")),
+            [],
+        )
+        .unwrap();
 
         let keys = known_account_keys_at(&root.0).unwrap();
-        assert!(keys.contains(&account_key));
+        assert!(!keys.contains(&account_key));
         assert!(!keys.contains(&temp_key));
         assert!(!keys.contains(&backup_key));
     }
