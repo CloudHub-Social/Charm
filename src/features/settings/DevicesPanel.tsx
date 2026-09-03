@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useFlag } from "@/featureFlags";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { DeviceRow } from "./DeviceRow";
+import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
 import {
   useCrossSigningResetUrl,
   useCrossSigningStatus,
@@ -35,6 +37,7 @@ function groupDevices(devices: DeviceSummary[]) {
 }
 
 export function DevicesPanel() {
+  const keyFilesEnabled = useFlag("crypto_key_files");
   const { data: profile } = useProfile();
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
@@ -271,6 +274,8 @@ export function DevicesPanel() {
           </SettingTile>
         </SettingsCard>
       )}
+
+      {keyFilesEnabled && <RoomKeyFilesCard />}
 
       {verify.isError && (
         <p className="text-sm text-destructive">

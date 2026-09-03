@@ -160,5 +160,11 @@
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "key": "crypto_key_files",
+    "default": false,
+    "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
+    "owner": "Spec 44 (crypto key backup and import/export)"
   }
 ]

@@ -1486,6 +1486,8 @@ pub fn run() {
             matrix::actions::get_edit_history,
             matrix::actions::get_reaction_details,
             matrix::commands::run_command,
+            matrix::key_management::export_room_keys,
+            matrix::key_management::import_room_keys,
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
