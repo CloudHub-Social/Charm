@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
+vi.mock("@/lib/platform", () => ({
+  isTauri: () => mocks.isTauri(),
+  isWebBuild: () => false,
+}));
 
 vi.mock("@sentry/react", () => ({
   getClient: () => mocks.getClient(),
@@ -21,7 +24,10 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
-vi.mock("@/lib/matrixTransport", () => ({
+// Keep transport routing real; isolate the native IPC boundary so lazy
+// reconciliation never enters Tauri or its telemetry wrapper in this test.
+vi.mock("@/observability/ipc", () => ({
+  IPC_OPERATION_ID_HEADER: "x-charm-operation-id",
   invoke: (...args: unknown[]) => mocks.invoke(...args),
 }));
 
