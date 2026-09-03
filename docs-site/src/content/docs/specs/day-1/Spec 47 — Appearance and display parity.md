@@ -83,8 +83,6 @@ The owner ruled these **in** (they were previously flagged optional):
     approximating it — the point is visual continuity with 1.0, so an inexact
     recreation defeats the purpose.
 
-## Data flow
-
 ## Implementation progress (2026-09-03)
 
 The in-progress branch adds locale/12-hour/24-hour clock choices and locale,
@@ -98,7 +96,7 @@ This is not completion of Spec 47. The other scope items above, settings sync un
 Spec 50, generated catalog reconciliation, end-to-end coverage, visual review, and
 manual verification remain outstanding. CI is the verification environment.
 
-## Settings ownership
+## Data flow and settings ownership
 
 Appearance settings use Spec 09's local store for immediate rendering (message
 rows, dividers, emoji, media). Their portable values, including the global font
