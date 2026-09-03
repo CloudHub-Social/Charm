@@ -76,4 +76,86 @@ describe("VoiceRecorder", () => {
     await act(async () => finish(true));
     expect(capture.discard).not.toHaveBeenCalled();
   });
+
+  function pointerEvent(target: HTMLElement, type: string, values: Record<string, unknown> = {}) {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperties(
+      event,
+      Object.fromEntries(
+        Object.entries({
+          pointerId: 1,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: 200,
+          ...values,
+        }).map(([key, value]) => [key, { value }]),
+      ),
+    );
+    fireEvent(target, event);
+  }
+
+  function renderMobileRecorder() {
+    capture.phase = "idle";
+    capture.preview = null;
+    render(<VoiceRecorder mobile onSend={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "Record voice message" });
+    Object.defineProperty(button, "setPointerCapture", { value: vi.fn() });
+    return button;
+  }
+
+  it("holds to record and stops on release without restarting on the synthesized click", () => {
+    const button = renderMobileRecorder();
+    pointerEvent(button, "pointerdown");
+    expect(capture.start).toHaveBeenCalledOnce();
+    pointerEvent(button, "pointerup");
+    fireEvent.click(button, { detail: 1 });
+    expect(capture.stop).toHaveBeenCalledOnce();
+    expect(capture.start).toHaveBeenCalledOnce();
+  });
+
+  it("discards once when sliding left and does not stop or restart on release", () => {
+    const button = renderMobileRecorder();
+    pointerEvent(button, "pointerdown");
+    pointerEvent(button, "pointermove", { clientX: 100 });
+    pointerEvent(button, "pointermove", { clientX: 90 });
+    pointerEvent(button, "pointerup", { clientX: 90 });
+    fireEvent.click(button, { detail: 1 });
+    expect(capture.discard).toHaveBeenCalledOnce();
+    expect(capture.stop).not.toHaveBeenCalled();
+    expect(capture.start).toHaveBeenCalledOnce();
+  });
+
+  it.each(["pointercancel", "lostpointercapture"])("discards when capture ends via %s", (event) => {
+    const button = renderMobileRecorder();
+    pointerEvent(button, "pointerdown");
+    pointerEvent(button, event);
+    expect(capture.discard).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a second finger's release", () => {
+    const button = renderMobileRecorder();
+    pointerEvent(button, "pointerdown");
+    pointerEvent(button, "pointerdown", { pointerId: 2, isPrimary: false });
+    pointerEvent(button, "pointerup", { pointerId: 2, isPrimary: false });
+    expect(capture.start).toHaveBeenCalledOnce();
+    expect(capture.stop).not.toHaveBeenCalled();
+    pointerEvent(button, "pointerup");
+    expect(capture.stop).toHaveBeenCalledOnce();
+  });
+
+  it("supports keyboard start on mobile", () => {
+    const button = renderMobileRecorder();
+    fireEvent.click(button, { detail: 0 });
+    expect(capture.start).toHaveBeenCalledOnce();
+  });
+
+  it("supports keyboard stop on mobile", () => {
+    capture.phase = "recording";
+    capture.preview = null;
+    render(<VoiceRecorder mobile onSend={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }), { detail: 0 });
+    expect(capture.stop).toHaveBeenCalledOnce();
+    expect(capture.start).not.toHaveBeenCalled();
+  });
 });

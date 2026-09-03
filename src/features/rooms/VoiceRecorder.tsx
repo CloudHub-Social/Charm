@@ -13,7 +13,7 @@ export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
   const [sendError, setSendError] = useState(false);
   const sendingRef = useRef(false);
   const mounted = useRef(true);
-  const pointer = useRef<{ id: number; x: number } | null>(null);
+  const pointer = useRef<{ id: number; x: number; cancelled: boolean } | null>(null);
   const suppressPointerClick = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -64,23 +64,34 @@ export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
               else void recorder.start();
             }}
             onPointerDown={(event) => {
+              if (event.button !== 0 || !event.isPrimary || pointer.current) return;
+              suppressPointerClick.current = false;
               if (!mobile || event.pointerType === "mouse") return;
-              pointer.current = { id: event.pointerId, x: event.clientX };
+              pointer.current = { id: event.pointerId, x: event.clientX, cancelled: false };
               event.currentTarget.setPointerCapture(event.pointerId);
               void recorder.start();
             }}
             onPointerMove={(event) => {
               if (pointer.current?.id !== event.pointerId) return;
-              if (pointer.current.x - event.clientX >= 80) recorder.discard();
+              if (!pointer.current.cancelled && pointer.current.x - event.clientX >= 80) {
+                pointer.current.cancelled = true;
+                recorder.discard();
+              }
             }}
             onPointerUp={(event) => {
               if (pointer.current?.id !== event.pointerId) return;
-              recorder.stop();
+              if (!pointer.current.cancelled) recorder.stop();
               pointer.current = null;
               suppressPointerClick.current = true;
             }}
-            onPointerCancel={() => {
-              if (pointer.current) recorder.discard();
+            onPointerCancel={(event) => {
+              if (pointer.current?.id !== event.pointerId) return;
+              if (!pointer.current.cancelled) recorder.discard();
+              pointer.current = null;
+            }}
+            onLostPointerCapture={(event) => {
+              if (pointer.current?.id !== event.pointerId) return;
+              if (!pointer.current.cancelled) recorder.discard();
               pointer.current = null;
             }}
           >
