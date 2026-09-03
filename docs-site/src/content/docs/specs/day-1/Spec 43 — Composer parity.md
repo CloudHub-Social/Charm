@@ -135,8 +135,17 @@ text message in the loaded timeline, behind the same default-off flag. It skips
 local echoes, failed sends, redactions, undecrypted placeholders, and attachments;
 autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
 their existing behavior. It does not fetch additional history to find an edit
-target. Shortcut regression tests are pending CI. Spoiler and slash-command
-requirements remain open; this does not establish full composer parity.
+target. Shortcut regression tests are pending CI.
+
+The spoiler toolbar control uses TipTap's mark API to serialize
+`span[data-mx-spoiler]`, preserving existing spoiler reasons and nested formatting
+when editing or restoring drafts. Schema parsing remains available with the flag
+off so an existing spoiler is not silently removed during editing; only the new
+toolbar action is staged. The existing received-content renderer conceals spoilers
+independently of `rich_message_rendering`, with regression coverage for both flag
+states. Spoilers are a presentation feature, not encryption: the Matrix plain-text
+fallback still contains the text. Slash-command requirements and CI/manual
+verification remain open; this does not establish full composer parity.
 
 ## What I'd revisit as this grows
 

@@ -38,6 +38,7 @@ function fakeEditor(activeMarks: Set<string> = new Set()): Editor {
     toggleItalic: () => chainable,
     toggleCode: () => chainable,
     toggleStrike: vi.fn(() => chainable),
+    toggleMark: vi.fn(() => chainable),
     toggleCodeBlock: vi.fn(() => chainable),
     toggleBlockquote: () => chainable,
     toggleBulletList: () => chainable,
@@ -66,6 +67,7 @@ describe("FormattingToolbar", () => {
     render(<FormattingToolbar editor={fakeEditor()} />);
     expect(screen.queryByRole("button", { name: "Strikethrough" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Code block" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Spoiler" })).not.toBeInTheDocument();
   });
 
   it("dispatches distinct strike and code-block commands when enabled", () => {
@@ -74,6 +76,8 @@ describe("FormattingToolbar", () => {
     render(<FormattingToolbar editor={editor} />);
     fireEvent.click(screen.getByRole("button", { name: "Strikethrough" }));
     fireEvent.click(screen.getByRole("button", { name: "Code block" }));
+    fireEvent.click(screen.getByRole("button", { name: "Spoiler" }));
+    expect(editor.chain().toggleMark).toHaveBeenCalledExactlyOnceWith("matrixSpoiler");
     expect(editor.chain().toggleStrike).toHaveBeenCalledOnce();
     expect(editor.chain().toggleCodeBlock).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "Code block" })).toHaveAttribute(

@@ -23,6 +23,7 @@ import {
 import { resolveInlineShortcodes } from "./emojiShortcodes";
 import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
+import { MatrixSpoiler } from "./spoilerExtension";
 import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -263,6 +264,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const extensions = useMemo(
     () => [
       StarterKit,
+      MatrixSpoiler,
       UserMention.configure({
         suggestion: {
           char: "@",

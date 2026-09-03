@@ -9,6 +9,7 @@ import {
   Quote,
   Smile,
   Strikethrough,
+  EyeOff,
 } from "lucide-react";
 import { useFlag } from "@/featureFlags";
 import { cn } from "@/lib/utils";
@@ -74,6 +75,13 @@ const BUTTONS: ToolbarButtonSpec[] = [
 ];
 
 const EXTENDED_BUTTONS: ToolbarButtonSpec[] = [
+  {
+    key: "matrixSpoiler",
+    label: "Spoiler",
+    icon: EyeOff,
+    isActive: (e) => e.isActive("matrixSpoiler"),
+    run: (e) => e.chain().focus().toggleMark("matrixSpoiler").run(),
+  },
   {
     key: "strike",
     label: "Strikethrough",
