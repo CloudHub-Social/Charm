@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn, within } from "storybook/test";
 import { EmojiPickerPanel } from "./EmojiPicker";
 
 const meta = {
@@ -14,4 +14,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** Full searchable Unicode picker with categories, recent emoji, and skin tones. */
-export const FullPicker: Story = {};
+export const FullPicker: Story = {
+  async play({ canvasElement }) {
+    // The picker is lazy-loaded. Capture and accessibility checks must see
+    // the interactive surface, not whichever Suspense state won a timing race.
+    await expect(await within(canvasElement).findByPlaceholderText("Search emoji")).toBeVisible();
+  },
+};
