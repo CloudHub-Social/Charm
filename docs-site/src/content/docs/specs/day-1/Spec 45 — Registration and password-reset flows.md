@@ -62,6 +62,13 @@ callback replay, provider allowlisting, polling, and transport/UI behavior have
 repository coverage. Live verification against a real configured SSO provider
 remains open.
 
+Desktop SSO cancellation remains authoritative through token exchange,
+completion-lock admission, and the final pre-relocation boundary. Cancellation
+or expiry drops the temporary Matrix client before deleting its encrypted
+temporary store, avoiding open SQLite handles during cleanup. Once durable
+session relocation starts, Charm finishes adoption and reports the real outcome
+rather than claiming the already-dispatched login was cancelled.
+
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
 twenty-minute attempt, supports both email-link and homeserver-hosted token

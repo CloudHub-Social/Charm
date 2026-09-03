@@ -3779,16 +3779,24 @@ pub async fn complete_sso_login(
     if let Err(e) = callback_result {
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
-        // startup sweep — clean it up now instead, same as a cancelled
-        // attempt.
+        // startup sweep. Drop the Matrix client first so its SQLite handles
+        // cannot make the bounded temp-store deletion fail spuriously.
+        drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err(e);
     }
 
-    let session = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
+    let Some(session) = client.matrix_auth().session() else {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("SSO login succeeded but no session was returned".to_string());
+    };
+
+    if pending.cancellation.is_cancelled() {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
@@ -3797,7 +3805,15 @@ pub async fn complete_sso_login(
     // `MatrixState::login_completion_lock`. Safe to acquire here: the
     // `pending_sso` lock taken earlier in this function was already
     // `drop`-ped before this point.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let _completion_guard = tokio::select! {
+        biased;
+        () = pending.cancellation.cancelled() => {
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            return Err("single sign-on cancelled".to_string());
+        }
+        guard = state.login_completion_lock.lock() => guard,
+    };
 
     // See `login`'s identical capture-and-restore-on-failure rationale.
     let previous_client = state.client.lock().await.clone();
@@ -3805,6 +3821,17 @@ pub async fn complete_sso_login(
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
+    // Cancellation remains authoritative until the irreversible store/session
+    // relocation begins. If it arrived while the completion lock or old sync
+    // loop was draining, restore that loop and leave the prior client current.
+    if pending.cancellation.is_cancelled() {
+        if let Some(previous_client) = previous_client.as_ref() {
+            sync::spawn_sync_task(app.clone(), previous_client.clone());
+        }
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,
