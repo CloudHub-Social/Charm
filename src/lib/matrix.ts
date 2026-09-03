@@ -724,22 +724,36 @@ function isUploadCancellation(error: unknown): boolean {
     : false;
 }
 
-export function sendAttachment(
+export async function sendAttachment(
   roomId: string,
   filePath: string | File,
   txnId: string,
   caption?: string,
   stripExifEnabled = true,
   signal?: AbortSignal,
+  voice?: import("@bindings/VoiceMessageMetadata").VoiceMessageMetadata,
 ): Promise<void> {
+  let recording: { mime_type: string; bytes: number[] } | undefined;
+  if (!isWebBuild() && typeof filePath !== "string") {
+    if (!voice) throw new Error("Native in-memory attachments require recording metadata");
+    if (filePath.size === 0 || filePath.size > 32 * 1024 * 1024)
+      throw new Error("Voice recording exceeds the in-memory upload limit");
+    recording = {
+      mime_type: filePath.type,
+      bytes: Array.from(new Uint8Array(await filePath.arrayBuffer())),
+    };
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+  }
   return invoke(
     "send_attachment",
     {
       roomId,
-      filePath,
+      filePath: recording ? "" : filePath,
       txnId,
       caption,
       stripExifEnabled,
+      ...(voice ? { voice } : {}),
+      ...(recording ? { recording } : {}),
       ...(isWebBuild() ? { signal } : {}),
     },
     { captureOnError: (error) => !isUploadCancellation(error) },

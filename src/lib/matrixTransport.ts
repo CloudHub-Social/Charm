@@ -833,6 +833,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       form.set("file", file);
       if (typeof args.caption === "string") form.set("caption", args.caption);
       form.set("strip_exif", String(args.stripExifEnabled === true));
+      if (args.voice) form.set("voice", JSON.stringify(args.voice));
       return requestBytes<T>(
         "POST",
         `/api/rooms/${encodeSegment(String(args.roomId))}/attachments${query({

@@ -25,6 +25,16 @@ pub struct VoiceMessageMetadata {
     pub waveform: Vec<f32>,
 }
 
+/// In-memory microphone recording; never interpreted as a filesystem path.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedAudioUpload {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+pub const MAX_VOICE_RECORDING_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Validate recorder metadata before the existing encrypted upload. Errors
 /// deliberately omit microphone samples and other caller-provided values.
 pub fn voice_attachment_info(
@@ -35,7 +45,7 @@ pub fn voice_attachment_info(
     if mime.type_() != mime::AUDIO {
         return Err("voice recording must use an audio media type".to_string());
     }
-    if size_bytes == 0 || size_bytes > MAX_ATTACHMENT_UPLOAD_BYTES {
+    if size_bytes == 0 || size_bytes > MAX_VOICE_RECORDING_UPLOAD_BYTES {
         return Err("voice recording size is outside the supported range".to_string());
     }
     if metadata.duration_ms == 0 || metadata.duration_ms > 600_000 {
@@ -750,6 +760,7 @@ pub async fn send_attachment(
     txn_id: String,
     strip_exif_enabled: bool,
     voice: Option<VoiceMessageMetadata>,
+    recording: Option<RecordedAudioUpload>,
 ) -> Result<(), String> {
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let operation_id = ipc_operation_id(&request);
@@ -826,31 +837,56 @@ pub async fn send_attachment(
             .ok_or_else(|| format!("room {room_id} not found"))?;
         drop(_send_guard);
 
-        let path = Path::new(&file_path);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| "file_path has no filename component".to_string())?
-            .to_string();
+        let (filename, mime, data) = if let Some(recording) = recording {
+            if !file_path.is_empty() {
+                return Err(
+                    "recording and filesystem attachment are mutually exclusive".to_string()
+                );
+            }
+            let metadata = voice
+                .as_ref()
+                .ok_or_else(|| "recording metadata is required".to_string())?;
+            let mime: mime::Mime = recording
+                .mime_type
+                .parse()
+                .map_err(|_| "invalid recording media type".to_string())?;
+            voice_attachment_info(&mime, recording.bytes.len() as u64, metadata)?;
+            let extension = match mime.subtype().as_str() {
+                "ogg" => "ogg",
+                "webm" => "webm",
+                "mp4" => "m4a",
+                "wav" | "wave" | "x-wav" => "wav",
+                _ => return Err("unsupported recording audio format".to_string()),
+            };
+            (format!("Voice message.{extension}"), mime, recording.bytes)
+        } else {
+            let path = Path::new(&file_path);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| "file_path has no filename component".to_string())?
+                .to_string();
 
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|e| e.to_string())?;
-        // `is_file()` follows symlinks and reflects the *target's* file type, so
-        // this also rejects a symlink pointed at a device/pipe/proc special file
-        // masquerading as an attachment, not just directories.
-        if !metadata.is_file() {
-            return Err("file_path does not refer to a regular file".to_string());
-        }
-        if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
-            return Err(format!(
-                "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
-                metadata.len()
-            ));
-        }
+            let metadata = tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| e.to_string())?;
+            // `is_file()` follows symlinks and reflects the *target's* file type, so
+            // this also rejects a symlink pointed at a device/pipe/proc special file
+            // masquerading as an attachment, not just directories.
+            if !metadata.is_file() {
+                return Err("file_path does not refer to a regular file".to_string());
+            }
+            if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
+                return Err(format!(
+                    "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
+                    metadata.len()
+                ));
+            }
 
-        let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
+            let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (filename, mime, data)
+        };
         // Best-effort: an unstrippable image (animated GIF/WebP, or one that
         // fails to decode) sends with its original bytes rather than failing
         // the whole upload — see `strip_exif`'s doc comment for why.
@@ -1206,7 +1242,7 @@ mod tests {
             waveform: vec![0.5],
         };
         assert!(voice_attachment_info(&mime::IMAGE_PNG, 1024, &metadata).is_err());
-        for size in [0, MAX_ATTACHMENT_UPLOAD_BYTES + 1] {
+        for size in [0, MAX_VOICE_RECORDING_UPLOAD_BYTES + 1] {
             assert!(voice_attachment_info(&mime, size, &metadata).is_err());
         }
         for duration in [0, 600_001] {
