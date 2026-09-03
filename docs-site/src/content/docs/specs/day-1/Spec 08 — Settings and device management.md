@@ -295,6 +295,12 @@ Surfaces changed:
     is cancelled. The caller retains exclusion after a worker panic so recovery
     cannot race a replacement login. Cancellation and panic regressions are
     included; GitHub Actions verification is pending.
+    Local-data removal makes a best-effort remote revoke with a five-second
+    deadline after clearing local session state. It drops that request's SDK
+    client before physical store deletion instead of leaving an unbounded
+    background request holding store files open. Remote success and delayed
+    response regression tests are pending CI; this does not prove that a remote
+    session was revoked when the homeserver is unavailable.
 
 ## Testing
 

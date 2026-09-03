@@ -530,26 +530,21 @@ pub async fn forget_local_data(
     drop(active);
     let account_key = persistence::account_key(user_id.as_str());
 
-    // A best-effort remote revoke matches ordinary logout, but local custody
-    // deletion remains authoritative even when the homeserver is offline.
-    let revoke_client = client.clone();
-    tokio::spawn(async move {
-        if revoke_client.matrix_auth().logged_in() {
-            let _ = revoke_client.matrix_auth().logout().await;
-        } else {
-            let _ = revoke_client.oauth().logout().await;
-        }
-    });
-
     persistence::mark_cancelled_account_cleanup(&app, &account_key)?;
-    clear_local_session_locked(
+    let teardown_result = clear_local_session_locked(
         &app,
         &state,
         &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::EntireAccount,
     )
-    .await?;
+    .await;
+
+    // A detached revoke would retain SDK store handles during physical
+    // deletion (particularly problematic on Windows). This bounded attempt
+    // owns and drops our last client handle before filesystem cleanup starts.
+    revoke_before_local_wipe(client, std::time::Duration::from_secs(5)).await;
+    teardown_result?;
 
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
@@ -581,6 +576,17 @@ pub async fn forget_local_data(
         tracing::warn!(command = "forget_local_data", status = "cleanup_pending");
     }
     Ok(())
+}
+
+async fn revoke_before_local_wipe(client: Client, timeout: std::time::Duration) {
+    let _ = tokio::time::timeout(timeout, async move {
+        if client.matrix_auth().logged_in() {
+            let _ = client.matrix_auth().logout().await;
+        } else {
+            let _ = client.oauth().logout().await;
+        }
+    })
+    .await;
 }
 
 fn require_local_data_confirmation(confirmed: bool) -> Result<(), String> {
@@ -969,6 +975,41 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn wipe_revoke_completes_the_remote_logout_when_available() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        revoke_before_local_wipe(client, std::time::Duration::from_secs(5)).await;
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn wipe_revoke_does_not_wait_for_an_unresponsive_homeserver() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({}))
+                    .set_delay(std::time::Duration::from_secs(30)),
+            )
+            .mount(server.server())
+            .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            revoke_before_local_wipe(client, std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("local wipe must not wait for the delayed logout response");
+    }
 
     #[tokio::test]
     async fn account_cleanup_keeps_login_excluded_after_caller_cancellation() {
