@@ -17,6 +17,7 @@ vi.mock("@/lib/platform", () => ({
 }));
 
 vi.mock("@sentry/react", () => ({
+  addBreadcrumb: vi.fn(),
   getClient: () => mocks.getClient(),
 }));
 
