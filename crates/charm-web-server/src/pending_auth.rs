@@ -39,6 +39,7 @@ use crate::session::{CryptoStoreHandle, Session};
 const ATTEMPT_TTL: Duration = Duration::from_secs(20 * 60);
 const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
 const SUPERSEDED_CAPACITY_WAIT: Duration = Duration::from_secs(5);
+const CANCELLED_SSO_REVOKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAIL_QUOTA_WINDOW: Duration = Duration::from_secs(10 * 60);
 const MAX_MAILS_PER_SOURCE: usize = 5;
 const MAX_MAILS_PER_ADDRESS: usize = 3;
@@ -128,7 +129,13 @@ async fn discard_sso_result(result: SsoCompletionResult) {
     };
     let (_, session, _, _) = *completed;
     let crypto = session.persisted_crypto.clone();
-    let _ = session.client.matrix_auth().logout().await;
+    // Remote revocation is best-effort. A hanging homeserver must not retain
+    // the temporary SDK store or block the replacement browser flow forever.
+    let _ = tokio::time::timeout(
+        CANCELLED_SSO_REVOKE_TIMEOUT,
+        session.client.matrix_auth().logout(),
+    )
+    .await;
     drop(session);
     crate::auth::cleanup_failed_crypto_store(&crypto);
 }

@@ -320,6 +320,10 @@ Fresh owners still fail immediately at capacity. A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity
 before remote cleanup; unrelated browsers remain subject to the same limit.
+Discarding a completed SSO session attempts remote logout for at most five
+seconds, then releases its SDK client and removes temporary crypto storage.
+This bounds supersession latency without claiming remote revocation succeeded
+when the homeserver was unreachable; live timeout verification remains pending.
 Routes do not split cancellation from admission for
 these flows; the replacement remains addressable for cancellation throughout
 network setup and finalization.
