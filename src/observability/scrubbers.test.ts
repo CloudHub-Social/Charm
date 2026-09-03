@@ -1,7 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { scrubSensitiveText, scrubSentryValue, scrubUrls, summarizeErrorText } from "./scrubbers";
+import {
+  scrubSensitiveText,
+  scrubSentryValue,
+  scrubUrls,
+  summarizeErrorText,
+  summarizeValue,
+} from "./scrubbers";
 
 describe("observability scrubbers", () => {
+  it("redacts recorded audio and metadata before structured diagnostics traverse them", () => {
+    const recording = {
+      mime_type: "audio/webm",
+      get bytes(): number[] {
+        throw new Error("Private audio must not be inspected");
+      },
+    };
+    const args = {
+      recording,
+      voice: { duration_ms: 1234, waveform: [0.12, 0.87] },
+      waveform: [0.12, 0.87],
+      audioBytes: [17, 33, 65],
+    };
+    const redacted = {
+      recording: "[redacted]",
+      voice: "[redacted]",
+      waveform: "[redacted]",
+      audioBytes: "[redacted]",
+    };
+    expect(summarizeValue(args)).toEqual(redacted);
+    expect(scrubSentryValue({ extra: { args } })).toEqual({ extra: { args: redacted } });
+  });
   it("redacts Matrix identifiers and secret fields", () => {
     const text =
       'room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media access_token="secret"';
