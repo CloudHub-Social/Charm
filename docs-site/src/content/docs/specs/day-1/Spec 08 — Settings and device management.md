@@ -279,6 +279,10 @@ Surfaces changed:
     deleting the server-side Matrix account. Confirmation is bound to the account and
     device selected before the native dialog opens; a changed session requires fresh
     confirmation. Login completion remains serialized through physical deletion.
+16. Terminal authentication failure revokes the in-memory client and invalidates
+    search backfill before cleanup. The live search database is closed before
+    its files are deleted, with the contended index lock and filesystem work on
+    a blocking worker. Failed cleanup retains the durable retry marker.
 
 ## Testing
 

@@ -787,6 +787,10 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         return;
     }
 
+    // Revoke access before waiting on disk work. Generation invalidation also
+    // prevents an in-flight backfill from reopening this session's index.
+    *state.client.lock().await = None;
+    search::reset_index_lifecycle(&state);
     let tombstone_marked = persistence::mark_logout_tombstone(app, &account_key).is_ok();
     let mut credentials_cleared = false;
     if tombstone_marked {
@@ -794,16 +798,34 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         let oauth_cleared = persistence::clear_oauth_session(&account_key).is_ok();
         credentials_cleared = matrix_cleared && oauth_cleared;
     }
-    let index_cleared = app.path().app_data_dir().is_ok_and(|app_data_dir| {
-        search::SearchIndex::delete_for_source(&app_data_dir, &account_key, device_id.as_str())
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let cleanup_account_key = account_key.clone();
+    let cleanup_device_id = device_id.to_string();
+    let app_data_dir = app.path().app_data_dir();
+    let index_cleared = tokio::task::spawn_blocking(move || {
+        // Taking and dropping the slot closes SQLite even if path resolution
+        // failed. Windows cannot reliably unlink an open database. Acquire the
+        // potentially contended index mutex only on a blocking worker.
+        let active = search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(active);
+        app_data_dir.is_ok_and(|directory| {
+            search::SearchIndex::delete_for_source(
+                &directory,
+                &cleanup_account_key,
+                &cleanup_device_id,
+            )
             .is_ok()
-    });
+        })
+    })
+    .await
+    .unwrap_or(false);
     if tombstone_marked && credentials_cleared && index_cleared {
         let _ = persistence::clear_logout_tombstone(app, &account_key);
     }
 
-    *state.client.lock().await = None;
-    search::reset_index_lifecycle(&state);
     state.clear_timelines().await;
     state.clear_pinned_event_cache().await;
     *state
