@@ -2196,6 +2196,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn newest_attempt_supersedes_a_replacement_waiting_for_capacity() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let old_permit = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let waiting = store.admit_owner_attempt(
+            "browser".to_owned(),
+            "waiting".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(waiting);
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("replacement must wait for the old task's permit"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.contains_key("waiting"));
+
+        let newest = store.admit_owner_attempt(
+            "browser".to_owned(),
+            "newest".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(newest);
+        tokio::select! {
+            biased;
+            _ = &mut newest => panic!("newest attempt must also wait for capacity"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(
+            waiting.await.is_err(),
+            "superseded waiter must not be admitted"
+        );
+        drop(old_permit);
+        let _newest_permit = newest
+            .await
+            .expect("newest attempt receives released capacity");
+        let cancellations = store.cancellations.lock().await;
+        assert_eq!(cancellations.len(), 1);
+        assert!(cancellations.contains_key("newest"));
+        assert!(store.reserve_capacity().is_err());
+    }
+
+    #[tokio::test]
     async fn replacement_reuses_its_owner_slot_at_capacity_without_admitting_strangers() {
         let store = PendingAuthStore::default();
         let _other_permits = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
