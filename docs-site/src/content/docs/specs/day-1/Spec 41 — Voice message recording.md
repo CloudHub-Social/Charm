@@ -103,8 +103,16 @@ to exercise capture, local preview, and discard without physical microphone
 access. Recording envelopes and waveform fields are explicitly redacted from
 structured diagnostics.
 
-This is implementation progress, not acceptance: generated binding import,
-passing CI, waveform UI, platform permission checks, and real-device/cross-client
+Apple permission prompts explicitly describe voice recording. macOS includes
+the audio-input entitlement and a microphone usage description using
+[Tauri's bundle configuration](https://v2.tauri.app/distribute/macos-application-bundle/)
+and [Apple's media-capture requirements](https://developer.apple.com/documentation/bundleresources/requesting-authorization-for-media-capture-on-macos).
+Native CSP allows `blob:` only in `media-src` for local preview; the browser
+regression applies that directive and waits for playable media metadata. These
+configuration checks do not prove that a signed macOS/iOS app can capture audio.
+
+This is implementation progress, not acceptance: passing CI, waveform UI,
+platform permission checks, and real-device/cross-client
 interoperability remain outstanding. Synthetic-microphone tests do not replace
 device permission or codec interoperability checks.
 
