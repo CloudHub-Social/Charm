@@ -41,6 +41,7 @@ use zeroize::Zeroizing;
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const CLEANUP_MARKER_PREFIX: &str = ".cleanup-";
+const DISABLED_CLEANUP_MARKER: &str = ".message-search-disabled-cleanup-pending";
 const SCHEMA_VERSION: u32 = 5;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
@@ -1042,7 +1043,7 @@ fn feature_enabled(app: &AppHandle) -> bool {
         crate::feature_flags::flag(
             &directory,
             crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
-        )
+        ) && matches!(disabled_cleanup_pending(&directory), Ok(false))
     })
 }
 
@@ -1666,19 +1667,7 @@ pub(crate) async fn submit_sync_response(
 ) {
     let state = app.state::<super::MatrixState>();
     if !feature_enabled(app) {
-        reset_index_lifecycle(&state);
-        let app_data_dir = app.path().app_data_dir().ok();
-        let app = app.clone();
-        let deleted = tauri::async_runtime::spawn_blocking(move || {
-            let state = app.state::<super::MatrixState>();
-            let mut slot = state
-                .search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
-        })
-        .await;
-        if !matches!(deleted, Ok(Ok(()))) {
+        if reconcile_disabled_search(app, &state).await.is_err() {
             tracing::warn!(
                 command = "message_search_kill_switch",
                 status = "cleanup_failed"
@@ -2296,7 +2285,7 @@ pub async fn search_messages(
     cursor: Option<String>,
 ) -> Result<SearchResultPage, SearchCommandError> {
     if !feature_enabled(&app) {
-        purge_disabled_search_indices(&app, &state).await;
+        let _ = reconcile_disabled_search(&app, &state).await;
         return Err(SearchCommandError::unavailable());
     }
     validate_query(&query)?;
@@ -2436,26 +2425,29 @@ pub async fn search_messages(
     Ok(page)
 }
 
-async fn purge_disabled_search_indices(app: &AppHandle, state: &super::MatrixState) {
+pub(crate) async fn reconcile_disabled_search(
+    app: &AppHandle,
+    state: &super::MatrixState,
+) -> Result<(), String> {
     // Invalidate queued plaintext and force a fresh cache seed before taking
     // the derived index. Cleanup can fail after the live handle is removed;
     // that must not leave a later re-enable believing backfill is complete.
     reset_index_lifecycle(state);
-    let app_data_dir = app.path().app_data_dir().ok();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search filesystem unavailable".to_string())?;
     let search_index = std::sync::Arc::clone(&state.search_index);
-    let deleted = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut slot = search_index
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+        let active = slot.take();
+        drop(active);
+        reconcile_disabled_cleanup(&app_data_dir)
     })
-    .await;
-    if !matches!(deleted, Ok(Ok(()))) {
-        tracing::warn!(
-            command = "message_search_kill_switch",
-            status = "cleanup_failed"
-        );
-    }
+    .await
+    .map_err(|_| "message search cleanup worker unavailable".to_string())?
 }
 
 fn purge_disabled_search_indices_from_slot(
@@ -2469,7 +2461,7 @@ fn purge_disabled_search_indices_from_slot(
     match app_data_dir {
         Some(app_data_dir) => {
             drop(active);
-            SearchIndex::delete_all(app_data_dir)
+            reconcile_disabled_cleanup(app_data_dir)
         }
         None => {
             if let Some(active) = active {
@@ -2478,6 +2470,33 @@ fn purge_disabled_search_indices_from_slot(
             Err("message search application data directory unavailable".to_string())
         }
     }
+}
+
+/// Records and completes the privacy kill-switch purge without a live index
+/// handle. The marker sits outside the directory being removed so a crash,
+/// renderer reload, or failed filesystem operation cannot erase the intent.
+pub(crate) fn reconcile_disabled_cleanup(app_data_dir: &Path) -> Result<(), String> {
+    let marker = disabled_cleanup_marker(app_data_dir);
+    create_private_directory(&marker)?;
+    SearchIndex::delete_all(app_data_dir)?;
+    match std::fs::remove_dir(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+pub(crate) fn disabled_cleanup_pending(app_data_dir: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(disabled_cleanup_marker(app_data_dir)) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err("message search filesystem cleanup marker invalid".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+fn disabled_cleanup_marker(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(DISABLED_CLEANUP_MARKER)
 }
 
 fn restore_visible_row(
@@ -3997,6 +4016,28 @@ mod tests {
         assert!(slot.is_none());
         assert!(!active_path.exists());
         assert!(retained_path.exists());
+    }
+
+    #[test]
+    fn failed_kill_switch_is_durable_and_blocks_reenable_until_recovery() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let index_directory = index
+            .database_path()
+            .parent()
+            .expect("index parent")
+            .to_owned();
+        drop(index);
+        let blocker = index_directory.join("unexpected.txt");
+        std::fs::write(&blocker, b"retain").expect("block bounded cleanup");
+
+        reconcile_disabled_cleanup(directory.path()).expect_err("cleanup remains blocked");
+        assert!(disabled_cleanup_pending(directory.path()).expect("read marker"));
+
+        std::fs::remove_file(blocker).expect("release cleanup");
+        reconcile_disabled_cleanup(directory.path()).expect("retry cleanup");
+        assert!(!disabled_cleanup_pending(directory.path()).expect("read marker"));
+        assert!(!index_directory.exists());
     }
 
     #[test]

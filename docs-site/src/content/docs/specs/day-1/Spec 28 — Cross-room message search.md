@@ -32,11 +32,11 @@ and its results so the input never describes an empty result pane. Repository
 evidence includes SQLCipher marker scans, no-follow filesystem tests, edit/redaction/
 cursor/query tests, component coverage, workspace compilation, and a Playwright
 search-navigation journey. Real-homeserver verification remains operational
-evidence rather than a repository correctness gate. Filesystem/backup hardening,
-durable overflow recovery, and kill-switch restart reconciliation remain tracked in
+evidence rather than a repository correctness gate. Filesystem/backup hardening and
+durable overflow recovery remain tracked in
 [#415](https://github.com/CloudHub-Social/Charm/issues/415),
-[#419](https://github.com/CloudHub-Social/Charm/issues/419), and
-[#417](https://github.com/CloudHub-Social/Charm/issues/417).
+and [#419](https://github.com/CloudHub-Social/Charm/issues/419). Kill-switch
+reconciliation now survives renderer and process restarts.
 
 **Workstream:** shipped daily-driver parity; bounded resilience follow-ups remain.
 
@@ -311,11 +311,14 @@ without the user knowing which is which.
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off. An enabled-to-disabled transition first closes the active
   handle, securely removes every retained Charm-owned account/device encrypted
-  database and its database sidecars on the next desktop sync, and records no
-  reusable quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
-  block that path from reopening. Persisting kill-switch transition intent before
-  renderer invocation and pre-session disabled-startup reconciliation remain in
-  [#417](https://github.com/CloudHub-Social/Charm/issues/417).
+  database and its database sidecars immediately, and records no reusable
+  quarantine. A marker outside the bounded search root durably records destructive
+  cleanup intent before deletion begins. Native startup reconciles disabled and
+  previously failed cleanup before session restoration; renderer startup also
+  reconciles disabled-to-disabled state. Labs and OFREP writes are serialized so a
+  re-enable cannot overtake cleanup, and every open, write, and query fails closed
+  while the marker remains. The marker contains no account, room, event, or message
+  identifier.
 - Because this flag controls a sensitive derived-content index, a trusted remote
   `false` is a hard veto over any persisted Labs/local override. The desktop veto
   prevents queries immediately and triggers the cleanup path above.
