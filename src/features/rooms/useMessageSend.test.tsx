@@ -23,6 +23,73 @@ describe("formatted composer submission", () => {
     mocks.useFlag.mockReturnValue(true);
   });
 
+  it("gates /notice submission and preserves backend failure feedback", async () => {
+    const room = makeRoomSummary();
+    const { result, rerender } = renderHook(() =>
+      useMessageSend({
+        room,
+        editingEventId: null,
+        replyTarget: null,
+        setEditingEventId: vi.fn(),
+        setReplyTarget: vi.fn(),
+        stopTyping: vi.fn(),
+      }),
+    );
+    mocks.useFlag.mockReturnValue(false);
+    rerender();
+    await act(async () => {
+      expect(await result.current.handleSlashCommand({ command: "notice", args: ["hello"] })).toBe(
+        false,
+      );
+    });
+    expect(mocks.runCommand).not.toHaveBeenCalled();
+
+    mocks.useFlag.mockReturnValue(true);
+    mocks.runCommand.mockResolvedValueOnce({ status: "error", message: "Cannot send notice" });
+    rerender();
+    await act(async () => {
+      expect(await result.current.handleSlashCommand({ command: "notice", args: ["hello"] })).toBe(
+        false,
+      );
+    });
+    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(room.room_id, "notice", ["hello"]);
+    expect(result.current.commandFeedback).toBe("Cannot send notice");
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a late /notice result to the next room", async () => {
+    const room = makeRoomSummary();
+    let resolveCommand!: (value: { status: "success" }) => void;
+    mocks.runCommand.mockReturnValueOnce(
+      new Promise<{ status: "success" }>((resolve) => {
+        resolveCommand = resolve;
+      }),
+    );
+    const { result, rerender } = renderHook(
+      ({ activeRoom }) =>
+        useMessageSend({
+          room: activeRoom,
+          editingEventId: null,
+          replyTarget: null,
+          setEditingEventId: vi.fn(),
+          setReplyTarget: vi.fn(),
+          stopTyping: vi.fn(),
+        }),
+      { initialProps: { activeRoom: room } },
+    );
+    let submission!: Promise<boolean>;
+    act(() => {
+      submission = result.current.handleSlashCommand({ command: "notice", args: ["hello"] });
+    });
+    rerender({ activeRoom: { ...room, room_id: "!next:example.org" } });
+    await act(async () => {
+      resolveCommand({ status: "success" });
+      expect(await submission).toBe(false);
+    });
+    expect(result.current.commandFeedback).toBeNull();
+    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(room.room_id, "notice", ["hello"]);
+  });
+
   it.each(["unban", "nick", "ignore", "unignore"] as const)(
     "routes /%s to its existing action only with the flag enabled",
     async (command) => {
