@@ -1271,7 +1271,7 @@ pub async fn request_registration_email(
                     return Err("could not send registration verification email".to_string());
                 }
                 Err(pending) => {
-                    discard_pending_registration(&app, pending);
+                    discard_pending_registration(&app, *pending);
                     clear_registration_cancellation(&state, &attempt_id);
                     return Err("registration cancelled".to_string());
                 }
@@ -1307,7 +1307,7 @@ pub async fn request_registration_email(
                     return Err(error);
                 }
                 Err(pending) => {
-                    discard_pending_registration(&app, pending);
+                    discard_pending_registration(&app, *pending);
                     clear_registration_cancellation(&state, &attempt_id);
                     return Err("registration cancelled".to_string());
                 }
@@ -1325,7 +1325,7 @@ pub async fn request_registration_email(
     if let Err(pending) =
         restore_pending_registration_if_current(&state, &attempt_id, &cancellation, pending).await
     {
-        discard_pending_registration(&app, pending);
+        discard_pending_registration(&app, *pending);
         clear_registration_cancellation(&state, &attempt_id);
         return Err("registration cancelled".to_string());
     }
@@ -1338,16 +1338,16 @@ async fn restore_pending_registration_if_current(
     attempt_id: &str,
     cancellation: &tokio_util::sync::CancellationToken,
     pending: PendingRegistration,
-) -> Result<(), PendingRegistration> {
+) -> Result<(), Box<PendingRegistration>> {
     if cancellation.is_cancelled() || !registration_cancellation_is_current(state, attempt_id) {
-        return Err(pending);
+        return Err(Box::new(pending));
     }
     let mut guard = state.pending_registration.lock().await;
     if guard.is_some()
         || cancellation.is_cancelled()
         || !registration_cancellation_is_current(state, attempt_id)
     {
-        return Err(pending);
+        return Err(Box::new(pending));
     }
     *guard = Some(pending);
     Ok(())
@@ -1363,7 +1363,7 @@ async fn restore_or_discard_pending_registration(
     match restore_pending_registration_if_current(state, attempt_id, cancellation, pending).await {
         Ok(()) => true,
         Err(pending) => {
-            discard_pending_registration(app, pending);
+            discard_pending_registration(app, *pending);
             clear_registration_cancellation(state, attempt_id);
             false
         }
@@ -1459,7 +1459,7 @@ pub async fn continue_registration(
                     Err(error)
                 }
                 Err(pending) => {
-                    discard_pending_registration(&app, pending);
+                    discard_pending_registration(&app, *pending);
                     clear_registration_cancellation(&state, &attempt_id);
                     Err("registration cancelled".to_string())
                 }
@@ -1539,7 +1539,7 @@ pub async fn continue_registration(
                         Ok(step)
                     }
                     Err(pending) => {
-                        discard_pending_registration(&app, pending);
+                        discard_pending_registration(&app, *pending);
                         clear_registration_cancellation(&state, &attempt_id);
                         Err("registration cancelled".to_string())
                     }
@@ -1557,7 +1557,7 @@ pub async fn continue_registration(
                     {
                         Ok(()) => reservation.defuse(),
                         Err(pending) => {
-                            discard_pending_registration(&app, pending);
+                            discard_pending_registration(&app, *pending);
                             clear_registration_cancellation(&state, &attempt_id);
                             return Err("registration cancelled".to_string());
                         }
