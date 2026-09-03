@@ -24,6 +24,63 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 const ROOM = { room_id: "!e2e-appearance:localhost", name: "Appearance E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
 
+test("clock and date choices survive reload and disappear when the rollout is disabled", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("charm:featureFlags")) {
+      localStorage.setItem(
+        "charm:featureFlags",
+        JSON.stringify({
+          state: { overrides: { appearance_parity: true } },
+          updatedAt: Date.now(),
+        }),
+      );
+    }
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.getByRole("button", { name: "System clock" }).click();
+  await page.getByRole("menuitemradio", { name: "24-hour" }).click();
+  await page.getByRole("button", { name: "System date" }).click();
+  await page.getByRole("menuitemradio", { name: "YYYY-MM-DD" }).click();
+  await expect(page.getByRole("button", { name: "24-hour" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "YYYY-MM-DD" })).toBeVisible();
+  await captureSnapshot(page, "appearance-display-formats");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await expect(page.getByRole("button", { name: "24-hour" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "YYYY-MM-DD" })).toBeVisible();
+
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { appearance_parity: false } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await expect(page.getByText("Clock format", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Date format", { exact: true })).toHaveCount(0);
+  const saved = await page.evaluate(
+    () => JSON.parse(localStorage.getItem("charm:appearance")!).state,
+  );
+  expect(saved.clockFormat).toBe("24h");
+  expect(saved.dateFormat).toBe("year-first");
+});
+
 function seedAppearanceMirror(appearance: Record<string, string>) {
   localStorage.setItem("charm:appearance", JSON.stringify(appearance));
 }
