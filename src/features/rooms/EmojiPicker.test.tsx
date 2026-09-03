@@ -141,4 +141,31 @@ describe("EmojiPicker", () => {
     expect(emojiPickerTheme("midnight")).toBe("dark");
     expect(emojiPickerTheme("system")).toBe("auto");
   });
+
+  it("repairs the upstream search reference across lazy mount, search, and clear", async () => {
+    const disconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
+    const view = render(<EmojiPickerPanel accountId="@alice:example.org" onSelect={vi.fn()} />);
+    const picker = await screen.findByTestId("full-emoji-picker");
+    // Model the library's conditional status node, including lazy DOM insertion.
+    const container = document.createElement("div");
+    container.className = "epr-search-container";
+    const input = document.createElement("input");
+    input.setAttribute("aria-controls", "epr-search-id");
+    container.append(input);
+    picker.append(container);
+    await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
+
+    const status = document.createElement("div");
+    status.id = "epr-search-id";
+    status.setAttribute("role", "status");
+    container.append(status);
+    await waitFor(() => expect(input).toHaveAttribute("aria-controls", status.id));
+
+    status.remove();
+    await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
+    const disconnectsBeforeUnmount = disconnect.mock.calls.length;
+    view.unmount();
+    expect(disconnect.mock.calls.length).toBeGreaterThan(disconnectsBeforeUnmount);
+    disconnect.mockRestore();
+  });
 });

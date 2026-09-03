@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CategoryConfig, EmojiClickData, PickerProps } from "emoji-picker-react";
 import { useAtomValue } from "jotai";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -59,6 +59,7 @@ export function EmojiPickerPanel({
   onSelect,
   extraCategories = NO_EXTRA_CATEGORIES,
 }: EmojiPickerPanelProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
   const theme = useAtomValue(themeAtom);
   const { recent, recordReaction } = useRecentReactions(accountId);
   const customEmojis = useMemo(
@@ -74,6 +75,29 @@ export function EmojiPickerPanel({
 
   useEffect(clearUpstreamRecentEmoji, [accountId]);
 
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    // emoji-picker-react references its search-status node even when an empty
+    // search has not mounted that node. Keep the relationship only while its
+    // target exists. Observe lazy mounting and search/clear without changing
+    // the library's search behavior or suppressing accessibility checks.
+    const reconcileSearchControls = () => {
+      const input = panel.querySelector<HTMLInputElement>(".epr-search-container input");
+      if (!input) return;
+      if (panel.querySelector('[id="epr-search-id"]')) {
+        input.setAttribute("aria-controls", "epr-search-id");
+      } else if (input.getAttribute("aria-controls") === "epr-search-id") {
+        input.removeAttribute("aria-controls");
+      }
+    };
+    const observer = new MutationObserver(reconcileSearchControls);
+    observer.observe(panel, { childList: true, subtree: true });
+    reconcileSearchControls();
+    return () => observer.disconnect();
+  }, []);
+
   function select(emoji: string) {
     // emoji-picker-react writes its own profile-wide recent list before this
     // callback. Charm owns recents per Matrix account, so remove that copy.
@@ -83,7 +107,7 @@ export function EmojiPickerPanel({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg bg-card">
+    <div ref={panelRef} className="overflow-hidden rounded-lg bg-card">
       <div className="flex max-w-[min(22rem,calc(100vw-2rem))] items-center gap-1 border-b border-border px-2 py-1.5">
         <span className="mr-1 text-xs text-muted-foreground">Recent</span>
         {recent.map((emoji) => (
