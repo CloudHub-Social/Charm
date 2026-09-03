@@ -17,6 +17,8 @@ import type {
   Theme,
 } from "@/features/appearance/atoms";
 import { useAppearance } from "@/features/appearance/useAppearance";
+import { FONT_FAMILY_LABELS } from "@/features/appearance/fontFamily";
+import { MESSAGE_SPACING_LABELS } from "@/features/appearance/messageSpacing";
 import { useFlag } from "@/featureFlags";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
@@ -172,6 +174,10 @@ export function AppearancePanel() {
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const {
+    messageSpacing,
+    setMessageSpacing,
+    fontFamily,
+    setFontFamily,
     clockFormat,
     dateFormat,
     setClockFormat,
@@ -213,6 +219,26 @@ export function AppearancePanel() {
       <SettingsCard>
         {appearanceParityEnabled && (
           <>
+            <SettingTile
+              title="Message spacing"
+              control={
+                <PickerControl
+                  value={messageSpacing}
+                  labels={MESSAGE_SPACING_LABELS}
+                  onChange={setMessageSpacing}
+                />
+              }
+            />
+            <SettingTile
+              title="Font family"
+              control={
+                <PickerControl
+                  value={fontFamily}
+                  labels={FONT_FAMILY_LABELS}
+                  onChange={setFontFamily}
+                />
+              }
+            />
             <SettingTile
               title="Clock format"
               control={

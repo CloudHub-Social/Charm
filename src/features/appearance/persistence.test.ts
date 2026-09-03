@@ -34,6 +34,8 @@ describe("local mirror", () => {
   it("round-trips through localStorage as a { state, updatedAt } envelope", () => {
     const state: AppearanceState = {
       clockFormat: "locale",
+      fontFamily: "default",
+      messageSpacing: "0",
       dateFormat: "locale",
       theme: "light",
       fontSize: "lg",
@@ -162,6 +164,21 @@ describe("pickNewerEnvelope", () => {
 });
 
 describe("mergeAppearance", () => {
+  it("validates spacing without accepting arbitrary CSS", () => {
+    expect(mergeAppearance({ messageSpacing: "16" }).messageSpacing).toBe("16");
+    expect(
+      mergeAppearance({ messageSpacing: "-100vh" } as unknown as Partial<AppearanceState>)
+        .messageSpacing,
+    ).toBe("0");
+  });
+  it("rejects arbitrary font CSS and accepts a local font preset", () => {
+    expect(mergeAppearance({ fontFamily: "mono" }).fontFamily).toBe("mono");
+    expect(
+      mergeAppearance({
+        fontFamily: "url(https://example.test/font)",
+      } as unknown as Partial<AppearanceState>).fontFamily,
+    ).toBe("default");
+  });
   it("returns defaults for null input", () => {
     expect(mergeAppearance(null)).toEqual(DEFAULT_APPEARANCE);
   });
@@ -173,6 +190,8 @@ describe("mergeAppearance", () => {
   it("passes through a fully-specified partial", () => {
     const full: AppearanceState = {
       clockFormat: "24h",
+      fontFamily: "serif",
+      messageSpacing: "8",
       dateFormat: "year-first",
       theme: "midnight",
       fontSize: "xl",

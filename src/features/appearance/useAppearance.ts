@@ -6,6 +6,8 @@ import {
   dateFormatAtom,
   densityAtom,
   fontSizeAtom,
+  fontFamilyAtom,
+  messageSpacingAtom,
   groupPresenceRingAtom,
   hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
@@ -26,6 +28,8 @@ import {
 import { applyAppearanceToDom } from "./dom";
 import { persistAppearance } from "./persistence";
 import type { ClockFormat, DateFormat } from "./dateTime";
+import type { FontFamily } from "./fontFamily";
+import type { MessageSpacing } from "./messageSpacing";
 
 /**
  * Reads and writes the current appearance settings. Every setter here is the
@@ -41,6 +45,8 @@ import type { ClockFormat, DateFormat } from "./dateTime";
  */
 export function useAppearance() {
   const store = useStore();
+  const [messageSpacing, setMessageSpacingAtom] = useAtom(messageSpacingAtom);
+  const [fontFamily, setFontFamilyAtom] = useAtom(fontFamilyAtom);
   const [clockFormat, setClockFormatAtom] = useAtom(clockFormatAtom);
   const [dateFormat, setDateFormatAtom] = useAtom(dateFormatAtom);
   const [theme, setThemeAtom] = useAtom(themeAtom);
@@ -59,6 +65,8 @@ export function useAppearance() {
   const commit = useCallback(
     (patch: Partial<AppearanceState>) => {
       const next: AppearanceState = {
+        messageSpacing: store.get(messageSpacingAtom),
+        fontFamily: store.get(fontFamilyAtom),
         clockFormat: store.get(clockFormatAtom),
         dateFormat: store.get(dateFormatAtom),
         theme: store.get(themeAtom),
@@ -79,6 +87,22 @@ export function useAppearance() {
       void persistAppearance(next);
     },
     [store],
+  );
+
+  const setMessageSpacing = useCallback(
+    (next: MessageSpacing) => {
+      setMessageSpacingAtom(next);
+      commit({ messageSpacing: next });
+    },
+    [commit, setMessageSpacingAtom],
+  );
+
+  const setFontFamily = useCallback(
+    (next: FontFamily) => {
+      setFontFamilyAtom(next);
+      commit({ fontFamily: next });
+    },
+    [commit, setFontFamilyAtom],
   );
 
   const setClockFormat = useCallback(
@@ -194,6 +218,10 @@ export function useAppearance() {
   );
 
   return {
+    messageSpacing,
+    setMessageSpacing,
+    fontFamily,
+    setFontFamily,
     clockFormat,
     dateFormat,
     setClockFormat,

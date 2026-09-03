@@ -47,6 +47,8 @@ describe("AppearancePanel", () => {
     renderPanel();
     expect(screen.queryByText("Clock format")).not.toBeInTheDocument();
     expect(screen.queryByText("Date format")).not.toBeInTheDocument();
+    expect(screen.queryByText("Font family")).not.toBeInTheDocument();
+    expect(screen.queryByText("Message spacing")).not.toBeInTheDocument();
   });
 
   it("updates and persists clock and date choices", async () => {
@@ -63,6 +65,19 @@ describe("AppearancePanel", () => {
         expect.objectContaining({
           state: expect.objectContaining({ clockFormat: "24h", dateFormat: "year-first" }),
         }),
+      ),
+    );
+  });
+
+  it("selects and persists a local font family", async () => {
+    renderPanel();
+    openMenu("Charm default");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Serif", exact: true }));
+    expect(screen.getByRole("button", { name: "Serif", exact: true })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ fontFamily: "serif" }) }),
       ),
     );
   });

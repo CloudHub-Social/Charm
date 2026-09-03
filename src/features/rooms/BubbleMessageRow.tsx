@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
+import { useMessageSpacing } from "@/features/appearance/messageSpacing";
 import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
@@ -61,11 +62,13 @@ export function BubbleMessageRow({
 }: MessageRowLayoutProps) {
   const showAvatar = !own && !sameSenderAsPrev;
   const { clockFormat } = useDisplayFormats();
+  const spacingStyle = useMessageSpacing();
   const showMeta = !sameSenderAsNext;
 
   return (
     <div
       id={`message-${message.event_id}`}
+      style={spacingStyle}
       className={cn(
         "group flex max-w-120 gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",

@@ -6,6 +6,8 @@ import {
   dateFormatAtom,
   densityAtom,
   fontSizeAtom,
+  fontFamilyAtom,
+  messageSpacingAtom,
   groupPresenceRingAtom,
   hideMembershipEventsAtom,
   jumboEmojiSizeAtom,
@@ -17,6 +19,8 @@ import {
   themeAtom,
 } from "./atoms";
 import { applyAppearanceToDom, resolveEffectiveTheme } from "./dom";
+import { useFlag } from "@/featureFlags";
+import { FONT_FAMILIES } from "./fontFamily";
 import {
   mergeAppearance,
   pickNewerEnvelope,
@@ -41,6 +45,10 @@ import {
  * the whole point of the boot script), it only reconciles afterward.
  */
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const appearanceEnabled = useFlag("appearance_parity");
+  const fontFamily = useAtomValue(fontFamilyAtom);
+  const setFontFamily = useSetAtom(fontFamilyAtom);
+  const setMessageSpacing = useSetAtom(messageSpacingAtom);
   const theme = useAtomValue(themeAtom);
   const setClockFormat = useSetAtom(clockFormatAtom);
   const setDateFormat = useSetAtom(dateFormatAtom);
@@ -72,6 +80,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const state = mergeAppearance(pickNewerEnvelope(persisted, local));
       if (cancelled) return;
       setClockFormat(state.clockFormat);
+      setFontFamily(state.fontFamily);
+      setMessageSpacing(state.messageSpacing);
       setDateFormat(state.dateFormat);
       setTheme(state.theme);
       setFontSize(state.fontSize);
@@ -94,6 +104,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
   }, [
     setClockFormat,
+    setFontFamily,
+    setMessageSpacing,
     setDateFormat,
     setAutoplayGifs,
     setDensity,
@@ -124,6 +136,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, [theme]);
+
+  useEffect(() => {
+    if (appearanceEnabled && fontFamily !== "default") {
+      document.documentElement.style.setProperty("--font-sans", FONT_FAMILIES[fontFamily].stack);
+    } else {
+      document.documentElement.style.removeProperty("--font-sans");
+    }
+    return () => {
+      document.documentElement.style.removeProperty("--font-sans");
+    };
+  }, [appearanceEnabled, fontFamily]);
 
   return children;
 }

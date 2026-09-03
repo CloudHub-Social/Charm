@@ -1,5 +1,7 @@
 import { atom } from "jotai";
 import type { ClockFormat, DateFormat } from "./dateTime";
+import type { FontFamily } from "./fontFamily";
+import type { MessageSpacing } from "./messageSpacing";
 
 export type Theme = "dark" | "light" | "midnight" | "system";
 export type FontSize = "sm" | "md" | "lg" | "xl";
@@ -14,6 +16,8 @@ export type MessageLayout = "bubble" | "discord" | "irc";
 export type JumboEmojiSize = "off" | "sm" | "md" | "lg";
 
 export interface AppearanceState {
+  messageSpacing: MessageSpacing;
+  fontFamily: FontFamily;
   clockFormat: ClockFormat;
   dateFormat: DateFormat;
   theme: Theme;
@@ -66,6 +70,8 @@ export const VALID_JUMBO_EMOJI_SIZES: readonly JumboEmojiSize[] = ["off", "sm", 
  * `messageLayout` defaults to `"bubble"` — Spec 27 is additive, matching
  * current/shipped behavior for existing users. */
 export const DEFAULT_APPEARANCE: AppearanceState = {
+  messageSpacing: "0",
+  fontFamily: "default",
   clockFormat: "locale",
   dateFormat: "locale",
   theme: "dark",
@@ -89,6 +95,8 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
  * these testable in isolation without touching `document`.
  */
 export const themeAtom = atom<Theme>(DEFAULT_APPEARANCE.theme);
+export const messageSpacingAtom = atom<MessageSpacing>(DEFAULT_APPEARANCE.messageSpacing);
+export const fontFamilyAtom = atom<FontFamily>(DEFAULT_APPEARANCE.fontFamily);
 export const clockFormatAtom = atom<ClockFormat>(DEFAULT_APPEARANCE.clockFormat);
 export const dateFormatAtom = atom<DateFormat>(DEFAULT_APPEARANCE.dateFormat);
 export const fontSizeAtom = atom<FontSize>(DEFAULT_APPEARANCE.fontSize);

@@ -92,6 +92,18 @@ flag. Message layouts and message/state-notice date dividers consume the setting
 relative Today/Yesterday labels remain unchanged. Disabling the flag restores
 locale presentation without erasing saved preferences.
 
+The branch also adds a global font-family picker with Charm default, system UI,
+sans-serif, serif, and monospace presets. Fixed local CSS font stacks avoid remote
+font requests or arbitrary CSS input; code-specific monospace styling is preserved.
+The value is persisted locally and remains a required portable input for Spec 50.
+The rollout flag gates its DOM application as well as its settings control.
+
+Six message-spacing levels add 0, 2, 4, 8, 12, or 16 pixels between rows in all
+three layouts. This is independent of the existing compact/cozy bubble-padding
+control and does not shrink touch targets. Flag-off restores the layout's original
+spacing while keeping the saved value. Extreme-spacing E2E snapshots cover bubble,
+Discord, and IRC rendering; CI verification is still required.
+
 This is not completion of Spec 47. The other scope items above, settings sync under
 Spec 50, generated catalog reconciliation, end-to-end coverage, visual review, and
 manual verification remain outstanding. CI is the verification environment.

@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
+import { useMessageSpacing } from "@/features/appearance/messageSpacing";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { nickColor } from "./roomDisplay";
@@ -58,10 +59,12 @@ export function IrcMessageRow({
 }: MessageRowLayoutProps) {
   const nick = message.sender_display_name ?? message.sender;
   const { clockFormat } = useDisplayFormats();
+  const spacingStyle = useMessageSpacing();
 
   return (
     <div
       id={`message-${message.event_id}`}
+      style={spacingStyle}
       className={cn(
         "group flex items-baseline gap-1 py-0.5",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
