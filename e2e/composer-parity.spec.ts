@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 const ROOM = { room_id: "!composer:localhost", name: "Composer Room", unread_count: 0 };
 
@@ -33,6 +34,7 @@ for (const enabled of [false, true]) {
         await expect(page.getByRole("button", { name, exact: true })).toHaveCount(enabled ? 1 : 0);
       }
       await expect(composer).toHaveAttribute("spellcheck", "true");
+      await captureSnapshot(page, `composer-parity-controls-${enabled ? "on" : "off"}`);
       await composer.fill("original composer message");
       await composer.press("Enter");
       await expect(page.getByText("original composer message", { exact: true })).toBeVisible();
@@ -48,6 +50,7 @@ for (const enabled of [false, true]) {
       if (enabled) {
         await expect(page.getByText("Editing message", { exact: true })).toBeVisible();
         await expect(composer).toHaveText("original composer message");
+        await captureSnapshot(page, "composer-parity-keyboard-edit");
         await composer.fill("updated via keyboard");
         await composer.press("Enter");
         await expect(page.getByText("updated via keyboard", { exact: true })).toBeVisible();

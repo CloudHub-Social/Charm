@@ -1092,6 +1092,7 @@ export function installMockTauri(seed: {
         sender_avatar_path: null,
         body: args.body,
         formatted_body: args.formattedBody ?? null,
+        media: null,
         timestamp_ms: Date.now(),
         edited: false,
         redacted: false,
