@@ -276,7 +276,9 @@ Surfaces changed:
 15. The default-off **Forget local data** action requires typed and native-system
     confirmation, signs out, and physically removes the retained Matrix store, keychain
     passphrase, and every encrypted search index for the account on this device without
-    deleting the server-side Matrix account.
+    deleting the server-side Matrix account. Confirmation is bound to the account and
+    device selected before the native dialog opens; a changed session requires fresh
+    confirmation. Login completion remains serialized through physical deletion.
 
 ## Testing
 

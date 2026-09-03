@@ -232,11 +232,21 @@ async fn clear_local_session(
     user_id: &str,
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
-    let account_key = persistence::account_key(user_id);
     // Serialize the durable sign-out intent and credential deletion against
     // login completion. A newly committed session clears this marker only
     // after its SDK store and credential pair are both installed.
     let _completion_guard = state.login_completion_lock.lock().await;
+    clear_local_session_locked(app, state, user_id, search_cleanup_scope).await
+}
+
+/// Caller holds the login completion lock through teardown and any device wipe.
+async fn clear_local_session_locked(
+    app: &AppHandle,
+    state: &State<'_, MatrixState>,
+    user_id: &str,
+    search_cleanup_scope: SearchCleanupScope,
+) -> Result<(), String> {
+    let account_key = persistence::account_key(user_id);
     let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
@@ -437,6 +447,17 @@ pub async fn forget_local_data(
     ) {
         return Err("forget local data is unavailable".to_string());
     }
+    // Capture the session before showing the dialog, without blocking login
+    // completion while waiting for the user to respond.
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
     let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .message(
@@ -454,11 +475,17 @@ pub async fn forget_local_data(
     if !confirmation_rx.await.unwrap_or(false) {
         return Err("local data deletion was cancelled".to_string());
     }
-    let client = state.require_client().await?;
-    let user_id = client
-        .user_id()
-        .ok_or_else(|| "not logged in".to_string())?
-        .to_owned();
+    // Keep this lock through physical deletion: a new login must not install
+    // a store underneath the wipe after the old client has been cleared.
+    let _completion_guard = state.login_completion_lock.lock().await;
+    let active = state.require_client().await?;
+    require_confirmed_session(
+        user_id.as_str(),
+        device_id.as_str(),
+        active.user_id().map(|id| id.as_str()),
+        active.device_id().map(|id| id.as_str()),
+    )?;
+    drop(active);
     let account_key = persistence::account_key(user_id.as_str());
 
     // A best-effort remote revoke matches ordinary logout, but local custody
@@ -473,7 +500,7 @@ pub async fn forget_local_data(
     });
 
     persistence::mark_cancelled_account_cleanup(&app, &account_key)?;
-    clear_local_session(
+    clear_local_session_locked(
         &app,
         &state,
         user_id.as_str(),
@@ -517,6 +544,19 @@ fn require_local_data_confirmation(confirmed: bool) -> Result<(), String> {
     confirmed
         .then_some(())
         .ok_or_else(|| "local data deletion requires confirmation".to_string())
+}
+
+fn require_confirmed_session(
+    user_id: &str,
+    device_id: &str,
+    active_user_id: Option<&str>,
+    active_device_id: Option<&str>,
+) -> Result<(), String> {
+    if active_user_id == Some(user_id) && active_device_id == Some(device_id) {
+        Ok(())
+    } else {
+        Err("session changed; confirm local data deletion again".to_string())
+    }
 }
 
 #[tauri::command]
@@ -883,6 +923,28 @@ mod tests {
     fn forget_local_data_requires_an_explicit_confirmation_bit() {
         assert!(require_local_data_confirmation(false).is_err());
         assert!(require_local_data_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn forget_local_data_rejects_a_changed_account_or_device() {
+        for (user, device) in [
+            (Some("@b:example.org"), Some("A")),
+            (Some("@a:example.org"), Some("B")),
+            (None, None),
+        ] {
+            assert!(require_confirmed_session("@a:example.org", "A", user, device).is_err());
+        }
+    }
+
+    #[test]
+    fn forget_local_data_accepts_the_confirmed_session() {
+        assert!(require_confirmed_session(
+            "@a:example.org",
+            "A",
+            Some("@a:example.org"),
+            Some("A")
+        )
+        .is_ok());
     }
 
     #[tokio::test]
