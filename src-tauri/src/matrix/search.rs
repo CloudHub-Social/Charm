@@ -41,6 +41,7 @@ use zeroize::Zeroizing;
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const CLEANUP_MARKER_PREFIX: &str = ".cleanup-";
+const RECONCILIATION_MARKER: &str = ".reconciliation-pending";
 const DISABLED_CLEANUP_MARKER: &str = ".message-search-disabled-cleanup-pending";
 const SCHEMA_VERSION: u32 = 5;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
@@ -207,6 +208,7 @@ pub struct SearchIndex {
     incarnation: String,
     snapshot_query_key: Zeroizing<[u8; 32]>,
     snapshots: HashMap<String, SearchSnapshot>,
+    reconciliation_pending: bool,
 }
 
 pub(crate) struct ActiveSearchIndex {
@@ -288,6 +290,7 @@ impl SearchIndex {
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
         reconcile_pending_cleanup(&search_root, &directory)?;
         create_private_directory(&directory)?;
+        let reconciliation_pending = reconciliation_marker_pending(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
         let mut connection = match open_encrypted_connection(
             &database_path,
@@ -328,6 +331,7 @@ impl SearchIndex {
             incarnation: random_id(),
             snapshot_query_key: Zeroizing::new(rand::rng().random()),
             snapshots: HashMap::new(),
+            reconciliation_pending,
         })
     }
 
@@ -344,6 +348,46 @@ impl SearchIndex {
     /// Returns the opaque database path for lifecycle coordination and tests.
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    /// Whether an earlier indexing lifecycle recorded dropped or failed work.
+    /// The marker contains no message content and survives process restart.
+    pub fn reconciliation_pending(&self) -> bool {
+        self.reconciliation_pending
+    }
+
+    /// Durably records that this derived index needs a complete local-cache
+    /// reconciliation. This is deliberately a directory marker so it cannot
+    /// be confused with or parsed as message-bearing diagnostic data.
+    pub fn mark_reconciliation_pending(&mut self) -> Result<(), String> {
+        create_private_directory(&reconciliation_marker(&self.database_path))?;
+        self.reconciliation_pending = true;
+        Ok(())
+    }
+
+    /// Clears failure intent only after a complete local-cache pass has
+    /// drained through the same FIFO as live mutations.
+    pub fn clear_reconciliation_pending(&mut self) -> Result<(), String> {
+        remove_reconciliation_marker(&self.database_path)?;
+        self.reconciliation_pending = false;
+        Ok(())
+    }
+
+    /// Records failure intent without opening SQLCipher or requiring access
+    /// to the source secret. Queue-overflow paths use this before returning.
+    pub fn mark_reconciliation_pending_for_source(
+        app_data_dir: &Path,
+        account_store_key: &str,
+        device_id: &str,
+    ) -> Result<(), String> {
+        let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
+        let search_root = app_data_dir.join(SEARCH_ROOT);
+        create_private_directory(&search_root)?;
+        exclude_search_root_from_backup(&app_data_dir, &search_root)?;
+        let directory = index_directory(&app_data_dir, account_store_key, device_id);
+        reconcile_pending_cleanup(&search_root, &directory)?;
+        create_private_directory(&directory)?;
+        create_private_directory(&directory.join(RECONCILIATION_MARKER))
     }
 
     /// Closes and physically removes this derived index and SQLite sidecars.
@@ -458,17 +502,12 @@ impl SearchIndex {
             return transaction.commit().map_err(safe_storage_error);
         }
         if document.version_event_id != document.event_id {
-            let original_sender = transaction
-                .query_row(
-                    "SELECT sender FROM message_versions
-                     WHERE room_id = ?1 AND original_event_id = ?2
-                       AND version_event_id = original_event_id",
-                    params![&document.room_id, &document.event_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(safe_storage_error)?;
-            if original_sender.as_deref() != Some(document.sender.as_str()) {
+            let original_sender =
+                original_sender(&transaction, &document.room_id, &document.event_id)?;
+            if original_sender
+                .as_deref()
+                .is_some_and(|sender| sender != document.sender)
+            {
                 return transaction.commit().map_err(safe_storage_error);
             }
         }
@@ -489,6 +528,20 @@ impl SearchIndex {
                 ],
             )
             .map_err(safe_storage_error)?;
+        if document.version_event_id == document.event_id {
+            // An edit can arrive before its original. Retain it only as
+            // encrypted, non-visible provenance until the original makes the
+            // sender check possible, then remove every forged candidate in
+            // the same transaction that first exposes a visible row.
+            transaction
+                .execute(
+                    "DELETE FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2
+                       AND version_event_id != original_event_id AND sender != ?3",
+                    params![&document.room_id, &document.event_id, &document.sender],
+                )
+                .map_err(safe_storage_error)?;
+        }
         restore_visible_row(&transaction, &document.room_id, &document.event_id)?;
         transaction.commit().map_err(safe_storage_error)
     }
@@ -1158,6 +1211,91 @@ fn mark_incomplete_if_current(state: &super::MatrixState, generation: u64) -> bo
     true
 }
 
+async fn persist_reconciliation_pending_if_current(
+    app: &AppHandle,
+    expected_identity: &(String, String),
+    generation: u64,
+) -> bool {
+    let state = app.state::<super::MatrixState>();
+    if !search_lifecycle_is_current(&state, expected_identity, generation).await
+        || !mark_incomplete_if_current(&state, generation)
+    {
+        return false;
+    }
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        tracing::warn!(
+            command = "message_search_reconciliation",
+            status = "checkpoint_failed"
+        );
+        return true;
+    };
+    let account_store_key = expected_identity.0.clone();
+    let device_id = expected_identity.1.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || {
+            SearchIndex::mark_reconciliation_pending_for_source(
+                &app_data_dir,
+                &account_store_key,
+                &device_id,
+            )
+        })
+        .await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!(
+            command = "message_search_reconciliation",
+            status = "checkpoint_failed"
+        );
+    }
+    true
+}
+
+async fn clear_reconciliation_pending_if_complete(
+    app: &AppHandle,
+    expected_identity: &(String, String),
+    generation: u64,
+) -> bool {
+    let state = app.state::<super::MatrixState>();
+    if !search_lifecycle_is_current(&state, expected_identity, generation).await {
+        return false;
+    }
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let expected_identity = expected_identity.clone();
+    let app = app.clone();
+    matches!(
+        tokio::task::spawn_blocking(move || {
+            let state = app.state::<super::MatrixState>();
+            let _lifecycle = state
+                .search_lifecycle_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if generation
+                != state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                || state
+                    .search_incomplete
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Ok(false);
+            }
+            let mut slot = search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(active) = slot
+                .as_mut()
+                .filter(|active| active.matches(&expected_identity.0, &expected_identity.1))
+            else {
+                return Err("message search reconciliation index unavailable".to_string());
+            };
+            active.index.clear_reconciliation_pending()?;
+            Ok(true)
+        })
+        .await,
+        Ok(Ok(true))
+    )
+}
+
 /// Removes the encrypted search database for a client that has been
 /// successfully superseded. Authentication flows call this only after their
 /// rollback/cancellation window has closed and before publishing the
@@ -1207,6 +1345,16 @@ fn ensure_index<'a>(
             .app_data_dir()
             .map_err(|_| "message search application data directory unavailable".to_string())?;
         let index = SearchIndex::open(&app_data_dir, account_store_key, device_id)?;
+        let state = app.state::<super::MatrixState>();
+        if index.reconciliation_pending()
+            && !state
+                .search_backfill_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         *slot = Some(ActiveSearchIndex {
             account_store_key: account_store_key.to_owned(),
             device_id: device_id.to_owned(),
@@ -1717,9 +1865,7 @@ pub(crate) async fn submit_sync_response(
         return;
     }
     let Ok(ignored_senders) = ignored_senders else {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &client_identity, generation).await;
         if let Some(work) = removal_work_from_sync(client, response) {
             enqueue_sync_work(app, &client_identity, generation, work).await;
         }
@@ -1744,6 +1890,7 @@ async fn enqueue_sync_work(
     if work.is_empty() {
         return;
     }
+    let work_identity = (work.account_store_key.clone(), work.device_id.clone());
     let state = app.state::<super::MatrixState>();
     let sender = search_work_sender(app).await;
     // Keep account replacement from clearing the client between the final
@@ -1773,9 +1920,7 @@ async fn enqueue_sync_work(
             let (privacy_work, dropped_additions) = queued.work.into_privacy_removals();
             queued.work = privacy_work;
             if dropped_additions {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &work_identity, generation).await;
                 tracing::warn!(
                     command = "message_search_index",
                     status = "queue_full_dropped_additions"
@@ -1789,9 +1934,7 @@ async fn enqueue_sync_work(
         Err(_) => false,
     };
     if !delivered {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &work_identity, generation).await;
         tracing::warn!(command = "message_search_index", status = "queue_full");
     }
 }
@@ -1891,6 +2034,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                         completes_backfill,
                         completion,
                     } = queued;
+                    let work_identity = (work.account_store_key.clone(), work.device_id.clone());
                     let state = worker_app.state::<super::MatrixState>();
                     let current_visibility = match state
                         .require_client_with_search_generation()
@@ -1937,7 +2081,14 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                     };
                     let applied = visibility_complete && result.is_ok();
                     let state = worker_app.state::<super::MatrixState>();
-                    if !applied && mark_incomplete_if_current(&state, generation) {
+                    if !applied
+                        && persist_reconciliation_pending_if_current(
+                            &worker_app,
+                            &work_identity,
+                            generation,
+                        )
+                        .await
+                    {
                         tracing::warn!(command = "message_search_index", status = "worker_failed");
                     }
                     if completes_backfill
@@ -1946,6 +2097,21 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                                 .search_generation
                                 .load(std::sync::atomic::Ordering::Acquire)
                     {
+                        if applied
+                            && !clear_reconciliation_pending_if_complete(
+                                &worker_app,
+                                &work_identity,
+                                generation,
+                            )
+                            .await
+                        {
+                            persist_reconciliation_pending_if_current(
+                                &worker_app,
+                                &work_identity,
+                                generation,
+                            )
+                            .await;
+                        }
                         state
                             .search_backfill_pending
                             .store(false, std::sync::atomic::Ordering::Release);
@@ -1982,14 +2148,34 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         return;
     };
     let expected_identity = (account_store_key.clone(), device_id.clone());
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
+    {
+        let _lifecycle = state
+            .search_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if generation
+            != state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        // The pending bit already makes every result explicitly incomplete.
+        // Clear only the prior sticky bit so any failure during this complete
+        // cache scan can set it again and veto the FIFO completion marker.
+        state
+            .search_incomplete
+            .store(false, std::sync::atomic::Ordering::Release);
+    };
     let ignored_senders = super::account::ignored_user_ids(client).await;
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
         return;
     }
     let Ok(ignored_senders) = ignored_senders else {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         state
             .search_backfill_pending
             .store(false, std::sync::atomic::Ordering::Release);
@@ -2010,9 +2196,8 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
                 if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
                     return;
                 }
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &expected_identity, generation)
+                    .await;
                 continue;
             }
         };
@@ -2020,9 +2205,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
                 return;
             }
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
             continue;
         };
         if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
@@ -2034,9 +2217,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             &events,
             ignored_senders.clone(),
         ) else {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
             break;
         };
         if work.is_empty() {
@@ -2071,9 +2252,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             })
             .is_err()
         {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
             state
                 .search_backfill_pending
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -2105,9 +2284,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         })
         .is_err()
     {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         state
             .search_backfill_pending
             .store(false, std::sync::atomic::Ordering::Release);
@@ -2214,9 +2391,7 @@ async fn process_cached_room_seed(
     }
     let Ok(ignored_senders) = super::account::ignored_user_ids(&client).await else {
         if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         }
         return;
     };
@@ -2228,18 +2403,15 @@ async fn process_cached_room_seed(
         Ok((cache, _drop_handles)) => cache.events().await,
         Err(_) => {
             if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &expected_identity, generation)
+                    .await;
             }
             return;
         }
     };
     let Ok(events) = events else {
         if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         }
         return;
     };
@@ -2268,9 +2440,7 @@ async fn process_cached_room_seed(
         })
         .is_err()
     {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         tracing::warn!(command = "message_search_pagination", status = "queue_full");
     }
 }
@@ -2296,16 +2466,40 @@ pub async fn search_messages(
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
-    if state
-        .search_backfill_started
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .is_ok()
-    {
+    let should_start_backfill = {
+        let _lifecycle = state
+            .search_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if generation
+            == state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+            && state
+                .search_incomplete
+                .load(std::sync::atomic::Ordering::Acquire)
+            && !state
+                .search_backfill_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            // A previous full seed or live batch failed. Permit exactly one
+            // caller to start another complete local-only pass; the CAS below
+            // immediately closes this retry gate for concurrent searches.
+            state
+                .search_backfill_started
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        state
+            .search_backfill_started
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    };
+    if should_start_backfill {
         // Publish the disclosure before detaching so the first request can
         // return promptly while still reporting that cached-history coverage
         // is incomplete until the worker's FIFO completion marker drains.
@@ -2499,12 +2693,42 @@ fn disabled_cleanup_marker(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(DISABLED_CLEANUP_MARKER)
 }
 
+fn reconciliation_marker(database_path: &Path) -> PathBuf {
+    database_path
+        .parent()
+        .expect("validated search database always has an index directory")
+        .join(RECONCILIATION_MARKER)
+}
+
+fn reconciliation_marker_pending(index_directory: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(index_directory.join(RECONCILIATION_MARKER)) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err("message search reconciliation marker invalid".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+fn remove_reconciliation_marker(database_path: &Path) -> Result<(), String> {
+    let marker = reconciliation_marker(database_path);
+    match std::fs::remove_dir(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
 fn restore_visible_row(
     transaction: &Transaction<'_>,
     room_id: &str,
     original_event_id: &str,
 ) -> Result<(), String> {
     delete_visible_row(transaction, room_id, original_event_id)?;
+    if original_sender(transaction, room_id, original_event_id)?.is_none() {
+        // Do not expose an edit until its original event establishes the
+        // authoritative sender and makes relation validation possible.
+        return Ok(());
+    }
     let selected_version = transaction
         .query_row(
             "SELECT version_event_id FROM selected_versions
@@ -2632,6 +2856,23 @@ fn restore_visible_row(
             .map_err(safe_storage_error)?;
     }
     Ok(())
+}
+
+fn original_sender(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    original_event_id: &str,
+) -> Result<Option<String>, String> {
+    transaction
+        .query_row(
+            "SELECT sender FROM message_versions
+             WHERE room_id = ?1 AND original_event_id = ?2
+               AND version_event_id = original_event_id",
+            params![room_id, original_event_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(safe_storage_error)
 }
 
 fn is_tombstoned(
@@ -3186,7 +3427,8 @@ fn validate_index_directory(directory: &Path) -> Result<(), String> {
         ]
         .contains(&name);
         let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
-        if !expected || !metadata.file_type().is_file() {
+        let reconciliation_marker = name == RECONCILIATION_MARKER && metadata.file_type().is_dir();
+        if (!expected || !metadata.file_type().is_file()) && !reconciliation_marker {
             return Err("message search filesystem entry invalid".to_string());
         }
     }
@@ -3278,6 +3520,11 @@ fn delete_database_path_once(database_path: &Path) -> Result<(), String> {
     let Some(directory) = database_path.parent() else {
         return Err("message search filesystem boundary invalid".to_string());
     };
+    match std::fs::remove_dir(directory.join(RECONCILIATION_MARKER)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(safe_io_error(error)),
+    }
     match std::fs::remove_dir(directory) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -3795,6 +4042,30 @@ mod tests {
             })
             .expect("count rebuilt rows");
         assert_eq!(indexed_rows, 0);
+    }
+
+    #[test]
+    fn reconciliation_checkpoint_survives_restart_without_message_content() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        SearchIndex::mark_reconciliation_pending_for_source(directory.path(), "account", "DEVICE")
+            .expect("record checkpoint");
+
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        assert!(index.reconciliation_pending());
+        let marker = reconciliation_marker(index.database_path());
+        assert!(marker.is_dir());
+        assert_eq!(
+            std::fs::read_dir(&marker)
+                .expect("read content-free marker")
+                .count(),
+            0
+        );
+
+        index
+            .clear_reconciliation_pending()
+            .expect("verified rebuild clears checkpoint");
+        drop(index);
+        assert!(!open_index(directory.path(), "account", "DEVICE").reconciliation_pending());
     }
 
     #[test]
@@ -4664,6 +4935,56 @@ mod tests {
                 .as_deref(),
             Some("first edit")
         );
+    }
+
+    #[test]
+    fn edit_before_original_waits_for_sender_validation_and_then_converges() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("edited first"), "$edit"))
+            .expect("retain pending edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .apply_document(&document(Some("original later"), "$original"))
+            .expect("insert original");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("edited first")
+        );
+    }
+
+    #[test]
+    fn forged_edit_before_original_is_removed_before_visibility() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let mut forged = document(Some("forged"), "$edit");
+        forged.sender = "@mallory:example.org".to_string();
+        index
+            .apply_document(&forged)
+            .expect("retain unverified edit as non-visible provenance");
+
+        index
+            .apply_document(&document(Some("authentic"), "$original"))
+            .expect("insert original");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("authentic")
+        );
+        let forged_rows = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE version_event_id = '$edit'",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .expect("count forged provenance");
+        assert_eq!(forged_rows, 0);
     }
 
     #[test]

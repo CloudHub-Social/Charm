@@ -2840,6 +2840,7 @@ async fn search_messages(
         return Err(ApiError::bad_request("message search is unavailable"));
     }
     let session = require_session(&state, &jar).await?;
+    crate::sync_loop::schedule_full_message_search_reconciliation(Arc::clone(&session));
     let crypto = session
         .persisted_crypto
         .clone()

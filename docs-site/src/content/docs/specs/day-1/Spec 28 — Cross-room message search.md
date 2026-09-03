@@ -135,8 +135,11 @@ connection: the SDK owns that schema and migration lifecycle.
   in provenance; later edits and replay must remain suppressed by that tombstone.
   Redacting an edit removes that candidate and atomically recomputes the row from
   the preceding valid edit or original content only when the original is not
-  tombstoned. A late edit/redaction, backfill, or replay therefore converges without
-  retaining or resurrecting stale or redacted text.
+  tombstoned. An edit that arrives before its original remains encrypted,
+  non-visible provenance until the original establishes the sender; forged-sender
+  candidates are then removed before any row becomes visible. A late
+  edit/redaction, backfill, or replay therefore converges without retaining or
+  resurrecting stale or redacted text.
 - Backfill: on first login, and on the first index open after the feature flag
   becomes enabled for an already-active account/session, index whatever history
   is already locally available in the SDK's store;
@@ -220,8 +223,14 @@ connection: the SDK owns that schema and migration lifecycle.
   threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
   through a bounded per-session queue. Overflow never retains unbounded decrypted
   text: it drops the batch, marks the index incomplete, and discloses that state on
-  every result page. Durable non-content checkpoints and automatic overflow
-  reconciliation are tracked in [#419](https://github.com/CloudHub-Social/Charm/issues/419).
+  every result page. Desktop/mobile also writes an empty per-device directory
+  checkpoint when work is dropped or fails. The checkpoint contains no message
+  plaintext, survives restart, and clears only after a complete local event-cache
+  scan and its FIFO completion marker both succeed. A later search claims one
+  bounded retry while results remain incomplete. Web indexes are session-ephemeral,
+  so a later search similarly coalesces one local-cache rebuild after failure and a
+  process restart creates a fresh incomplete index; neither transport invokes
+  homeserver search or forces history pagination for reconciliation.
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
   eligible events to the indexer even when that room has never been opened. The
