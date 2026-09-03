@@ -1608,6 +1608,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
+    /// Regression for #434: a database worker can hold the synchronous index
+    /// mutex for an arbitrary amount of time, but session teardown must wait
+    /// for it only on Tokio's blocking pool. With a single async worker, moving
+    /// the contended lock acquisition back outside `spawn_blocking` deadlocks
+    /// the timer and fails this test under nextest's timeout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn contended_search_teardown_does_not_block_the_async_runtime() {
+        let session = Arc::new(dummy_session("@contended-search:example.org").await);
+        let index = Arc::clone(&session.message_search_index);
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _guard = index.lock().unwrap_or_else(|error| error.into_inner());
+            let _ = locked_tx.send(());
+            let _ = release_rx.recv();
+        });
+        locked_rx
+            .await
+            .expect("blocking worker acquired index lock");
+
+        let teardown_session = Arc::clone(&session);
+        let teardown = tokio::spawn(async move {
+            delete_message_search_index(&teardown_session, std::env::temp_dir()).await;
+        });
+
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        })
+        .await
+        .expect("contended teardown must not block Tokio's only async worker");
+
+        release_tx.send(()).expect("release blocking worker");
+        blocker.await.expect("blocking worker completed");
+        teardown.await.expect("teardown completed");
+    }
+
     #[tokio::test]
     async fn removal_cleanup_deletes_an_unopened_persisted_session_index() {
         let suffix: String = rand::rng()
