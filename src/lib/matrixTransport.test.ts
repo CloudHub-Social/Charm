@@ -562,6 +562,21 @@ describe("matrix web transport", () => {
       { display_name: "Alice Here", avatar_url: "mxc://example.org/avatar" },
     ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
+    ["get_ignored_users", {}, "GET", "/api/account/ignored-users", undefined],
+    [
+      "ignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/ignore",
+      "@alice:example.org",
+    ],
+    [
+      "unignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/unignore",
+      "@alice:example.org",
+    ],
     [
       "get_account_data",
       { eventType: "social.cloudhub.charm.onboarding" },

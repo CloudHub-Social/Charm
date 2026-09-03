@@ -160,8 +160,10 @@ verification remain open; this does not establish full composer parity.
 
 The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
 existing membership, global display-name, and ignored-user IPC operations.
-Unban and display-name operations already have web transport mappings; ignored-user
-mutations still need companion HTTP routes before web parity is complete.
+The web companion exposes ignored-user reads and mutations through authenticated
+JSON routes, sharing the native SDK helpers and user-ID validation. User identifiers
+are carried in JSON bodies, not URL paths. Transport mappings and unauthenticated
+route rejection have regression coverage, pending CI and live end-to-end verification.
 Missing arguments show usage; ignore/unignore require exactly
 one user identifier. Backend validation and authorization remain authoritative.
 Failures show inline feedback without logging action arguments, and completion

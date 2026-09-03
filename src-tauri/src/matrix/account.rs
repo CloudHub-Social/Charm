@@ -107,7 +107,11 @@ pub async fn get_ignored_users(state: State<'_, MatrixState>) -> Result<Vec<Stri
 #[tauri::command]
 pub async fn ignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    ignore_user_impl(&client, &user_id).await
+}
+
+pub async fn ignore_user_impl(client: &Client, user_id: &str) -> Result<(), String> {
+    let user_id = <&UserId>::try_from(user_id).map_err(|e| e.to_string())?;
     client
         .account()
         .ignore_user(user_id)
@@ -118,7 +122,11 @@ pub async fn ignore_user(state: State<'_, MatrixState>, user_id: String) -> Resu
 #[tauri::command]
 pub async fn unignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    unignore_user_impl(&client, &user_id).await
+}
+
+pub async fn unignore_user_impl(client: &Client, user_id: &str) -> Result<(), String> {
+    let user_id = <&UserId>::try_from(user_id).map_err(|e| e.to_string())?;
     client
         .account()
         .unignore_user(user_id)

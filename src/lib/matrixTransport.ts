@@ -789,6 +789,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     }
     case "set_display_name":
       return requestJson<T>("PUT", "/api/profile/display-name", args.displayName);
+    case "get_ignored_users":
+      return requestJson<T>("GET", "/api/account/ignored-users");
+    case "ignore_user":
+      return requestJson<T>("POST", "/api/account/ignored-users/ignore", args.userId);
+    case "unignore_user":
+      return requestJson<T>("POST", "/api/account/ignored-users/unignore", args.userId);
     case "get_account_deactivate_url":
       return requestJson<T>("GET", "/api/account/deactivate-url");
     case "get_account_data":
