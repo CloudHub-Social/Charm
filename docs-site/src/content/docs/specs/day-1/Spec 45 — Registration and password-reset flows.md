@@ -330,9 +330,13 @@ without navigation. These temporary strong references are dropped before store
 relocation when adoption proceeds. Regression coverage verifies listener
 shutdown/restart, view identity, focus preservation, and duplicate prevention;
 GitHub Actions and real-client cancellation checks remain required.
-Quiescing an already-running timeline replacement before this capture remains an
-open correctness gate: an entry temporarily removed by replacement can otherwise
-be omitted from the rollback snapshot.
+Timeline creation and replacement retain shared lifecycle access through their
+pop-to-repush windows. Teardown acquires exclusive access before capture and
+clears the active client before releasing it; queued mutations revalidate their
+session before touching the cache. Regression coverage exercises a temporarily
+removed entry and requires teardown to wait for its return. This closes the
+identified capture gap in code; combined CI and real-client verification remain
+pending.
 If callback exchange already
 authenticated a device, cancellation attempts Matrix logout with the bounded
 auth-network timeout before discarding the temporary local store. Offline or

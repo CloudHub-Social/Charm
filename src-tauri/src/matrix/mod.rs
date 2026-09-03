@@ -272,6 +272,9 @@ pub struct MatrixState {
     /// check "is this room mid-transition" so it stays correct even while
     /// `timelines` itself briefly has no entry for it.
     transitioning_timelines: Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
+    /// Timeline mutations hold a reader through listener replacement; session
+    /// teardown takes the writer before capturing views and clearing the client.
+    timeline_lifecycle: tokio::sync::RwLock<()>,
     /// Per-room "most recently requested" Saved Messages jump target event
     /// id — set by `timeline::load_timeline_around_event` before it starts
     /// working, and checked by `timeline::load_focused_event_timeline`
@@ -458,6 +461,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             transitioning_timelines: Mutex::default(),
+            timeline_lifecycle: tokio::sync::RwLock::default(),
             latest_jump_target: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
@@ -629,6 +633,12 @@ impl MatrixState {
         force_live: bool,
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
+        let _lifecycle = self.timeline_lifecycle.read().await;
+        if !self.client.lock().await.as_ref().is_some_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }) {
+            return Err("session changed while opening timeline".to_string());
+        }
         // Review fix: a focused entry being force-reset to live used to have
         // its listener merely `.abort()`-ed in place (via `get_mut`, keeping
         // the entry cached) and only *awaited* once displaced by the later
@@ -864,6 +874,12 @@ impl MatrixState {
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
         expected_event_id: Option<&matrix_sdk::ruma::EventId>,
     ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
+        let _lifecycle = self.timeline_lifecycle.read().await;
+        if !self.client.lock().await.as_ref().is_some_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }) {
+            return None;
+        }
         // Review fix: this used to only `.abort()` the previous listener *in
         // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
         // stayed correct) and defer the actual `.await` of its shutdown until
@@ -1202,6 +1218,7 @@ impl MatrixState {
     /// Capture the rollback views in the same critical section that removes
     /// their listeners. A separate snapshot can miss a newly opened room.
     pub(crate) async fn drain_timelines(&self, retain_views: bool) -> Vec<TimelineRollbackEntry> {
+        let _lifecycle = self.timeline_lifecycle.write().await;
         let mut timelines = self.timelines.lock().await;
         let mut handles = Vec::new();
         let mut snapshot = Vec::new();
@@ -1216,6 +1233,9 @@ impl MatrixState {
         for handle in handles {
             let _ = handle.await;
         }
+        // Readers queued behind teardown must reject the old client before
+        // touching the cache. Keep this inside the lifecycle writer.
+        *self.client.lock().await = None;
         snapshot
     }
 
@@ -1319,13 +1339,34 @@ mod tests {
 
         for focused in [false, true] {
             let state = MatrixState::default();
+            *state.client.lock().await = Some(client.clone());
             let old_listener = tokio::spawn(std::future::pending::<()>());
             let old_abort = old_listener.abort_handle();
             state.timelines.lock().await.push(
                 room_id.to_owned(),
                 (std::sync::Arc::clone(&timeline), old_listener, focused),
             );
-            let snapshot = state.drain_timelines(true).await;
+            // Model a replacement's pop-to-repush window. Teardown must not
+            // capture the temporarily empty cache or clear its active client.
+            let replacement = state.timeline_lifecycle.read().await;
+            let entry = state
+                .timelines
+                .lock()
+                .await
+                .pop(room_id)
+                .expect("open view");
+            let drain = state.drain_timelines(true);
+            tokio::pin!(drain);
+            tokio::select! {
+                biased;
+                _ = &mut drain => panic!("drain passed an in-flight replacement"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(state.client.lock().await.is_some());
+            state.timelines.lock().await.push(room_id.to_owned(), entry);
+            drop(replacement);
+            let snapshot = drain.await;
+            assert!(state.client.lock().await.is_none());
             assert_eq!(
                 snapshot.len(),
                 1,
@@ -1339,6 +1380,7 @@ mod tests {
 
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let mut started_tx = Some(started_tx);
+            *state.client.lock().await = Some(client.clone());
             state
                 .restore_timeline_snapshot(snapshot, |restored_room, restored_timeline| {
                     assert_eq!(restored_room, room_id);
