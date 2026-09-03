@@ -23,8 +23,13 @@ export function useVoiceRecorder() {
     timer: ReturnType<typeof setInterval>;
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
+  const preparing = useRef<{ stream: MediaStream; context: AudioContext | null } | null>(null);
 
   const releaseCapture = useCallback(() => {
+    const pending = preparing.current;
+    preparing.current = null;
+    pending?.stream.getTracks().forEach((track) => track.stop());
+    if (pending?.context) void pending.context.close().catch(() => {});
     const capture = active.current;
     active.current = null;
     if (!capture) return;
@@ -75,11 +80,14 @@ export function useVoiceRecorder() {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      // Capture ownership begins before the next await: disposal must stop
+      // the microphone even if the browser never resolves audio resume.
+      preparing.current = { stream, context: null };
       context = new AudioContext();
+      preparing.current.context = context;
       await context.resume();
       if (epoch.current !== attempt) {
-        stream.getTracks().forEach((track) => track.stop());
-        await context.close();
+        // The superseding discard/unmount already released these resources.
         return;
       }
       const analyser = context.createAnalyser();
@@ -153,11 +161,10 @@ export function useVoiceRecorder() {
         if (elapsed >= MAX_DURATION_MS && recorder.state !== "inactive") recorder.stop();
       }, 100);
       active.current = { recorder, stream, context, timer };
+      preparing.current = null;
       recorder.start(250);
       setPhase("recording");
     } catch (cause) {
-      stream?.getTracks().forEach((track) => track.stop());
-      if (context) void context.close().catch(() => {});
       if (epoch.current !== attempt) return;
       releaseCapture();
       setPhase("idle");

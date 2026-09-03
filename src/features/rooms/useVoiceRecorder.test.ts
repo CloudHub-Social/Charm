@@ -29,6 +29,7 @@ class FakeRecorder {
 describe("useVoiceRecorder", () => {
   const stopTrack = vi.fn();
   const closeContext = vi.fn().mockResolvedValue(undefined);
+  const resumeContext = vi.fn();
   const getUserMedia = vi.fn();
   const createObjectURL = vi.fn(() => "blob:private-preview");
   const revokeObjectURL = vi.fn();
@@ -39,6 +40,7 @@ describe("useVoiceRecorder", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
     FakeRecorder.instances = [];
     getUserMedia.mockResolvedValue(stream);
+    resumeContext.mockResolvedValue(undefined);
     vi.stubGlobal(
       "navigator",
       Object.create(navigator, {
@@ -49,7 +51,7 @@ describe("useVoiceRecorder", () => {
     vi.stubGlobal(
       "AudioContext",
       class {
-        resume = vi.fn().mockResolvedValue(undefined);
+        resume = resumeContext;
         close = closeContext;
         createAnalyser() {
           return {
@@ -165,6 +167,32 @@ describe("useVoiceRecorder", () => {
     expect(closeContext).toHaveBeenCalledOnce();
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("releases the microphone immediately while audio resume is still pending", async () => {
+    let resume!: () => void;
+    resumeContext.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resume = resolve;
+        }),
+    );
+    const { result, unmount } = renderHook(() => useVoiceRecorder());
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+    });
+    expect(resumeContext).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
+    unmount();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(closeContext).toHaveBeenCalledOnce();
+    await act(async () => {
+      resume();
+      await starting;
+    });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
   });
 
   it("shows actionable permission denial without opening capture", async () => {
