@@ -346,6 +346,12 @@ Surfaces changed:
   must tolerate `None`.
 - **Logout store retention**: plain logout may retain `matrix_store` encrypted at rest,
   while deleting the current device's separately encrypted message-search index.
+  Logout and deactivation revalidate their requested account/device after acquiring
+  login exclusion, rejecting stale actions before revocation or deletion. Deactivation
+  holds exclusion through the remote request and local cleanup; a UIA challenge
+  releases it before the next user-input round. This prevents an in-flight account
+  action from clearing a replacement session. The new concurrency regression is
+  pending CI verification.
   The default-off Spec 28 account-management control "Forget local data" requires typed
   confirmation plus a native system confirmation, closes the session, and removes every retained matrix-sdk store,
   keychain passphrase, and encrypted search index for that account on this device. It

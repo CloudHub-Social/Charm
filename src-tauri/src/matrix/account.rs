@@ -226,17 +226,28 @@ enum SearchCleanupScope {
 /// store — see Spec 08's "Logout store retention": this is a sign-out, not a
 /// device wipe, so a later re-login onto the same account reuses the
 /// existing store instead of starting cold.
-async fn clear_local_session(
-    app: &AppHandle,
-    state: &State<'_, MatrixState>,
-    user_id: &str,
-    search_cleanup_scope: SearchCleanupScope,
-) -> Result<(), String> {
-    // Serialize the durable sign-out intent and credential deletion against
-    // login completion. A newly committed session clears this marker only
-    // after its SDK store and credential pair are both installed.
-    let _completion_guard = state.login_completion_lock.lock().await;
-    clear_local_session_locked(app, state, user_id, search_cleanup_scope).await
+async fn begin_session_teardown(
+    state: &MatrixState,
+) -> Result<(tokio::sync::OwnedMutexGuard<()>, Client), String> {
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let guard = std::sync::Arc::clone(&state.login_completion_lock)
+        .lock_owned()
+        .await;
+    let active = state.require_client().await?;
+    require_confirmed_session(
+        user_id.as_str(),
+        device_id.as_str(),
+        active.user_id().map(|id| id.as_str()),
+        active.device_id().map(|id| id.as_str()),
+    )
+    .map_err(|_| "session changed; retry the account action".to_string())?;
+    Ok((guard, client))
 }
 
 /// Caller holds the login completion lock through teardown and any device wipe.
@@ -410,7 +421,9 @@ async fn clear_local_session_locked(
 /// drops the client so a relaunch doesn't auto-restore.
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
-    let client = state.require_client().await?;
+    // Revalidate the requested target after excluding login completion so an
+    // old request cannot clear a replacement client.
+    let (_completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -425,7 +438,7 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         }
     });
 
-    clear_local_session(
+    clear_local_session_locked(
         &app,
         &state,
         user_id.as_str(),
@@ -871,7 +884,10 @@ pub async fn deactivate_account(
     state: State<'_, MatrixState>,
     password: Option<String>,
 ) -> Result<(), UiaCommandError> {
-    let client = state.require_client().await?;
+    // Remote deactivation and local deletion form one session transition.
+    // A UIA challenge returns from this call (releasing the lock); we never
+    // retain it while the user is entering a password between requests.
+    let (_completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -885,7 +901,7 @@ pub async fn deactivate_account(
 
     let account_key = persistence::account_key(user_id.as_str());
     let marker_error = persistence::mark_cancelled_account_cleanup(&app, &account_key).err();
-    let teardown_result = clear_local_session(
+    let teardown_result = clear_local_session_locked(
         &app,
         &state,
         user_id.as_str(),
@@ -927,6 +943,26 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn teardown_rejects_a_session_change_while_waiting_for_login_exclusion() {
+        let state = MatrixState::default();
+        let server = MatrixMockServer::new().await;
+        let original = server.client_builder().build().await;
+        *state.client.lock().await = Some(original);
+        let login = state.login_completion_lock.lock().await;
+        let teardown = begin_session_teardown(&state);
+        tokio::pin!(teardown);
+        tokio::select! {
+            biased;
+            _ = &mut teardown => panic!("teardown read the client before login completed"),
+            () = std::future::ready(()) => {}
+        }
+        *state.client.lock().await = None;
+        drop(login);
+        assert!(teardown.await.is_err());
+        assert!(state.login_completion_lock.try_lock().is_ok());
+    }
 
     #[test]
     fn forget_local_data_requires_an_explicit_confirmation_bit() {
