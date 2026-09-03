@@ -25,13 +25,14 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
-vi.mock("@/lib/matrixTransport", () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-}));
-
 beforeEach(() => {
   localStorage.clear();
   vi.resetModules();
+  // Re-register after resetting the module graph: reconciliation imports the
+  // transport lazily, including while initialization and a write overlap.
+  vi.doMock("@/lib/matrixTransport", () => ({
+    invoke: (...args: unknown[]) => mocks.invoke(...args),
+  }));
   mocks.isTauri.mockReturnValue(false);
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   mocks.invoke.mockReset().mockResolvedValue(undefined);
@@ -162,6 +163,7 @@ describe("feature-flag client", () => {
     });
     await Promise.all([initialization, update]);
 
+    expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
     expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
     expect(mod.getFlag("canary")).toBe(true);
   });
