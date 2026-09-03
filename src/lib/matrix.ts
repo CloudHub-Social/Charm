@@ -1,4 +1,5 @@
 import type { BadgeState } from "@bindings/BadgeState";
+import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 import type { BookmarkEntry } from "@bindings/BookmarkEntry";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { DndSnapshot } from "@bindings/DndSnapshot";
@@ -731,7 +732,7 @@ export async function sendAttachment(
   caption?: string,
   stripExifEnabled = true,
   signal?: AbortSignal,
-  voice?: import("@bindings/VoiceMessageMetadata").VoiceMessageMetadata,
+  voice?: VoiceMessageMetadata,
 ): Promise<void> {
   let recording: { mime_type: string; bytes: number[] } | undefined;
   if (!isWebBuild() && typeof filePath !== "string") {

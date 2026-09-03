@@ -118,7 +118,10 @@ export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
               preload="metadata"
               src={recorder.preview.url}
               aria-label="Voice message preview"
-            />
+            >
+              {/* As with received voice audio, no transcript is generated or uploaded. */}
+              <track kind="captions" />
+            </audio>
             <span>{duration}</span>
             <button
               type="button"
