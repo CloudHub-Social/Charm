@@ -171,6 +171,11 @@ homeservers. The parity audit (2026-07-13) found:
   push-session restore until the encrypted store and credentials are removed.
   Cleanup failure can therefore delay restoration but cannot resurrect a cancelled
   account.
+- During startup account discovery, an unreadable cancellation marker excludes
+  only its associated account. Other readable, non-cancelled account directories
+  remain eligible; a marker lookup failure must neither make the affected account
+  restorable nor abort discovery of every account. Root-directory enumeration
+  failures still propagate because no trustworthy account inventory is available.
 - The companion persists enough pending-store ownership metadata to sweep
   abandoned unauthenticated crypto-store directories on startup after a crash.
   Restart tests interrupt registration after store creation and verify that the
