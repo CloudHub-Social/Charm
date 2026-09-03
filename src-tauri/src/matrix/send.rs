@@ -749,6 +749,7 @@ pub async fn send_attachment(
     caption: Option<String>,
     txn_id: String,
     strip_exif_enabled: bool,
+    voice: Option<VoiceMessageMetadata>,
 ) -> Result<(), String> {
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let operation_id = ipc_operation_id(&request);
@@ -877,7 +878,10 @@ pub async fn send_attachment(
         let txn_id_string = txn_id.clone();
         let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = txn_id.into();
 
-        let info = attachment_info_for(&mime, &data, total_bytes);
+        let info = match voice.as_ref() {
+            Some(metadata) => voice_attachment_info(&mime, total_bytes, metadata)?,
+            None => attachment_info_for(&mime, &data, total_bytes),
+        };
 
         let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
         if let Some(caption) = caption {
