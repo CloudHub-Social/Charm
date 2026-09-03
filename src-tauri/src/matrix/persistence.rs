@@ -603,6 +603,51 @@ pub fn discard_temp_login_store(app: &AppHandle, temp_key: &str) -> Result<(), S
     Ok(())
 }
 
+/// Fallible cleanup for a fresh session rejected before relocation.
+pub(super) fn discard_vetoed_temp_login_store(
+    app: &AppHandle,
+    temp_key: &str,
+) -> Result<(), String> {
+    discard_vetoed_temp_store_at(&matrix_store_root(app)?, temp_key, || {
+        let result = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key))
+            .and_then(|entry| entry.delete_credential());
+        match result {
+            Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+            Err(_) => Err("temporary store passphrase removal failed".to_string()),
+        }
+    })
+}
+
+fn discard_vetoed_temp_store_at(
+    root: &Path,
+    temp_key: &str,
+    remove_secret: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    validate_temp_login_key(temp_key)?;
+    let path = root.join(temp_key);
+    let directory_result = match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("temporary store removal failed".to_string()),
+    };
+    // Attempt both even if one fails, but never report full cleanup unless
+    // both the encrypted directory and its passphrase are gone.
+    let secret_result = remove_secret();
+    directory_result?;
+    secret_result
+}
+
+fn validate_temp_login_key(key: &str) -> Result<(), String> {
+    match key.strip_prefix(TEMP_STORE_PREFIX) {
+        Some(suffix)
+            if suffix.len() == 16 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()) =>
+        {
+            Ok(())
+        }
+        _ => Err("invalid temporary login store key".to_string()),
+    }
+}
+
 /// Removes a newly-relocated account store and its passphrase after an
 /// authentication completion loses to cancellation. Unlike
 /// [`clear_session`], this is intentionally destructive: the session was
@@ -962,6 +1007,9 @@ pub fn relocate_store_and_save_oauth_session(
 /// a given failure safe or not.
 pub struct RelocationFailure {
     pub message: String,
+    /// The cancellation veto rejected this attempt before touching its temp store.
+    /// Callers may revoke the fresh session and discard only that temp store.
+    pub cancelled_cleanup_veto: bool,
     /// `true` if the account's on-disk store ended up in a state consistent
     /// with whatever a previously-active client already has open: either
     /// nothing was touched (the failure happened before any existing store
@@ -978,6 +1026,7 @@ impl RelocationFailure {
     fn safe(message: impl ToString) -> Self {
         Self {
             message: message.to_string(),
+            cancelled_cleanup_veto: false,
             safe_to_resume_previous: true,
         }
     }
@@ -1059,6 +1108,7 @@ fn relocate_store_at_locked_with(
     if cancelled_account_cleanup_pending_at(root, account_key).unwrap_or(true) {
         return Err(RelocationFailure {
             message: "Previous cancelled login cleanup is pending. Restart Charm to retry cleanup before signing in to this account.".to_string(),
+            cancelled_cleanup_veto: true,
             safe_to_resume_previous: false,
         });
     }
@@ -1219,6 +1269,7 @@ fn relocate_store_at_locked_with(
         }
         RelocationFailure {
             message: err,
+            cancelled_cleanup_veto: false,
             safe_to_resume_previous: fully_restored,
         }
     };
@@ -1748,6 +1799,43 @@ mod tests {
         let temp = temp_store_key();
         assert!(temp.starts_with(TEMP_STORE_PREFIX));
         assert_ne!(temp, account_key(TEST_MXID_A));
+        assert!(validate_temp_login_key(&temp).is_ok());
+    }
+
+    #[test]
+    fn veto_cleanup_attempts_secret_removal_when_directory_removal_fails() {
+        let root = ScratchRoot::new("veto-directory-failure");
+        let key = temp_store_key();
+        std::fs::write(root.0.join(&key), "not a directory").unwrap();
+        let called = std::cell::Cell::new(false);
+        let result = discard_vetoed_temp_store_at(&root.0, &key, || {
+            called.set(true);
+            Ok(())
+        });
+        assert!(called.get());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn veto_cleanup_reports_secret_failure_after_directory_removal() {
+        let root = ScratchRoot::new("veto-secret-failure");
+        let key = temp_store_key();
+        let path = store_path_at(&root.0, &key).unwrap();
+        let result = discard_vetoed_temp_store_at(&root.0, &key, || Err("secret failed".into()));
+        assert!(!path.exists());
+        assert_eq!(result, Err("secret failed".into()));
+    }
+
+    #[test]
+    fn veto_cleanup_rejects_account_keys_and_path_traversal() {
+        for key in [
+            account_key(TEST_MXID_A),
+            "tmp-../../outside".into(),
+            "tmp-".into(),
+            "/tmp/elsewhere".into(),
+        ] {
+            assert!(validate_temp_login_key(&key).is_err());
+        }
     }
 
     /// Exercises the real OS keychain, not a mock — this is the actual
@@ -2112,6 +2200,7 @@ mod tests {
             panic!("relocation must reject pending cancellation cleanup");
         };
         assert!(!failure.safe_to_resume_previous);
+        assert!(failure.cancelled_cleanup_veto);
         assert!(old_store.join("old").exists());
         assert!(temp_store.join("new").exists());
         assert!(marker.exists());

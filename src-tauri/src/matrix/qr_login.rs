@@ -240,6 +240,23 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     &homeserver_url,
                     &session,
                 ) {
+                    if e.cancelled_cleanup_veto {
+                        super::auth::discard_vetoed_login(&app, client, &temp_key).await;
+                        {
+                            let mut pending_key = state
+                                .pending_qr_temp_store_key
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            if pending_key.as_deref() == Some(temp_key.as_str()) {
+                                *pending_key = None;
+                            }
+                        }
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error { message: e.into() },
+                        );
+                        return;
+                    }
                     // See auth.rs's identical safe_to_resume_previous check.
                     if e.safe_to_resume_previous {
                         if let Some(previous_client) = previous_client {

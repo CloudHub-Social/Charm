@@ -95,6 +95,107 @@ const AUTH_MAILS_PER_ADDRESS: usize = 3;
 const AUTH_MAILS_PER_PROCESS: usize = 12;
 const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Retire an authenticated attempt rejected before its store was relocated.
+pub(super) async fn discard_vetoed_login(app: &AppHandle, client: Client, temp_key: &str) {
+    let revoke = async move {
+        if client.oauth().full_session().is_some() {
+            client.oauth().logout().await.map_err(|_| ())
+        } else {
+            client
+                .matrix_auth()
+                .logout()
+                .await
+                .map(|_| ())
+                .map_err(|_| ())
+        }
+    };
+    let (revoked, cleaned) = finish_vetoed_login(
+        revoke,
+        || persistence::discard_vetoed_temp_login_store(app, temp_key),
+        AUTH_NETWORK_TIMEOUT,
+    )
+    .await;
+    if !revoked {
+        tracing::warn!("fresh login revocation failed after cancellation cleanup veto");
+    }
+    if !cleaned {
+        tracing::warn!("temporary login cleanup failed after cancellation cleanup veto");
+    }
+}
+
+async fn finish_vetoed_login(
+    revoke: impl std::future::Future<Output = Result<(), ()>>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+    timeout: std::time::Duration,
+) -> (bool, bool) {
+    // The revocation future owns the fresh client. Completion or timeout drops
+    // it before attempting to remove its open SQLite store.
+    let revoked = matches!(tokio::time::timeout(timeout, revoke).await, Ok(Ok(())));
+    let cleaned = cleanup().is_ok();
+    (revoked, cleaned)
+}
+
+#[cfg(test)]
+mod vetoed_login_tests {
+    use super::finish_vetoed_login;
+    use std::{cell::Cell, time::Duration};
+
+    #[tokio::test]
+    async fn cleanup_runs_after_revocation_error() {
+        let cleaned = Cell::new(false);
+        let outcome = finish_vetoed_login(
+            async { Err(()) },
+            || {
+                cleaned.set(true);
+                Ok(())
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(cleaned.get());
+        assert_eq!(outcome, (false, true));
+    }
+
+    #[tokio::test]
+    async fn timeout_drops_fresh_owner_before_cleanup() {
+        struct Owner<'a>(&'a Cell<bool>);
+        impl Drop for Owner<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Cell::new(false);
+        let owner = Owner(&dropped);
+        let revoke = async move {
+            let _owner = owner;
+            std::future::pending::<Result<(), ()>>().await
+        };
+        let outcome = finish_vetoed_login(
+            revoke,
+            || {
+                assert!(dropped.get());
+                Ok(())
+            },
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(outcome, (false, true));
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_is_not_reported_as_success() {
+        assert_eq!(
+            finish_vetoed_login(
+                async { Ok(()) },
+                || Err("cleanup failed".into()),
+                Duration::from_secs(1)
+            )
+            .await,
+            (true, false)
+        );
+    }
+}
+
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
     pub(crate) store_key: String,
@@ -322,6 +423,10 @@ pub async fn login(
             &homeserver_url,
             &session,
         ) {
+            if e.cancelled_cleanup_veto {
+                discard_vetoed_login(&app, client, &temp_key).await;
+                return Err(e.into());
+            }
             // Only resume `previous_client` if relocation's own rollback left
             // the account's on-disk store consistent with it — otherwise doing
             // so would paper over a half-restored store neither this client nor
@@ -802,6 +907,10 @@ async fn finish_registration(
         &homeserver_url,
         &session,
     ) {
+        if e.cancelled_cleanup_veto {
+            discard_vetoed_login(&app, client, &temp_key).await;
+            return Err(e.into());
+        }
         // See `login`'s identical safe_to_resume_previous check.
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {
@@ -3815,6 +3924,10 @@ pub async fn complete_sso_login(
         &homeserver_url,
         &session,
     ) {
+        if e.cancelled_cleanup_veto {
+            discard_vetoed_login(&app, client, &pending.store_key).await;
+            return Err(e.into());
+        }
         // See `login`'s identical safe_to_resume_previous check.
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {

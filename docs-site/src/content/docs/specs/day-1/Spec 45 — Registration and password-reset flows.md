@@ -179,6 +179,15 @@ homeservers. The parity audit (2026-07-13) found:
 - Marker creation must not follow or truncate existing symlinks. If recording
   the marker fails, cleanup is still attempted; failure of both operations is
   reported rather than treated as durable cancellation.
+- A fresh password, registration, SSO, or QR session rejected by the pending-cleanup
+  relocation veto is never adopted. Its authentication-specific logout is attempted
+  with a bounded timeout, then its client is released before removing only its
+  validated temporary store and passphrase. Both removals are attempted; failures
+  remain failures. Revocation failure cannot prove the server-side session is gone,
+  and is recorded without tokens, account IDs, or raw service errors. No prior
+  account store is removed by this rejection cleanup. Regression coverage includes
+  failed revocation, timeout releasing the client before cleanup, and invalid temp
+  keys. Implementation and tests still require CI verification.
 - During startup account discovery, an unreadable cancellation marker excludes
   only its associated account. Other readable, non-cancelled account directories
   remain eligible; a marker lookup failure must neither make the affected account
