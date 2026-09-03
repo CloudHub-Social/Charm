@@ -153,6 +153,29 @@ pub struct PendingAuthStore {
     capacity: Arc<Semaphore>,
 }
 
+/// Admission has no payload or expiry task yet. A disconnected request must
+/// still remove its exact cancellation entry while waiting for capacity.
+struct AdmissionCleanup {
+    store: PendingAuthStore,
+    attempt_id: String,
+    cancellation: CancellationToken,
+    armed: bool,
+}
+
+impl Drop for AdmissionCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cancellation.cancel();
+        let store = self.store.clone();
+        let attempt_id = self.attempt_id.clone();
+        tokio::spawn(async move {
+            store.cancel_token(&attempt_id).await;
+        });
+    }
+}
+
 /// Server-derived browser ownership, including both pre-auth cookie namespaces.
 #[derive(Clone)]
 pub struct AuthOwner {
@@ -192,6 +215,12 @@ impl PendingAuthStore {
         attempt_id: String,
         cancellation: CancellationToken,
     ) -> Result<OwnedSemaphorePermit, String> {
+        let mut cleanup = AdmissionCleanup {
+            store: self.clone(),
+            attempt_id: attempt_id.clone(),
+            cancellation: cancellation.clone(),
+            armed: true,
+        };
         let owner = owner.into();
         let (completed, capacity, replacing_in_flight) = {
             let _transition = self.transitions.lock().await;
@@ -237,12 +266,13 @@ impl PendingAuthStore {
             }
             result => result,
         };
-        if capacity.is_err() {
+        if capacity.is_err() || cancellation.is_cancelled() {
             self.cancel_token(&attempt_id).await;
         }
         if cancellation.is_cancelled() && capacity.is_ok() {
             return Err("authentication attempt was superseded".to_string());
         }
+        cleanup.armed = false;
         capacity
     }
 
@@ -2200,6 +2230,53 @@ mod tests {
         assert!(store.cancellations.lock().await.contains_key("replacement"));
         assert!(store.reserve_capacity().is_err());
         drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn dropped_capacity_wait_removes_its_admission_entry() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let _old_permit = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let mut waiting = Box::pin(store.admit_owner_attempt(
+            "browser".to_owned(),
+            "disconnected".to_owned(),
+            cancellation.clone(),
+        ));
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("replacement must wait for capacity"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store
+            .cancellations
+            .lock()
+            .await
+            .contains_key("disconnected"));
+        drop(waiting);
+        assert!(cancellation.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while store
+                .cancellations
+                .lock()
+                .await
+                .contains_key("disconnected")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("disconnected admission must be removed without an expiry task");
+        assert!(store.reserve_capacity().is_err());
     }
 
     #[tokio::test]

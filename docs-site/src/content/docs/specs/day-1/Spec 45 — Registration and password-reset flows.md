@@ -316,6 +316,11 @@ release their permits inside that transition, so a browser can replace its own
 stored attempt even at the global limit. If the cancelled attempt still holds
 its permit in an in-flight task, its replacement waits up to five seconds for
 capacity outside the transition lock, and remains cancellable by a newer flow.
+Admission owns a cancellation-on-drop guard before its first await. Disconnecting
+while waiting for capacity cancels and removes that exact attempt entry without
+depending on the later expiry task; it does not release another flow's permit.
+Regression coverage drops a saturated-capacity waiter and checks bounded cleanup,
+pending GitHub Actions verification.
 Fresh owners still fail immediately at capacity. A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity
