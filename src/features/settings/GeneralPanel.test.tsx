@@ -7,8 +7,7 @@ const isNotificationPermissionGranted = vi.fn();
 const requestNotificationPermission = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
-  isNotificationPermissionGranted: (...args: unknown[]) =>
-    isNotificationPermissionGranted(...args),
+  isNotificationPermissionGranted: (...args: unknown[]) => isNotificationPermissionGranted(...args),
   requestNotificationPermission: (...args: unknown[]) => requestNotificationPermission(...args),
 }));
 

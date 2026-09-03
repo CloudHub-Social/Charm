@@ -1,9 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import {
-  isNotificationPermissionGranted,
-  requestNotificationPermission,
-} from "@/lib/matrix";
+import { isNotificationPermissionGranted, requestNotificationPermission } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const NOTIFICATION_PERMISSION_QUERY_KEY = ["settings", "notification-permission"];

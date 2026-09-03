@@ -45,8 +45,10 @@ impl super::NotificationTransport for ApnsTransport {
             app_id: IOS_APP_ID.to_string(),
             kind: PusherKind::Apns,
         };
-        *self.endpoint.lock().unwrap_or_else(|error| error.into_inner()) =
-            Some(endpoint.clone());
+        *self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(endpoint.clone());
         Ok(endpoint)
     }
 
@@ -56,7 +58,10 @@ impl super::NotificationTransport for ApnsTransport {
             .unregister_for_push_notifications()
             .await
             .map_err(|error| format!("APNs unregister failed: {error}"))?;
-        *self.endpoint.lock().unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         Ok(())
     }
 

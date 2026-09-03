@@ -31,8 +31,7 @@ vi.mock("@/lib/matrix", () => ({
   onPushStatus: (...args: unknown[]) => onPushStatus(...args),
   registerPush: (...args: unknown[]) => registerPush(...args),
   unregisterPush: (...args: unknown[]) => unregisterPush(...args),
-  requestNotificationPermission: (...args: unknown[]) =>
-    requestNotificationPermission(...args),
+  requestNotificationPermission: (...args: unknown[]) => requestNotificationPermission(...args),
 }));
 
 beforeEach(() => {

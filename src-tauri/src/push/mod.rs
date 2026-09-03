@@ -809,12 +809,9 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         return Ok(());
     }
 
-    let show_result = shell::show_native_notification(
-        app,
-        notification.title.clone(),
-        notification.body.clone(),
-    )
-    .await;
+    let show_result =
+        shell::show_native_notification(app, notification.title.clone(), notification.body.clone())
+            .await;
     if let Err(e) = show_result {
         app.state::<MatrixState>()
             .forget_notified(&notification.event_id);
