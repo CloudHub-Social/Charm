@@ -4,6 +4,7 @@
 
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +12,7 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
     verification, MatrixState,
 };
 
@@ -784,6 +785,133 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     spawn_sync_task_with_presence(app, client, true);
 }
 
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    matches!(
+        error.client_api_error_kind(),
+        Some(ErrorKind::UnknownToken(_))
+    )
+}
+
+async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
+    let (Some(user_id), Some(device_id)) = (client.user_id(), client.device_id()) else {
+        return;
+    };
+    let account_key = persistence::account_key(user_id.as_str());
+    let state = app.state::<MatrixState>();
+    let completion_guard = std::sync::Arc::clone(&state.login_completion_lock)
+        .lock_owned()
+        .await;
+    let is_active = state.client.lock().await.as_ref().is_some_and(|active| {
+        active.user_id() == client.user_id() && active.device_id() == client.device_id()
+    });
+    if !is_active {
+        return;
+    }
+
+    // Revoke access before waiting on disk work. Generation invalidation also
+    // prevents an in-flight backfill from reopening this session's index.
+    *state.client.lock().await = None;
+    search::reset_index_lifecycle(&state);
+    let tombstone_marked = persistence::mark_logout_tombstone(app, &account_key).is_ok();
+    let mut credentials_cleared = false;
+    if tombstone_marked {
+        let matrix_cleared = persistence::clear_session(&account_key).is_ok();
+        let oauth_cleared = persistence::clear_oauth_session(&account_key).is_ok();
+        credentials_cleared = matrix_cleared && oauth_cleared;
+    }
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let cleanup_account_key = account_key.clone();
+    let cleanup_device_id = device_id.to_string();
+    let app_data_dir = app.path().app_data_dir();
+    let cleanup_result = run_locked_cleanup(completion_guard, move || {
+        // Taking and dropping the slot closes SQLite even if path resolution
+        // failed. Windows cannot reliably unlink an open database. Acquire the
+        // potentially contended index mutex only on a blocking worker.
+        let active = search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(active);
+        app_data_dir.is_ok_and(|directory| {
+            search::SearchIndex::delete_for_source(
+                &directory,
+                &cleanup_account_key,
+                &cleanup_device_id,
+            )
+            .is_ok()
+        })
+    })
+    .await;
+    let Ok((_completion_guard, index_cleared)) = cleanup_result else {
+        // A panicked worker has released its lock. Do not clear another
+        // session's state after that point; the durable marker owns retries.
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "worker_failed"
+        );
+        return;
+    };
+    if tombstone_marked && credentials_cleared && index_cleared {
+        let _ = persistence::clear_logout_tombstone(app, &account_key);
+    }
+
+    state.clear_timelines().await;
+    state.clear_pinned_event_cache().await;
+    *state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    *state
+        .push_status
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = crate::push::PushStatus::default();
+    let _ = shell::apply_native_badge(app, 0);
+    let _ = app.emit("session:invalidated", ());
+}
+
+/// Keep replacement login excluded until blocking work really finishes, even
+/// when the async caller is aborted. Return the guard so subsequent teardown
+/// remains serialized too, without an unlock/relock window.
+async fn run_locked_cleanup<T, F>(
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    cleanup: F,
+) -> Result<(tokio::sync::OwnedMutexGuard<()>, T), tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let result = cleanup();
+        (guard, result)
+    })
+    .await
+}
+
+#[cfg(test)]
+mod cleanup_cancellation_tests {
+    #[tokio::test]
+    async fn aborted_caller_cannot_release_login_before_cleanup_finishes() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::clone(&lock).lock_owned().await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(super::run_locked_cleanup(guard, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.await.unwrap();
+        caller.abort();
+        let caller_result = caller.await;
+        let replacement_blocked = lock.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        assert!(caller_result.unwrap_err().is_cancelled());
+        assert!(replacement_blocked);
+        let _replacement = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock())
+            .await
+            .expect("cleanup must release login after finishing");
+    }
+}
+
 /// The sync-task-spawning half of [`spawn_sync_loop`], without the
 /// `register_*_handler` calls — use this (not `spawn_sync_loop`) to *resume*
 /// a `Client` that already had those registered by an earlier
@@ -892,6 +1020,9 @@ fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: 
         {
             Ok(response) => response,
             Err(e) => {
+                if is_terminal_auth_error(&e) {
+                    teardown_terminal_auth_session(&app, &client).await;
+                }
                 let _ = app.emit(
                     "sync:state",
                     SyncStateEvent::Error {
@@ -1031,6 +1162,21 @@ fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: 
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        tracing::error!(
+                            command = "sync_loop",
+                            status = "terminal_authentication_error",
+                            "Sync session was revoked"
+                        );
+                        teardown_terminal_auth_session(&app, &client).await;
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         tracing::error!(

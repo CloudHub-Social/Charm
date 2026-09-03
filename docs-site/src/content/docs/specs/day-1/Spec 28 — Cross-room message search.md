@@ -32,11 +32,11 @@ and its results so the input never describes an empty result pane. Repository
 evidence includes SQLCipher marker scans, no-follow filesystem tests, edit/redaction/
 cursor/query tests, component coverage, workspace compilation, and a Playwright
 search-navigation journey. Real-homeserver verification remains operational
-evidence rather than a repository correctness gate. Filesystem/backup hardening,
-durable overflow recovery, and kill-switch restart reconciliation remain tracked in
+evidence rather than a repository correctness gate. Filesystem/backup hardening and
+durable overflow recovery remain tracked in
 [#415](https://github.com/CloudHub-Social/Charm/issues/415),
-[#419](https://github.com/CloudHub-Social/Charm/issues/419), and
-[#417](https://github.com/CloudHub-Social/Charm/issues/417).
+and [#419](https://github.com/CloudHub-Social/Charm/issues/419). Kill-switch
+reconciliation now survives renderer and process restarts.
 
 **Workstream:** shipped daily-driver parity; bounded resilience follow-ups remain.
 
@@ -135,8 +135,11 @@ connection: the SDK owns that schema and migration lifecycle.
   in provenance; later edits and replay must remain suppressed by that tombstone.
   Redacting an edit removes that candidate and atomically recomputes the row from
   the preceding valid edit or original content only when the original is not
-  tombstoned. A late edit/redaction, backfill, or replay therefore converges without
-  retaining or resurrecting stale or redacted text.
+  tombstoned. An edit that arrives before its original remains encrypted,
+  non-visible provenance until the original establishes the sender; forged-sender
+  candidates are then removed before any row becomes visible. A late
+  edit/redaction, backfill, or replay therefore converges without retaining or
+  resurrecting stale or redacted text.
 - Backfill: on first login, and on the first index open after the feature flag
   becomes enabled for an already-active account/session, index whatever history
   is already locally available in the SDK's store;
@@ -220,8 +223,14 @@ connection: the SDK owns that schema and migration lifecycle.
   threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
   through a bounded per-session queue. Overflow never retains unbounded decrypted
   text: it drops the batch, marks the index incomplete, and discloses that state on
-  every result page. Durable non-content checkpoints and automatic overflow
-  reconciliation are tracked in [#419](https://github.com/CloudHub-Social/Charm/issues/419).
+  every result page. Desktop/mobile also writes an empty per-device directory
+  checkpoint when work is dropped or fails. The checkpoint contains no message
+  plaintext, survives restart, and clears only after a complete local event-cache
+  scan and its FIFO completion marker both succeed. A later search claims one
+  bounded retry while results remain incomplete. Web indexes are session-ephemeral,
+  so a later search similarly coalesces one local-cache rebuild after failure and a
+  process restart creates a fresh incomplete index; neither transport invokes
+  homeserver search or forces history pagination for reconciliation.
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
   eligible events to the indexer even when that room has never been opened. The
@@ -311,11 +320,14 @@ without the user knowing which is which.
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off. An enabled-to-disabled transition first closes the active
   handle, securely removes every retained Charm-owned account/device encrypted
-  database and its database sidecars on the next desktop sync, and records no
-  reusable quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
-  block that path from reopening. Persisting kill-switch transition intent before
-  renderer invocation and pre-session disabled-startup reconciliation remain in
-  [#417](https://github.com/CloudHub-Social/Charm/issues/417).
+  database and its database sidecars immediately, and records no reusable
+  quarantine. A marker outside the bounded search root durably records destructive
+  cleanup intent before deletion begins. Native startup reconciles disabled and
+  previously failed cleanup before session restoration; renderer startup also
+  reconciles disabled-to-disabled state. Labs and OFREP writes are serialized so a
+  re-enable cannot overtake cleanup, and every open, write, and query fails closed
+  while the marker remains. The marker contains no account, room, event, or message
+  identifier.
 - Because this flag controls a sensitive derived-content index, a trusted remote
   `false` is a hard veto over any persisted Labs/local override. The desktop veto
   prevents queries immediately and triggers the cleanup path above.

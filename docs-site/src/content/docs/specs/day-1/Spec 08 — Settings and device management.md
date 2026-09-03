@@ -238,7 +238,10 @@ Surfaces changed:
 1. A **Log out** control signs the user out: server-side session revoked (best effort),
    both keychain entries (`session` and `oauth-session`) cleared, `MatrixState.client`
    set to `None`, and the UI returns to `LoginScreen`. A subsequent app relaunch does
-   **not** auto-restore (`try_restore_session` returns `None`).
+   **not** auto-restore (`try_restore_session` returns `None`). Durable primary/fallback
+   tombstones suppress restore until interrupted credential and encrypted-search cleanup
+   finishes; a newly committed login clears the tombstones only after the store/session
+   pair is installed.
 2. Logout succeeds and clears local session even when the server-side revoke call fails
    (offline), and shows no false error.
 3. Editing display name persists via `set_display_name` and is reflected after refetch;
@@ -246,7 +249,8 @@ Surfaces changed:
 4. Password change with correct current password succeeds; a UIA/`M_FORBIDDEN` challenge
    surfaces a clear "re-enter your password" prompt rather than a raw error.
 5. Deactivate account, after double-confirm, deactivates server-side and tears down the
-   local session identically to logout.
+   local session identically to logout, then removes the retained SDK store and records
+   account-wide retry intent before any fallible local cleanup.
 6. Devices panel lists all of the account's devices with display name, last-seen, a
    trust badge, and the current device clearly marked (`is_current`).
 7. Revoking (signing out) another device calls `delete_device`, satisfies UIA, and the
@@ -266,6 +270,37 @@ Surfaces changed:
 13. All new IPC types exist as ts-rs bindings in `src/bindings/` **and** as matching
     hand-authored types/wrappers in `src/lib/matrix.ts`; `CrossSigningStatusSummary` is
     reused, not redefined.
+14. The renderer installs `session:invalidated` before starting restore. Listener or
+    restore setup failures preserve local data and show a retryable startup error rather
+    than silently presenting an unexplained logged-out screen.
+    Local teardown publishes invalidation while login completion is excluded,
+    including successful teardown followed by a physical-cleanup failure, so
+    the renderer cannot remain authenticated after the active client is gone.
+15. The default-off **Forget local data** action requires typed and native-system
+    confirmation, signs out, and physically removes the retained Matrix store, keychain
+    passphrase, and every encrypted search index for the account on this device without
+    deleting the server-side Matrix account. Confirmation is bound to the account and
+    device selected before the native dialog opens; a changed session requires fresh
+    confirmation. Login completion remains serialized through physical deletion.
+    Startup retry clears an interrupted-wipe marker only after both session/store
+    cleanup and deletion of every device-scoped search index have succeeded.
+16. Terminal authentication failure revokes the in-memory client and invalidates
+    search backfill before cleanup. The live search database is closed before
+    its files are deleted, with the contended index lock and filesystem work on
+    a blocking worker. That worker owns the login-exclusion guard until it
+    finishes, even if the awaiting sync task is aborted. Failed cleanup retains
+    the durable retry marker.
+    Logout, local-data removal, and deactivation workers likewise retain shared
+    ownership of login exclusion through blocking cleanup, even if their caller
+    is cancelled. The caller retains exclusion after a worker panic so recovery
+    cannot race a replacement login. Cancellation and panic regressions are
+    included; GitHub Actions verification is pending.
+    Local-data removal makes a best-effort remote revoke with a five-second
+    deadline after clearing local session state. It drops that request's SDK
+    client before physical store deletion instead of leaving an unbounded
+    background request holding store files open. Remote success and delayed
+    response regression tests are pending CI; this does not prove that a remote
+    session was revoked when the homeserver is unavailable.
 
 ## Testing
 
@@ -321,11 +356,20 @@ Surfaces changed:
 - **`client.devices()` last-seen fields** can be sparse/absent on some homeservers; UI
   must tolerate `None`.
 - **Logout store retention**: plain logout may retain `matrix_store` encrypted at rest,
-  but Spec 28 closes and deletes the current account's plaintext message-search index.
-  Spec 28 PR 1 owns a Day-1 "Forget local data" account-management action that removes
-  every retained account store plus its key material. Its confirmation must distinguish
-  the encrypted SDK store from the already-deleted plaintext search index; plain-logout
-  copy must remain accurate about what is retained.
+  while deleting the current device's separately encrypted message-search index.
+  Logout and deactivation revalidate their requested account/device after acquiring
+  login exclusion, rejecting stale actions before revocation or deletion. Deactivation
+  holds exclusion through the remote request and local cleanup; a UIA challenge
+  releases it before the next user-input round. This prevents an in-flight account
+  action from clearing a replacement session. The new concurrency regression is
+  pending CI verification.
+  The default-off Spec 28 account-management control "Forget local data" requires typed
+  confirmation plus a native system confirmation, closes the session, and removes every retained matrix-sdk store,
+  keychain passphrase, and encrypted search index for that account on this device. It
+  does not deactivate the Matrix account or erase server-side messages. Cleanup intent
+  is persisted before teardown, so an interrupted filesystem/keychain deletion is
+  retried at startup without silently restoring the account; plain-logout copy remains
+  explicit that it is not a device wipe.
 - **Notification-settings API surface** (`NotificationSettings` helper method names) can
   vary across matrix-rust-sdk versions — verify against the pinned `Cargo.toml` version.
 

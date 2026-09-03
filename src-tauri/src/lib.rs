@@ -639,6 +639,29 @@ fn get_feature_flag_catalog() -> Vec<feature_flags::FeatureFlagCatalogEntry> {
     feature_flags::catalog()
 }
 
+/// Reconciles Spec 28's destructive privacy kill switch after a durable flag
+/// write. Rust re-reads the authoritative file; an enabled flag is accepted
+/// only when no earlier failed cleanup marker remains.
+#[tauri::command]
+async fn reconcile_message_search_flag(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, matrix::MatrixState>,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search filesystem unavailable".to_string())?;
+    let enabled = feature_flags::flag(
+        &app_data_dir,
+        feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+    );
+    let pending = matrix::search::disabled_cleanup_pending(&app_data_dir)?;
+    if enabled && !pending {
+        return Ok(());
+    }
+    matrix::search::reconcile_disabled_search(&app, &state).await
+}
+
 /// The trusted GO Feature Flag OFREP proxy origin. `fetch_remote_flags` builds
 /// its request URL from this constant and **does not** accept a URL from the
 /// webview — otherwise a compromised or XSS'd frontend could use the
@@ -1263,6 +1286,22 @@ pub fn run() {
             // `push::global_app_handle`'s doc comment.
             #[cfg(any(target_os = "android", target_os = "ios"))]
             push::set_global_app_handle(handle.clone());
+            // Reconcile the sensitive local-search kill switch before any
+            // session restoration can open the derived index. A durable
+            // marker from a failed earlier purge vetoes re-enable too.
+            if let Ok(app_data_dir) = handle.path().app_data_dir() {
+                let search_enabled = feature_flags::flag(
+                    &app_data_dir,
+                    feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+                );
+                let cleanup_pending =
+                    matrix::search::disabled_cleanup_pending(&app_data_dir).unwrap_or(true);
+                if (!search_enabled || cleanup_pending)
+                    && matrix::search::reconcile_disabled_cleanup(&app_data_dir).is_err()
+                {
+                    eprintln!("message-search disabled-state cleanup failed");
+                }
+            }
             // One-time dev wipe of the pre-Spec-15 single-account store
             // layout (see its doc comment) — debug-build-only. A release
             // build reaching a real user's machine with the legacy layout
@@ -1437,6 +1476,7 @@ pub fn run() {
             update_observability_sentry_consent,
             get_feature_flags,
             get_feature_flag_catalog,
+            reconcile_message_search_flag,
             fetch_remote_flags,
             had_unclean_previous_session,
             forward_sentry_envelope,
@@ -1552,6 +1592,7 @@ pub fn run() {
             matrix::room_admin::pin_event,
             matrix::room_admin::unpin_event,
             matrix::account::logout,
+            matrix::account::forget_local_data,
             matrix::account::get_profile,
             matrix::account::resolve_avatar,
             matrix::account::set_display_name,

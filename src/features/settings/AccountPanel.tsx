@@ -1,5 +1,6 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useRef, useState } from "react";
+import { useFlag } from "@/featureFlags";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
+import { changePassword, deactivateAccount, forgetLocalData, logout } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
@@ -33,6 +34,7 @@ interface AccountPanelProps {
 
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   const webBuild = isWebBuild();
+  const forgetLocalDataEnabled = useFlag("encrypted_local_message_search") && !webBuild;
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
   const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
@@ -48,6 +50,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
 
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [deactivateOpen, setDeactivateOpen] = useState(false);
+  const [forgetLocalOpen, setForgetLocalOpen] = useState(false);
 
   async function handleSaveDisplayName() {
     try {
@@ -197,6 +200,17 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
       </SettingsCard>
 
       <SettingsCard heading="Danger zone">
+        {forgetLocalDataEnabled && (
+          <SettingTile
+            title="Forget local data"
+            description="Signs out and permanently removes this account's retained Matrix store, cached encryption keys, and encrypted message-search indexes from this device. It does not deactivate the Matrix account."
+            control={
+              <Button variant="destructive" size="sm" onClick={() => setForgetLocalOpen(true)}>
+                Forget local data
+              </Button>
+            }
+          />
+        )}
         <SettingTile
           title="Deactivate account"
           description={
@@ -232,6 +246,11 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         onOpenChange={setDeactivateOpen}
         onDeactivated={onLoggedOut}
       />
+      <ForgetLocalDataDialog
+        open={forgetLocalOpen}
+        onOpenChange={setForgetLocalOpen}
+        onForgotten={onLoggedOut}
+      />
 
       <Dialog open={logoutOpen} onOpenChange={setLogoutOpen}>
         <DialogContent>
@@ -254,6 +273,85 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+interface ForgetLocalDataDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onForgotten: () => void;
+}
+
+const FORGET_LOCAL_CONFIRM_TEXT = "FORGET";
+
+function ForgetLocalDataDialog({ open, onOpenChange, onForgotten }: ForgetLocalDataDialogProps) {
+  const [confirmText, setConfirmText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function reset() {
+    setConfirmText("");
+    setSubmitting(false);
+    setError(null);
+  }
+
+  async function handleForget() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await forgetLocalData(true);
+      onForgotten();
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) reset();
+        onOpenChange(next);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Forget local data?</DialogTitle>
+          <DialogDescription>
+            This signs out and permanently removes the retained Matrix store, cached encryption
+            keys, and encrypted message-search indexes for this account from this device. Your
+            Matrix account and server-side messages are not deleted.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="forget-local-confirm">
+              Type {FORGET_LOCAL_CONFIRM_TEXT} to confirm
+            </Label>
+            <Input
+              id="forget-local-confirm"
+              value={confirmText}
+              onChange={(event) => setConfirmText(event.target.value)}
+            />
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleForget}
+              disabled={submitting || confirmText !== FORGET_LOCAL_CONFIRM_TEXT}
+            >
+              {submitting ? "Forgetting…" : "Forget local data"}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

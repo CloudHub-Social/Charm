@@ -5,6 +5,7 @@ import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getProfile = vi.fn();
 const logout = vi.fn();
+const forgetLocalData = vi.fn();
 const setDisplayName = vi.fn();
 const setAvatar = vi.fn();
 const removeAvatar = vi.fn();
@@ -19,6 +20,7 @@ const unignoreUser = vi.fn();
 vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
   logout: (...args: unknown[]) => logout(...args),
+  forgetLocalData: (...args: unknown[]) => forgetLocalData(...args),
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
   setAvatar: (...args: unknown[]) => setAvatar(...args),
   removeAvatar: (...args: unknown[]) => removeAvatar(...args),
@@ -29,6 +31,10 @@ vi.mock("@/lib/matrix", () => ({
   get3pids: (...args: unknown[]) => get3pids(...args),
   getIgnoredUsers: (...args: unknown[]) => getIgnoredUsers(...args),
   unignoreUser: (...args: unknown[]) => unignoreUser(...args),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => true,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -58,6 +64,7 @@ beforeEach(() => {
     uses_oauth: false,
   });
   logout.mockReset();
+  forgetLocalData.mockReset();
   getAccountDeactivateUrl.mockReset().mockResolvedValue(null);
   deactivateAccount.mockReset();
   get3pids.mockReset().mockResolvedValue([]);
@@ -93,6 +100,26 @@ describe("AccountPanel", () => {
 
     expect(await screen.findByText("Error: network error")).toBeInTheDocument();
     expect(onLoggedOut).not.toHaveBeenCalled();
+  });
+
+  it("requires typed confirmation before forgetting local account data", async () => {
+    forgetLocalData.mockResolvedValue(undefined);
+    const onLoggedOut = vi.fn();
+    renderWithProviders(<AccountPanel onLoggedOut={onLoggedOut} />);
+
+    const [openButton] = screen.getAllByRole("button", { name: "Forget local data" });
+    fireEvent.click(openButton);
+    const confirmButtons = await screen.findAllByRole("button", { name: "Forget local data" });
+    const confirmButton = confirmButtons[confirmButtons.length - 1];
+    expect(confirmButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type FORGET to confirm"), {
+      target: { value: "FORGET" },
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(forgetLocalData).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(onLoggedOut).toHaveBeenCalled());
   });
 
   it("deactivate account requires typing DEACTIVATE before it can be confirmed", async () => {

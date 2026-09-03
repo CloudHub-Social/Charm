@@ -315,14 +315,24 @@ applies. Regression tests cover fresh/resumed initialization and the privacy
 override, pending GitHub Actions verification.
 
 Native SSO cancellation before durable adoption restores both the prior client
-slot and its sync loop if shutdown had begun. The cancellation window retains
+slot and its sync loop if shutdown had begun. Account teardown and SSO adoption
+share login-completion exclusion: logout cannot finish clearing a session while
+SSO still owns the rollback window. A queued teardown revalidates its original
+account and device after acquiring that exclusion, so it cannot clear a newly
+adopted session. This depends on the recoverable account-teardown implementation;
+combined GitHub Actions verification remains required.
+
+The cancellation window retains
 the exact cached timeline objects and their focused/live view markers, capturing
-them atomically when draining the cache rather than before shutdown, then
+cached entries when draining the cache rather than before shutdown, then
 reattaches listeners on rollback so the open room continues receiving updates
 without navigation. These temporary strong references are dropped before store
 relocation when adoption proceeds. Regression coverage verifies listener
 shutdown/restart, view identity, focus preservation, and duplicate prevention;
 GitHub Actions and real-client cancellation checks remain required.
+Quiescing an already-running timeline replacement before this capture remains an
+open correctness gate: an entry temporarily removed by replacement can otherwise
+be omitted from the rollback snapshot.
 If callback exchange already
 authenticated a device, cancellation attempts Matrix logout with the bounded
 auth-network timeout before discarding the temporary local store. Offline or

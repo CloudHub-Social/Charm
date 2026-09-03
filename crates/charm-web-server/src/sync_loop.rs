@@ -416,6 +416,12 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     if backfill_revoked(context) {
         return;
     }
+    // `backfill_pending` keeps results honest while this full local-only pass
+    // runs. Clear only the prior sticky failure so any new queue/cache/worker
+    // failure can set it again and survive the FIFO completion marker.
+    context
+        .incomplete
+        .store(false, std::sync::atomic::Ordering::Release);
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
@@ -524,6 +530,59 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             .backfill_pending
             .store(false, std::sync::atomic::Ordering::Release);
     }
+}
+
+/// Starts one bounded retry of a failed web index reconciliation. Concurrent
+/// searches coalesce on `backfill_pending`; no homeserver search or history
+/// pagination is performed because `backfill_message_search` reads only the
+/// matrix-sdk event cache already owned by this session.
+pub fn schedule_full_message_search_reconciliation(session: Arc<crate::session::Session>) {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+        || !claim_reconciliation_retry(
+            &session.message_search_incomplete,
+            &session.message_search_backfill_pending,
+        )
+    {
+        return;
+    }
+    let sender = session
+        .message_search_sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let Some(sender) = sender else {
+        session
+            .message_search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let context = MessageSearchContext {
+        sender,
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        backfill_pending: Arc::clone(&session.message_search_backfill_pending),
+        closed: Arc::clone(&session.session_closed),
+    };
+    let client = session.client.clone();
+    tokio::spawn(async move {
+        backfill_message_search(&Some(context), &client).await;
+    });
+}
+
+fn claim_reconciliation_retry(
+    incomplete: &std::sync::atomic::AtomicBool,
+    backfill_pending: &std::sync::atomic::AtomicBool,
+) -> bool {
+    incomplete.load(std::sync::atomic::Ordering::Acquire)
+        && backfill_pending
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
 }
 
 /// Returns true after revoking the initial backfill's pending marker. Call it
@@ -1548,6 +1607,19 @@ mod tests {
         record_search_work_outcome(&incomplete, &pending, true, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
         assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn failed_web_reconciliation_has_one_retry_owner() {
+        let incomplete = std::sync::atomic::AtomicBool::new(true);
+        let pending = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(claim_reconciliation_retry(&incomplete, &pending));
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
+
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        incomplete.store(false, std::sync::atomic::Ordering::Release);
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
     }
 
     #[test]
