@@ -165,12 +165,17 @@ function PickerControl<T extends string>({
  * `<html>` immediately, no reload) and persists across restart.
  */
 export function AppearancePanel() {
+  const appearanceParityEnabled = useFlag("appearance_parity");
   const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const roomListEnrichmentEnabled = useFlag("room_list_unread_filter");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const avatarPresenceVisualsEnabled = useFlag("avatar_presence_visuals");
   const {
+    clockFormat,
+    dateFormat,
+    setClockFormat,
+    setDateFormat,
     theme,
     fontSize,
     density,
@@ -206,6 +211,35 @@ export function AppearancePanel() {
         </p>
       </div>
       <SettingsCard>
+        {appearanceParityEnabled && (
+          <>
+            <SettingTile
+              title="Clock format"
+              control={
+                <PickerControl
+                  value={clockFormat}
+                  labels={{ locale: "System clock", "12h": "12-hour", "24h": "24-hour" }}
+                  onChange={setClockFormat}
+                />
+              }
+            />
+            <SettingTile
+              title="Date format"
+              control={
+                <PickerControl
+                  value={dateFormat}
+                  labels={{
+                    locale: "System date",
+                    "day-first": "DD/MM/YYYY",
+                    "month-first": "MM/DD/YYYY",
+                    "year-first": "YYYY-MM-DD",
+                  }}
+                  onChange={setDateFormat}
+                />
+              }
+            />
+          </>
+        )}
         <SettingTile
           title="Theme"
           control={<PickerControl value={theme} labels={THEME_LABELS} onChange={setTheme} />}

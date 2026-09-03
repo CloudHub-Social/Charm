@@ -1,4 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
@@ -59,6 +60,7 @@ export function BubbleMessageRow({
   onViewEditHistory,
 }: MessageRowLayoutProps) {
   const showAvatar = !own && !sameSenderAsPrev;
+  const { clockFormat } = useDisplayFormats();
   const showMeta = !sameSenderAsNext;
 
   return (
@@ -233,7 +235,7 @@ export function BubbleMessageRow({
         )}
         {showMeta && (
           <span className="font-mono text-[11px] text-muted-foreground">
-            {formatTime(message.timestamp_ms)}
+            {formatTime(message.timestamp_ms, clockFormat)}
             {message.edited && " (edited)"}
             {isPending && " · sending…"}
             {isError && " · failed to send"}
