@@ -1400,7 +1400,7 @@ mod tests {
         assert!(
             result.is_err(),
             "expired DND must not suppress dispatch: expected the sweep step past the DND check \
-             to run and fail on a missing store_root, got {result:?}"
+             to run and fail on a missing store_root"
         );
 
         let _ = std::fs::remove_dir_all(app_data_dir);
