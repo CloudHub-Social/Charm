@@ -15,6 +15,7 @@ import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray } from "./UploadTray";
+import { VoiceRecorder } from "./VoiceRecorder";
 import {
   activeReplyTargetAtomFamily,
   editingEventIdAtomFamily,
@@ -185,6 +186,7 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const voiceRecordingEnabled = useFlag("voice_recording");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
@@ -1141,6 +1143,13 @@ export function ChatShell({
               <Send size={16} />
             </button>
           </div>
+          {voiceRecordingEnabled && !roomMutationsBlocked && (
+            <VoiceRecorder
+              key={`${currentUserId}:${room.room_id}`}
+              mobile={mobile}
+              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+            />
+          )}
         </div>
       )}
       {!mobile && participants.length > 0 && (

@@ -87,9 +87,17 @@ A late permission response must release its stream if the recording attempt is
 no longer current. Preview is local-only until explicit send. Microphone samples,
 filenames, and recorded content must not enter logs or telemetry.
 
-These are implementation requirements, not completed functionality. The recorder,
-transport extension, default-off flag, and platform interoperability evidence
-remain outstanding.
+The implementation branch now has bounded MediaRecorder capture, local native
+audio-control preview, explicit send/discard, desktop start/stop and mobile
+hold/slide-to-discard controls. The composer mounts the recorder behind the
+default-off `voice_recording` flag and keys it by account and room. Recording
+metadata travels through the existing native and web attachment transports;
+failed sends retain the local preview for retry. The current live visualization
+is a microphone-level meter, not yet the required waveform history.
+
+This is implementation progress, not acceptance: generated binding import,
+microphone lifecycle and gesture tests, CI, waveform UI, platform permission
+checks, and real-device/cross-client interoperability remain outstanding.
 
 - Reuse Spec 02's `send_attachment` if it can carry the extra voice-message content
   markers + waveform; if not, a small extension or a dedicated

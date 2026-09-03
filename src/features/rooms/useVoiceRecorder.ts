@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -24,7 +24,7 @@ export function useVoiceRecorder() {
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
 
-  function releaseCapture() {
+  const releaseCapture = useCallback(() => {
     const capture = active.current;
     active.current = null;
     if (!capture) return;
@@ -32,14 +32,14 @@ export function useVoiceRecorder() {
     capture.stream.getTracks().forEach((track) => track.stop());
     if (capture.recorder.state !== "inactive") capture.recorder.stop();
     void capture.context.close().catch(() => {});
-  }
+  }, []);
 
-  function clearResources() {
+  const clearResources = useCallback(() => {
     epoch.current += 1;
     releaseCapture();
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
     previewUrl.current = null;
-  }
+  }, [releaseCapture]);
 
   function discard() {
     clearResources();
@@ -50,7 +50,7 @@ export function useVoiceRecorder() {
     setError(null);
   }
 
-  useEffect(() => () => clearResources(), []);
+  useEffect(() => () => clearResources(), [clearResources]);
 
   function stop() {
     if (active.current) {

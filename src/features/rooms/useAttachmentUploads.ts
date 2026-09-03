@@ -12,6 +12,7 @@ import {
 import { isWebBuild } from "@/lib/platform";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { PendingUpload } from "./UploadTray";
+import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 
 export function attachmentUploadPayload(file: File & { path?: string }): string | File | null {
   if (isWebBuild()) {
@@ -54,10 +55,11 @@ export function useAttachmentUploads(
   // mid-preflight.
   const roomIdRef = useRef(roomId);
   roomIdRef.current = roomId;
-  // Web-only: lets dismissUpload actually abort the in-flight `fetch`
+  // Lets dismissUpload actually abort the web `fetch`
   // streaming the multipart body, not just notify the server-side
   // cancellation token — see sendAttachment's `signal` param doc comment.
-  // Desktop needs no equivalent map; its cancellation is entirely
+  // Native recorded blobs also use the signal to cancel their in-memory
+  // conversion before invoking IPC. Native uploads themselves are cancelled
   // server-side (`cancel_attachment_upload`'s `tokio::select!`).
   const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
 
@@ -97,8 +99,12 @@ export function useAttachmentUploads(
     };
   }, []);
 
-  async function handleAttachFile(file: string | File, caption?: string) {
-    if (!roomId || mutationsBlockedRef?.current) return;
+  async function handleAttachFile(
+    file: string | File,
+    caption?: string,
+    voice?: VoiceMessageMetadata,
+  ): Promise<boolean> {
+    if (!roomId || mutationsBlockedRef?.current) return false;
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -110,9 +116,9 @@ export function useAttachmentUploads(
     const limit = mediaSendPolishEnabled
       ? (maxUploadBytes ?? (await getMediaConfig().catch(() => null)))
       : null;
-    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return;
+    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return false;
     const size = limit != null ? await fileSize(file) : null;
-    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return;
+    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return false;
     if (limit != null && size != null && size > limit) {
       setUploads((prev) => [
         ...prev,
@@ -125,15 +131,15 @@ export function useAttachmentUploads(
           errorMessage: `Too large — this server's limit is ${formatMebibytes(limit)}`,
         },
       ]);
-      return;
+      return false;
     }
 
     // This is the last synchronous point before the upload starts. A
     // tombstone received during either awaited preflight therefore cannot
     // create an upload row or reach the native/web transport.
-    if (mutationsBlockedRef?.current) return;
+    if (mutationsBlockedRef?.current) return false;
     setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
-    const abortController = isWebBuild() ? new AbortController() : undefined;
+    const abortController = isWebBuild() || voice ? new AbortController() : undefined;
     if (abortController) uploadAbortControllers.current.set(txnId, abortController);
     try {
       await sendAttachment(
@@ -143,18 +149,21 @@ export function useAttachmentUploads(
         caption,
         mediaSendPolishEnabled ? stripExifOnUpload : false,
         abortController?.signal,
+        voice,
       );
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
+      return true;
     } catch (err) {
       // A dismissed-while-uploading row is already gone from `uploads` (see
       // dismissUpload) — its abort landing here as a rejected fetch isn't a
       // failure to surface, just this request unwinding.
-      if (abortController?.signal.aborted) return;
+      if (abortController?.signal.aborted) return false;
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setUploads((prev) =>
         prev.map((u) => (u.txnId === txnId ? { ...u, failed: true, errorMessage } : u)),
       );
+      return false;
     } finally {
       uploadAbortControllers.current.delete(txnId);
     }
