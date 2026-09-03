@@ -45,6 +45,17 @@ repository release key. Platform-native production signing and Apple
 notarization remain gated on their provider credentials; an iOS simulator build
 is verification evidence, not a distributable release asset.
 
+Tagged macOS builds must pass signature integrity, Gatekeeper assessment, and
+stapled-ticket validation for the app and final disk images before uploading
+release artifacts. Missing or untrusted signatures fail the job and therefore
+block the dependent publication job; GPG checksums do not replace these platform
+checks. The production certificate import and notarization submission setup is
+still outstanding, so this gate intentionally prevents stable publication until
+that setup and real signed-artifact validation are complete. Untagged diagnostic
+dispatches and explicitly non-production nightlies retain their existing policy.
+These checks follow Apple's [code-signing verification guidance](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)
+and [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same
 integrity chain and retained alongside the binaries. SBOM generation scans a

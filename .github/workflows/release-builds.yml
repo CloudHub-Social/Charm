@@ -400,6 +400,33 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      # GPG manifests establish download integrity, not Gatekeeper trust.
+      # Keep unsigned diagnostic dispatches available, but fail closed for tags.
+      - name: Verify stable macOS signing and notarization
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.apple-debug-files.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=("$BUNDLE_PATH"/macos/*.app)
+          images=("$BUNDLE_PATH"/dmg/*.dmg)
+          if [ "${#apps[@]}" -ne 1 ] || [ "${#images[@]}" -eq 0 ]; then
+            echo "::error::Stable macOS release requires exactly one app and at least one disk image"
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+            xcrun stapler validate "$app"
+          done
+          for image in "${images[@]}"; do
+            codesign --verify --strict --verbose=2 "$image"
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$image"
+            xcrun stapler validate "$image"
+          done
+
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
