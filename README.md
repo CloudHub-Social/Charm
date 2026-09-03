@@ -103,8 +103,10 @@ Each nightly and stable release also includes platform-named SPDX JSON
 software bills of materials (`charm-<platform>.spdx.json`). Verify an SBOM
 through the same signed checksum manifest before importing it into an
 SPDX-compatible inventory or vulnerability scanner. It describes the
-lockfile-pinned workspace used by that platform build and intentionally
-contains dependency metadata, not CI credentials or signing material.
+lockfile-pinned source commit used by that platform build. The scanner receives
+a clean Git archive, not the post-build workspace or its runtime credentials,
+caches, and signing material. This source inventory is not an exhaustive
+inventory of packaged binaries or platform-resolved transitive dependencies.
 
 This is a self-issued key, not backed by a CA or Apple/Microsoft's
 notarization chains — it proves the file matches what this pipeline

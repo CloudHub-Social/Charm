@@ -180,10 +180,21 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/linux-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Export committed source for Linux SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Linux SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-linux.spdx.json
@@ -368,10 +379,21 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/apple-build-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Export committed source for macOS SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate macOS SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-macos.spdx.json
@@ -480,10 +502,21 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/windows-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Export committed source for Windows SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Windows SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-windows.spdx.json
@@ -643,10 +676,21 @@ jobs:
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/android-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
+      - name: Export committed source for Android SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Android SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-android.spdx.json

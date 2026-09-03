@@ -356,11 +356,23 @@ jobs:
       # `gh release create`'s asset upload expect plain files. The .dmg
       # already contains the .app, so uploading both is redundant as well as
       # broken.
+      - name: Export committed source for macOS SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate macOS SPDX SBOM
         if: github.ref == 'refs/heads/main'
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-macos.spdx.json
@@ -552,11 +564,23 @@ jobs:
 
       # Only published for main — see the macOS job's "Upload macOS
       # artifacts" step for the same reasoning.
+      - name: Export committed source for Windows SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Windows SPDX SBOM
         if: github.ref == 'refs/heads/main'
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-windows.spdx.json
@@ -838,11 +862,23 @@ jobs:
       # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
       # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
       # begin with — apt/rpm install unsigned packages fine.
+      - name: Export committed source for Linux SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Linux SPDX SBOM
         if: github.ref == 'refs/heads/main'
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-linux.spdx.json
@@ -1060,11 +1096,23 @@ jobs:
       # Android happily installs the APK once the device has "install
       # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
       # equivalent block to work around.
+      - name: Export committed source for Android SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
       - name: Generate Android SPDX SBOM
         if: github.ref == 'refs/heads/main'
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: .
+          path: ${{ env.CHARM_SBOM_SOURCE }}
           format: spdx-json
           syft-version: v1.51.1
           output-file: charm-android.spdx.json

@@ -47,9 +47,13 @@ is verification evidence, not a distributable release asset.
 
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same
-integrity chain and retained alongside the binaries. SBOM generation scans the
-checked-out, lockfile-pinned workspace after dependencies are installed; it does
-not receive signing, Sentry, or store credentials.
+integrity chain and retained alongside the binaries. SBOM generation scans a
+clean `git archive HEAD` export of the build commit in a fresh temporary
+directory, excluding post-build generated files, dependency caches, Git
+credentials, and runtime signing material. This source inventory does not
+establish complete coverage of packaged binaries or platform-resolved transitive
+dependencies. Artifact-level dependency completeness remains a separate
+release-readiness gate.
 
 For the full rationale and supporting-infrastructure details (rust-cache,
 sccache, the Moonrepo backlog item), see
