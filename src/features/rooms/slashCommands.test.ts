@@ -3,6 +3,19 @@ import { parseSlashCommand } from "./slashCommands";
 import { filterSlashCommands } from "./composerSuggestions";
 
 describe("staged message-style commands", () => {
+  it.each(["unban", "nick", "ignore", "unignore"])(
+    "stages /%s parsing and suggestions",
+    (command) => {
+      expect(parseSlashCommand(`/${command} @alice:example.org`)).toBeNull();
+      expect(filterSlashCommands(command)).toEqual([]);
+      expect(parseSlashCommand(`/${command} @alice:example.org`, true)).toEqual({
+        command,
+        args: ["@alice:example.org"],
+        action: true,
+      });
+      expect(filterSlashCommands(command, true).map((spec) => spec.name)).toContain(command);
+    },
+  );
   it.each(["plain", "shrug", "tableflip"])(
     "keeps /%s literal and out of suggestions while disabled",
     (name) => {

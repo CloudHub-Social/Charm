@@ -1,9 +1,10 @@
 import type { SlashCommand } from "@/lib/matrix";
 
 type MessageStyleCommand = "plain" | "shrug" | "tableflip";
+type LocalActionCommand = "unban" | "nick" | "ignore" | "unignore";
 
 export interface SlashCommandSpec {
-  name: SlashCommand | MessageStyleCommand;
+  name: SlashCommand | MessageStyleCommand | LocalActionCommand;
   trigger: string;
   argsHint: string;
   description: string;
@@ -39,12 +40,35 @@ export const MESSAGE_STYLE_COMMANDS: SlashCommandSpec[] = [
   },
 ];
 
+export const LOCAL_ACTION_COMMANDS: (SlashCommandSpec & { name: LocalActionCommand })[] = [
+  {
+    name: "unban",
+    trigger: "/unban",
+    argsHint: "<user id> [reason]",
+    description: "Unban a room member",
+  },
+  {
+    name: "nick",
+    trigger: "/nick",
+    argsHint: "<display name>",
+    description: "Change your display name",
+  },
+  { name: "ignore", trigger: "/ignore", argsHint: "<user id>", description: "Ignore a user" },
+  {
+    name: "unignore",
+    trigger: "/unignore",
+    argsHint: "<user id>",
+    description: "Stop ignoring a user",
+  },
+];
+
 export type ParsedSlashCommand =
   | {
       command: SlashCommand;
       args: string[];
     }
-  | { command: MessageStyleCommand; args: string[]; text: string };
+  | { command: MessageStyleCommand; args: string[]; text: string }
+  | { command: LocalActionCommand; args: string[]; action: true };
 
 /**
  * Parses a composer's plain-text body for a leading slash command. Returns
@@ -59,6 +83,8 @@ export function parseSlashCommand(body: string, extended = false): ParsedSlashCo
   if (!body.startsWith("/") || body.startsWith("//")) return null;
 
   const [word, ...rest] = body.slice(1).split(/\s+/);
+  const action = extended && LOCAL_ACTION_COMMANDS.find((spec) => spec.name === word);
+  if (action) return { command: action.name, args: rest.filter(Boolean), action: true };
   if (extended && (word === "plain" || word === "shrug" || word === "tableflip")) {
     return {
       command: word,

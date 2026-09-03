@@ -158,6 +158,15 @@ scrolls after a successful message send in the same room. Remaining slash-comman
 requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
+The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
+existing membership, global display-name, and ignored-user IPC operations on
+native and web. Missing arguments show usage; ignore/unignore require exactly
+one user identifier. Backend validation and authorization remain authoritative.
+Failures show inline feedback without logging action arguments, and completion
+does not update feedback after a room switch. Parsing and dispatch regressions
+are included, pending CI. These commands do not send chat messages or trigger
+message-send scrolling. `/nick` changes the global profile, not the per-room nick.
+
 ## What I'd revisit as this grows
 
 - Custom/user-defined command aliases — not in Charm 1.0, not built now.

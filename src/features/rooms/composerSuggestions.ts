@@ -1,5 +1,10 @@
 import { searchEmoji } from "./emojiShortcodes";
-import { SLASH_COMMANDS, MESSAGE_STYLE_COMMANDS, type SlashCommandSpec } from "./slashCommands";
+import {
+  SLASH_COMMANDS,
+  MESSAGE_STYLE_COMMANDS,
+  LOCAL_ACTION_COMMANDS,
+  type SlashCommandSpec,
+} from "./slashCommands";
 
 export interface RoomMemberOption {
   userId: string;
@@ -20,9 +25,11 @@ export interface EmojiOption {
 /** Filters the static slash-command list by a case-insensitive name prefix. */
 export function filterSlashCommands(query: string, extended = false): SlashCommandSpec[] {
   const q = query.toLowerCase();
-  return (extended ? [...SLASH_COMMANDS, ...MESSAGE_STYLE_COMMANDS] : SLASH_COMMANDS).filter((c) =>
-    c.name.startsWith(q),
-  );
+  return (
+    extended
+      ? [...SLASH_COMMANDS, ...MESSAGE_STYLE_COMMANDS, ...LOCAL_ACTION_COMMANDS]
+      : SLASH_COMMANDS
+  ).filter((c) => c.name.startsWith(q));
 }
 
 /** Thin re-export so every provider's filter lives in one module. */

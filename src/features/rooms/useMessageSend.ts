@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { editMessage, runCommand, sendMessage, sendReply } from "@/lib/matrix";
+import {
+  editMessage,
+  runCommand,
+  sendMessage,
+  sendReply,
+  unbanMember,
+  setDisplayName,
+  ignoreUser,
+  unignoreUser,
+} from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import type { ParsedSlashCommand } from "./slashCommands";
 import { useFlag } from "@/featureFlags";
@@ -126,6 +135,49 @@ export function useMessageSend({
     stopTyping();
     try {
       if (mutationsBlockedRef?.current) return false;
+      if ("action" in parsed) {
+        if (!composerParityEnabled) return false;
+        const { command, args } = parsed;
+        if (
+          !args.length ||
+          ((command === "ignore" || command === "unignore") && args.length !== 1)
+        ) {
+          setCommandFeedback(
+            command === "nick"
+              ? "Usage: /nick <display name>"
+              : `Usage: /${command} <user id>${command === "unban" ? " [reason]" : ""}`,
+          );
+          return false;
+        }
+        try {
+          switch (command) {
+            case "unban":
+              await unbanMember(
+                targetRoomId,
+                args[0],
+                args.length > 1 ? args.slice(1).join(" ") : undefined,
+              );
+              break;
+            case "nick":
+              await setDisplayName(args.join(" "));
+              break;
+            case "ignore":
+              await ignoreUser(args[0]);
+              break;
+            case "unignore":
+              await unignoreUser(args[0]);
+              break;
+          }
+          if (currentRoomIdRef.current === targetRoomId) setCommandFeedback(null);
+        } catch {
+          if (currentRoomIdRef.current === targetRoomId)
+            setCommandFeedback(
+              `Could not complete /${command}. Check the arguments and your permissions, then try again.`,
+            );
+          return false;
+        }
+        return currentRoomIdRef.current === targetRoomId;
+      }
       if ("text" in parsed) {
         if (!composerParityEnabled) return false;
         if (parsed.command === "plain" && !parsed.text.trim()) {
