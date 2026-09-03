@@ -62,6 +62,22 @@ export function useAttachmentUploads(
   // conversion before invoking IPC. Native uploads themselves are cancelled
   // server-side (`cancel_attachment_upload`'s `tokio::select!`).
   const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
+  const ownerGeneration = useRef(0);
+  const ownerDisposed = useRef(false);
+
+  useEffect(() => {
+    ownerDisposed.current = false;
+    const controllers = uploadAbortControllers.current;
+    return () => {
+      ownerDisposed.current = true;
+      ownerGeneration.current += 1;
+      for (const [txnId, controller] of controllers) {
+        controller.abort();
+        cancelAttachmentUpload(txnId).catch(logAndIgnore);
+      }
+      controllers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!mediaSendPolishEnabled) return;
@@ -104,7 +120,12 @@ export function useAttachmentUploads(
     caption?: string,
     voice?: VoiceMessageMetadata,
   ): Promise<boolean> {
-    if (!roomId || mutationsBlockedRef?.current) return false;
+    if (!roomId || ownerDisposed.current || mutationsBlockedRef?.current) return false;
+    const generation = ownerGeneration.current;
+    const ownerIsCurrent = () =>
+      generation === ownerGeneration.current &&
+      roomIdRef.current === roomId &&
+      !mutationsBlockedRef?.current;
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -116,9 +137,9 @@ export function useAttachmentUploads(
     const limit = mediaSendPolishEnabled
       ? (maxUploadBytes ?? (await getMediaConfig().catch(() => null)))
       : null;
-    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return false;
+    if (!ownerIsCurrent()) return false;
     const size = limit != null ? await fileSize(file) : null;
-    if (roomIdRef.current !== roomId || mutationsBlockedRef?.current) return false;
+    if (!ownerIsCurrent()) return false;
     if (limit != null && size != null && size > limit) {
       setUploads((prev) => [
         ...prev,
@@ -151,13 +172,14 @@ export function useAttachmentUploads(
         abortController?.signal,
         voice,
       );
+      if (generation !== ownerGeneration.current) return false;
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
       return true;
     } catch (err) {
       // A dismissed-while-uploading row is already gone from `uploads` (see
       // dismissUpload) — its abort landing here as a rejected fetch isn't a
       // failure to surface, just this request unwinding.
-      if (abortController?.signal.aborted) return false;
+      if (abortController?.signal.aborted || generation !== ownerGeneration.current) return false;
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setUploads((prev) =>
