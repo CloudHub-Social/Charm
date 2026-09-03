@@ -232,6 +232,10 @@ pub(crate) enum SearchMutation {
     PurgeRoom {
         room_id: String,
     },
+    PurgeOriginal {
+        room_id: String,
+        event_id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -641,6 +645,27 @@ impl SearchIndex {
         transaction.commit().map_err(safe_storage_error)
     }
 
+    /// Remove ignored original-event provenance without a redaction tombstone:
+    /// unignoring the author may legitimately make a later replay visible.
+    fn purge_original(&mut self, room_id: &str, event_id: &str) -> Result<(), String> {
+        let transaction = self.connection.transaction().map_err(safe_storage_error)?;
+        delete_visible_row(&transaction, room_id, event_id)?;
+        let mut removed = 0;
+        for table in ["message_versions", "selected_versions"] {
+            removed += transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE room_id = ?1 AND original_event_id = ?2"),
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+        }
+        transaction.commit().map_err(safe_storage_error)?;
+        if removed > 0 {
+            compact(&self.connection)?;
+        }
+        Ok(())
+    }
+
     /// Physically removes searchable rows and provenance for one room.
     ///
     /// # Errors
@@ -976,6 +1001,9 @@ impl SearchWork {
                     index.redact(&room_id, &event_id)?
                 }
                 SearchMutation::PurgeRoom { room_id } => index.purge_room(&room_id)?,
+                SearchMutation::PurgeOriginal { room_id, event_id } => {
+                    index.purge_original(&room_id, &event_id)?
+                }
             }
         }
         Ok(())
@@ -995,7 +1023,9 @@ impl SearchWork {
         self.mutations.retain(|mutation| match mutation {
             SearchMutation::Apply(document) => joined_room_ids.contains(&document.room_id),
             SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
-            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+            SearchMutation::Redact { .. }
+            | SearchMutation::PurgeRoom { .. }
+            | SearchMutation::PurgeOriginal { .. } => true,
         });
     }
 
@@ -1014,7 +1044,9 @@ impl SearchWork {
                     && !ignored_senders.contains(&document.sender)
             }
             SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
-            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+            SearchMutation::Redact { .. }
+            | SearchMutation::PurgeRoom { .. }
+            | SearchMutation::PurgeOriginal { .. } => true,
         });
         self.ignored_senders = ignored_senders;
     }
@@ -1027,7 +1059,9 @@ impl SearchWork {
             || self.mutations.iter().any(|mutation| {
                 matches!(
                     mutation,
-                    SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+                    SearchMutation::Redact { .. }
+                        | SearchMutation::PurgeRoom { .. }
+                        | SearchMutation::PurgeOriginal { .. }
                 )
             })
     }
@@ -1039,7 +1073,9 @@ impl SearchWork {
         self.mutations.retain(|mutation| {
             matches!(
                 mutation,
-                SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+                SearchMutation::Redact { .. }
+                    | SearchMutation::PurgeRoom { .. }
+                    | SearchMutation::PurgeOriginal { .. }
             )
         });
         let dropped_additions = self.mutations.len() != original_len;
@@ -1624,6 +1660,14 @@ fn append_raw_event_mutation(
             SyncMessageLikeEvent::Original(original),
         )) => {
             if ignored_senders.contains(original.sender.as_str()) {
+                // An ignored edit cannot authorize purging its claimed target.
+                // Only the ignored original identifies the provenance to drop.
+                if !matches!(original.content.relates_to, Some(Relation::Replacement(_))) {
+                    mutations.push(SearchMutation::PurgeOriginal {
+                        room_id: room_id.to_string(),
+                        event_id: original.event_id.to_string(),
+                    });
+                }
                 return;
             }
             let timestamp: u64 = original.origin_server_ts.get().into();
@@ -4025,8 +4069,11 @@ mod tests {
             &mut mutations,
         );
 
-        assert_eq!(mutations.len(), 1);
-        let SearchMutation::Redact { room_id, event_id } = &mutations[0] else {
+        assert_eq!(mutations.len(), 2);
+        assert!(
+            matches!(&mutations[0], SearchMutation::PurgeOriginal { event_id, .. } if event_id == "$ignored:example.org")
+        );
+        let SearchMutation::Redact { room_id, event_id } = &mutations[1] else {
             panic!("redaction should be preserved");
         };
         assert_eq!(room_id, "!room:example.org");
@@ -4977,6 +5024,36 @@ mod tests {
                 .visible_body("!room:example.org", "$original")
                 .as_deref(),
             Some("edited first")
+        );
+    }
+
+    #[test]
+    fn ignored_original_purges_unverified_edits_without_preventing_replay() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let mut forged = document(Some("unverified edit"), "$edit");
+        forged.sender = "@mallory:example.org".to_string();
+        index.apply_document(&forged).expect("pending edit");
+        index
+            .purge_original("!room:example.org", "$original")
+            .expect("ignored original cleanup");
+        let versions: u32 = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE original_event_id = '$original'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 0);
+        index
+            .apply_document(&document(Some("visible after unignore"), "$original"))
+            .unwrap();
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("visible after unignore")
         );
     }
 
