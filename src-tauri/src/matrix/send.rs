@@ -16,6 +16,57 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use ts_rs::TS;
 
+/// Recorder metadata shared by native IPC and web multipart attachments.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct VoiceMessageMetadata {
+    pub duration_ms: u32,
+    pub waveform: Vec<f32>,
+}
+
+/// Validate recorder metadata before the existing encrypted upload. Errors
+/// deliberately omit microphone samples and other caller-provided values.
+pub fn voice_attachment_info(
+    mime: &mime::Mime,
+    size_bytes: u64,
+    metadata: &VoiceMessageMetadata,
+) -> Result<AttachmentInfo, String> {
+    if mime.type_() != mime::AUDIO {
+        return Err("voice recording must use an audio media type".to_string());
+    }
+    if size_bytes == 0 || size_bytes > MAX_ATTACHMENT_UPLOAD_BYTES {
+        return Err("voice recording size is outside the supported range".to_string());
+    }
+    if metadata.duration_ms == 0 || metadata.duration_ms > 600_000 {
+        return Err(
+            "voice recording duration must be positive and at most ten minutes".to_string(),
+        );
+    }
+    if metadata.waveform.is_empty()
+        || metadata.waveform.len() > 120
+        || metadata
+            .waveform
+            .iter()
+            .any(|sample| !sample.is_finite() || !(0.0..=1.0).contains(sample))
+    {
+        return Err("voice recording waveform is invalid".to_string());
+    }
+    Ok(AttachmentInfo::Voice(
+        matrix_sdk::attachment::BaseAudioInfo {
+            duration: Some(std::time::Duration::from_millis(
+                metadata.duration_ms.into(),
+            )),
+            size: Some(
+                size_bytes
+                    .try_into()
+                    .map_err(|_| "voice recording is too large".to_string())?,
+            ),
+            waveform: Some(metadata.waveform.clone()),
+        },
+    ))
+}
+
 /// Rotation/flip implied by an EXIF `Orientation` tag (values 2-8; 1 is
 /// already upright and needs no transform). `image`'s decoders don't apply
 /// this automatically, so stripping EXIF (which silently discards the tag)
@@ -1107,6 +1158,58 @@ mod tests {
     use matrix_sdk::ruma::room_id;
 
     use super::*;
+
+    #[test]
+    fn voice_metadata_preserves_duration_and_normalized_waveform() {
+        let metadata = VoiceMessageMetadata {
+            duration_ms: 1250,
+            waveform: vec![0.0, 0.5, 1.0],
+        };
+        let info =
+            voice_attachment_info(&"audio/ogg; codecs=opus".parse().unwrap(), 1024, &metadata)
+                .unwrap();
+        let AttachmentInfo::Voice(info) = info else {
+            panic!("expected SDK voice path");
+        };
+        assert_eq!(info.duration, Some(std::time::Duration::from_millis(1250)));
+        assert_eq!(info.waveform, Some(metadata.waveform));
+    }
+
+    #[test]
+    fn voice_metadata_rejects_invalid_waveforms() {
+        let mime = "audio/ogg".parse().unwrap();
+        for waveform in [
+            vec![],
+            vec![0.0; 121],
+            vec![-0.1],
+            vec![1.1],
+            vec![f32::NAN],
+            vec![f32::INFINITY],
+        ] {
+            let metadata = VoiceMessageMetadata {
+                duration_ms: 1000,
+                waveform,
+            };
+            assert!(voice_attachment_info(&mime, 1024, &metadata).is_err());
+        }
+    }
+
+    #[test]
+    fn voice_metadata_rejects_non_audio_and_out_of_range_duration_or_size() {
+        let mime = "audio/ogg".parse().unwrap();
+        let mut metadata = VoiceMessageMetadata {
+            duration_ms: 1000,
+            waveform: vec![0.5],
+        };
+        assert!(voice_attachment_info(&mime::IMAGE_PNG, 1024, &metadata).is_err());
+        for size in [0, MAX_ATTACHMENT_UPLOAD_BYTES + 1] {
+            assert!(voice_attachment_info(&mime, size, &metadata).is_err());
+        }
+        for duration in [0, 600_001] {
+            metadata.duration_ms = duration;
+            assert!(voice_attachment_info(&mime, 1024, &metadata).is_err());
+        }
+    }
 
     #[test]
     fn room_barrier_cancels_only_uploads_from_that_room() {
