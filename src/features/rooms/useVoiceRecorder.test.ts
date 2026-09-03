@@ -111,6 +111,40 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("revokes a stopped preview when the recorder unmounts", async () => {
+    const { result, unmount } = renderHook(() => useVoiceRecorder());
+    await act(async () => {
+      await result.current.start();
+    });
+    await act(async () => result.current.stop());
+    expect(result.current.preview?.url).toBe("blob:private-preview");
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:private-preview");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ignores an old recorder's error and stop events after starting a new recording", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => {
+      await result.current.start();
+    });
+    const oldRecorder = FakeRecorder.instances[0];
+    await act(async () => result.current.discard());
+    await act(async () => {
+      await result.current.start();
+    });
+    act(() => {
+      oldRecorder.onerror?.();
+      oldRecorder.ondataavailable?.({ data: new Blob(["stale audio"]) });
+      oldRecorder.onstop?.();
+    });
+    expect(result.current.phase).toBe("recording");
+    expect(result.current.error).toBeNull();
+    expect(result.current.preview).toBeNull();
+    expect(FakeRecorder.instances[1].state).toBe("recording");
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
   it("releases a stream granted after the user discards the permission request", async () => {
     let grant!: (value: MediaStream) => void;
     getUserMedia.mockImplementationOnce(
