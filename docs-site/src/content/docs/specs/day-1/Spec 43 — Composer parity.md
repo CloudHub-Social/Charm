@@ -150,7 +150,12 @@ HTTP routes, reusing the normal message-content builder before applying Matrix
 replacement/reply relations. Previously those two paths discarded all formatting.
 Hook/transport regressions and the message-actions integration scenario cover
 spoiler retention at these boundaries, pending CI verification.
-Slash-command requirements and CI/manual
+The default-off composer flag also enables `/plain`, `/shrug`, and `/tableflip`
+in parsing and suggestions. These reuse the existing plain-message send path;
+`/plain` preserves internal whitespace and treats markup literally. Dispatch
+rechecks the flag and room mutation guard, rejects empty `/plain`, and only
+scrolls after a successful message send in the same room. Remaining slash-command
+requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
 ## What I'd revisit as this grows

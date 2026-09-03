@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { editMessage, runCommand, sendMessage, sendReply } from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import type { ParsedSlashCommand } from "./slashCommands";
+import { useFlag } from "@/featureFlags";
 
 interface ComposerContent {
   body: string;
@@ -29,6 +30,7 @@ export function useMessageSend({
   mutationsBlockedRef,
 }: UseMessageSendOptions) {
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
+  const composerParityEnabled = useFlag("composer_parity");
   const roomId = room?.room_id ?? "";
   // Tracks the *currently viewed* room id across renders — used by
   // `handleSlashCommand`'s async continuation below to check whether the
@@ -124,6 +126,22 @@ export function useMessageSend({
     stopTyping();
     try {
       if (mutationsBlockedRef?.current) return false;
+      if ("text" in parsed) {
+        if (!composerParityEnabled) return false;
+        if (parsed.command === "plain" && !parsed.text.trim()) {
+          setCommandFeedback("Usage: /plain <message>");
+          return false;
+        }
+        const suffix = parsed.command === "shrug" ? "¯\\_(ツ)_/¯" : "(╯°□°）╯︵ ┻━┻";
+        const body =
+          parsed.command === "plain"
+            ? parsed.text
+            : `${parsed.text}${parsed.text ? " " : ""}${suffix}`;
+        await sendMessage(targetRoomId, body, null, null);
+        if (currentRoomIdRef.current !== targetRoomId) return false;
+        setCommandFeedback(null);
+        return true;
+      }
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale

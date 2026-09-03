@@ -27,6 +27,7 @@ import { MatrixSpoiler } from "./spoilerExtension";
 import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 export type ComposerMode = "send" | "edit" | "reply";
 
@@ -182,6 +183,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   ref,
 ) {
   const menu = useSuggestionMenu();
+  const composerParityEnabled = useFlag("composer_parity");
+  const composerParityRef = useRef(composerParityEnabled);
+  composerParityRef.current = composerParityEnabled;
   const menuOpenRef = useRef(false);
   // Tracks the last value reported via `onEmptyChange` so we only call it on
   // an actual empty/non-empty transition, not on every keystroke. `null`
@@ -306,7 +310,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // (e.g. "look /m"), where opening the menu would otherwise hijack
         // Enter for "select suggestion" instead of sending.
         allow: ({ range }) => range.from === 1,
-        items: ({ query }: { query: string }) => filterSlashCommands(query),
+        items: ({ query }: { query: string }) =>
+          filterSlashCommands(query, composerParityRef.current),
         command: ({ editor, range, props }) => {
           const spec = props as ReturnType<typeof filterSlashCommands>[number];
           editor.chain().focus().insertContentAt(range, `/${spec.name} `).run();
@@ -482,7 +487,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // separately via `collectMentionIds`.
     const commandText =
       mode === "send" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
-    const slash = mode === "send" ? parseSlashCommand(commandText.trim()) : null;
+    const slash =
+      mode === "send" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
       onSlashCommand(slash);
       // `clearContent(false)` skips emitting `onUpdate` — clearing after a

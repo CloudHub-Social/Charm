@@ -1,14 +1,16 @@
 import type { SlashCommand } from "@/lib/matrix";
 
+type MessageStyleCommand = "plain" | "shrug" | "tableflip";
+
 export interface SlashCommandSpec {
-  name: SlashCommand;
+  name: SlashCommand | MessageStyleCommand;
   trigger: string;
   argsHint: string;
   description: string;
 }
 
 /** Static list backing the `/` autocomplete menu. */
-export const SLASH_COMMANDS: SlashCommandSpec[] = [
+export const SLASH_COMMANDS: (SlashCommandSpec & { name: SlashCommand })[] = [
   { name: "me", trigger: "/me", argsHint: "<action>", description: "Send an action message" },
   { name: "topic", trigger: "/topic", argsHint: "<topic>", description: "Set the room topic" },
   { name: "invite", trigger: "/invite", argsHint: "<user id>", description: "Invite a user" },
@@ -26,10 +28,23 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   },
 ];
 
-export interface ParsedSlashCommand {
-  command: SlashCommand;
-  args: string[];
-}
+export const MESSAGE_STYLE_COMMANDS: SlashCommandSpec[] = [
+  { name: "plain", trigger: "/plain", argsHint: "<message>", description: "Send plain text" },
+  { name: "shrug", trigger: "/shrug", argsHint: "[message]", description: "Append a shrug" },
+  {
+    name: "tableflip",
+    trigger: "/tableflip",
+    argsHint: "[message]",
+    description: "Append a table flip",
+  },
+];
+
+export type ParsedSlashCommand =
+  | {
+      command: SlashCommand;
+      args: string[];
+    }
+  | { command: MessageStyleCommand; args: string[]; text: string };
 
 /**
  * Parses a composer's plain-text body for a leading slash command. Returns
@@ -40,14 +55,25 @@ export interface ParsedSlashCommand {
  * starting with `/`: it's stripped down to a single `/` and never parsed as
  * a command.
  */
-export function parseSlashCommand(body: string): ParsedSlashCommand | null {
+export function parseSlashCommand(body: string, extended = false): ParsedSlashCommand | null {
   if (!body.startsWith("/") || body.startsWith("//")) return null;
 
   const [word, ...rest] = body.slice(1).split(/\s+/);
+  if (extended && (word === "plain" || word === "shrug" || word === "tableflip")) {
+    return {
+      command: word,
+      args: rest.filter((a) => a.length > 0),
+      text: body.slice(word.length + 1).replace(/^\s/, ""),
+    };
+  }
   const spec = SLASH_COMMANDS.find((c) => c.name === word);
   if (!spec) return null;
 
   return { command: spec.name, args: rest.filter((a) => a.length > 0) };
+}
+
+export function isMessageSendingCommand(parsed: ParsedSlashCommand): boolean {
+  return parsed.command === "me" || "text" in parsed;
 }
 
 /**
