@@ -2014,7 +2014,8 @@ pub async fn confirm_password_reset(
     // not race that irreversible request against cancellation and then
     // report that nothing happened; the frontend operation token will
     // ignore this result if the user has already closed the surface.
-    let result = complete_password_reset(&mut pending, token.as_deref(), new_password).await;
+    let result =
+        complete_password_reset(&mut pending, token.as_deref(), new_password, &cancellation).await;
     if result.is_err() {
         let mut guard = state.pending_password_reset.lock().await;
         if !cancellation.is_cancelled()
@@ -2129,10 +2130,11 @@ async fn complete_password_reset(
     pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
         if pending.token_submitted {
-            return complete_password_change(pending, new_password).await;
+            return complete_password_change(pending, new_password, cancellation).await;
         }
         let token = token
             .filter(|token| !token.is_empty())
@@ -2150,12 +2152,13 @@ async fn complete_password_reset(
         pending.token_submitted = true;
     }
 
-    complete_password_change(pending, new_password).await
+    complete_password_change(pending, new_password, cancellation).await
 }
 
 async fn complete_password_change(
     pending: &PendingPasswordReset,
     new_password: String,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), String> {
     let thirdparty_id_creds =
         ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());
@@ -2165,6 +2168,12 @@ async fn complete_password_change(
     .map_err(|_| "could not confirm password reset".to_string())?;
     let mut request = change_password::v3::Request::new(new_password);
     request.auth = Some(AuthData::EmailIdentity(email_identity));
+    // Token submission is reversible/retryable, but the following request can
+    // irreversibly change the account password. Recheck cancellation at the
+    // dispatch boundary, then await the result instead of racing cancellation.
+    if cancellation.is_cancelled() {
+        return Err("password reset attempt expired or was cancelled".to_string());
+    }
     pending
         .client
         .send(request)
@@ -2246,6 +2255,18 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // IPv4-compatible IPv6 addresses (`::a.b.c.d`) are distinct from
+            // mapped addresses and are not covered by `to_ipv4_mapped`.
+            // Classify their embedded destination with the same deny list.
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let compatible = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(compatible.into());
+            }
             // RFC 6052's well-known NAT64 prefix is public when the embedded
             // IPv4 destination is public. Blocking the whole /96 breaks
             // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
@@ -3506,6 +3527,8 @@ mod registration_uia_tests {
             "64:ff9b:1::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::10.0.0.1",
         ] {
             assert!(
                 !is_public_network_ip(address.parse().expect("valid IP")),
@@ -3517,6 +3540,9 @@ mod registration_uia_tests {
         ));
         assert!(is_public_network_ip(
             "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
+        assert!(is_public_network_ip(
+            "::8.8.8.8".parse().expect("valid compatible public IP")
         ));
     }
 
@@ -3640,9 +3666,46 @@ mod registration_uia_tests {
             attempt_id: "opaque".to_owned(),
             created_at: std::time::Instant::now(),
         };
-        complete_password_reset(&mut pending, Some("123456"), "new correct horse".to_owned())
-            .await
-            .expect("password reset completes");
+        complete_password_reset(
+            &mut pending,
+            Some("123456"),
+            "new correct horse".to_owned(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("password reset completes");
+    }
+
+    #[tokio::test]
+    async fn cancelled_password_reset_stops_before_password_change_dispatch() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: true,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+
+        let error = complete_password_reset(
+            &mut pending,
+            None,
+            "new correct horse".to_owned(),
+            &cancellation,
+        )
+        .await
+        .expect_err("cancelled attempt must not dispatch password change");
+
+        assert_eq!(error, "password reset attempt expired or was cancelled");
     }
 }
 
