@@ -252,6 +252,41 @@ describe("matrix web transport", () => {
       { new_body: "edited" },
     ],
     [
+      "edit_message",
+      {
+        roomId: "!r:example.org",
+        eventId: "$e",
+        newBody: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/events/%24e/edit",
+      {
+        new_body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+    ],
+    [
+      "send_reply",
+      {
+        roomId: "!r:example.org",
+        inReplyToEventId: "$e",
+        body: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/reply",
+      {
+        in_reply_to_event_id: "$e",
+        body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
+    ],
+    [
       "can_redact",
       { roomId: "!r:example.org", targetSender: "@alice:example.org" },
       "GET",

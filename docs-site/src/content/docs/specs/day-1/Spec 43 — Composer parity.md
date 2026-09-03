@@ -144,7 +144,13 @@ off so an existing spoiler is not silently removed during editing; only the new
 toolbar action is staged. The existing received-content renderer conceals spoilers
 independently of `rich_message_rendering`, with regression coverage for both flag
 states. Spoilers are a presentation feature, not encryption: the Matrix plain-text
-fallback still contains the text. Slash-command requirements and CI/manual
+fallback still contains the text. Edit and reply submissions now carry the
+serialized formatted body and mentions through both native IPC and companion
+HTTP routes, reusing the normal message-content builder before applying Matrix
+replacement/reply relations. Previously those two paths discarded all formatting.
+Hook/transport regressions and the message-actions integration scenario cover
+spoiler retention at these boundaries, pending CI verification.
+Slash-command requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
 ## What I'd revisit as this grows

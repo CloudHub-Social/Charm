@@ -195,9 +195,19 @@ pub async fn edit_message(
     room_id: String,
     event_id: String,
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    edit_message_impl(&client, &room_id, &event_id, new_body).await
+    edit_message_impl(
+        &client,
+        &room_id,
+        &event_id,
+        new_body,
+        formatted_body,
+        mentions,
+    )
+    .await
 }
 
 /// Core logic behind [`edit_message`], taking a plain `&Client` so it's
@@ -207,6 +217,8 @@ pub async fn edit_message_impl(
     room_id: &str,
     event_id: &str,
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<(), String> {
     let room = get_room(client, room_id)?;
 
@@ -244,7 +256,8 @@ pub async fn edit_message_impl(
     }
 
     let metadata = ReplacementMetadata::from(original_message);
-    let content = RoomMessageEventContent::text_plain(new_body).make_replacement(metadata);
+    let content = super::send::build_message_content(new_body, formatted_body, mentions)?
+        .make_replacement(metadata);
 
     // Routed through the same capture helper as send_message/send_reply
     // (discarding the transaction id — edits don't need frontend
@@ -506,9 +519,19 @@ pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<String, String> {
     let client = state.require_client().await?;
-    send_reply_impl(&client, &room_id, &in_reply_to_event_id, body).await
+    send_reply_impl(
+        &client,
+        &room_id,
+        &in_reply_to_event_id,
+        body,
+        formatted_body,
+        mentions,
+    )
+    .await
 }
 
 /// Core logic behind [`send_reply`].
@@ -517,6 +540,8 @@ pub async fn send_reply_impl(
     room_id: &str,
     in_reply_to_event_id: &str,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<String, String> {
     let room = get_room(client, room_id)?;
 
@@ -547,11 +572,8 @@ pub async fn send_reply_impl(
         .as_original()
         .ok_or_else(|| "target event has already been redacted".to_string())?;
 
-    let content = RoomMessageEventContent::text_plain(body).make_reply_to(
-        original_message,
-        ForwardThread::No,
-        AddMentions::Yes,
-    );
+    let content = super::send::build_message_content(body, formatted_body, mentions)?
+        .make_reply_to(original_message, ForwardThread::No, AddMentions::Yes);
 
     super::send::send_and_capture_transaction_id(
         client,

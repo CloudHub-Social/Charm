@@ -517,6 +517,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/reply`, {
         in_reply_to_event_id: args.inReplyToEventId,
         body: args.body,
+        formatted_body: args.formattedBody,
+        mentions: args.mentions,
       });
     case "edit_message":
       return requestJson<T>(
@@ -524,7 +526,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
           String(args.eventId),
         )}/edit`,
-        { new_body: args.newBody },
+        { new_body: args.newBody, formatted_body: args.formattedBody, mentions: args.mentions },
       );
     case "redact_event":
       return requestBytes<T>(

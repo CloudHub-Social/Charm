@@ -128,12 +128,19 @@ async fn step_edit_message_replaces_body_and_marks_edited(client: &Client, timel
         timeline.room().room_id().as_str(),
         &event_id,
         "hello world".to_string(),
+        Some("<span data-mx-spoiler>hello world</span>".to_string()),
+        None,
     )
     .await
     .expect("edit succeeds");
 
     wait_for_summary(client, timeline, &event_id, |found| {
-        found.edited && found.body == "hello world"
+        found.edited
+            && found.body == "hello world"
+            && found
+                .formatted_body
+                .as_deref()
+                .is_some_and(|html| html.contains("data-mx-spoiler"))
     })
     .await;
 }
@@ -287,6 +294,8 @@ async fn step_send_reply_carries_in_reply_to(client: &Client, timeline: &Timelin
         timeline.room().room_id().as_str(),
         &original_event_id,
         "reply body".to_string(),
+        Some("<span data-mx-spoiler>reply body</span>".to_string()),
+        None,
     )
     .await
     .expect("reply succeeds");
@@ -303,7 +312,12 @@ async fn step_send_reply_carries_in_reply_to(client: &Client, timeline: &Timelin
                     .as_ref()
                     .is_some_and(|r| r.event_id == original_event_id)
             });
-            if reply.is_some() {
+            if reply.is_some_and(|message| {
+                message
+                    .formatted_body
+                    .as_deref()
+                    .is_some_and(|html| html.contains("data-mx-spoiler"))
+            }) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(300)).await;

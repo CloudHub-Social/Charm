@@ -3523,6 +3523,8 @@ async fn send_message(
 struct ReplyRequest {
     in_reply_to_event_id: String,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 }
 
 async fn send_reply(
@@ -3537,6 +3539,8 @@ async fn send_reply(
         &room_id,
         &request.in_reply_to_event_id,
         request.body,
+        request.formatted_body,
+        request.mentions,
     )
     .await
     .map_err(ApiError::bad_request)?;
@@ -3546,6 +3550,8 @@ async fn send_reply(
 #[derive(Debug, Deserialize)]
 struct EditMessageRequest {
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 }
 
 async fn edit_message(
@@ -3555,9 +3561,16 @@ async fn edit_message(
     Json(request): Json<EditMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    edit_message_impl(&session.client, &room_id, &event_id, request.new_body)
-        .await
-        .map_err(ApiError::bad_request)?;
+    edit_message_impl(
+        &session.client,
+        &room_id,
+        &event_id,
+        request.new_body,
+        request.formatted_body,
+        request.mentions,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -58,7 +58,13 @@ export function useMessageSend({
       setEditingEventId(null);
       stopTyping();
       try {
-        await editMessage(targetRoom.room_id, eventId, content.body);
+        await editMessage(
+          targetRoom.room_id,
+          eventId,
+          content.body,
+          content.formattedBody,
+          content.mentions,
+        );
       } catch (err) {
         console.error(err);
       }
@@ -79,10 +85,13 @@ export function useMessageSend({
     // for rendering any more, only for triggering the send.
     try {
       if (replyingTo) {
-        // Replies don't yet carry formatting/mentions — `send_reply` wasn't
-        // extended in this pass (only `send_message` was, per spec scope); a
-        // formatted reply falls back to its plain body.
-        await sendReply(targetRoom.room_id, replyingTo.event_id, content.body);
+        await sendReply(
+          targetRoom.room_id,
+          replyingTo.event_id,
+          content.body,
+          content.formattedBody,
+          content.mentions,
+        );
       } else {
         await sendMessage(
           targetRoom.room_id,
