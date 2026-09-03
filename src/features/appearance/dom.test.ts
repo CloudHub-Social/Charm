@@ -84,6 +84,8 @@ describe("applyAppearanceToDom", () => {
 
   it("sets all four dataset attributes on <html>", () => {
     applyAppearanceToDom({
+      clockFormat: "locale",
+      dateFormat: "locale",
       theme: "midnight",
       fontSize: "lg",
       density: "compact",

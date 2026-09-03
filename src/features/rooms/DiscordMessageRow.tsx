@@ -120,8 +120,10 @@ export function DiscordMessageRow({
         )
       ) : (
         <div className="relative w-6 shrink-0">
-          <span className="absolute left-0 top-0.5 hidden w-6 text-center font-mono text-[10px] text-muted-foreground group-hover:block">
-            {formatTime(message.timestamp_ms, clockFormat).replace(/\s?[AP]M$/i, "")}
+          <span className="absolute left-0 top-0.5 hidden w-6 break-words text-center font-mono text-[10px] text-muted-foreground group-hover:block">
+            {clockFormat === "locale"
+              ? formatTime(message.timestamp_ms).replace(/\s?[AP]M$/i, "")
+              : formatTime(message.timestamp_ms, clockFormat)}
           </span>
         </div>
       )}

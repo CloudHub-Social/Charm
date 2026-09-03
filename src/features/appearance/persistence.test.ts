@@ -33,6 +33,8 @@ afterEach(() => {
 describe("local mirror", () => {
   it("round-trips through localStorage as a { state, updatedAt } envelope", () => {
     const state: AppearanceState = {
+      clockFormat: "locale",
+      dateFormat: "locale",
       theme: "light",
       fontSize: "lg",
       density: "compact",
