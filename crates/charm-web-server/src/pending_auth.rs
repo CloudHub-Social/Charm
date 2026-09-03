@@ -186,6 +186,9 @@ impl PendingAuthStore {
     /// owner cookies under one transition lock. This prevents a new flow from
     /// being admitted between clearing the discovery and active-flow owners.
     pub async fn cancel_owners(&self, owners: &[&str]) {
+        if owners.is_empty() {
+            return;
+        }
         let completed = {
             let _transition = self.transitions.lock().await;
             let mut unique = HashSet::new();
@@ -494,10 +497,8 @@ impl PendingAuthStore {
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
+        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await;
         self.spawn_expiry(attempt_id.clone());
         let homeserver_url = request.homeserver_url.clone();
         let build_result = tokio::select! {
@@ -833,10 +834,8 @@ impl PendingAuthStore {
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
+        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await;
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
             result = async {
@@ -2031,6 +2030,27 @@ mod tests {
             .lock()
             .await
             .contains_key("new-token-login"));
+    }
+
+    #[tokio::test]
+    async fn owner_admission_waits_for_the_multi_owner_transition() {
+        let store = PendingAuthStore::default();
+        let transition = store.transitions.lock().await;
+        let admission = store.admit_owner_attempt(
+            "owner".to_owned(),
+            "attempt".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            () = &mut admission => panic!("admission bypassed transition lock"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.is_empty());
+        drop(transition);
+        admission.await;
+        assert!(store.cancellations.lock().await.contains_key("attempt"));
     }
 
     #[test]

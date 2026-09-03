@@ -1741,8 +1741,13 @@ async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
         jar.get(PREAUTH_COOKIE).map(|cookie| cookie.value()),
         jar.get(DISCOVERY_COOKIE).map(|cookie| cookie.value()),
     ];
-    let owners = owners.into_iter().flatten().collect::<Vec<_>>();
-    state.pending_auth.cancel_owners(&owners).await;
+    match owners {
+        [Some(first), Some(second)] => state.pending_auth.cancel_owners(&[first, second]).await,
+        [Some(owner), None] | [None, Some(owner)] => {
+            state.pending_auth.cancel_owner(owner).await;
+        }
+        [None, None] => {}
+    }
 }
 
 async fn begin_registration(
