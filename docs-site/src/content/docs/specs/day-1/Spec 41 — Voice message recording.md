@@ -95,9 +95,18 @@ metadata travels through the existing native and web attachment transports;
 failed sends retain the local preview for retry. The current live visualization
 is a microphone-level meter, not yet the required waveform history.
 
+Added unit coverage for permission denial, late permission and audio-resume
+responses, size/duration limits, preview disposal, stale recorder events, mobile
+pointer cancellation, explicit send, and native/web transport metadata. A CI
+browser test uses Chromium's synthetic microphone with the real MediaRecorder
+to exercise capture, local preview, and discard without physical microphone
+access. Recording envelopes and waveform fields are explicitly redacted from
+structured diagnostics.
+
 This is implementation progress, not acceptance: generated binding import,
-microphone lifecycle and gesture tests, CI, waveform UI, platform permission
-checks, and real-device/cross-client interoperability remain outstanding.
+passing CI, waveform UI, platform permission checks, and real-device/cross-client
+interoperability remain outstanding. Synthetic-microphone tests do not replace
+device permission or codec interoperability checks.
 
 - Reuse Spec 02's `send_attachment` if it can carry the extra voice-message content
   markers + waveform; if not, a small extension or a dedicated
