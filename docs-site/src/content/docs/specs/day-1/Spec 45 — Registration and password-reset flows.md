@@ -311,7 +311,11 @@ starts and floods that rotate pre-auth sessions.
 
 Companion registration, password-reset, token-login, and SSO admission cancels
 both server-derived browser cookie owners and inserts the replacement attempt
-under one transition lock. Routes do not split cancellation from admission for
+under one transition lock. Capacity reservation happens after superseded payloads
+release their permits inside that transition, so a browser can replace its own
+stored attempt even at the global limit. Completed SSO results release capacity
+before remote cleanup; unrelated browsers remain subject to the same limit.
+Routes do not split cancellation from admission for
 these flows; the replacement remains addressable for cancellation throughout
 network setup and finalization.
 

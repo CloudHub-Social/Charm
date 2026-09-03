@@ -118,7 +118,11 @@ struct CompletedSso {
 }
 
 async fn discard_completed_sso(completion: CompletedSso) {
-    let SsoCompletionResult::Success(completed) = completion.result else {
+    discard_sso_result(completion.result).await;
+}
+
+async fn discard_sso_result(result: SsoCompletionResult) {
+    let SsoCompletionResult::Success(completed) = result else {
         return;
     };
     let (_, session, _, _) = *completed;
@@ -179,9 +183,9 @@ impl PendingAuthStore {
         owner: impl Into<AuthOwner>,
         attempt_id: String,
         cancellation: CancellationToken,
-    ) {
+    ) -> Result<OwnedSemaphorePermit, String> {
         let owner = owner.into();
-        let completed = {
+        let (completed, capacity) = {
             let _transition = self.transitions.lock().await;
             let mut owners = owner.superseded;
             owners.push(owner.id.clone());
@@ -191,15 +195,19 @@ impl PendingAuthStore {
             for previous in owners {
                 completed.extend(self.clear_owner_attempts(&previous).await);
             }
-            self.cancellations
-                .lock()
-                .await
-                .insert(attempt_id, (owner.id, cancellation));
-            completed
+            let capacity = self.reserve_capacity();
+            if capacity.is_ok() {
+                self.cancellations
+                    .lock()
+                    .await
+                    .insert(attempt_id, (owner.id, cancellation));
+            }
+            (completed, capacity)
         };
         for completion in completed {
-            discard_completed_sso(completion).await;
+            discard_sso_result(completion).await;
         }
+        capacity
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
@@ -223,11 +231,11 @@ impl PendingAuthStore {
             completed
         };
         for completion in completed {
-            discard_completed_sso(completion).await;
+            discard_sso_result(completion).await;
         }
     }
 
-    async fn clear_owner_attempts(&self, owner: &str) -> Vec<CompletedSso> {
+    async fn clear_owner_attempts(&self, owner: &str) -> Vec<SsoCompletionResult> {
         let attempt_ids = {
             let guard = self.cancellations.lock().await;
             guard
@@ -255,7 +263,13 @@ impl PendingAuthStore {
                 .collect::<Vec<_>>();
             attempt_ids
                 .into_iter()
-                .filter_map(|attempt_id| guard.remove(&attempt_id))
+                // Release capacity inside the transition; remote cleanup runs
+                // afterward and must not prevent replacement at the limit.
+                .filter_map(|attempt_id| {
+                    guard
+                        .remove(&attempt_id)
+                        .map(|completion| completion.result)
+                })
                 .collect::<Vec<_>>()
         }
     }
@@ -269,11 +283,11 @@ impl PendingAuthStore {
         has_persistence: bool,
     ) -> Result<(String, String), String> {
         let owner = owner.into();
-        let capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
-            .await;
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
         let owner = owner.id;
         let (client, crypto) = match tokio::select! {
             result = crate::auth::build_client(&homeserver_url, has_persistence) => result,
@@ -498,11 +512,11 @@ impl PendingAuthStore {
         token: String,
         has_persistence: bool,
     ) -> Result<(AuthenticatedClient, String), String> {
-        let _capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner, attempt_id.clone(), cancellation.clone())
-            .await;
+        let _capacity = self
+            .admit_owner_attempt(owner, attempt_id.clone(), cancellation.clone())
+            .await?;
         self.spawn_expiry(attempt_id.clone());
         match login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await {
             Ok(completed) => Ok((completed, attempt_id)),
@@ -520,12 +534,12 @@ impl PendingAuthStore {
         has_persistence: bool,
     ) -> Result<BeginRegistrationResult, String> {
         let owner = owner.into();
-        let capacity = self.reserve_capacity()?;
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
-            .await;
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
         let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let homeserver_url = request.homeserver_url.clone();
@@ -851,7 +865,6 @@ impl PendingAuthStore {
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
         let owner = owner.into();
-        let capacity = self.reserve_capacity()?;
         let delivery_email = email.trim().to_owned();
         let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
             return Err("enter an email address".to_string());
@@ -863,8 +876,9 @@ impl PendingAuthStore {
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
-            .await;
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
         let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
@@ -2051,7 +2065,8 @@ mod tests {
                 "new-token-login".to_owned(),
                 CancellationToken::new(),
             )
-            .await;
+            .await
+            .expect("replacement admission");
 
         assert!(old_cancellation.is_cancelled());
         assert!(!store.sso_attempts.lock().await.contains_key("old-sso"));
@@ -2074,12 +2089,12 @@ mod tests {
         tokio::pin!(admission);
         tokio::select! {
             biased;
-            () = &mut admission => panic!("admission bypassed transition lock"),
+            _ = &mut admission => panic!("admission bypassed transition lock"),
             () = std::future::ready(()) => {}
         }
         assert!(store.cancellations.lock().await.is_empty());
         drop(transition);
-        admission.await;
+        let _capacity = admission.await.expect("admission");
         assert!(store.cancellations.lock().await.contains_key("attempt"));
     }
 
@@ -2090,14 +2105,16 @@ mod tests {
         let discovery = CancellationToken::new();
         store
             .admit_owner_attempt("preauth".to_owned(), "old-a".to_owned(), preauth.clone())
-            .await;
+            .await
+            .expect("preauth admission");
         store
             .admit_owner_attempt(
                 "discovery".to_owned(),
                 "old-b".to_owned(),
                 discovery.clone(),
             )
-            .await;
+            .await
+            .expect("discovery admission");
         let replacement = CancellationToken::new();
         store
             .admit_owner_attempt(
@@ -2108,13 +2125,54 @@ mod tests {
                 "replacement".to_owned(),
                 replacement.clone(),
             )
-            .await;
+            .await
+            .expect("replacement admission");
         assert!(preauth.is_cancelled());
         assert!(discovery.is_cancelled());
         assert!(!replacement.is_cancelled());
         let cancellations = store.cancellations.lock().await;
         assert_eq!(cancellations.len(), 1);
         assert!(cancellations.contains_key("replacement"));
+    }
+
+    #[tokio::test]
+    async fn replacement_reuses_its_owner_slot_at_capacity_without_admitting_strangers() {
+        let store = PendingAuthStore::default();
+        let _other_permits = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().expect("other owner capacity"))
+            .collect::<Vec<_>>();
+        store.completed_sso.lock().await.insert(
+            "old".to_owned(),
+            CompletedSso {
+                _capacity: store.reserve_capacity().expect("owner capacity"),
+                owner: "browser".to_owned(),
+                result: SsoCompletionResult::Failed("cancelled".to_owned()),
+                created_at: Instant::now(),
+            },
+        );
+        let denied = store
+            .admit_owner_attempt(
+                "stranger".to_owned(),
+                "denied".to_owned(),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(denied.is_err());
+        assert!(!store.cancellations.lock().await.contains_key("denied"));
+        let _replacement = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("owner replaces its own slot at capacity");
+        assert!(store.completed_sso.lock().await.is_empty());
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(
+            store.reserve_capacity().is_err(),
+            "replacement retains the capacity bound"
+        );
     }
 
     #[test]
