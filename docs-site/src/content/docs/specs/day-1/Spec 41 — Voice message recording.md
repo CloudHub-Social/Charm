@@ -62,6 +62,35 @@ waveform for voice messages).
 
 ## API/contract changes
 
+### Implementation boundary
+
+The pinned matrix-sdk 0.18.0 provides `AttachmentInfo::Voice(BaseAudioInfo)`.
+Its attachment send path constructs the voice marker and audio details from that
+variant; use it rather than constructing a second upload/send implementation.
+`BaseAudioInfo::waveform` accepts normalized floating-point amplitudes in `[0, 1]`;
+the SDK converts these into the Matrix wire representation. Duration and waveform
+must both be supplied for the SDK's audio-details block.
+
+The current native command takes a filesystem path, whereas browser recording
+produces a `Blob` with no trusted path. Extend the existing attachment boundary
+to accept a bounded recording payload and metadata, without granting arbitrary
+filesystem write access or persisting microphone data merely to bridge the two.
+The web companion should accept the same metadata alongside its existing
+multipart upload. Both transports must validate audio MIME, finite normalized
+waveform samples, duration, and payload size before starting the upload; reuse
+the current room authorization, transaction ID, progress, cancellation, and
+encrypted-room handling. Ordinary attachment behavior must remain unchanged.
+
+Recording must stop and release microphone tracks, timers, audio nodes, and
+preview object URLs on discard, room/account change, flag disable, and unmount.
+A late permission response must release its stream if the recording attempt is
+no longer current. Preview is local-only until explicit send. Microphone samples,
+filenames, and recorded content must not enter logs or telemetry.
+
+These are implementation requirements, not completed functionality. The recorder,
+transport extension, default-off flag, and platform interoperability evidence
+remain outstanding.
+
 - Reuse Spec 02's `send_attachment` if it can carry the extra voice-message content
   markers + waveform; if not, a small extension or a dedicated
   `send_voice_message(room_id, file_path, waveform, duration_ms)` command.
