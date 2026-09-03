@@ -160,5 +160,11 @@
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "key": "crypto_backup_setup",
+    "default": false,
+    "description": "Set up Matrix secret storage and server-side encrypted room-key backup.",
+    "owner": "Spec 44 (crypto key backup and import/export)"
   }
 ]

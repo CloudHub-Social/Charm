@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useFlag } from "@/featureFlags";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { DeviceRow } from "./DeviceRow";
+import { RecoverySetupCard } from "./RecoverySetupCard";
 import {
   useCrossSigningResetUrl,
   useCrossSigningStatus,
@@ -35,6 +37,7 @@ function groupDevices(devices: DeviceSummary[]) {
 }
 
 export function DevicesPanel() {
+  const recoverySetupEnabled = useFlag("crypto_backup_setup");
   const { data: profile } = useProfile();
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
@@ -90,6 +93,9 @@ export function DevicesPanel() {
   const isBootstrapped = Boolean(
     status?.has_identity ||
     (status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key),
+  );
+  const hasLocalCrossSigningKeys = Boolean(
+    status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key,
   );
   const groups = groupDevices(devices ?? []);
   const selectableDeviceIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
@@ -270,6 +276,13 @@ export function DevicesPanel() {
             )}
           </SettingTile>
         </SettingsCard>
+      )}
+
+      {recoverySetupEnabled && (
+        <RecoverySetupCard
+          crossSigningReady={hasLocalCrossSigningKeys}
+          recoveryDisabled={recoveryState === "disabled"}
+        />
       )}
 
       {verify.isError && (

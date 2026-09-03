@@ -9,6 +9,7 @@ import {
   recoverFromKey,
   recoveryStatus,
   requestDeviceVerification,
+  setupRecovery,
 } from "@/lib/matrix";
 
 export const DEVICES_QUERY_KEY = ["devices"] as const;
@@ -80,6 +81,12 @@ export function useRecoverFromKey() {
         queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY }),
       ]),
+  });
+}
+
+export function useSetupRecovery() {
+  return useMutation({
+    mutationFn: (passphrase?: string) => setupRecovery(passphrase),
   });
 }
 

@@ -1,0 +1,193 @@
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { logAndIgnore } from "@/lib/logAndIgnore";
+import { SettingsCard, SettingTile } from "./components/SettingsCard";
+import { RECOVERY_STATUS_QUERY_KEY, useSetupRecovery } from "./useDevices";
+
+export function RecoverySetupCard({
+  crossSigningReady,
+  recoveryDisabled,
+}: {
+  crossSigningReady: boolean;
+  recoveryDisabled: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const setup = useSetupRecovery();
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [roomKeysBackedUp, setRoomKeysBackedUp] = useState(true);
+  const [saved, setSaved] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const hasPassphrase = passphrase.length > 0;
+  const passphraseValid =
+    (!hasPassphrase && confirmation.length === 0) ||
+    (passphrase.length >= 8 && confirmation === passphrase);
+
+  async function startSetup() {
+    const summary = await setup.mutateAsync(hasPassphrase ? passphrase : undefined);
+    setPassphrase("");
+    setConfirmation("");
+    setSetupOpen(false);
+    setRoomKeysBackedUp(summary.room_keys_backed_up);
+    setRecoveryKey(summary.recovery_key);
+  }
+
+  function closeSetup() {
+    if (setup.isPending) return;
+    setSetupOpen(false);
+    setPassphrase("");
+    setConfirmation("");
+    setup.reset();
+  }
+
+  function finish() {
+    if (!saved) return;
+    setRecoveryKey(null);
+    setSaved(false);
+    setCopied(false);
+    setRoomKeysBackedUp(true);
+    void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
+  }
+
+  function copyRecoveryKey() {
+    if (!recoveryKey || !navigator.clipboard?.writeText) return;
+    navigator.clipboard
+      .writeText(recoveryKey)
+      .then(() => setCopied(true))
+      .catch(logAndIgnore);
+  }
+
+  return (
+    <>
+      {recoveryDisabled && (
+        <SettingsCard heading="Recovery">
+          <SettingTile>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Protect encrypted message history by creating Matrix secret storage and a server-side
+              room-key backup. Charm will give you a recovery key to save offline.
+            </p>
+            {!crossSigningReady && (
+              <p className="mb-3 text-sm text-muted-foreground">
+                Set up or restore cross-signing above before enabling recovery.
+              </p>
+            )}
+            <Button size="sm" onClick={() => setSetupOpen(true)} disabled={!crossSigningReady}>
+              Set up recovery
+            </Button>
+          </SettingTile>
+        </SettingsCard>
+      )}
+
+      <Dialog
+        open={setupOpen}
+        onOpenChange={(open) => {
+          if (!open) closeSetup();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set up recovery</DialogTitle>
+            <DialogDescription>
+              Charm will create a server-side encrypted room-key backup. You can optionally add a
+              passphrase, but you must save the generated recovery key either way.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label htmlFor="recovery-setup-passphrase">Optional passphrase</Label>
+              <Input
+                id="recovery-setup-passphrase"
+                type="password"
+                autoComplete="new-password"
+                value={passphrase}
+                onChange={(event) => setPassphrase(event.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="recovery-setup-confirmation">Confirm passphrase</Label>
+              <Input
+                id="recovery-setup-confirmation"
+                type="password"
+                autoComplete="new-password"
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.target.value)}
+              />
+            </div>
+            {setup.isError && <p className="text-sm text-destructive">{String(setup.error)}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={closeSetup} disabled={setup.isPending}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => startSetup().catch(logAndIgnore)}
+              disabled={!passphraseValid || setup.isPending}
+            >
+              {setup.isPending ? "Backing up room keys…" : "Create backup"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={recoveryKey !== null}
+        onOpenChange={(open) => {
+          if (!open) finish();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save your recovery key</DialogTitle>
+            <DialogDescription>
+              Store this somewhere safe and separate from this device. Charm cannot recover it for
+              you after this window closes.
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="overflow-x-auto rounded-md border border-border bg-muted p-3 text-sm whitespace-pre-wrap">
+            {recoveryKey}
+          </pre>
+          {!roomKeysBackedUp && (
+            <p className="text-sm text-destructive" role="alert">
+              Recovery is enabled, but some room keys could not be uploaded yet. Keep Charm open and
+              online so it can retry the backup.
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={copyRecoveryKey}>
+              Copy recovery key
+            </Button>
+            {copied && <output className="text-sm text-muted-foreground">Copied</output>}
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              className="mt-0.5"
+              type="checkbox"
+              checked={saved}
+              onChange={(event) => setSaved(event.target.checked)}
+            />
+            I saved this recovery key somewhere safe.
+          </label>
+          <DialogFooter>
+            <Button onClick={finish} disabled={!saved}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}

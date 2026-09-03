@@ -39,6 +39,7 @@ import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
+import type { RecoverySetupSummary } from "@bindings/RecoverySetupSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
 import type { RegistrationEmailChallenge } from "@bindings/RegistrationEmailChallenge";
@@ -656,6 +657,11 @@ export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
 
 export function recoveryStatus(): Promise<RecoveryStatusSummary> {
   return invoke("recovery_status");
+}
+
+/** Creates Matrix secret storage and key backup, returning the recovery key the user must save. */
+export function setupRecovery(passphrase?: string): Promise<RecoverySetupSummary> {
+  return invoke("setup_recovery", { passphrase });
 }
 
 // captureOnError: false — a wrong/invalid recovery key is an expected user-input

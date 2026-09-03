@@ -3,14 +3,25 @@ title: Charm 2.0 Spec — Crypto key backup setup and key import/export
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 sidebar:
   label: "Crypto key backup & import/export"
 ---
 
-**Workstream:** one PR / one agent. Extends Spec 25 (persistent crypto state &
+**Workstream:** dependency-ordered security slices. Extends Spec 25 (persistent crypto state &
 recovery-key-sufficient verification), which shipped recovery-key **restore** but
 not first-time **setup** or manual key file I/O.
+
+## Current implementation status
+
+- **First-time key backup / 4S setup:** implemented behind the default-off
+  `crypto_backup_setup` feature flag. The flow requires this session to hold all
+  local cross-signing private keys, delegates secret storage and backup creation
+  to matrix-rust-sdk, waits for the initial room-key upload, and keeps the
+  generated recovery key visible until the user confirms it is saved.
+- **Manual encrypted room-key import/export:** remains to be implemented.
+- **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
+  be implemented.
 
 ## Problem & why now
 
@@ -19,14 +30,13 @@ cross-signing bootstrap, recovery-key restore, and reset are all present
 (`DevicesPanel.tsx`, `VerificationOverlay.tsx`, `useDevices.ts`). But the parity
 audit (2026-07-13) found two real gaps against Charm 1.0:
 
-1. **First-time key backup / 4S setup is missing.** Charm 2.0's recovery card
+1. **First-time key backup / 4S setup was missing.** Charm 2.0's recovery card
    renders **only** when `recoveryState === "incomplete"` (i.e. a backup already
    exists to restore from — `DevicesPanel.tsx:245`). There is no path for the
    `disabled` state: a user who has never set up key backup cannot *create* a
-   recovery key / enable server-side key backup from Charm 2.0 at all. Charm 1.0 has
-   this (`components/Devices.tsx:60-122` secret-storage bootstrap, `LocalBackup.tsx`).
-   This is the more important of the two — without it, new users never establish a
-   backup, so a lost device = lost message history.
+   recovery key / enable server-side key backup from Charm 2.0 at all. Charm now
+   provides this staged flow through matrix-rust-sdk; it remains default-off while
+   CI and live-account recovery gates are completed.
 2. **Manual megolm key export/import is missing.** Charm 1.0 exports/imports
    encrypted `.txt` room-key files (`LocalBackup.tsx:40-47,188-190` —
    `exportRoomKeysAsJson` + `encryptMegolmKeyFile` → `cinny-keys.txt`, and the
@@ -93,7 +103,7 @@ negotiation). Reuse whatever QR-generation/scanning the login flow (MSC4108,
 
 ## Data flow
 
-New IPC: `setup_key_backup(passphrase?) -> recovery_key`, `export_room_keys(passphrase,
+New IPC: `setup_recovery(passphrase?) -> recovery_key`, `export_room_keys(passphrase,
 file_path)`, `import_room_keys(passphrase, file_path) -> imported_count`. All thin
 wrappers over matrix-rust-sdk crypto operations, Rust-side (keys never cross IPC as
 raw material — only the recovery key string the user must save, and file paths).
