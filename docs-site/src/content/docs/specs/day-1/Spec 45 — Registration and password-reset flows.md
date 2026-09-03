@@ -313,7 +313,12 @@ Companion registration, password-reset, token-login, and SSO admission cancels
 both server-derived browser cookie owners and inserts the replacement attempt
 under one transition lock. Capacity reservation happens after superseded payloads
 release their permits inside that transition, so a browser can replace its own
-stored attempt even at the global limit. Completed SSO results release capacity
+stored attempt even at the global limit. If the cancelled attempt still holds
+its permit in an in-flight task, its replacement waits up to five seconds for
+capacity outside the transition lock, and remains cancellable by a newer flow.
+Fresh owners still fail immediately at capacity. A regression test exercises
+release by an old task that itself needs the transition lock; CI is pending.
+Completed SSO results release capacity
 before remote cleanup; unrelated browsers remain subject to the same limit.
 Routes do not split cancellation from admission for
 these flows; the replacement remains addressable for cancellation throughout

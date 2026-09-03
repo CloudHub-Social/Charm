@@ -38,6 +38,7 @@ use crate::session::{CryptoStoreHandle, Session};
 
 const ATTEMPT_TTL: Duration = Duration::from_secs(20 * 60);
 const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
+const SUPERSEDED_CAPACITY_WAIT: Duration = Duration::from_secs(5);
 const MAIL_QUOTA_WINDOW: Duration = Duration::from_secs(10 * 60);
 const MAX_MAILS_PER_SOURCE: usize = 5;
 const MAX_MAILS_PER_ADDRESS: usize = 3;
@@ -185,27 +186,55 @@ impl PendingAuthStore {
         cancellation: CancellationToken,
     ) -> Result<OwnedSemaphorePermit, String> {
         let owner = owner.into();
-        let (completed, capacity) = {
+        let (completed, capacity, replacing_in_flight) = {
             let _transition = self.transitions.lock().await;
             let mut owners = owner.superseded;
             owners.push(owner.id.clone());
             owners.sort_unstable();
             owners.dedup();
+            let replacing_in_flight = self
+                .cancellations
+                .lock()
+                .await
+                .values()
+                .any(|(previous, _)| owners.contains(previous));
             let mut completed = Vec::new();
             for previous in owners {
                 completed.extend(self.clear_owner_attempts(&previous).await);
             }
             let capacity = self.reserve_capacity();
-            if capacity.is_ok() {
+            if capacity.is_ok() || replacing_in_flight {
                 self.cancellations
                     .lock()
                     .await
-                    .insert(attempt_id, (owner.id, cancellation));
+                    .insert(attempt_id.clone(), (owner.id, cancellation.clone()));
             }
-            (completed, capacity)
+            (completed, capacity, replacing_in_flight)
         };
         for completion in completed {
             discard_sso_result(completion).await;
+        }
+        // In-flight setup/continuation owns its permit on another task's
+        // stack. That task may need `transitions` to observe cancellation,
+        // so never hold the transition lock while awaiting its released slot.
+        let capacity = match capacity {
+            Err(_) if replacing_in_flight => {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err("authentication attempt was superseded".to_string()),
+                    released = tokio::time::timeout(SUPERSEDED_CAPACITY_WAIT, self.capacity.clone().acquire_owned()) => {
+                        released.ok().and_then(Result::ok).ok_or_else(||
+                            "too many authentication attempts are in progress; try again later".to_string())
+                    }
+                }
+            }
+            result => result,
+        };
+        if capacity.is_err() {
+            self.cancel_token(&attempt_id).await;
+        }
+        if cancellation.is_cancelled() && capacity.is_ok() {
+            return Err("authentication attempt was superseded".to_string());
         }
         capacity
     }
@@ -2133,6 +2162,37 @@ mod tests {
         let cancellations = store.cancellations.lock().await;
         assert_eq!(cancellations.len(), 1);
         assert!(cancellations.contains_key("replacement"));
+    }
+
+    #[tokio::test]
+    async fn replacement_waits_for_cancelled_in_flight_capacity_without_holding_transition() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let old_token = CancellationToken::new();
+        let old_permit = store
+            .admit_owner_attempt("browser".to_owned(), "old".to_owned(), old_token.clone())
+            .await
+            .unwrap();
+        let old_store = store.clone();
+        let old_task = tokio::spawn(async move {
+            old_token.cancelled().await;
+            let _transition = old_store.transitions.lock().await;
+            drop(old_permit);
+        });
+        let replacement = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("replacement must await the cancelled setup's permit");
+        old_task.await.unwrap();
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(store.reserve_capacity().is_err());
+        drop(replacement);
     }
 
     #[tokio::test]
