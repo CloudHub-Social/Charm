@@ -137,7 +137,11 @@ connection: the SDK owns that schema and migration lifecycle.
   the preceding valid edit or original content only when the original is not
   tombstoned. An edit that arrives before its original remains encrypted,
   non-visible provenance until the original establishes the sender; forged-sender
-  candidates are then removed before any row becomes visible. A late
+  candidates are then removed before any row becomes visible. Schema migration
+  enforces the same boundary when rebuilding visible rows: missing originals
+  remain deferred and known mismatched-sender candidates are purged. Regression
+  coverage migrates both legitimate and forged edits received before originals;
+  GitHub Actions verification remains required. A late
   edit/redaction, backfill, or replay therefore converges without retaining or
   resurrecting stale or redacted text.
 - Backfill: on first login, and on the first index open after the feature flag
