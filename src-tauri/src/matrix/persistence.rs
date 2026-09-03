@@ -146,7 +146,9 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
         };
         if !name.starts_with(TEMP_STORE_PREFIX)
             && !name.ends_with(STALE_BACKUP_SUFFIX)
-            && !cancelled_account_cleanup_pending_at(root, &name)?
+            // An unreadable marker must never make its account restorable,
+            // but it must not prevent discovery of unrelated accounts either.
+            && !cancelled_account_cleanup_pending_at(root, &name).unwrap_or(true)
         {
             keys.push(name);
         }
@@ -1953,11 +1955,13 @@ mod tests {
     #[test]
     fn known_account_keys_excludes_temp_stores_backups_and_cancelled_accounts() {
         let root = ScratchRoot::new("known-keys");
+        let unaffected_key = account_key("@charm-persistence-test-unaffected:localhost");
         let account_key = account_key("@charm-persistence-test-known:localhost");
         let temp_key = temp_store_key();
         let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
 
         store_path_at(&root.0, &account_key).unwrap();
+        store_path_at(&root.0, &unaffected_key).unwrap();
         store_path_at(&root.0, &temp_key).unwrap();
         std::fs::create_dir_all(root.0.join(&backup_key)).unwrap();
         std::fs::write(
@@ -1971,6 +1975,22 @@ mod tests {
         assert!(!keys.contains(&account_key));
         assert!(!keys.contains(&temp_key));
         assert!(!keys.contains(&backup_key));
+        assert_eq!(keys, vec![unaffected_key]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_cancellation_marker_excludes_only_its_account() {
+        let root = ScratchRoot::new("known-keys-marker-error");
+        let healthy = account_key("@healthy:localhost");
+        store_path_at(&root.0, &healthy).unwrap();
+        // The account directory fits NAME_MAX, while adding the marker prefix
+        // does not. This produces a real metadata error without permissions,
+        // keychain access, or assumptions about whether CI runs as root.
+        let malformed = "a".repeat(250);
+        std::fs::create_dir(root.0.join(&malformed)).unwrap();
+        assert!(cancelled_account_cleanup_pending_at(&root.0, &malformed).is_err());
+        assert_eq!(known_account_keys_at(&root.0).unwrap(), vec![healthy]);
     }
 
     #[test]
