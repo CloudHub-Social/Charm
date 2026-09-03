@@ -308,6 +308,13 @@ completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
+Native SSO cancellation before durable adoption restores both the prior client
+slot and its sync loop if shutdown had begun. If callback exchange already
+authenticated a device, cancellation attempts Matrix logout with the bounded
+auth-network timeout before discarding the temporary local store. Offline or
+failed revocation remains best-effort and is reported without session details;
+it is not evidence that the homeserver device was removed.
+
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
 defaulting to `false`. The existing legacy dummy registration and generic SSO

@@ -3251,6 +3251,21 @@ mod registration_uia_tests {
     }
 
     #[tokio::test]
+    async fn cancelled_sso_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.matrix_auth().logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        revoke_cancelled_sso_device(&client).await;
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
     async fn registration_email_submits_the_token_and_threads_owned_credentials() {
         let server = MatrixMockServer::new().await;
         let client_secret = matrix_sdk::ruma::ClientSecret::new();
@@ -3777,6 +3792,7 @@ pub async fn complete_sso_login(
         },
     };
     if let Err(e) = callback_result {
+        revoke_cancelled_sso_device(&client).await;
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
         // startup sweep. Drop the Matrix client first so its SQLite handles
@@ -3793,6 +3809,7 @@ pub async fn complete_sso_login(
     };
 
     if pending.cancellation.is_cancelled() {
+        revoke_cancelled_sso_device(&client).await;
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err("single sign-on cancelled".to_string());
@@ -3808,6 +3825,7 @@ pub async fn complete_sso_login(
     let _completion_guard = tokio::select! {
         biased;
         () = pending.cancellation.cancelled() => {
+            revoke_cancelled_sso_device(&client).await;
             drop(client);
             let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
             return Err("single sign-on cancelled".to_string());
@@ -3826,8 +3844,10 @@ pub async fn complete_sso_login(
     // loop was draining, restore that loop and leave the prior client current.
     if pending.cancellation.is_cancelled() {
         if let Some(previous_client) = previous_client.as_ref() {
+            *state.client.lock().await = Some(previous_client.clone());
             sync::spawn_sync_task(app.clone(), previous_client.clone());
         }
+        revoke_cancelled_sso_device(&client).await;
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err("single sign-on cancelled".to_string());
@@ -3879,6 +3899,23 @@ pub async fn complete_sso_login(
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
+}
+
+/// A callback can authenticate a device immediately before cancellation wins.
+/// Revocation is bounded so an offline homeserver cannot prevent local cleanup.
+async fn revoke_cancelled_sso_device(client: &Client) {
+    if !client.matrix_auth().logged_in() {
+        return;
+    }
+    if !matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await,
+        Ok(Ok(_))
+    ) {
+        tracing::warn!(
+            command = "cancel_sso_login",
+            status = "device_revocation_failed"
+        );
+    }
 }
 
 /// Exchanges the `loginToken` in `callback_url` for a real session on
