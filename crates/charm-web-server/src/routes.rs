@@ -5550,6 +5550,11 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             .claim_pending_recovery(self.token, pending)
             .await
     }
+    async fn release(&self) -> Result<(), String> {
+        self.persistence
+            .release_pending_recovery_claim(self.token)
+            .await
+    }
     async fn checkpoint(&self) -> Result<(), String> {
         if !self.persistence.has_crypto_backup() {
             return Err(
@@ -5705,16 +5710,36 @@ async fn setup_recovery(
                 "Could not persist encrypted storage; recovery setup was not started.",
             )
         })?;
-    let summary = charm_lib::matrix::recovery_custody::setup_with_custody(
-        &session.client,
-        &WebRecoveryCustody {
-            persistence,
-            token: cookie.value(),
-            session: &session,
-        },
-        request.passphrase,
-    )
+    // Once setup claims its distributed admission bit, request cancellation
+    // must not strand that bit forever. Transfer the mutation to an owned task
+    // before claiming it; dropping the HTTP future then detaches the task, which
+    // still runs setup's success/error release path.
+    let setup_persistence = Arc::clone(persistence);
+    let setup_session = Arc::clone(&session);
+    let setup_token = cookie.value().to_string();
+    let setup_passphrase = request.passphrase;
+    drop(_guard);
+    let summary = tokio::spawn(async move {
+        let _guard = setup_session.recovery_setup_lock.lock().await;
+        if setup_session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed; recovery operation was not started.".to_string());
+        }
+        charm_lib::matrix::recovery_custody::setup_with_custody(
+            &setup_session.client,
+            &WebRecoveryCustody {
+                persistence: &setup_persistence,
+                token: &setup_token,
+                session: &setup_session,
+            },
+            setup_passphrase,
+        )
+        .await
+    })
     .await
+    .map_err(|_| ApiError::bad_request("Recovery setup task failed."))?
     .map_err(ApiError::bad_request)?;
     if let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
         &state.persistence,

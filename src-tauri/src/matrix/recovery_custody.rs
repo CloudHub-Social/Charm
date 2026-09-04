@@ -42,6 +42,10 @@ pub trait RecoveryCustody: Send + Sync {
         self.save(Some(pending)).await?;
         Ok(pending.clone())
     }
+    /// Releases cross-process setup admission after success or failure.
+    async fn release(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Web persists its encrypted crypto database before enabling secret storage.
     async fn checkpoint(&self) -> Result<(), String>;
 }
@@ -113,7 +117,7 @@ pub async fn setup_with_custody(
     if let Some(summary) = pending_summary(client, custody).await? {
         return Ok(summary);
     }
-    let mut pending = match existing {
+    let pending = match existing {
         Some(pending) => pending,
         None => {
             if client.encryption().recovery().state() != RecoveryState::Disabled {
@@ -140,31 +144,41 @@ pub async fn setup_with_custody(
                 recovery_key: None,
                 room_keys_backed_up: false,
             };
-            custody.claim(&pending).await?
+            pending
         }
     };
-    custody.checkpoint().await?;
-    if !client.encryption().backups().are_enabled().await {
-        client
-            .encryption()
-            .recovery()
-            .enable_backup()
-            .await
-            .map_err(|_| {
-                "Could not enable a new backup. Restore an existing backup if one exists."
-            })?;
+    let mut pending = custody.claim(&pending).await?;
+    let result = async {
+        custody.checkpoint().await?;
+        if !client.encryption().backups().are_enabled().await {
+            client
+                .encryption()
+                .recovery()
+                .enable_backup()
+                .await
+                .map_err(|_| {
+                    "Could not enable a new backup. Restore an existing backup if one exists."
+                })?;
+        }
+        // Preserve the newly generated backup private key before creating SSSS.
+        custody.checkpoint().await?;
+        let summary = verification::enable_recovery_impl(client, Some(&pending.passphrase)).await?;
+        pending.recovery_key = Some(summary.recovery_key.clone());
+        pending.room_keys_backed_up = summary.room_keys_backed_up;
+        // If this final write fails, the already-durable seed can reopen SSSS.
+        // Do not hide a credential that the SDK has already issued.
+        if custody.save(Some(&pending)).await.is_err() {
+            tracing::warn!("Pending recovery result save failed; protected seed remains available");
+        }
+        Ok(summary)
     }
-    // Preserve the newly generated backup private key before creating SSSS.
-    custody.checkpoint().await?;
-    let summary = verification::enable_recovery_impl(client, Some(&pending.passphrase)).await?;
-    pending.recovery_key = Some(summary.recovery_key.clone());
-    pending.room_keys_backed_up = summary.room_keys_backed_up;
-    // If this final write fails, the already-durable seed can reopen SSSS.
-    // Do not hide a credential that the SDK has already issued.
-    if custody.save(Some(&pending)).await.is_err() {
-        tracing::warn!("Pending recovery result save failed; protected seed remains available");
+    .await;
+    let release = custody.release().await;
+    match (result, release) {
+        (Ok(summary), Ok(())) => Ok(summary),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
     }
-    Ok(summary)
 }
 
 pub async fn acknowledge(

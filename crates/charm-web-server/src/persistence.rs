@@ -108,6 +108,9 @@ struct PersistedSession {
     /// it while a recovery credential is pending.
     #[serde(default)]
     recovery_teardown_started: bool,
+    /// True only while a setup request owns the cross-process mutation slot.
+    #[serde(default)]
+    recovery_setup_active: bool,
     token: String,
     homeserver_url: String,
     session: MatrixSession,
@@ -510,10 +513,12 @@ impl PersistenceStore {
             if entry.recovery_teardown_started {
                 return Err("Session teardown has already started.".into());
             }
-            if let Some(existing) = entry.pending_recovery {
-                return Ok(existing);
+            if entry.recovery_setup_active {
+                return Err("Recovery setup is already in progress.".into());
             }
-            entry.pending_recovery = Some(candidate.clone());
+            let selected = entry.pending_recovery.unwrap_or_else(|| candidate.clone());
+            entry.pending_recovery = Some(selected.clone());
+            entry.recovery_setup_active = true;
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json =
@@ -527,7 +532,7 @@ impl PersistenceStore {
                 .put_opts(&path, PutPayload::from(json), options)
                 .await
             {
-                Ok(_) => return Ok(candidate.clone()),
+                Ok(_) => return Ok(selected),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not atomically claim protected recovery.".into()),
             }
@@ -535,9 +540,43 @@ impl PersistenceStore {
         Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
-    /// Atomically admits session teardown only when no recovery credential is
-    /// pending. The bit lives in the same versioned object as the seed, so a
-    /// setup claim and logout on different web instances have one CAS winner.
+    pub async fn release_pending_recovery_claim(&self, token: &str) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if !entry.recovery_setup_active {
+                return Ok(());
+            }
+            entry.recovery_setup_active = false;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery release.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not release recovery setup admission.".into()),
+            }
+        }
+        Err("Recovery setup state changed concurrently; retry.".into())
+    }
+
+    /// Atomically admits session teardown only when no recovery setup request
+    /// is active. Completed, failed, or externally invalidated pending custody
+    /// does not trap logout; the bit and admission state share the same
+    /// versioned object, so setup and logout on different instances have one
+    /// CAS winner.
     pub async fn begin_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
@@ -545,10 +584,8 @@ impl PersistenceStore {
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
                 return Ok(());
             };
-            if entry.pending_recovery.is_some() {
-                return Err(
-                    "Save and acknowledge the pending recovery key before signing out.".into(),
-                );
+            if entry.recovery_setup_active {
+                return Err("Recovery setup is completing; retry sign out.".into());
             }
             if entry.recovery_teardown_started {
                 return Ok(());
@@ -1103,6 +1140,7 @@ impl PersistenceStore {
                 &PersistedSession {
                     pending_recovery: None,
                     recovery_teardown_started: false,
+                    recovery_setup_active: false,
                     token: token.to_string(),
                     homeserver_url: homeserver_url.to_string(),
                     session: session.clone(),
@@ -1201,6 +1239,9 @@ impl PersistenceStore {
                     recovery_teardown_started: existing
                         .as_ref()
                         .is_some_and(|(entry, _)| entry.recovery_teardown_started),
+                    recovery_setup_active: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_setup_active),
                 },
                 &path,
             )?;
@@ -2141,6 +2182,7 @@ pub(crate) async fn save_with_last_seen_for_test(
     let entry = PersistedSession {
         pending_recovery: None,
         recovery_teardown_started: false,
+        recovery_setup_active: false,
         token: token.to_string(),
         homeserver_url: "https://example.invalid".to_string(),
         session: MatrixSession {
@@ -2319,18 +2361,14 @@ mod tests {
         }))
         .unwrap();
 
-        let (winner_a, winner_b) = tokio::join!(
+        let (claim_a, claim_b) = tokio::join!(
             process_a.claim_pending_recovery("pending-claim-token", &candidate_a),
             process_b.claim_pending_recovery("pending-claim-token", &candidate_b),
         );
-        let winner_a = serde_json::to_value(winner_a.unwrap()).unwrap();
-        let winner_b = serde_json::to_value(winner_b.unwrap()).unwrap();
+        assert_ne!(claim_a.is_ok(), claim_b.is_ok(), "only one setup may run");
+        let winner = claim_a.or(claim_b).unwrap();
         assert_eq!(
-            winner_a, winner_b,
-            "both instances must adopt the CAS winner"
-        );
-        assert_eq!(
-            winner_a,
+            serde_json::to_value(&winner).unwrap(),
             serde_json::to_value(
                 process_a
                     .pending_recovery("pending-claim-token")
@@ -2339,6 +2377,19 @@ mod tests {
                     .unwrap()
             )
             .unwrap()
+        );
+        process_a
+            .release_pending_recovery_claim("pending-claim-token")
+            .await
+            .unwrap();
+        let retry = process_b
+            .claim_pending_recovery("pending-claim-token", &candidate_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(retry).unwrap(),
+            serde_json::to_value(winner).unwrap(),
+            "a later retry must adopt the durable winner"
         );
     }
 
@@ -2385,14 +2436,59 @@ mod tests {
         if claim.is_ok() {
             assert!(durable.pending_recovery.is_some());
             assert!(!durable.recovery_teardown_started);
+            assert!(durable.recovery_setup_active);
         } else {
             assert!(durable.pending_recovery.is_none());
             assert!(durable.recovery_teardown_started);
+            assert!(!durable.recovery_setup_active);
             assert!(setup_process
                 .save_pending_recovery("teardown-race-token", Some(&candidate))
                 .await
                 .is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn inactive_pending_recovery_does_not_trap_logout() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[76u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "failed-setup-token",
+                "https://example.invalid",
+                &dummy_session("@failed-setup:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("failed-setup-token", &pending)
+            .await
+            .unwrap();
+        assert!(store
+            .begin_recovery_safe_teardown("failed-setup-token")
+            .await
+            .is_err());
+        store
+            .release_pending_recovery_claim("failed-setup-token")
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("failed-setup-token")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3243,6 +3339,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_setup_active: false,
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@laura:example.invalid"),
@@ -3264,6 +3361,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_setup_active: false,
             token: "tok-legacy".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@mallory:example.invalid"),
@@ -3283,6 +3381,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_setup_active: false,
             token: token.to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@sweep-target:example.invalid"),
@@ -4175,6 +4274,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_setup_active: false,
             token: "tok-legacy-no-timestamp".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@legacy:example.invalid"),
