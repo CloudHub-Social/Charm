@@ -23,6 +23,7 @@ export function useVoiceRecorder() {
     stream: MediaStream;
     context: AudioContext;
     timer: ReturnType<typeof setInterval>;
+    requestStop: () => void;
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
   const preparing = useRef<{ stream: MediaStream; context: AudioContext | null } | null>(null);
@@ -92,7 +93,7 @@ export function useVoiceRecorder() {
 
   function stop() {
     if (active.current) {
-      if (active.current.recorder.state !== "inactive") active.current.recorder.stop();
+      active.current.requestStop();
     } else discard(); // Pointer released before permission was granted.
   }
 
@@ -131,6 +132,12 @@ export function useVoiceRecorder() {
       const amplitudes: number[] = [];
       const samples = new Float32Array(analyser.fftSize);
       let startedAt = 0;
+      let stoppedAt: number | null = null;
+      function requestStop() {
+        if (recorder.state === "inactive") return;
+        stoppedAt = performance.now();
+        recorder.stop();
+      }
       let bytes = 0;
       recorder.ondataavailable = (event) => {
         if (epoch.current !== attempt || !event.data.size) return;
@@ -149,7 +156,7 @@ export function useVoiceRecorder() {
       };
       recorder.onstop = () => {
         if (epoch.current !== attempt) return;
-        const durationMs = Math.max(1, Math.round(performance.now() - startedAt));
+        const durationMs = Math.max(1, Math.round((stoppedAt ?? performance.now()) - startedAt));
         releaseCapture();
         if (durationMs > MAX_DURATION_MS) {
           discard();
@@ -193,9 +200,9 @@ export function useVoiceRecorder() {
         setLevel(Number.isFinite(amplitude) ? amplitude : 0);
         const elapsed = Math.round(performance.now() - startedAt);
         setElapsedMs(Math.min(MAX_DURATION_MS, elapsed));
-        if (elapsed >= MAX_DURATION_MS && recorder.state !== "inactive") recorder.stop();
+        if (elapsed >= MAX_DURATION_MS) requestStop();
       }, 100);
-      active.current = { recorder, stream, context, timer };
+      active.current = { recorder, stream, context, timer, requestStop };
       preparing.current = null;
       startedAt = performance.now();
       recorder.start(250);

@@ -149,6 +149,21 @@ describe("useVoiceRecorder", () => {
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
+  it("does not count delayed stop-event delivery as recorded audio", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => result.current.start());
+    const clock = vi.spyOn(performance, "now").mockReturnValue(600_000);
+    await act(async () => {
+      result.current.stop();
+      // The queued data/stop events arrive after capture was asked to stop.
+      clock.mockReturnValue(600_050);
+    });
+    clock.mockRestore();
+    expect(result.current.phase).toBe("preview");
+    expect(result.current.preview?.metadata.duration_ms).toBe(600_000);
+    expect(stopTrack).toHaveBeenCalledOnce();
+  });
+
   it("revokes a stopped preview when the recorder unmounts", async () => {
     const { result, unmount } = renderHook(() => useVoiceRecorder());
     await act(async () => {
