@@ -158,7 +158,7 @@ Add as environment secrets: `MACOS_CERT_P12` (contents of `cert.p12.b64`),
 `MACOS_CERT_PASSWORD` (the password used above), `MACOS_CERT_NAME` (the
 cert's common name, exactly as it appears in Keychain Access).
 
-**Windows** — from PowerShell:
+**Windows nightly** — use a self-signed test identity from PowerShell:
 
 ```powershell
 $cert = New-SelfSignedCertificate -Type CodeSigning -Subject "CN=Charm Nightly" `
@@ -169,11 +169,22 @@ Export-PfxCertificate -Cert $cert -FilePath cert.pfx -Password $password
 ```
 
 Add as environment secrets: `WINDOWS_CERT_PFX` (contents of `cert.pfx.b64`),
-`WINDOWS_CERT_PASSWORD` (the password used above).
+`WINDOWS_CERT_PASSWORD` (the password used above) in `nightly-signing`.
 
-Neither cert needs to be trusted by anyone else's machine ahead of time —
-they only remove the "unidentified publisher" badge, not the OS's
-first-run friction described above.
+**Windows stable** — obtain a long-lived Authenticode code-signing certificate
+whose chain is trusted by Windows (for example, an OV/EV certificate issued by
+a public CA), export that certificate and private key as a password-protected
+PFX, and base64-encode the PFX. Store its encoded PFX and password under the
+same secret names in `release-signing`. Do not copy the self-signed nightly
+identity into that environment: stable CI requires `Get-AuthenticodeSignature`
+to report `Valid` for the app and installers, and an untrusted self-signed
+certificate cannot satisfy that gate. Certificate purchase, identity
+validation, renewal, and archival are maintainer/provider operations; the
+workflow never generates or replaces the stable identity.
+
+The self-signed macOS and Windows identities described above are only suitable
+for nightly provenance. They do not remove the OS first-run friction described
+above and are not substitutes for the stable platform trust chains.
 
 **Android** — a normal Java keystore via `keytool` (bundled with any JDK).
 Unlike the macOS/Windows certs, this one's identity *must* stay stable
