@@ -149,9 +149,10 @@ pub async fn pending_summary(
         .open_secret_store(&pending.passphrase)
         .await
         .map_err(|_| "Could not reopen pending recovery. Retry when online.")?;
+    let room_keys_backed_up = client.encryption().backups().are_enabled().await;
     Ok(Some(RecoverySetupSummary {
         recovery_key: store.secret_storage_key(),
-        room_keys_backed_up: false,
+        room_keys_backed_up,
     }))
 }
 
