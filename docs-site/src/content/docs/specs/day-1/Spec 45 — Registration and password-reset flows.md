@@ -34,13 +34,30 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+An empty web session restore suspends the socket and reconnect timer opened by
+pre-authentication listeners, without announcing that an initial anonymous session
+was revoked. A successful login resumes transport; a stale empty restore cannot
+suspend a newer login or overtake an in-flight logout's cookie cleanup.
+
+WebSocket upgrades recheck permanent session revocation immediately after
+subscribing to session events, before replaying retained snapshots. This closes
+the lookup-to-upgrade gap where logout's invalidation broadcast had no receiver;
+the revoked socket closes so the browser can recheck its authenticated session.
+Every subsequent snapshot, live event, and keepalive send also checks revocation,
+so a removal during replay stops the remaining payloads. Frames already handed
+to the transport cannot be recalled.
+A deterministic companion regression exercises this handoff through a real
+loopback WebSocket. Its CI result is required before treating the fix as verified.
+
 Web password-change dispatch and cancellation share an atomic boundary. A
 cancellation acknowledged before dispatch prevents the mutation; after dispatch,
 the server reports that the outcome may be uncertain, disables automatic HTTP
 retries, and does not restore the attempt for another submission. Secret-free,
 browser-owner-bound receipts retain that distinction for twenty minutes, including
 after completion or request disconnection. Receipt capacity is bounded and new
-dispatches fail closed instead of evicting unexpired evidence. This does not
+dispatches fail closed instead of evicting unexpired evidence. Receipt-capacity
+rejection before dispatch preserves the unexpired, uncancelled attempt for retry.
+This does not
 prove whether a homeserver applied an already-dispatched password change.
 
 Homeserver `.well-known` discovery is read as a bounded stream: an oversized
@@ -78,6 +95,19 @@ and serves only recognized raster image formats. Browser-owner isolation,
 callback replay, provider allowlisting, polling, and transport/UI behavior have
 repository coverage. Live verification against a real configured SSO provider
 remains open.
+
+Desktop SSO cancellation remains authoritative through token exchange,
+completion-lock admission, and the final pre-relocation boundary. Cancellation
+or expiry drops the temporary Matrix client before deleting its encrypted
+temporary store, avoiding open SQLite handles during cleanup. Once durable
+session relocation starts, Charm finishes adoption and reports the real outcome
+rather than claiming the already-dispatched login was cancelled.
+Native callback UI updates are bound to the active SSO operation and mounted
+login screen. Cancellation during callback completion keeps restart disabled
+until both completion and cancellation settle. If cancellation wins, its stale
+error is suppressed; if durable adoption wins, the successful sign-in is shown.
+This prevents a previous operation from overwriting a newer attempt's UI without
+hiding a session that Rust has already committed.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
@@ -183,6 +213,39 @@ homeservers. The parity audit (2026-07-13) found:
 - Cancellation, app exit, superseding login/registration, and timeout must release
   the pending client and clean its temporary store using Spec 15's existing
   reservation/sweep rules.
+- If cancellation races successful registration relocation, the durable cleanup
+  marker excludes that account from both interactive startup restore and headless
+  push-session restore until the encrypted store and credentials are removed.
+  Cleanup failure can therefore delay restoration but cannot resurrect a cancelled
+  account.
+- A pending or unreadable cancellation marker also prevents a replacement login
+  from committing for that account. The user must restart to retry cleanup before
+  signing in again; marker-removal errors remain failures, not silent success.
+  The startup sweep rechecks marker existence under the same relocation lock so
+  an already-retired marker cannot authorize deletion of a newer session.
+  Cleanup validates the marker suffix as exactly 32 lowercase hexadecimal
+  characters before any keychain or filesystem operation. Empty, path-like, or
+  otherwise malformed keys cannot authorize deleting the store root or another
+  account; malformed markers are left untouched for explicit diagnosis.
+- Marker creation must not follow or truncate existing symlinks. If recording
+  the marker fails, cleanup is still attempted; failure of both operations is
+  reported rather than treated as durable cancellation.
+- A fresh password, registration, SSO, or QR session rejected by the pending-cleanup
+  relocation veto is never adopted. Its authentication-specific logout is attempted
+  with a bounded timeout, then its client is released before removing only its
+  validated temporary store and passphrase. The passphrase is removed first; if
+  that fails, the directory remains discoverable for startup cleanup retries.
+  Repeated sweep failures retain the same ordering. Failures remain failures.
+  Revocation failure cannot prove the server-side session is gone,
+  and is recorded without tokens, account IDs, or raw service errors. No prior
+  account store is removed by this rejection cleanup. Regression coverage includes
+  failed revocation, timeout releasing the client before cleanup, and invalid temp
+  keys. Implementation and tests still require CI verification.
+- During startup account discovery, an unreadable cancellation marker excludes
+  only its associated account. Other readable, non-cancelled account directories
+  remain eligible; a marker lookup failure must neither make the affected account
+  restorable nor abort discovery of every account. Root-directory enumeration
+  failures still propagate because no trustworthy account inventory is available.
 - The companion persists enough pending-store ownership metadata to sweep
   abandoned unauthenticated crypto-store directories on startup after a crash.
   Restart tests interrupt registration after store creation and verify that the
@@ -207,6 +270,8 @@ homeservers. The parity audit (2026-07-13) found:
   addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
   `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
   do not infer its destination from the final 32 bits.
+  Email-submission destinations use the same NAT64 embedded-address policy,
+  including denial of translated private, loopback, and metadata-service addresses.
 
 ### Password reset
 
@@ -229,6 +294,28 @@ homeservers. The parity audit (2026-07-13) found:
   Matrix client; tests cover abandoned and quota-permitted attempt accumulation.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
+- Native cancellation and commitment to irreversible password-change dispatch
+  share an atomic state transition. If cancellation wins, no request is dispatched;
+  if dispatch wins, cancellation reports that it cannot undo the request, even
+  before the network future is first polled. Charm awaits the request's result.
+  Dispatch is single-use and disables automatic network retries. A post-dispatch
+  failure is uncertain, never restores the pending attempt, and uses the same
+  acknowledged warning as the web companion. Failures before dispatch may retry.
+  A bounded attempt-status record remains after completion until the next attempt;
+  a late cancellation cannot claim it prevented a completed password change.
+  Unknown or superseded attempt IDs likewise cannot claim prevention.
+  The recovery UI waits for cancellation before dismissing the form. If cancellation
+  cannot be confirmed, it clears sensitive inputs and shows an explicit warning
+  that the password may still change, with an acknowledged return to sign-in.
+  A confirmation response explicitly reporting uncertain dispatch uses this same
+  terminal warning, clears sensitive inputs, and does not offer to retry the
+  consumed attempt. Returning to sign-in acknowledges it without another cancel.
+  Disabling the recovery feature flag uses the same awaited cancellation path;
+  it stops new recovery entry without hiding an uncertain dispatched change or
+  an already acknowledged backend result. Only the user's return action dismisses
+  the terminal warning or completion screen.
+  Unauthenticated recovery networking classifies both IPv4-mapped and legacy
+  IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
   caps resends for an attempt, and honors upstream retry intervals before sending
   another homeserver request. Raw email addresses never become quota-map keys,
@@ -325,6 +412,57 @@ completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
+Resuming a retained native session preserves its current presence choice rather
+than reseeding it to online. Appear Offline still applies before the first resumed
+sync request; a genuinely fresh session starts online unless that privacy setting
+applies. Regression tests cover fresh/resumed initialization and the privacy
+override, pending GitHub Actions verification.
+
+Native SSO cancellation before durable adoption restores both the prior client
+slot and its sync loop if shutdown had begun. Once the prior session and its
+listeners are restored, cancellation releases login-completion exclusion before
+best-effort remote revocation of the cancelled device; the cancelled client owns
+only its unique temporary store at that point. Account teardown and SSO adoption
+share login-completion exclusion: logout cannot finish clearing a session while
+SSO still owns the rollback window. A queued teardown revalidates its original
+account and device after acquiring that exclusion, so it cannot clear a newly
+adopted session. This depends on the recoverable account-teardown implementation;
+combined GitHub Actions verification remains required.
+
+The cancellation window retains
+the exact cached timeline objects and their focused/live view markers, capturing
+cached entries when draining the cache rather than before shutdown, then
+reattaches listeners on rollback so the open room continues receiving updates
+without navigation. These temporary strong references are dropped before store
+relocation when adoption proceeds. Regression coverage verifies listener
+shutdown/restart, view identity, focus preservation, and duplicate prevention;
+GitHub Actions and real-client cancellation checks remain required.
+Timeline creation and replacement retain shared lifecycle access through their
+pop-to-repush windows. Teardown acquires exclusive access before capture and
+clears the active client before releasing it; queued mutations revalidate their
+session before touching the cache. Regression coverage exercises a temporarily
+removed entry and requires teardown to wait for its return. This closes the
+identified capture gap in code; combined CI and real-client verification remain
+pending.
+Rollback also holds exclusive timeline lifecycle access before republishing the
+prior client and throughout listener restoration. New room opens cannot enter
+between those operations and displace the newly restored views. Logout attempts
+both Matrix and OAuth credential deletions even if its durable marker cannot be
+written; failures remain errors rather than claims of durable cleanup. Regression
+coverage for these failure boundaries requires GitHub Actions verification.
+
+The default-off native `forget_local_data` preview has a public feature-gallery
+journey that opens its confirmation, verifies the destructive action stays
+disabled until `FORGET` is typed, and cancels back to account settings. Its
+CI-generated screenshot documents the consent boundary only: the deterministic
+mock backend does not establish native data deletion or remote token revocation.
+
+If callback exchange already
+authenticated a device, cancellation attempts Matrix logout with the bounded
+auth-network timeout before discarding the temporary local store. Offline or
+failed revocation remains best-effort and is reported without session details;
+it is not evidence that the homeserver device was removed.
+
 Companion registration, password-reset, token-login, and SSO admission cancels
 both server-derived browser cookie owners and inserts the replacement attempt
 under one transition lock. Capacity reservation happens after superseded payloads
@@ -375,6 +513,22 @@ actions remain available while the flag is off, so a dark launch cannot regress
 baseline authentication. Tauri commands enforce the same flag and fully validate
 attempt and stage inputs when enabled; flags are rollout controls, not
 authorization boundaries.
+
+Completed web registration adopts the nested session returned by either the begin
+or continue endpoint and resumes live WebSocket events after an empty restore.
+Intermediate registration challenges do not resume an authenticated transport.
+
+Password-reset cancellation remains available after the recovery rollout is
+disabled, with the companion still requiring the pre-auth owner cookie. Closing
+an empty recovery form or disabling recovery without an active request must not
+cancel an older, acknowledged reset or display dispatch uncertainty. In-flight
+discovery and issued attempts retain cancellation and late-result cleanup.
+The first web setup response may not yet have supplied an owner cookie. A failed
+owner-only cancellation during that initial email request does not imply password
+dispatch: the UI closes and cancels the late attempt by ID when it arrives.
+Cancellation failures for issued attempts retain the conservative uncertainty warning.
+An idle recovery rollout change must not clear another sign-in operation's busy
+state or error feedback.
 
 ## Testing strategy
 
