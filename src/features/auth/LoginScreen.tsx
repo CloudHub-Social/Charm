@@ -1,5 +1,5 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -106,6 +106,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [recoveryToken, setRecoveryToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [passwordResetComplete, setPasswordResetComplete] = useState(false);
+  const [passwordResetCancellationUncertain, setPasswordResetCancellationUncertain] =
+    useState(false);
   const [passwordResetNotice, setPasswordResetNotice] = useState<string | null>(null);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
@@ -229,23 +231,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
+  const passwordResetRequestRef = useRef<number | null>(null);
   const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
-
-  useEffect(() => {
-    if (registrationUiaEnabled) return;
-    passwordResetOperationRef.current += 1;
-    const attemptId = passwordResetAttemptRef.current;
-    passwordResetAttemptRef.current = null;
-    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
-    setShowPasswordReset(false);
-    setPasswordResetChallenge(undefined);
-    setPasswordResetComplete(false);
-    setPasswordResetNotice(null);
-    setRecoveryEmail("");
-    setRecoveryToken("");
-    setNewPassword("");
-    setPending(false);
-  }, [registrationUiaEnabled]);
+  const recoveryPreviouslyEnabledRef = useRef(true);
 
   useEffect(
     () => () => {
@@ -253,11 +241,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       registrationAttemptRef.current = null;
       registrationEmailOperationRef.current += 1;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
+      const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
       passwordResetOperationRef.current += 1;
       // `undefined` also cancels a backend request that is still in discovery
       // and has not returned its opaque attempt id to this component yet.
-      cancelPasswordReset(undefined).catch(logAndIgnore);
+      if (resetAttemptId || passwordResetRequestRef.current !== null) {
+        cancelPasswordReset(resetAttemptId ?? undefined).catch(logAndIgnore);
+      }
     },
     [],
   );
@@ -564,6 +555,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setError(null);
     setPasswordResetNotice(null);
     let challenge: PasswordResetChallenge;
+    passwordResetRequestRef.current = operation;
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
     } catch {
@@ -577,6 +569,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       return;
     } finally {
+      if (passwordResetRequestRef.current === operation) passwordResetRequestRef.current = null;
       if (passwordResetOperationRef.current === operation) setPending(false);
     }
     if (passwordResetOperationRef.current !== operation) {
@@ -605,7 +598,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setPasswordResetComplete(true);
     } catch (resetError) {
       if (passwordResetOperationRef.current === operation) {
-        if (isTerminalPasswordResetError(String(resetError))) {
+        if (String(resetError).includes("password reset may already have been submitted")) {
+          passwordResetAttemptRef.current = null;
+          setPasswordResetChallenge(undefined);
+          setRecoveryToken("");
+          setNewPassword("");
+          setPassword("");
+          setPasswordResetCancellationUncertain(true);
+        } else if (isTerminalPasswordResetError(String(resetError))) {
           passwordResetAttemptRef.current = null;
           setPasswordResetChallenge(undefined);
           setRecoveryToken("");
@@ -651,18 +651,39 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  function closePasswordReset() {
-    passwordResetOperationRef.current += 1;
+  const closePasswordReset = useCallback(async () => {
+    if (passwordResetCancellationRef.current) return;
+    const operation = ++passwordResetOperationRef.current;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
-    const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
-    passwordResetCancellationRef.current = cancellation;
-    void cancellation.finally(() => {
-      if (passwordResetCancellationRef.current === cancellation) {
-        passwordResetCancellationRef.current = undefined;
+    let cancellationUncertain = false;
+    // Returning from an acknowledged terminal result is not another cancellation.
+    if (
+      !passwordResetComplete &&
+      !passwordResetCancellationUncertain &&
+      (attemptId !== null || passwordResetRequestRef.current !== null)
+    ) {
+      setPending(true);
+      const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(() => {
+        // Never display or log raw backend errors from this sensitive operation.
+        // Initial email setup cannot dispatch a password change. On web its
+        // first response may not yet have supplied the owner cookie, so an
+        // owner-only cancellation can fail; the stale response is cleaned up
+        // by handleRequestPasswordReset once its attempt id arrives.
+        cancellationUncertain = attemptId !== null;
+      });
+      passwordResetCancellationRef.current = cancellation;
+      try {
+        await cancellation;
+      } finally {
+        if (passwordResetCancellationRef.current === cancellation) {
+          passwordResetCancellationRef.current = undefined;
+        }
       }
-    });
-    setShowPasswordReset(false);
+    }
+    if (passwordResetOperationRef.current !== operation) return;
+    setShowPasswordReset(cancellationUncertain);
+    setPasswordResetCancellationUncertain(cancellationUncertain);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
     setPasswordResetNotice(null);
@@ -671,7 +692,25 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setNewPassword("");
     setPending(false);
     setError(null);
-  }
+  }, [passwordResetComplete, passwordResetCancellationUncertain]);
+
+  useEffect(() => {
+    const wasEnabled = recoveryPreviouslyEnabledRef.current;
+    recoveryPreviouslyEnabledRef.current = registrationUiaEnabled;
+    if (registrationUiaEnabled || !wasEnabled) return;
+    // A kill switch stops new recovery work, but cannot undo a dispatched
+    // password change. Preserve terminal results until the user acknowledges
+    // them and share the Cancel button's awaited, deduplicated cancellation.
+    // Do not reset shared login state when recovery is not the active surface.
+    if (!showPasswordReset || passwordResetComplete || passwordResetCancellationUncertain) return;
+    void closePasswordReset();
+  }, [
+    registrationUiaEnabled,
+    showPasswordReset,
+    passwordResetComplete,
+    passwordResetCancellationUncertain,
+    closePasswordReset,
+  ]);
 
   return (
     <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
@@ -683,7 +722,18 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
         {showPasswordReset ? (
           <div className="flex flex-col gap-5">
-            {passwordResetComplete ? (
+            {passwordResetCancellationUncertain ? (
+              <div className="flex flex-col gap-4">
+                <p role="alert" className="text-sm text-destructive">
+                  The password reset outcome could not be confirmed. Your password may still change.
+                  If your old password no longer works, try the new password or request another
+                  recovery email.
+                </p>
+                <Button type="button" onClick={closePasswordReset}>
+                  Return to sign in
+                </Button>
+              </div>
+            ) : passwordResetComplete ? (
               <div className="flex flex-col gap-4" aria-live="polite">
                 <div className="flex flex-col gap-1">
                   <h2 className="text-sm font-semibold">Password updated</h2>
