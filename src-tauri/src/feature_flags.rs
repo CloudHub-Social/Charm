@@ -171,6 +171,8 @@ define_feature_flag_keys!(
         JumpToDate,
         /// Spec 31 admin-triggered room upgrades and tombstoned-room handling.
         RoomUpgrades,
+        /// Spec 47 appearance customization and display preferences.
+        AppearanceParity,
     }
 );
 
@@ -207,6 +209,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => false,
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
+            FeatureFlagKey::AppearanceParity => false,
         }
     }
 
@@ -298,6 +301,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
+            FeatureFlagKey::AppearanceParity => {
+                "Customize appearance and display preferences, including clock and date formats."
+            }
         }
     }
 
@@ -343,6 +349,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
+            FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
 
@@ -378,6 +385,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
+            FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
 }

@@ -449,8 +449,8 @@ pub async fn try_restore_session(
         // rather than assuming which.
         let oauth_session = match persistence::load_oauth_session(&account_key) {
             Ok(session) => session,
-            Err(e) => {
-                eprintln!("failed to load oauth session for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to load oauth session; trying the next stored account");
                 continue;
             }
         };
@@ -458,7 +458,9 @@ pub async fn try_restore_session(
             match restore_oauth_session(&app, &state, &account_key, saved).await {
                 Ok(Some(response)) => return Ok(Some(response)),
                 Ok(None) => {}
-                Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
+                Err(_) => {
+                    eprintln!("failed to restore oauth session; trying Matrix session restore")
+                }
             }
             // Deliberately *not* `continue` here: an OAuth session that
             // exists but didn't yield a live restore isn't proof this
@@ -473,16 +475,16 @@ pub async fn try_restore_session(
         let saved = match persistence::load_session(&account_key) {
             Ok(Some(saved)) => saved,
             Ok(None) => continue,
-            Err(e) => {
-                eprintln!("failed to load session for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to load session; trying the next stored account");
                 continue;
             }
         };
 
         let client = match build_client(&app, &saved.homeserver_url, &account_key).await {
             Ok(client) => client,
-            Err(e) => {
-                eprintln!("failed to build client for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to build client; trying the next stored account");
                 continue;
             }
         };

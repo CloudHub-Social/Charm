@@ -749,10 +749,7 @@ fn recover_or_discard_stale_backup_locked(
     })();
 
     if restored.is_none() {
-        eprintln!(
-            "sweep_orphan_temp_stores: found an orphaned stale-backup for {account_key} at {} with no recoverable passphrase — leaving it in place rather than discarding possibly-unrecoverable data",
-            backup_path.display()
-        );
+        eprintln!("sweep_orphan_temp_stores: stale backup recovery failed; retaining it for retry");
     }
     restored.is_some()
 }
@@ -1438,8 +1435,7 @@ fn relocate_store_at_locked_with(
     }
     if !marker_written {
         eprintln!(
-            "relocate_store: failed to write commit marker for {account_key} at {} after retries — a crash before the next successful startup sweep could incorrectly restore the superseded backup",
-            account_path.display()
+            "relocate_store: commit marker write failed after retries; crash recovery may restore a superseded backup"
         );
     }
 
@@ -1448,16 +1444,10 @@ fn relocate_store_at_locked_with(
         // its directory and its durable passphrase entry) is safe to
         // discard. Best-effort: failing to reclaim disk space or a keychain
         // entry shouldn't turn an otherwise-successful login into an error.
-        if let Err(e) = std::fs::remove_dir_all(&backup_path) {
-            eprintln!(
-                "relocate_store: failed to remove backup of superseded store for {account_key} at {}: {e}",
-                backup_path.display()
-            );
+        if std::fs::remove_dir_all(&backup_path).is_err() {
+            eprintln!("relocate_store: superseded backup removal failed");
         } else {
-            eprintln!(
-                "relocate_store: discarded stale store for {account_key} at {} (superseded by a fresh login)",
-                account_path.display()
-            );
+            eprintln!("relocate_store: discarded stale store superseded by a fresh login");
         }
         let _ = backup_passphrase_entry.delete_credential();
     }

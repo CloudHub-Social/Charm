@@ -24,8 +24,149 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 const ROOM = { room_id: "!e2e-appearance:localhost", name: "Appearance E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
 
+test("clock and date choices survive reload and disappear when the rollout is disabled", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("charm:featureFlags")) {
+      localStorage.setItem(
+        "charm:featureFlags",
+        JSON.stringify({
+          state: { overrides: { appearance_parity: true } },
+          updatedAt: Date.now(),
+        }),
+      );
+    }
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.getByRole("button", { name: "Charm default" }).click();
+  await page.getByRole("menuitemradio", { name: "Serif", exact: true }).click();
+  await expect(page.locator("html")).toHaveCSS("--font-sans", 'Georgia, "Times New Roman", serif');
+  await page.getByRole("button", { name: "System clock" }).click();
+  await page.getByRole("menuitemradio", { name: "24-hour" }).click();
+  await page.getByRole("button", { name: "System date" }).click();
+  await page.getByRole("menuitemradio", { name: "YYYY-MM-DD" }).click();
+  await expect(page.getByRole("button", { name: "24-hour" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "YYYY-MM-DD" })).toBeVisible();
+  await captureSnapshot(page, "appearance-display-formats");
+
+  await page.reload();
+  // Reload restores the settings deep link; the room-list opener is not mounted.
+  await expect(page.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "Serif", exact: true })).toBeVisible();
+  await expect(page.locator("html")).toHaveCSS("--font-sans", 'Georgia, "Times New Roman", serif');
+  await expect(page.getByRole("button", { name: "24-hour" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "YYYY-MM-DD" })).toBeVisible();
+
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { appearance_parity: false } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByText("Clock format", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Date format", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Font family", { exact: true })).toHaveCount(0);
+  expect(
+    await page.locator("html").evaluate((root) => root.style.getPropertyValue("--font-sans")),
+  ).toBe("");
+  const saved = await page.evaluate(
+    () => JSON.parse(localStorage.getItem("charm:appearance")!).state,
+  );
+  expect(saved.clockFormat).toBe("24h");
+  expect(saved.dateFormat).toBe("year-first");
+  expect(saved.fontFamily).toBe("serif");
+});
+
 function seedAppearanceMirror(appearance: Record<string, string>) {
   localStorage.setItem("charm:appearance", JSON.stringify(appearance));
+}
+
+for (const messageLayout of ["bubble", "discord", "irc"] as const) {
+  test(`message spacing applies to ${messageLayout} and resets when disabled`, async ({ page }) => {
+    await page.addInitScript(
+      ({ layout }) => {
+        if (!localStorage.getItem("charm:featureFlags")) {
+          localStorage.setItem(
+            "charm:featureFlags",
+            JSON.stringify({
+              state: { overrides: { appearance_parity: true } },
+              updatedAt: Date.now(),
+            }),
+          );
+        }
+        localStorage.setItem(
+          "charm:appearance",
+          JSON.stringify({
+            state: { messageLayout: layout, messageSpacing: "16" },
+            updatedAt: Date.now(),
+          }),
+        );
+      },
+      { layout: messageLayout },
+    );
+    await page.addInitScript(installMockTauri, {
+      userId: USER_ID,
+      deviceId: "E2E_DEVICE",
+      room: ROOM,
+      initialMessages: [
+        {
+          event_id: "$spacing-message",
+          sender: USER_ID,
+          sender_display_name: "Tester",
+          sender_avatar_url: null,
+          sender_avatar_path: null,
+          body: "Message spacing preview",
+          formatted_body: null,
+          timestamp_ms: 1735689600000,
+          edited: false,
+          redacted: false,
+          reactions: [],
+          in_reply_to: null,
+          transaction_id: null,
+          send_state: { state: "sent" },
+          media: null,
+          is_undecrypted: false,
+        },
+      ],
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: ROOM.name }).click();
+    const row = page.locator('[id="message-$spacing-message"]');
+    await expect(row).toBeVisible();
+    await expect(row).toHaveCSS("margin-bottom", "16px");
+    await captureSnapshot(page, `appearance-spacing-${messageLayout}`);
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "charm:featureFlags",
+        JSON.stringify({
+          state: { overrides: { appearance_parity: false } },
+          updatedAt: Date.now(),
+        }),
+      );
+    });
+    await page.reload();
+    await page.getByRole("button", { name: ROOM.name }).click();
+    await expect(row).toHaveCSS("margin-bottom", "0px");
+  });
 }
 
 test("boot script applies a persisted non-default theme before the app bundle runs", async ({
