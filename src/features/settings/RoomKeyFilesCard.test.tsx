@@ -78,7 +78,7 @@ describe("RoomKeyFilesCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Importing…" })).toBeDisabled());
 
-    expect(screen.queryByRole("button", { name: "Close", exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     fireEvent.pointerDown(document.body);
