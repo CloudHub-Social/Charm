@@ -235,19 +235,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   useEffect(() => {
     if (registrationUiaEnabled) return;
-    passwordResetOperationRef.current += 1;
-    const attemptId = passwordResetAttemptRef.current;
-    passwordResetAttemptRef.current = null;
-    cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
-    setShowPasswordReset(false);
-    setPasswordResetChallenge(undefined);
-    setPasswordResetComplete(false);
-    setPasswordResetCancellationUncertain(false);
-    setPasswordResetNotice(null);
-    setRecoveryEmail("");
-    setRecoveryToken("");
-    setNewPassword("");
-    setPending(false);
+    // A kill switch stops new recovery work, but cannot undo a dispatched
+    // password change. Preserve terminal results until the user acknowledges
+    // them and share the Cancel button's awaited, deduplicated cancellation.
+    if (passwordResetComplete || passwordResetCancellationUncertain) return;
+    void closePasswordReset();
   }, [registrationUiaEnabled]);
 
   useEffect(

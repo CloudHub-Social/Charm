@@ -215,6 +215,10 @@ homeservers. The parity audit (2026-07-13) found:
   The recovery UI waits for cancellation before dismissing the form. If cancellation
   cannot be confirmed, it clears sensitive inputs and shows an explicit warning
   that the password may still change, with an acknowledged return to sign-in.
+  Disabling the recovery feature flag uses the same awaited cancellation path;
+  it stops new recovery entry without hiding an uncertain dispatched change or
+  an already acknowledged backend result. Only the user's return action dismisses
+  the terminal warning or completion screen.
   Unauthenticated recovery networking classifies both IPv4-mapped and legacy
   IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
