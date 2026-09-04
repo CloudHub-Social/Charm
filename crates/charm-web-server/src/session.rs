@@ -1276,6 +1276,10 @@ impl SessionStore {
                 session
                     .session_closed
                     .store(true, std::sync::atomic::Ordering::Release);
+                // Publish while removal is atomic with session lookup, before
+                // fallible/awaited disk cleanup. Connected renderers must not
+                // retain their authenticated shell after permanent removal.
+                let _ = session.events.send(ServerEvent::SessionInvalidated(()));
             }
             session
         };
@@ -1598,7 +1602,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(search_index);
 
+        let mut events = session.events.subscribe();
         store.remove(&token).await.expect("removed session");
+        let invalidated = events.try_recv().expect("session invalidation event");
+        assert_eq!(
+            serde_json::to_value(invalidated).unwrap(),
+            serde_json::json!({ "event": "session:invalidated", "data": null })
+        );
 
         assert!(session
             .session_closed

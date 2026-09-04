@@ -298,6 +298,10 @@ Surfaces changed:
     renderer authentication are cleared before starting that blocking worker,
     while replacement login is still excluded. A worker panic therefore cannot
     strand the renderer in the invalidated account's authenticated shell.
+    The web companion emits the same `session:invalidated` event atomically with
+    permanent session removal, before awaited search-index deletion. Connected
+    tabs use the existing renderer reset listener. Missed-event/reconnection
+    handling remains a separate web readiness requirement.
     That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
     the durable retry marker when marker persistence succeeds. Both credential
