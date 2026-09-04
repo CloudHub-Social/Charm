@@ -322,6 +322,9 @@ pub async fn login(
             &homeserver_url,
             &session,
         ) {
+            if e.committed_session {
+                return Err(reject_committed_login(&app, &client, &account_key).await);
+            }
             // Only resume `previous_client` if relocation's own rollback left
             // the account's on-disk store consistent with it — otherwise doing
             // so would paper over a half-restored store neither this client nor
@@ -800,6 +803,9 @@ async fn finish_registration(
         &session,
     ) {
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            return Err(reject_committed_login(&app, &client, &account_key).await);
+        }
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
@@ -3252,6 +3258,38 @@ mod registration_uia_tests {
     }
 
     #[tokio::test]
+    async fn rejected_committed_login_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn rejected_committed_login_does_not_claim_failed_revocation_succeeded() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "errcode": "M_FORBIDDEN",
+                "error": "revocation refused",
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(!revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
     async fn cancelled_sso_revokes_the_authenticated_device() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
@@ -3881,6 +3919,9 @@ pub async fn complete_sso_login(
         &session,
     ) {
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            return Err(reject_committed_login(&app, &client, &account_key).await);
+        }
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
@@ -3920,6 +3961,35 @@ pub async fn complete_sso_login(
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
+}
+
+/// Final persistence cleanup failed after the new session was committed.
+/// The previous client has already been detached and must not be resumed.
+/// Complete every local protection before the first await, so cancellation
+/// cannot skip it. No local writes follow the await: a later login must not
+/// have its credentials removed by this rejected attempt's network cleanup.
+pub(crate) async fn reject_committed_login(
+    app: &AppHandle,
+    client: &Client,
+    account_key: &str,
+) -> String {
+    let local_cleanup = persistence::invalidate_rejected_session(app, account_key);
+    let revoked = revoke_rejected_login_device(client).await;
+    match (local_cleanup, revoked) {
+        (true, true) => "Login could not be finalized. The new session was signed out; please try again.",
+        (true, false) => "Login could not be finalized. Local sign-in was removed, but server sign-out could not be confirmed. Review this device from another session.",
+        (false, true) => "Login could not be finalized. The new session was signed out on the server, but local credential cleanup is incomplete.",
+        (false, false) => "Login could not be finalized. Local credential cleanup and server sign-out could not be confirmed. Review this device from another session before retrying.",
+    }
+    .to_string()
+}
+
+async fn revoke_rejected_login_device(client: &Client) -> bool {
+    // SDK dispatch handles both Matrix password/SSO and OAuth QR sessions.
+    matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.logout()).await,
+        Ok(Ok(()))
+    )
 }
 
 /// A callback can authenticate a device immediately before cancellation wins.

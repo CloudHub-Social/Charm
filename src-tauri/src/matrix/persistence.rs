@@ -1042,6 +1042,30 @@ pub fn relocate_store_and_save_session(
     Ok(outcome)
 }
 
+/// Prevent a committed-but-rejected login from restoring on restart. Call
+/// under the login completion lock, before awaiting network revocation.
+/// Keep the ordinary logout marker for startup cleanup; do not delete a
+/// crypto store that the rejected client still has open.
+pub(crate) fn invalidate_rejected_session(app: &AppHandle, account_key: &str) -> bool {
+    invalidate_rejected_session_with(
+        || mark_logout_tombstone(app, account_key),
+        || clear_session(account_key),
+        || clear_oauth_session(account_key),
+    )
+}
+
+fn invalidate_rejected_session_with(
+    mark: impl FnOnce() -> Result<(), String>,
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    // Never short-circuit: failure of one protection must not skip the others.
+    let marked = mark().is_ok();
+    let matrix_cleared = clear_matrix().is_ok();
+    let oauth_cleared = clear_oauth().is_ok();
+    marked && matrix_cleared && oauth_cleared
+}
+
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
 /// QR login flow (see [`OAUTH_SESSION_ACCOUNT`]'s doc comment for why the
 /// two session kinds are separate).
@@ -1081,6 +1105,10 @@ pub struct RelocationFailure {
     /// restore the old passphrase) — resuming a previous client in that
     /// case would paper over on-disk state nothing can reliably decrypt.
     pub safe_to_resume_previous: bool,
+    /// The replacement store and credentials were committed before final
+    /// cleanup failed. The caller must reject and revoke this new session;
+    /// this is distinct from an incomplete rollback of an uncommitted swap.
+    pub committed_session: bool,
 }
 
 impl RelocationFailure {
@@ -1088,6 +1116,7 @@ impl RelocationFailure {
         Self {
             message: message.to_string(),
             safe_to_resume_previous: true,
+            committed_session: false,
         }
     }
 
@@ -1095,6 +1124,7 @@ impl RelocationFailure {
         Self {
             message: message.to_string(),
             safe_to_resume_previous: false,
+            committed_session: true,
         }
     }
 }
@@ -1326,6 +1356,7 @@ fn relocate_store_at_locked_with(
         RelocationFailure {
             message: err,
             safe_to_resume_previous: fully_restored,
+            committed_session: false,
         }
     };
 
@@ -1779,6 +1810,40 @@ mod tests {
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
+
+    #[test]
+    fn committed_cleanup_failure_is_not_an_uncommitted_rollback() {
+        let before_commit = RelocationFailure::safe("not installed");
+        assert!(before_commit.safe_to_resume_previous);
+        assert!(!before_commit.committed_session);
+        let after_commit = RelocationFailure::committed("cleanup failed");
+        assert!(!after_commit.safe_to_resume_previous);
+        assert!(after_commit.committed_session);
+    }
+
+    #[test]
+    fn rejected_session_marks_before_clearing_both_credential_kinds_even_on_failure() {
+        // Each failing operation, including a failed marker write, must still
+        // leave both credential deletions attempted in the same order.
+        for failing_step in [None, Some("mark"), Some("matrix"), Some("oauth")] {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let step = |name| {
+                calls.borrow_mut().push(name);
+                if failing_step == Some(name) {
+                    Err("injected failure".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            let cleaned = invalidate_rejected_session_with(
+                || step("mark"),
+                || step("matrix"),
+                || step("oauth"),
+            );
+            assert_eq!(cleaned, failing_step.is_none());
+            assert_eq!(*calls.borrow(), ["mark", "matrix", "oauth"]);
+        }
+    }
 
     #[test]
     fn cancelled_cleanup_sweep_removes_search_before_clearing_marker() {
