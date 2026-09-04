@@ -1597,6 +1597,7 @@ async fn finish_login(
         initial_response,
         stored.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            session_closed: stored.session_closed.clone(),
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
@@ -2630,6 +2631,8 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    let lifecycle_lock = state.sessions.lifecycle_lock(&token);
+    let _lifecycle = lifecycle_lock.lock().await;
     if let Some(session) = state.sessions.get(&token).await {
         // This fast path used to authenticate any resident session
         // unconditionally — neither of the checks below ran for it at all,
@@ -2706,17 +2709,9 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // window doesn't get forced into a full re-login for no reason other
     // than server-side memory pressure.
     //
-    // Known race, accepted rather than solved here: two requests for the
-    // same idle-evicted token arriving concurrently (e.g. a page load firing
-    // several API calls at once right after the eviction window) can both
-    // miss the `get` above and both restore + spawn their own `Client` and
-    // sync loop, with the second `insert` silently winning and orphaning the
-    // first's sync loop (never aborted, just abandoned — it'll keep polling
-    // until the process restarts). Narrow in practice (only matters in the
-    // instant right after an eviction, before either restore completes) and
-    // no worse than today's behavior for the equivalent case elsewhere in
-    // this file; closing it properly needs a per-token restore lock, which
-    // isn't worth the added complexity unless it shows up in practice.
+    // The token lifecycle lock covers lookup, restore, and insertion, as well
+    // as terminal sync cleanup. Concurrent requests cannot orphan a sync loop
+    // or reinsert this token while its durable credentials are being removed.
     let Some(persistence) = &state.persistence else {
         return Err(ApiError::unauthorized("unknown or expired session"));
     };
@@ -2800,6 +2795,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         initial_response,
         session.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            session_closed: session.session_closed.clone(),
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,

@@ -144,6 +144,7 @@ fn record_search_work_outcome(
 }
 
 pub struct SpawnOptions {
+    pub session_closed: Arc<std::sync::atomic::AtomicBool>,
     pub include_canonical_space_hierarchy: bool,
     pub message_search: Option<MessageSearchContext>,
     pub sessions: crate::session::SessionStore,
@@ -163,14 +164,17 @@ fn is_terminal_auth_kind(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> bool
 async fn invalidate_terminal_session(
     sessions: &crate::session::SessionStore,
     token: &str,
+    closed: &Arc<std::sync::atomic::AtomicBool>,
     persist: Option<&PersistHandle>,
 ) {
     // This is the sync task itself: remove admission and notify sockets, but
     // do not abort our own handle before durable cleanup completes.
-    let removed = sessions.remove(token).await;
-    let crypto = removed
-        .as_ref()
-        .and_then(|session| session.persisted_crypto.as_ref());
+    let lock = sessions.lifecycle_lock(token);
+    let _guard = lock.lock().await;
+    let Some(removed) = sessions.remove_if_current(token, closed).await else {
+        return;
+    };
+    let crypto = removed.persisted_crypto.as_ref();
     if let Some(persist) = persist {
         if persist
             .store
@@ -1146,6 +1150,7 @@ pub fn spawn(
     options: SpawnOptions,
 ) -> tokio::task::JoinHandle<()> {
     let SpawnOptions {
+        session_closed,
         include_canonical_space_hierarchy,
         message_search,
         sessions,
@@ -1274,7 +1279,13 @@ pub fn spawn(
                 }
                 Err(e) => {
                     if is_terminal_auth_error(&e) {
-                        invalidate_terminal_session(&sessions, &token, persist.as_ref()).await;
+                        invalidate_terminal_session(
+                            &sessions,
+                            &token,
+                            &session_closed,
+                            persist.as_ref(),
+                        )
+                        .await;
                         break;
                     }
                     consecutive_failures += 1;
@@ -1720,6 +1731,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_sync_failure_does_not_remove_a_replacement_session() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        let old =
+            crate::session::Session::new(client.clone(), "@user:example.org".into(), None, false);
+        let old_closed = old.session_closed.clone();
+        let sessions = crate::session::SessionStore::new();
+        let token = sessions.create(old).await;
+        let replacement =
+            crate::session::Session::new(client, "@user:example.org".into(), None, false);
+        let replacement_closed = replacement.session_closed.clone();
+        let mut replacement_events = replacement.events.subscribe();
+        sessions.insert(token.clone(), replacement).await;
+        invalidate_terminal_session(&sessions, &token, &old_closed, None).await;
+        let current = sessions.get(&token).await.unwrap();
+        assert!(Arc::ptr_eq(&current.session_closed, &replacement_closed));
+        assert!(!replacement_closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(replacement_events.try_recv().is_err());
+        assert!(Arc::ptr_eq(
+            &sessions.lifecycle_lock(&token),
+            &sessions.clone().lifecycle_lock(&token)
+        ));
+    }
+
+    #[tokio::test]
     async fn hard_auth_invalidation_removes_admission_and_notifies_the_browser() {
         let client = Client::builder()
             .homeserver_url("http://localhost:1")
@@ -1732,7 +1771,7 @@ mod tests {
         let closed = session.session_closed.clone();
         let sessions = crate::session::SessionStore::new();
         let token = sessions.create(session).await;
-        invalidate_terminal_session(&sessions, &token, None).await;
+        invalidate_terminal_session(&sessions, &token, &closed, None).await;
         assert!(sessions.get(&token).await.is_none());
         assert!(closed.load(std::sync::atomic::Ordering::Acquire));
         assert!(matches!(

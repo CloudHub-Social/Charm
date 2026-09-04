@@ -119,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 initial_response,
                 session.sync_snapshots(),
                 sync_loop::SpawnOptions {
+                    session_closed: session.session_closed.clone(),
                     sessions: state.sessions.clone(),
                     token: token.clone(),
                     include_canonical_space_hierarchy: state.space_hierarchy_reorganization,

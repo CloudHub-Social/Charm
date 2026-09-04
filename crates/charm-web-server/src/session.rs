@@ -1120,11 +1120,15 @@ fn spawn_timeline_listener(
     });
 }
 
+type SessionLifecycleLocks =
+    std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>;
+
 /// `Arc<RwLock<HashMap<...>>>` so it can be cloned cheaply into axum's
 /// `State` and shared across request handlers/tasks.
 #[derive(Clone, Default)]
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    lifecycle_locks: Arc<SessionLifecycleLocks>,
     /// The presence choice an idle-evicted session had at the instant
     /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
     /// was recorded at — populated there, consumed once by
@@ -1279,10 +1283,50 @@ impl SessionStore {
         session.has_open_connection() || session.idle_for_validated() < max_age
     }
 
+    pub fn lifecycle_lock(&self, token: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .lifecycle_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(lock) = locks.get(token).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(token.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
+        self.remove_matching(token, None).await
+    }
+
+    pub async fn remove_if_current(
+        &self,
+        token: &str,
+        closed: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Option<Arc<Session>> {
+        self.remove_matching(token, Some(closed)).await
+    }
+
+    async fn remove_matching(
+        &self,
+        token: &str,
+        expected: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Option<Arc<Session>> {
         // Remove admission first, but never hold the global map while a slow
         // socket finishes its bounded send. Other accounts remain available.
-        let session = self.inner.write().await.remove(token);
+        let session = {
+            let mut sessions = self.inner.write().await;
+            if expected.is_some_and(|closed| {
+                !sessions
+                    .get(token)
+                    .is_some_and(|session| Arc::ptr_eq(&session.session_closed, closed))
+            }) {
+                return None;
+            }
+            sessions.remove(token)
+        };
         if let Some(session) = &session {
             let _send_guard = session.socket_send_lock.lock().await;
             session

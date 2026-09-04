@@ -273,16 +273,27 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     if e.committed_session {
                         let message =
                             super::auth::reject_committed_login(&app, &client, &account_key).await;
+                        super::auth::restore_unaffected_account(
+                            &app,
+                            &state,
+                            previous_client.as_ref(),
+                            &account_key,
+                            previous_timelines,
+                        )
+                        .await;
                         let _ =
                             app.emit("qr_login:progress", QrLoginProgressEvent::Error { message });
                         return;
                     }
                     // See auth.rs's identical safe_to_resume_previous check.
                     if e.safe_to_resume_previous {
-                        if let Some(previous_client) = previous_client {
-                            *state.client.lock().await = Some(previous_client.clone());
-                            super::sync::spawn_sync_task(app.clone(), previous_client);
-                        }
+                        super::auth::restore_previous_snapshot(
+                            &app,
+                            &state,
+                            previous_client.as_ref(),
+                            previous_timelines,
+                        )
+                        .await;
                     }
                     let _ = app.emit(
                         "qr_login:progress",
