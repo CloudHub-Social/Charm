@@ -489,6 +489,7 @@ async fn notify_unopened_room_messages(
 
     let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
+    let poll_notifications_enabled = super::polls::notifications_enabled(app);
 
     for (room_id, update) in &response.rooms.joined {
         if state.is_timeline_open(room_id).await {
@@ -503,10 +504,9 @@ async fn notify_unopened_room_messages(
             let Ok(deserialized) = deserialize_result else {
                 continue;
             };
-            let Some(original) = unopened_notification_content(
-                deserialized,
-                super::polls::notifications_enabled(app),
-            ) else {
+            let Some(original) =
+                unopened_notification_content(deserialized, poll_notifications_enabled)
+            else {
                 continue;
             };
             if own_user_id.is_some_and(|me| me == original.sender) {
