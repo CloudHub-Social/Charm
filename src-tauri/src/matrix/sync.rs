@@ -659,11 +659,10 @@ mod unopened_poll_notification_tests {
                 }
             }
         });
-        assert!(super::unopened_notification_content(
-            serde_json::from_value(event).unwrap(),
-            true,
-        )
-        .is_none());
+        assert!(
+            super::unopened_notification_content(serde_json::from_value(event).unwrap(), true,)
+                .is_none()
+        );
     }
 }
 

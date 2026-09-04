@@ -59,7 +59,7 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [message.event_id, message.poll?.ended, roomId]);
+  }, [message.event_id, message.poll, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
