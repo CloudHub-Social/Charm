@@ -598,7 +598,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setPasswordResetComplete(true);
     } catch (resetError) {
       if (passwordResetOperationRef.current === operation) {
-        if (isTerminalPasswordResetError(String(resetError))) {
+        if (String(resetError).includes("password reset may already have been submitted")) {
+          passwordResetAttemptRef.current = null;
+          setPasswordResetChallenge(undefined);
+          setRecoveryToken("");
+          setNewPassword("");
+          setPassword("");
+          setPasswordResetCancellationUncertain(true);
+        } else if (isTerminalPasswordResetError(String(resetError))) {
           passwordResetAttemptRef.current = null;
           setPasswordResetChallenge(undefined);
           setRecoveryToken("");
@@ -714,8 +721,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
             {passwordResetCancellationUncertain ? (
               <div className="flex flex-col gap-4">
                 <p role="alert" className="text-sm text-destructive">
-                  Cancellation could not be confirmed. Your password may still change. If your old
-                  password no longer works, try the new password or request another recovery email.
+                  The password reset outcome could not be confirmed. Your password may still change.
+                  If your old password no longer works, try the new password or request another
+                  recovery email.
                 </p>
                 <Button type="button" onClick={closePasswordReset}>
                   Return to sign in

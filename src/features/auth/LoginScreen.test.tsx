@@ -1128,6 +1128,44 @@ describe("LoginScreen password recovery", () => {
     },
   );
 
+  it("shows an acknowledged uncertain outcome when confirmation loses its response", async () => {
+    requestPasswordReset.mockResolvedValue({ attempt_id: "reset-attempt", requires_token: true });
+    confirmPasswordReset.mockRejectedValueOnce(
+      new Error(
+        "password reset may already have been submitted; check whether your new password works",
+      ),
+    );
+    const onSignedIn = vi.fn();
+    const { rerender } = render(<LoginScreen onSignedIn={onSignedIn} />);
+    await discoverLoginChoices();
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.org" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+    });
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "new correct horse" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Your password may still change");
+    expect(screen.queryByRole("button", { name: "Reset password" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    expect(screen.queryByText("Password updated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Verify the email step/)).not.toBeInTheDocument();
+    const cancellationCount = cancelPasswordReset.mock.calls.length;
+    featureFlags.registrationEnabled = false;
+    rerender(<LoginScreen onSignedIn={onSignedIn} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Your password may still change");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to sign in" }));
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(confirmPasswordReset).toHaveBeenCalledTimes(1);
+  });
+
   it("returns to the request step after a password-reset attempt expires", async () => {
     requestPasswordReset.mockResolvedValue({
       attempt_id: "expired-attempt",

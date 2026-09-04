@@ -2018,6 +2018,14 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // Match homeserver discovery: the well-known NAT64 /96 carries
+            // an IPv4 destination, which must satisfy the same public-IP policy.
+            if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+                let octets = ip.octets();
+                let embedded =
+                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                return is_public_network_ip(embedded.into());
+            }
             if segments[..6] == [0, 0, 0, 0, 0, 0] {
                 let embedded = std::net::Ipv4Addr::new(
                     (segments[6] >> 8) as u8,
@@ -2033,7 +2041,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
         }
@@ -3109,5 +3117,25 @@ mod tests {
             "1.1.1.1".parse().expect("valid public IP")
         ));
         assert!(is_public_network_ip("::8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn email_submission_applies_ipv4_policy_to_nat64_destinations() {
+        for address in [
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::192.168.1.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b::100.64.0.1",
+            "64:ff9b::192.0.2.1",
+            "64:ff9b::224.0.0.1",
+            "64:ff9b:1::8.8.8.8",
+            "64:ff9b:0:1::8.8.8.8",
+        ] {
+            assert!(!is_public_network_ip(address.parse().unwrap()), "{address}");
+        }
+        for address in ["64:ff9b::8.8.8.8", "64:ff9b::808:808"] {
+            assert!(is_public_network_ip(address.parse().unwrap()), "{address}");
+        }
     }
 }

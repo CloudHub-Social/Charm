@@ -207,6 +207,8 @@ homeservers. The parity audit (2026-07-13) found:
   addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
   `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
   do not infer its destination from the final 32 bits.
+  Email-submission destinations use the same NAT64 embedded-address policy,
+  including denial of translated private, loopback, and metadata-service addresses.
 
 ### Password reset
 
@@ -239,6 +241,9 @@ homeservers. The parity audit (2026-07-13) found:
   The recovery UI waits for cancellation before dismissing the form. If cancellation
   cannot be confirmed, it clears sensitive inputs and shows an explicit warning
   that the password may still change, with an acknowledged return to sign-in.
+  A confirmation response explicitly reporting uncertain dispatch uses this same
+  terminal warning, clears sensitive inputs, and does not offer to retry the
+  consumed attempt. Returning to sign-in acknowledges it without another cancel.
   Disabling the recovery feature flag uses the same awaited cancellation path;
   it stops new recovery entry without hiding an uncertain dispatched change or
   an already acknowledged backend result. Only the user's return action dismisses
