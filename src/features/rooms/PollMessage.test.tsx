@@ -9,6 +9,7 @@ const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
 const resendMessage = vi.fn();
 const getPendingPollEnd = vi.fn();
+const discardFailedMessage = vi.fn();
 const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
 
 vi.mock("@/features/appearance/useDisplayFormats", () => ({
@@ -25,6 +26,7 @@ vi.mock("@/lib/matrix", async () => {
     endPoll: (...args: unknown[]) => endPoll(...args),
     resendMessage: (...args: unknown[]) => resendMessage(...args),
     getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
+    discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   };
 });
 
@@ -92,6 +94,7 @@ beforeEach(() => {
   endPoll.mockReset().mockResolvedValue("txn-end");
   resendMessage.mockReset().mockResolvedValue(undefined);
   getPendingPollEnd.mockReset().mockResolvedValue(null);
+  discardFailedMessage.mockReset().mockResolvedValue(true);
 });
 
 describe("PollMessage", () => {
@@ -196,20 +199,58 @@ describe("PollMessage", () => {
   });
 
   it("restores a queued close after the poll row remounts", async () => {
-    getPendingPollEnd.mockResolvedValueOnce("txn-restored-end");
-    render(
-      <PollMessage message={pollMessage()} roomId="!restored-room:example.org" own={false} />,
-    );
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-restored-end",
+      failed: false,
+    });
+    render(<PollMessage message={pollMessage()} roomId="!restored-room:example.org" own={false} />);
 
-    expect(
-      await screen.findByRole("button", { name: "Retry closing poll" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
     expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
 
+  it("preserves the end admission lock across a timeline refresh", async () => {
+    let finish!: (transactionId: string) => void;
+    endPoll.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+
+    view.rerender(
+      <PollMessage message={pollMessage({ edited: true })} roomId="!room:example.org" own />,
+    );
+
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Ending…" })).toBeDisabled();
+    await act(async () => finish("txn-end"));
+  });
+
+  it("offers to discard a queued close that fails after admission", async () => {
+    getPendingPollEnd
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: false })
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: true });
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeInTheDocument();
+
+    view.rerender(
+      <PollMessage message={pollMessage({ edited: true })} roomId="!room:example.org" own />,
+    );
+
+    const discard = await screen.findByRole("button", { name: "Discard failed close" });
+    fireEvent.click(discard);
+    await waitFor(() =>
+      expect(discardFailedMessage).toHaveBeenCalledWith("!room:example.org", "txn-failed-end"),
+    );
+  });
+
   it("blocks mutations while a queued close is being restored", async () => {
-    let finish!: (transactionId: null) => void;
+    let finish!: (pending: null) => void;
     getPendingPollEnd.mockImplementationOnce(
       () =>
         new Promise<null>((resolve) => {

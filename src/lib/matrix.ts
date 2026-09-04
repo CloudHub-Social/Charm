@@ -555,8 +555,16 @@ export function endPoll(roomId: string, pollEventId: string): Promise<string> {
   return invokeMatrix("end_poll", { roomId, pollEventId });
 }
 
-/** Returns the queued poll-close transaction, including after a row remount. */
-export function getPendingPollEnd(roomId: string, pollEventId: string): Promise<string | null> {
+export interface PendingPollEnd {
+  transaction_id: string;
+  failed: boolean;
+}
+
+/** Returns the queued poll-close state, including after a row remount. */
+export function getPendingPollEnd(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollEnd | null> {
   return invokeMatrix("get_pending_poll_end", { roomId, pollEventId });
 }
 

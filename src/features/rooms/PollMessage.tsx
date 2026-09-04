@@ -42,19 +42,24 @@ export function PollMessage({
   const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    setEnding(false);
+    setEndRequestPending(false);
+    setEndTransactionId(null);
+    setError(null);
+  }, [message.event_id, roomId]);
+  useEffect(() => {
     if (!message.poll || message.poll.ended || !message.event_id.startsWith("$")) {
       setRestoringEndState(false);
       return;
     }
     let active = true;
     setRestoringEndState(true);
-    setEnding(false);
-    setEndTransactionId(null);
     void getPendingPollEnd(roomId, message.event_id)
-      .then((transactionId) => {
-        if (!active || !transactionId) return;
-        setEndTransactionId(transactionId);
+      .then((pending) => {
+        if (!active || !pending) return;
+        setEndTransactionId(pending.transaction_id);
         setEnding(true);
+        if (pending.failed) setError("The poll could not be ended.");
       })
       .catch(() => {
         // The mutation command still rejects votes while a close is queued.

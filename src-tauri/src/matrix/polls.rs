@@ -17,6 +17,7 @@ use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::{EventId, RoomId};
 use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
+use serde::Serialize;
 use std::sync::LazyLock;
 use tauri::{Manager, State};
 
@@ -28,10 +29,16 @@ const MAX_OPTIONS: usize = 20;
 static POLL_MUTATION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingPollEnd {
+    transaction_id: String,
+    failed: bool,
+}
+
 async fn pending_poll_end(
     room: &matrix_sdk::Room,
     poll_id: &EventId,
-) -> Result<Option<String>, String> {
+) -> Result<Option<PendingPollEnd>, String> {
     let (echoes, _) = room
         .send_queue()
         .subscribe()
@@ -39,7 +46,9 @@ async fn pending_poll_end(
         .map_err(|e| e.to_string())?;
     Ok(echoes.into_iter().find_map(|echo| {
         let LocalEchoContent::Event {
-            serialized_event, ..
+            serialized_event,
+            send_error,
+            ..
         } = echo.content
         else {
             return None;
@@ -49,8 +58,10 @@ async fn pending_poll_end(
         else {
             return None;
         };
-        (content.relates_to.event_id.as_str() == poll_id.as_str())
-            .then(|| echo.transaction_id.to_string())
+        (content.relates_to.event_id.as_str() == poll_id.as_str()).then(|| PendingPollEnd {
+            transaction_id: echo.transaction_id.to_string(),
+            failed: send_error.is_some(),
+        })
     }))
 }
 
@@ -58,7 +69,7 @@ pub async fn pending_poll_end_impl(
     client: &Client,
     room_id: &str,
     poll_event_id: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<PendingPollEnd>, String> {
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
     pending_poll_end(&room, &poll_event_id).await
@@ -183,8 +194,8 @@ pub async fn end_poll_impl(
     let _guard = POLL_MUTATION_LOCK.lock().await;
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
-    if let Some(transaction_id) = pending_poll_end(&room, &poll_event_id).await? {
-        return Ok(transaction_id);
+    if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
+        return Ok(pending.transaction_id);
     }
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
     send_and_capture_transaction_id(
