@@ -33,13 +33,17 @@ afterEach(cleanup);
  * has no real IME/keypress-to-DOM-mutation pipeline, but ProseMirror's paste
  * handling is real DOM event handling that inserts clipboard text into the
  * doc, so this exercises the actual editor rather than a fake. */
-function pasteText(editable: Element, text: string) {
+function pasteText(editable: Element, text: string, matchFormatting = false) {
+  // Paste-and-match-style uses the active typing marks. Ordinary clipboard
+  // paste instead takes marks from the surrounding document, not storedMarks.
+  if (matchFormatting) fireEvent.keyDown(editable, { key: "Shift", shiftKey: true });
   fireEvent.paste(editable, {
     clipboardData: {
       getData: (type: string) => (type === "text/plain" ? text : ""),
       types: ["text/plain"],
     },
   });
+  if (matchFormatting) fireEvent.keyUp(editable, { key: "Shift", shiftKey: false });
 }
 
 describe("Composer", () => {
@@ -87,7 +91,9 @@ describe("Composer", () => {
           getData: (type: string) =>
             type === "text/html"
               ? `<p>/${command} <a data-mx-pill="true" href="https://matrix.to/#/@alice:example.org">Alice</a></p>`
-              : `/${command} Alice`,
+              : type === "text/plain"
+                ? `/${command} Alice`
+                : "",
           types: ["text/html", "text/plain"],
         },
       });
@@ -122,11 +128,11 @@ describe("Composer", () => {
       const view = render(<Composer {...props} />);
       const editable = await screen.findByLabelText("Message");
       fireEvent.click(screen.getByRole("button", { name: label }));
-      pasteText(editable, "authored");
+      pasteText(editable, "authored", true);
       expect(editable.querySelector(selector)).toHaveTextContent("authored");
       flags.composerParity = false;
       view.rerender(<Composer {...props} />);
-      pasteText(editable, "new text");
+      pasteText(editable, "new text", true);
       expect(editable.querySelector(selector)).toHaveTextContent("authored");
       expect(editable.querySelector(selector)).not.toHaveTextContent("new text");
       expect(editable).toHaveTextContent("new text");
