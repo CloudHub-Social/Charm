@@ -364,9 +364,12 @@ fn load_persisted_endpoint(app: &AppHandle, account_key: &str) -> Option<Persist
     serde_json::from_str(&json).ok()
 }
 
-fn clear_persisted_endpoint(app: &AppHandle, account_key: &str) {
-    if let Ok(path) = persisted_endpoint_path(app, account_key) {
-        let _ = std::fs::remove_file(path);
+fn clear_persisted_endpoint(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let path = persisted_endpoint_path(app, account_key)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("Could not clear push registration".into()),
     }
 }
 
@@ -411,7 +414,7 @@ pub async fn register_push(
         .filter(|(_, record)| record.disabled)
     {
         if retry_persisted_push_cleanup(&client, &mut pending_cleanup).await {
-            clear_persisted_endpoint(&app, account_key);
+            let _ = clear_persisted_endpoint(&app, account_key);
         } else {
             let path = persisted_endpoint_path(&app, account_key)?;
             save_endpoint_record(&path, &pending_cleanup)?;
@@ -432,16 +435,24 @@ pub async fn register_push(
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "Charm".to_string());
             let pusher: Pusher = build_pusher_init(&endpoint, &device_display_name).into();
+            let account_key = account_key
+                .as_ref()
+                .ok_or_else(|| "Push registration has no authenticated account".to_string())?;
+            // Persist a cleanup tombstone before the homeserver mutation. If
+            // the process exits after set_pusher succeeds, the next launch can
+            // still remove this exact pusher before allowing registration.
+            let mut staged = PersistedPushEndpoint::from(&endpoint);
+            staged.disabled = true;
+            let staged_path = persisted_endpoint_path(&app, account_key)?;
+            if let Err(error) = save_endpoint_record(&staged_path, &staged) {
+                let _ = transport.unregister().await;
+                return Err(error);
+            }
             match client.pusher().set(pusher, false).await {
                 Ok(()) => {
-                    let persisted = account_key
-                        .as_ref()
-                        .ok_or_else(|| "Push registration has no authenticated account".into())
-                        .and_then(|account_key| {
-                            save_persisted_endpoint(&app, account_key, &endpoint)
-                        });
+                    let persisted = save_persisted_endpoint(&app, account_key, &endpoint);
                     if let Err(error) = persisted {
-                        let _ = finish_remote_push_cleanup(
+                        let rollback_complete = finish_remote_push_cleanup(
                             client.pusher().delete(PusherIds::new(
                                 endpoint.url_or_token.clone(),
                                 endpoint.app_id.clone(),
@@ -449,6 +460,9 @@ pub async fn register_push(
                             std::time::Duration::from_secs(5),
                         )
                         .await;
+                        if rollback_complete {
+                            let _ = clear_persisted_endpoint(&app, account_key);
+                        }
                         let _ = transport.unregister().await;
                         PushStatus {
                             transport: endpoint.kind,
@@ -479,6 +493,7 @@ pub async fn register_push(
                     // nor clean up (there's nothing in `push_transport` for
                     // `unregister_push` to act on otherwise).
                     let _ = transport.unregister().await;
+                    let _ = clear_persisted_endpoint(&app, account_key);
                     PushStatus {
                         transport: endpoint.kind,
                         registered: false,
@@ -710,7 +725,7 @@ pub(crate) async fn unregister_push_impl(
 
     if let Some(account_key) = &account_key {
         if remote_cleanup_complete {
-            clear_persisted_endpoint(app, account_key);
+            persistence_error = clear_persisted_endpoint(app, account_key).err();
         } else if let Some(record) = &pending_cleanup {
             let save_result = persisted_endpoint_path(app, account_key)
                 .and_then(|path| save_endpoint_record(&path, record));
@@ -929,7 +944,7 @@ pub(crate) async fn handle_transport_unregistered(app: &AppHandle) {
     if let Some(mut persisted) = load_persisted_endpoint(app, &account_key) {
         persisted.disabled = true;
         if retry_persisted_push_cleanup(&client, &mut persisted).await {
-            clear_persisted_endpoint(app, &account_key);
+            let _ = clear_persisted_endpoint(app, &account_key);
         } else if let Ok(path) = persisted_endpoint_path(app, &account_key) {
             if let Err(error) = save_endpoint_record(&path, &persisted) {
                 tracing::error!(
@@ -940,7 +955,7 @@ pub(crate) async fn handle_transport_unregistered(app: &AppHandle) {
             }
         }
     } else {
-        clear_persisted_endpoint(app, &account_key);
+        let _ = clear_persisted_endpoint(app, &account_key);
     }
 
     *state
