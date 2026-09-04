@@ -101,7 +101,7 @@ describe("RoomDirectoryDialog", () => {
     },
   );
 
-  it("joins by canonical alias, selects the resolved room, and closes", async () => {
+  it("joins the directory room ID even when an alias is present, selects it, and closes", async () => {
     searchPublicRooms.mockResolvedValueOnce({
       rooms: [matrixRoom],
       next_batch: null,
@@ -112,7 +112,7 @@ describe("RoomDirectoryDialog", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
 
-    expect(joinRoom).toHaveBeenCalledWith("#matrix:example.org");
+    expect(joinRoom).toHaveBeenCalledWith("!matrix:example.org");
     await waitFor(() =>
       expect(onJoined).toHaveBeenCalledWith("!matrix:example.org", expect.any(AbortSignal)),
     );

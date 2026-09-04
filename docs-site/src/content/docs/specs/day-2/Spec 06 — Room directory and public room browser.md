@@ -25,7 +25,7 @@ invite/alias/link from outside the app.
 ## Non-goals
 
 - Not a full room-discovery/recommendation engine — a straightforward searchable
-  list of the current homeserver's public room directory (`GET
+  list of the current homeserver's public room directory (`POST
   /_matrix/client/v3/publicRooms`), matching baseline Matrix client functionality.
 - Not federated cross-homeserver directory aggregation in Phase 1 — start with the
   user's own homeserver's directory; querying a specific *other* known homeserver

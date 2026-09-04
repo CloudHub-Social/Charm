@@ -145,7 +145,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
     setJoiningRoomId(room.room_id);
     setError(null);
     try {
-      const joined = await joinRoom(room.canonical_alias ?? room.room_id);
+      const joined = await joinRoom(room.room_id);
       if (generation !== joinGeneration.current) return;
       membershipJoined = true;
       const navigation = new AbortController();
