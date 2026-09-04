@@ -192,9 +192,22 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    validate_cancelled_account_key(account_key)?;
     let marker =
         matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
     create_cancelled_account_marker(&marker)
+}
+
+fn validate_cancelled_account_key(account_key: &str) -> Result<(), String> {
+    if account_key.len() == 32
+        && account_key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err("Invalid cancelled-account cleanup key.".to_string())
+    }
 }
 
 fn create_cancelled_account_marker(marker: &Path) -> Result<(), String> {
@@ -667,6 +680,7 @@ fn discard_cancelled_account_store_locked(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<(), String> {
+    validate_cancelled_account_key(account_key)?;
     // Resolve without `store_path`: its create-on-access contract is useful
     // for live stores but would manufacture an empty directory while cleanup
     // is trying to prove the cancelled store is absent.
@@ -702,6 +716,7 @@ fn discard_cancelled_account_session_at(
     account_key: &str,
     cleanup: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    validate_cancelled_account_key(account_key)?;
     // Record cancellation before touching the keychain: a failed cleanup must
     // not leave an otherwise valid session eligible for restoration.
     let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
@@ -731,6 +746,9 @@ fn retry_cancelled_account_cleanup_at(
     account_key: &str,
     cleanup: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    // Marker filenames are untrusted filesystem data, not account identities.
+    // Reject before checking markers or invoking any keychain/filesystem cleanup.
+    validate_cancelled_account_key(account_key)?;
     if !cancelled_account_cleanup_pending_at(root, account_key)? {
         return Ok(());
     }
@@ -2222,10 +2240,14 @@ mod tests {
         let root = ScratchRoot::new("cancelled-marker-write-failure");
         let missing_root = root.0.join("missing-parent");
         let called = std::cell::Cell::new(false);
-        discard_cancelled_account_session_at(&missing_root, "account", || {
-            called.set(true);
-            Ok(())
-        })
+        discard_cancelled_account_session_at(
+            &missing_root,
+            &account_key("@test:localhost"),
+            || {
+                called.set(true);
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(called.get());
     }
@@ -2233,10 +2255,11 @@ mod tests {
     #[test]
     fn cancelled_cleanup_reports_failure_without_a_marker_or_completed_cleanup() {
         let root = ScratchRoot::new("cancelled-marker-and-cleanup-failure");
-        let result =
-            discard_cancelled_account_session_at(&root.0.join("missing-parent"), "account", || {
-                Err("simulated keychain failure".to_string())
-            });
+        let result = discard_cancelled_account_session_at(
+            &root.0.join("missing-parent"),
+            &account_key("@test:localhost"),
+            || Err("simulated keychain failure".to_string()),
+        );
         assert!(result
             .unwrap_err()
             .contains("cleanup failed: simulated keychain failure"));
@@ -2247,22 +2270,60 @@ mod tests {
     fn cancelled_cleanup_does_not_truncate_a_symlink_marker_target() {
         let root = ScratchRoot::new("cancelled-marker-symlink");
         let outside = root.0.join("unrelated-private-file");
+        let key = account_key("@test:localhost");
         std::fs::write(&outside, "preserve this data").unwrap();
         let marker = root
             .0
-            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{key}"));
         std::os::unix::fs::symlink(&outside, &marker).unwrap();
         create_cancelled_account_marker(&marker).unwrap();
         assert_eq!(
             std::fs::read_to_string(&outside).unwrap(),
             "preserve this data"
         );
-        discard_cancelled_account_session_at(&root.0, "account", || Ok(())).unwrap();
+        discard_cancelled_account_session_at(&root.0, &key, || Ok(())).unwrap();
         assert_eq!(
             std::fs::read_to_string(&outside).unwrap(),
             "preserve this data"
         );
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn malformed_cancelled_account_keys_never_invoke_cleanup() {
+        let root = ScratchRoot::new("cancelled-marker-invalid-key");
+        let healthy = account_key("@healthy:localhost");
+        let store = store_path_at(&root.0, &healthy).unwrap();
+        std::fs::write(store.join("preserved"), "keep").unwrap();
+        for key in [
+            "",
+            ".",
+            "..",
+            "/",
+            "../other",
+            "..\\other",
+            "not-an-account",
+            "ABCDEF0123456789ABCDEF0123456789",
+            "abcdef0123456789abcdef012345678g",
+        ] {
+            let called = std::cell::Cell::new(false);
+            assert!(retry_cancelled_account_cleanup_at(&root.0, key, || {
+                called.set(true);
+                Ok(())
+            })
+            .is_err());
+            assert!(discard_cancelled_account_session_at(&root.0, key, || {
+                called.set(true);
+                Ok(())
+            })
+            .is_err());
+            assert!(!called.get());
+        }
+        assert!(validate_cancelled_account_key(&healthy).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(store.join("preserved")).unwrap(),
+            "keep"
+        );
     }
 
     #[test]
