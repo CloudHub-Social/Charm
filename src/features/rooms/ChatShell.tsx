@@ -773,7 +773,11 @@ export function ChatShell({
               handleAtBottomStateChange(pinned);
             }}
           >
-            <TimelineNoticeList notices={noticeBuckets.trailing} irc={messageLayout === "irc"} />
+            <TimelineNoticeList
+              key={room.room_id}
+              notices={noticeBuckets.trailing}
+              irc={messageLayout === "irc"}
+            />
           </div>
         )}
         {!loading && messages.length === 0 && hasMore && paginationError && (

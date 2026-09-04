@@ -171,6 +171,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 41 microphone capture, local preview, and voice attachments.
         VoiceRecording,
+        /// Spec 47 appearance customization and display preferences.
+        AppearanceParity,
     }
 );
 
@@ -207,6 +209,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::VoiceRecording => false,
+            FeatureFlagKey::AppearanceParity => false,
         }
     }
 
@@ -296,6 +299,9 @@ impl FeatureFlagKey {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
             FeatureFlagKey::VoiceRecording => "Record, preview, and send voice messages from the composer.",
+            FeatureFlagKey::AppearanceParity => {
+                "Customize appearance and display preferences, including clock and date formats."
+            }
         }
     }
 
@@ -341,6 +347,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::VoiceRecording => "Spec 41 (voice message recording)",
+            FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
 
@@ -376,6 +383,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::VoiceRecording => "voice_recording",
+            FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
 }
@@ -672,8 +680,8 @@ mod tests {
     fn generated_frontend_catalog_matches_rust_catalog() {
         let expected =
             serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize");
-        // Preserve generated evidence even when parity fails so CI-only
-        // contributors can import the authoritative catalog without editing it.
+        // Export before asserting parity so CI-only contributors can import
+        // the authoritative catalog even when the committed version is stale.
         let output =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".artifacts/generated-bindings");
         std::fs::create_dir_all(&output).expect("create generated catalog directory");
