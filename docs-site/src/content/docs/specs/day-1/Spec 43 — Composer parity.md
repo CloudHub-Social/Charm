@@ -207,7 +207,8 @@ processes: Matrix account data remains last-write-wins across those writers.
 Concurrent block/block and block/unblock regressions cover preservation of existing
 entries without waiting for sync, plus malformed-data and homeserver isolation.
 Successful ignore/unignore slash commands invalidate the settings ignored-user
-query; failed commands leave it untouched and retain inline failure feedback.
+query. Successful `/nick` commands invalidate Settings and room-list profile queries.
+Failed commands leave cached queries untouched and retain inline failure feedback.
 Explicit native and web settings reads fetch current server account data so this
 invalidation cannot refill the list from pre-mutation sync state. Timeline and
 search filtering retain their separate sync-local reads for offline operation.

@@ -137,6 +137,10 @@ describe("formatted composer submission", () => {
         expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({
           queryKey: ["settings", "ignored-users"],
         });
+      } else if (command === "nick") {
+        expect(mocks.invalidateQueries).toHaveBeenCalledTimes(2);
+        expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["profile"] });
+        expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["own-profile"] });
       } else {
         expect(mocks.invalidateQueries).not.toHaveBeenCalled();
       }
@@ -154,10 +158,14 @@ describe("formatted composer submission", () => {
     },
   );
 
-  it.each(["ignore", "unignore"] as const)(
-    "does not invalidate the settings list when /%s fails",
+  it.each(["ignore", "unignore", "nick"] as const)(
+    "does not invalidate settings queries when /%s fails",
     async (command) => {
-      const mutation = command === "ignore" ? mocks.ignoreUser : mocks.unignoreUser;
+      const mutation = {
+        ignore: mocks.ignoreUser,
+        unignore: mocks.unignoreUser,
+        nick: mocks.setDisplayName,
+      }[command];
       mutation.mockRejectedValueOnce(new Error("Request failed"));
       const { result } = renderHook(() =>
         useMessageSend({

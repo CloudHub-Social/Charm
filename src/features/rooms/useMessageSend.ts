@@ -169,6 +169,8 @@ export function useMessageSend({
               break;
             case "nick":
               await setDisplayName(args.join(" "));
+              void queryClient.invalidateQueries({ queryKey: ["profile"] });
+              void queryClient.invalidateQueries({ queryKey: ["own-profile"] });
               break;
             case "ignore":
               await ignoreUser(args[0]);
