@@ -37,6 +37,12 @@ not first-time **setup** or manual key file I/O.
 
 ## Problem & why now
 
+Native key imports read from one opened file into a private, size-bounded
+encrypted snapshot before acquiring account-transfer exclusion. The SDK imports
+that snapshot rather than reopening the user-selected pathname. Temporary
+ciphertext is removed when the owned transfer completes or fails; plaintext keys
+are not written to the staging file. Regression execution remains in CI.
+
 Charm 2.0's crypto is strong on verification and restore: SAS verification,
 cross-signing bootstrap, recovery-key restore, and reset are all present
 (`DevicesPanel.tsx`, `VerificationOverlay.tsx`, `useDevices.ts`). But the parity

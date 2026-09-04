@@ -7,7 +7,8 @@
 //! logged. matrix-sdk owns the interoperable encrypted key-file format and
 //! zeroizes its Rust-side passphrase copy.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,43 @@ use super::MatrixState;
 const MIN_PASSPHRASE_CHARS: usize = 8;
 const MAX_PASSPHRASE_BYTES: usize = 1024;
 const MAX_IMPORT_BYTES: u64 = 100 * 1024 * 1024;
+
+fn snapshot_import_file(
+    path: &Path,
+    limit: u64,
+) -> Result<(tempfile::NamedTempFile, tempfile::TempDir), String> {
+    // Inspect the opened descriptor, then bound the actual read. Path metadata
+    // alone cannot constrain a file changed between inspection and SDK import.
+    let source = std::fs::File::open(path)
+        .map_err(|_| "Could not read the selected room-key file.".to_string())?;
+    let metadata = source
+        .metadata()
+        .map_err(|_| "Could not inspect the selected room-key file.".to_string())?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err("The selected room-key file is invalid or larger than 100 MB.".to_string());
+    }
+    let directory = tempfile::tempdir()
+        .map_err(|_| "Could not prepare the encrypted room-key import.".to_string())?;
+    let mut snapshot = tempfile::NamedTempFile::new_in(directory.path())
+        .map_err(|_| "Could not prepare the encrypted room-key import.".to_string())?;
+    copy_bounded_import(source, snapshot.as_file_mut(), limit)?;
+    // Only encrypted bytes reach this private temporary file. Both owners stay
+    // alive until the SDK finishes, including when the invoking future drops.
+    Ok((snapshot, directory))
+}
+
+fn copy_bounded_import(
+    source: impl Read,
+    destination: &mut impl std::io::Write,
+    limit: u64,
+) -> Result<(), String> {
+    let copied = std::io::copy(&mut source.take(limit.saturating_add(1)), destination)
+        .map_err(|_| "Could not read the selected room-key file.".to_string())?;
+    if copied > limit {
+        return Err("The selected room-key file is invalid or larger than 100 MB.".to_string());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -192,25 +230,20 @@ pub async fn import_room_keys(
             total_count: 0,
         });
     };
-    let metadata = tokio::task::spawn_blocking({
-        let path = path.clone();
-        move || std::fs::metadata(path)
-    })
-    .await
-    .map_err(|_| "Could not inspect the selected room-key file.".to_string())?
-    .map_err(|_| "Could not read the selected room-key file.".to_string())?;
-    if !metadata.is_file() || metadata.len() > MAX_IMPORT_BYTES {
-        return Err("The selected room-key file is invalid or larger than 100 MB.".to_string());
-    }
+    let snapshot =
+        tokio::task::spawn_blocking(move || snapshot_import_file(&path, MAX_IMPORT_BYTES))
+            .await
+            .map_err(|_| "Could not prepare the encrypted room-key import.".to_string())??;
 
     run_key_transfer(app, client, move |client| async move {
         let result = client
             .encryption()
-            .import_room_keys(path, &passphrase)
+            .import_room_keys(snapshot.0.path().to_path_buf(), &passphrase)
             .await
             .map_err(|_| {
                 "Could not decrypt the room-key file. Check the file and passphrase.".to_string()
             })?;
+        drop(snapshot);
         tracing::info!(
             imported_count = result.imported_count,
             total_count = result.total_count,
@@ -228,6 +261,29 @@ pub async fn import_room_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_read_limit_applies_to_growing_or_unending_input() {
+        let mut output = Vec::new();
+        assert!(copy_bounded_import(std::io::repeat(0), &mut output, 8).is_err());
+        assert_eq!(output.len(), 9);
+        output.clear();
+        assert!(copy_bounded_import(&b"12345678"[..], &mut output, 8).is_ok());
+    }
+
+    #[test]
+    fn import_snapshot_does_not_follow_later_source_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("keys.txt");
+        std::fs::write(&source, b"encrypted-original").unwrap();
+        let snapshot = snapshot_import_file(&source, 64).unwrap();
+        std::fs::write(&source, b"replacement").unwrap();
+        assert_eq!(
+            std::fs::read(snapshot.0.path()).unwrap(),
+            b"encrypted-original"
+        );
+        assert!(snapshot_import_file(directory.path(), 64).is_err());
+    }
 
     #[test]
     fn passphrase_validation_is_bounded() {
