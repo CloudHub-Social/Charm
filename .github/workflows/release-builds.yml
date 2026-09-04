@@ -1071,10 +1071,11 @@ jobs:
             name=$(basename "$file")
             expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
             remote=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
-              | jq -r --arg name "$name" '.[] | select(.name == $name) | .digest')
+              | jq -c --arg name "$name" '.[] | select(.name == $name)')
             if [ -n "$remote" ]; then
-              if [ "$remote" != "$expected" ]; then
-                echo "::error::Existing draft asset differs or lacks a digest; refusing to overwrite $name"
+              remote_digest=$(jq -r '.digest // empty' <<<"$remote")
+              if [ -n "$remote_digest" ] && [ "$remote_digest" != "$expected" ]; then
+                echo "::error::Existing draft asset digest differs; refusing to overwrite $name"
                 exit 1
               fi
             else
