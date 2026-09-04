@@ -58,8 +58,11 @@ test("clock and date choices survive reload and disappear when the rollout is di
   await captureSnapshot(page, "appearance-display-formats");
 
   await page.reload();
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  // Reload restores the settings deep link; the room-list opener is not mounted.
+  await expect(page.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.getByRole("button", { name: "Serif", exact: true })).toBeVisible();
   await expect(page.locator("html")).toHaveCSS("--font-sans", 'Georgia, "Times New Roman", serif');
   await expect(page.getByRole("button", { name: "24-hour" })).toBeVisible();
@@ -75,8 +78,10 @@ test("clock and date choices survive reload and disappear when the rollout is di
     );
   });
   await page.reload();
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await expect(page.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.getByText("Clock format", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Date format", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Font family", { exact: true })).toHaveCount(0);

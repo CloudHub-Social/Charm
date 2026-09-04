@@ -112,7 +112,7 @@ manual verification remain outstanding. CI is the verification environment.
 
 Appearance settings use Spec 09's local store for immediate rendering (message
 rows, dividers, emoji, media). Their portable values, including the global font
-family, are required inputs to [Spec 50 — Cross-device settings sync](./Spec%2050%20%E2%80%94%20Cross-device%20settings%20sync.md).
+family, are required inputs to [Spec 50 — Cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/).
 Spec 50 owns per-setting classification, account-data transport, opt-in behavior,
 and export/import; synchronization is required, not an optional Spec 48 follow-up.
 Device-specific values stay local under that classification. Custom-theme import

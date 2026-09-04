@@ -104,7 +104,7 @@ close time). ts-rs bindings. No changes to existing shell commands.
 
 ## What I'd revisit as this grows
 
-- [Spec 50 — Cross-device settings sync](./Spec%2050%20%E2%80%94%20Cross-device%20settings%20sync.md)
+- [Spec 50 — Cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/)
   governs the required sync schema and portable/device-local boundary.
 - Global/per-app-tier keyboard-shortcut customization (shortcuts panel exists per
   the audit; customization of it is a possible follow-up, not a confirmed 1.0 gap).
