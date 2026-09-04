@@ -299,7 +299,7 @@ async fn clear_local_session_locked(
     );
     let mut credential_error =
         clear_logout_credentials(tombstone_result, || matrix_result, || oauth_result);
-    if !durable {
+    if retain_session_after_failed_logout(search_cleanup_scope, durable) {
         return Err(
             "Could not persist sign-out. Your session remains open; retry signing out.".into(),
         );
@@ -1003,6 +1003,14 @@ fn logout_is_durable(marked: bool, matrix_cleared: bool, oauth_cleared: bool) ->
     marked || (matrix_cleared && oauth_cleared)
 }
 
+fn retain_session_after_failed_logout(scope: SearchCleanupScope, durable: bool) -> bool {
+    // EntireAccount is reached only after a durable full-wipe marker or a
+    // successful remote deactivation. Neither flow may keep a client alive
+    // while its caller deletes the SDK store, even if the separate logout
+    // tombstone/keychain cleanup failed. Ordinary logout remains retryable.
+    matches!(scope, SearchCleanupScope::CurrentDevice) && !durable
+}
+
 pub(super) fn clear_logout_credentials(
     marker: Result<(), String>,
     clear_matrix: impl FnOnce() -> Result<(), String>,
@@ -1036,6 +1044,20 @@ mod tests {
                     matrix_cleared && oauth_cleared
                 );
             }
+        }
+    }
+
+    #[test]
+    fn marked_wipe_and_deactivation_always_release_the_live_client() {
+        for durable in [false, true] {
+            assert!(!retain_session_after_failed_logout(
+                SearchCleanupScope::EntireAccount,
+                durable
+            ));
+            assert_eq!(
+                retain_session_after_failed_logout(SearchCleanupScope::CurrentDevice, durable),
+                !durable
+            );
         }
     }
 

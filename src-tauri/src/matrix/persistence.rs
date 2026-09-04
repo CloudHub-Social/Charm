@@ -2433,8 +2433,7 @@ mod tests {
             committed.set(true);
             Ok(())
         })
-        .err()
-        .expect("shutdown marker vetoes finalization");
+        .expect_err("shutdown marker vetoes finalization");
         assert!(failure.cancelled_cleanup_veto);
         assert!(!failure.committed_session);
         assert!(!committed.get());
