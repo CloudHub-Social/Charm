@@ -11,7 +11,9 @@ for (const enabled of [false, true]) {
         localStorage.setItem(
           "charm:featureFlags",
           JSON.stringify({
-            state: { overrides: { composer_parity: flag } },
+            // Narrow-width cases exercise the mobile shell's formatting toggle;
+            // composer parity still varies independently in both states.
+            state: { overrides: { composer_parity: flag, mobile_chat_redesign: true } },
             updatedAt: Date.now(),
           }),
         );
