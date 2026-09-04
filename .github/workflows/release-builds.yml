@@ -29,6 +29,10 @@ jobs:
     name: Validate signing verification ref
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Restrict manual signing verification to main
         env:
           VERIFY_SIGNING: ${{ inputs.verify_platform_signing }}
@@ -38,7 +42,24 @@ jobs:
             exit 1
           fi
 
+      - name: Match release tag to synchronized application version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          package_version=$(jq -r .version package.json)
+          tauri_version=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "$package_version" != "$tauri_version" ] || [ "$package_version" != "$cargo_version" ]; then
+            echo "::error::Application versions are not synchronized (package=$package_version, tauri=$tauri_version, cargo=$cargo_version)"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$package_version" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME does not match application version v$package_version"
+            exit 1
+          fi
+
   frontend-sourcemaps:
+    needs: signing-policy
     if: ${{ !inputs.verify_platform_signing }}
     name: Frontend sourcemaps
     runs-on: ubuntu-latest
@@ -101,6 +122,7 @@ jobs:
           include-hidden-files: true
 
   rust-linux-debug-files:
+    needs: signing-policy
     if: ${{ !inputs.verify_platform_signing }}
     name: Rust Linux debug files
     runs-on: ubuntu-latest
@@ -236,6 +258,7 @@ jobs:
           include-hidden-files: true
 
   apple-debug-files:
+    needs: signing-policy
     if: ${{ !inputs.verify_platform_signing }}
     name: Apple debug files
     runs-on: macos-latest
@@ -972,7 +995,7 @@ jobs:
             fi
           done
 
-      - name: Generate signed checksum manifest
+      - name: Generate checksums and detached signatures
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -985,11 +1008,16 @@ jobs:
             printf '%s\n' "$duplicate_names"
             exit 1
           fi
-          manifest=$(mktemp)
+          sha256_manifest=$(mktemp)
+          sha1_manifest=$(mktemp)
           while IFS= read -r -d '' file; do
             (cd "$(dirname "$file")" && sha256sum "$(basename "$file")")
-          done < <(find . -type f -print0 | sort -z) > "$manifest"
-          mv "$manifest" SHA256SUMS.txt
+          done < <(find . -type f -print0 | sort -z) > "$sha256_manifest"
+          while IFS= read -r -d '' file; do
+            (cd "$(dirname "$file")" && sha1sum "$(basename "$file")")
+          done < <(find . -type f -print0 | sort -z) > "$sha1_manifest"
+          mv "$sha256_manifest" SHA256SUMS.txt
+          mv "$sha1_manifest" SHA1SUMS.txt
 
           if [ -z "$GPG_PRIVATE_KEY" ]; then
             echo "::error::Stable releases require GPG_PRIVATE_KEY"
@@ -1002,11 +1030,14 @@ jobs:
           key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
           # Empty passphrases deliberately support an unencrypted release key.
           # A protected key still fails closed, with an actionable error.
-          if ! gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-            --local-user "$key_id" --detach-sign --armor SHA256SUMS.txt; then
-            echo "::error::Release signing failed. If the key is protected, configure its matching GPG_PASSPHRASE."
-            exit 1
-          fi
+          mapfile -d '' to_sign < <(find . -type f -print0)
+          for file in "${to_sign[@]}"; do
+            if ! gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              --local-user "$key_id" --detach-sign --armor "$file"; then
+              echo "::error::Release signing failed for $(basename "$file"). If the key is protected, configure its matching GPG_PASSPHRASE."
+              exit 1
+            fi
+          done
           gpg --batch --armor --export "$key_id" > charm-release-signing-key.asc
 
       - name: Stage and verify assets before publishing the draft

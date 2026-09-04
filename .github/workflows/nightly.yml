@@ -1355,12 +1355,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Verify complete nightly SBOM set
+      - name: Verify complete nightly artifact and SBOM set
         run: |
           set -euo pipefail
-          for sbom in charm-macos.spdx.json charm-windows.spdx.json charm-linux.spdx.json charm-android.spdx.json; do
-            if ! find artifacts -type f -name "$sbom" -print -quit | grep -q .; then
-              echo "::error::Missing nightly SBOM $sbom"
+          for pattern in '*.dmg' '*.msi' '*.exe' '*.deb' '*.rpm' '*.AppImage' '*.apk' \
+            'charm-macos.spdx.json' 'charm-windows.spdx.json' \
+            'charm-linux.spdx.json' 'charm-android.spdx.json'; do
+            if ! find artifacts -type f -name "$pattern" -print -quit | grep -q .; then
+              echo "::error::Missing nightly asset matching $pattern"
               exit 1
             fi
           done
