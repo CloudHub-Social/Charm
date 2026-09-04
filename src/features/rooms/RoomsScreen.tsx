@@ -748,6 +748,7 @@ export function RoomsScreen({
             activeRoomId={activeRoomId}
             currentUserId={currentUserId}
             onSelectRoom={selectRoom}
+            onDirectoryJoined={navigateToProfileRoom}
             onSelectSpace={selectSpace}
             onSelectSearchResult={selectRoomInVisibleMode}
             onOpenMessageSearch={

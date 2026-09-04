@@ -65,6 +65,16 @@ total estimate. Queries and pagination tokens are trimmed, page size defaults to
 20, and the backend caps it at 50. Joining deliberately continues through the
 existing `join_room` command.
 
+The initial browser filters out spaces, custom room types, and non-public join
+rules before producing actionable results; knock and space navigation remain
+outside this slice. Pagination tokens and the estimate still describe the
+homeserver's unfiltered directory. The metadata follows the
+[Matrix public-room contract](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms).
+Typing a replacement query immediately suspends pagination throughout debounce.
+Successful joins reuse the existing refresh-and-pending-selection path, so a
+delayed room-list sync keeps the current conversation visible until the joined
+room is available.
+
 ## Testing strategy
 
 - Rust: `search_public_rooms` correctness against a mocked `/publicRooms` response

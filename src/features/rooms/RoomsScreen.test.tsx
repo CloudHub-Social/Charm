@@ -233,14 +233,19 @@ vi.mock("./RoomList", () => ({
     onAcceptInvite,
     onDeclineInvite,
     onOpenQuickSwitcher,
+    onDirectoryJoined,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
     onAcceptInvite: (id: string) => Promise<void>;
     onDeclineInvite: (id: string) => Promise<void>;
     onOpenQuickSwitcher?: () => void;
+    onDirectoryJoined: (id: string) => Promise<void>;
   }) => (
     <div>
+      <button type="button" onClick={() => void onDirectoryJoined("!directory:example.org")}>
+        joined-directory-room
+      </button>
       {onOpenQuickSwitcher && (
         <button type="button" onClick={onOpenQuickSwitcher}>
           open-quick-switcher
@@ -1421,6 +1426,29 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(joinRoom).toHaveBeenCalledWith(replacement.room_id));
     expect(await screen.findByText(`chat-content:${replacement.room_id}`)).toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains directory join selection until the room snapshot arrives", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const joined = room({ room_id: "!directory:example.org" });
+    listRooms.mockReset().mockResolvedValue([firstRoom]);
+    render(
+      <Provider store={createStore()}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "joined-directory-room" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(`chat-content:${firstRoom.room_id}`)).toBeInTheDocument();
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, joined]));
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
   });
 
   it("keeps the current chat visible until a newly-created DM reaches the room-list stream", async () => {

@@ -71,6 +71,8 @@ interface RoomListProps {
    * other user's typing notice received during that window. */
   currentUserId: string;
   onSelectRoom: (id: string) => void;
+  /** Refresh or retain a pending selection after a directory join. */
+  onDirectoryJoined?: (id: string) => void | Promise<void>;
   onSelectSpace: (id: string) => void;
   /**
    * Selecting a search result found via "Search everywhere" (or one that's
@@ -136,6 +138,7 @@ export function RoomList({
   activeRoomId,
   currentUserId,
   onSelectRoom,
+  onDirectoryJoined,
   onSelectSpace,
   onSelectSearchResult,
   onOpenMessageSearch,
@@ -1111,7 +1114,7 @@ export function RoomList({
         <RoomDirectoryDialog
           open={roomDirectoryOpen}
           onOpenChange={setRoomDirectoryOpen}
-          onJoined={onSelectRoom}
+          onJoined={onDirectoryJoined ?? onSelectRoom}
         />
       )}
     </TooltipProvider>

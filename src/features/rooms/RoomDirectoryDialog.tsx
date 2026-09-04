@@ -45,7 +45,7 @@ function DirectoryRoomAvatar({ room }: { room: PublicRoomSummary }) {
 interface RoomDirectoryDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onJoined: (roomId: string) => void;
+  onJoined: (roomId: string) => void | Promise<void>;
 }
 
 export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirectoryDialogProps) {
@@ -70,6 +70,9 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
     }
 
     const requestId = ++searchRequestIdRef.current;
+    // Invalidate pagination immediately, including the debounce interval.
+    setLoading(true);
+    setNextBatch(null);
     const timeout = window.setTimeout(
       () => {
         setLoading(true);
@@ -99,7 +102,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   }, [open, query]);
 
   async function loadMore() {
-    if (!nextBatch || loadingMore) return;
+    if (!nextBatch || loading || loadingMore) return;
     const requestId = ++searchRequestIdRef.current;
     setLoadingMore(true);
     setError(null);
@@ -126,7 +129,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
     setError(null);
     try {
       const joined = await joinRoom(room.canonical_alias ?? room.room_id);
-      onJoined(joined.room_id);
+      await onJoined(joined.room_id);
       onOpenChange(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Couldn't join the room.");

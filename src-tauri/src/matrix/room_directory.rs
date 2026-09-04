@@ -94,10 +94,21 @@ pub async fn search_public_rooms_impl(
         .map_err(|error| error.to_string())?;
 
     Ok(PublicRoomPage {
-        rooms: response.chunk.into_iter().map(Into::into).collect(),
+        // This first browser supports ordinary, directly joinable rooms only.
+        // Never discard type/join metadata and then offer the wrong action.
+        rooms: response
+            .chunk
+            .into_iter()
+            .filter(is_supported_directory_room)
+            .map(Into::into)
+            .collect(),
         next_batch: response.next_batch,
         total_room_count_estimate: response.total_room_count_estimate.map(Into::into),
     })
+}
+
+fn is_supported_directory_room(room: &PublicRoomsChunk) -> bool {
+    room.room_type.is_none() && room.join_rule.as_str() == "public"
 }
 
 #[cfg(test)]
@@ -107,6 +118,29 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::search_public_rooms_impl;
+
+    #[test]
+    fn only_offers_ordinary_public_rooms() {
+        for (room_type, join_rule, supported) in [
+            (None, "public", true),
+            (Some("m.space"), "public", false),
+            (Some("custom.type"), "public", false),
+            (None, "knock", false),
+            (None, "knock_restricted", false),
+            (None, "invite", false),
+        ] {
+            let room = serde_json::from_value(serde_json::json!({
+                "room_id": "!room:example.org",
+                "room_type": room_type,
+                "join_rule": join_rule,
+                "num_joined_members": 1,
+                "world_readable": false,
+                "guest_can_join": false
+            }))
+            .unwrap();
+            assert_eq!(super::is_supported_directory_room(&room), supported);
+        }
+    }
 
     #[tokio::test]
     async fn search_maps_results_and_round_trips_pagination() {

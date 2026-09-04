@@ -99,6 +99,30 @@ describe("RoomDirectoryDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("disables old pagination as soon as a replacement search starts", async () => {
+    searchPublicRooms
+      .mockResolvedValueOnce({
+        rooms: [matrixRoom],
+        next_batch: "old-page",
+        total_room_count_estimate: 2,
+      })
+      .mockResolvedValueOnce({
+        rooms: [matrixRoom],
+        next_batch: null,
+        total_room_count_estimate: 1,
+      });
+    renderDialog();
+    const oldLoadMore = await screen.findByRole("button", { name: "Load more" });
+    fireEvent.change(screen.getByLabelText("Search public rooms"), { target: { value: "matrix" } });
+    fireEvent.click(oldLoadMore);
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+    expect(searchPublicRooms).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Matrix HQ")).toBeInTheDocument();
+    expect(searchPublicRooms).toHaveBeenCalledTimes(2);
+    expect(searchPublicRooms).toHaveBeenLastCalledWith("matrix");
+    expect(screen.queryByLabelText("Loading public rooms")).not.toBeInTheDocument();
+  });
+
   it("clears stale pagination state when a new search supersedes it", async () => {
     let resolveStalePage: (page: MatrixModule.PublicRoomPage) => void = () => {};
     searchPublicRooms
