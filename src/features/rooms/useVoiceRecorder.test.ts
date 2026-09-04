@@ -111,6 +111,27 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("discards capture on page hide instead of recording in the background", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => result.current.start());
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(result.current.phase).toBe("idle");
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects overlong capture even when interval callbacks never ran", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => result.current.start());
+    const clock = vi.spyOn(performance, "now").mockReturnValue(600_001);
+    await act(async () => result.current.stop());
+    clock.mockRestore();
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toContain("duration limit");
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
   it("revokes a stopped preview when the recorder unmounts", async () => {
     const { result, unmount } = renderHook(() => useVoiceRecorder());
     await act(async () => {

@@ -57,6 +57,27 @@ export function useVoiceRecorder() {
 
   useEffect(() => () => clearResources(), [clearResources]);
 
+  useEffect(() => {
+    function abandonBackgroundCapture() {
+      if (phase !== "requesting" && phase !== "recording") return;
+      clearResources();
+      setPreview(null);
+      setPhase("idle");
+      setElapsedMs(0);
+      setLevel(0);
+      setError("Recording was discarded when Charm went into the background.");
+    }
+    function visibilityChanged() {
+      if (document.hidden) abandonBackgroundCapture();
+    }
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("pagehide", abandonBackgroundCapture);
+    return () => {
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      window.removeEventListener("pagehide", abandonBackgroundCapture);
+    };
+  }, [phase, clearResources]);
+
   function stop() {
     if (active.current) {
       if (active.current.recorder.state !== "inactive") active.current.recorder.stop();
@@ -116,11 +137,13 @@ export function useVoiceRecorder() {
       };
       recorder.onstop = () => {
         if (epoch.current !== attempt) return;
-        const durationMs = Math.min(
-          MAX_DURATION_MS,
-          Math.max(1, Math.round(performance.now() - startedAt)),
-        );
+        const durationMs = Math.max(1, Math.round(performance.now() - startedAt));
         releaseCapture();
+        if (durationMs > MAX_DURATION_MS) {
+          discard();
+          setError("Recording exceeded the duration limit. Please record a shorter message.");
+          return;
+        }
         if (!bytes) {
           setPhase("idle");
           setError("No audio was recorded. Please try again.");

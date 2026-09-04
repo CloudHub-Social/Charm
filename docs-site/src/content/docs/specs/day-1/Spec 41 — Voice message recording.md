@@ -148,6 +148,10 @@ device permission or codec interoperability checks.
   messages so cross-client rendering works; a non-standard codec would play in
   Charm but show as a generic file elsewhere.
 
+Capture is discarded on page hiding/backgrounding. A capture whose elapsed duration
+exceeds ten minutes is rejected rather than published with clamped metadata, including
+when interval callbacks were delayed or suspended.
+
 ## What I'd revisit as this grows
 
 - Trim-before-send if users ask for it.
