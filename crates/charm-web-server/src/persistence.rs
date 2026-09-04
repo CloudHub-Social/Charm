@@ -483,6 +483,55 @@ impl PersistenceStore {
         Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
+    /// Atomically transitions `pending_recovery` from empty to populated and
+    /// returns whichever seed won. The object-store version precondition is
+    /// the cross-instance serialization boundary; a losing process reloads
+    /// the canonical seed instead of overwriting it.
+    pub async fn claim_pending_recovery(
+        &self,
+        token: &str,
+        candidate: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if let Some(existing) = entry.pending_recovery {
+                return Ok(existing);
+            }
+            entry.pending_recovery = Some(candidate.clone());
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(candidate.clone()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically claim protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    pub async fn require_active_crypto_writer(&self) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.require_active_writer().await
+    }
+
     pub async fn snapshot_crypto_store(
         &self,
         token: &str,
@@ -2177,6 +2226,61 @@ mod tests {
             .await
             .is_err());
         assert!(store.read_one("pending-token").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_instances_claim_one_canonical_recovery_seed() {
+        let key_bytes = [74u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "pending-claim-token",
+                "https://example.invalid",
+                &dummy_session("@pending-claim:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let candidate_a = serde_json::from_value(serde_json::json!({
+            "passphrase": "seed-a",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        let candidate_b = serde_json::from_value(serde_json::json!({
+            "passphrase": "seed-b",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+
+        let (winner_a, winner_b) = tokio::join!(
+            process_a.claim_pending_recovery("pending-claim-token", &candidate_a),
+            process_b.claim_pending_recovery("pending-claim-token", &candidate_b),
+        );
+        let winner_a = serde_json::to_value(winner_a.unwrap()).unwrap();
+        let winner_b = serde_json::to_value(winner_b.unwrap()).unwrap();
+        assert_eq!(winner_a, winner_b, "both instances must adopt the CAS winner");
+        assert_eq!(
+            winner_a,
+            serde_json::to_value(
+                process_a
+                    .pending_recovery("pending-claim-token")
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap()
+        );
     }
 
     #[tokio::test]

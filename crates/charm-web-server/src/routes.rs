@@ -5532,6 +5532,14 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             .save_pending_recovery(self.token, pending)
             .await
     }
+    async fn claim(
+        &self,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
+        self.persistence
+            .claim_pending_recovery(self.token, pending)
+            .await
+    }
     async fn checkpoint(&self) -> Result<(), String> {
         if !self.persistence.has_crypto_backup() {
             return Err(
@@ -5545,6 +5553,7 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
         {
             return Err("Session closed during recovery setup.".into());
         }
+        self.persistence.require_active_crypto_writer().await?;
         let matrix_session = self
             .session
             .client
@@ -5562,7 +5571,11 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
                 &matrix_session,
                 Some((&crypto.store_key, &crypto.passphrase)),
             )
-            .await
+            .await?;
+        // The writer fence can change while the snapshot is uploading. A
+        // superseded writer deliberately skips its commit, so recheck before
+        // allowing recovery setup to mutate server-side secret storage.
+        self.persistence.require_active_crypto_writer().await
     }
 }
 

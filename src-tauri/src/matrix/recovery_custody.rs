@@ -35,6 +35,16 @@ impl Drop for PendingRecoverySetup {
 pub trait RecoveryCustody: Send + Sync {
     async fn load(&self) -> Result<Option<PendingRecoverySetup>, String>;
     async fn save(&self, pending: Option<&PendingRecoverySetup>) -> Result<(), String>;
+    /// Claims the empty pending slot and returns the canonical winner. Web
+    /// implementations override this with a cross-process conditional write;
+    /// native callers are serialized by the account recovery lock.
+    async fn claim(
+        &self,
+        pending: &PendingRecoverySetup,
+    ) -> Result<PendingRecoverySetup, String> {
+        self.save(Some(pending)).await?;
+        Ok(pending.clone())
+    }
     /// Web persists its encrypted crypto database before enabling secret storage.
     async fn checkpoint(&self) -> Result<(), String>;
 }
@@ -121,8 +131,7 @@ pub async fn setup_with_custody(
                 recovery_key: None,
                 room_keys_backed_up: false,
             };
-            custody.save(Some(&pending)).await?;
-            pending
+            custody.claim(&pending).await?
         }
     };
     custody.checkpoint().await?;

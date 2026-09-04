@@ -357,6 +357,17 @@ impl CryptoBackupStore {
             .is_some_and(|active| active == self.writer_id))
     }
 
+    /// Recovery setup is not a best-effort background snapshot: mutating
+    /// Matrix secret storage from a superseded deployment instance would make
+    /// its local crypto changes non-durable. Fail closed at that boundary.
+    pub async fn require_active_writer(&self) -> Result<(), String> {
+        if self.is_active_writer().await? {
+            Ok(())
+        } else {
+            Err("This server instance is no longer the active crypto writer; retry.".into())
+        }
+    }
+
     async fn remove_uncommitted_generation(
         &self,
         binding: &CryptoSnapshotBinding,
@@ -920,8 +931,10 @@ mod tests {
             true,
         );
         assert!(!writer.is_active_writer().await.unwrap());
+        assert!(writer.require_active_writer().await.is_err());
         writer.activate_writer().await.unwrap();
         assert!(writer.is_active_writer().await.unwrap());
+        writer.require_active_writer().await.unwrap();
     }
 
     #[test]
