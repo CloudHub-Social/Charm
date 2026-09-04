@@ -20,6 +20,9 @@ function setupFailureGuidance(error: unknown): string {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
   // Only map known conditions to static copy; never render an arbitrary native,
   // server, keychain, or credential-bearing diagnostic.
+  if (message.startsWith("Pending recovery uses the original passphrase.")) {
+    return "A previous setup is pending. Leave the passphrase blank to resume it with its original protected credential, then save the recovery key.";
+  }
   if (message.includes("Sign in again") || message.includes("persisted session is no longer")) {
     return "Sign in again with durable encrypted storage before setting up recovery.";
   }

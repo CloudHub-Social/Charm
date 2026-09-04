@@ -79,10 +79,22 @@ pub async fn setup_with_custody(
 ) -> Result<RecoverySetupSummary, String> {
     let passphrase = passphrase.map(Zeroizing::new);
     verification::validate_recovery_passphrase(passphrase.as_ref().map(|p| p.as_str()))?;
+    let existing = custody.load().await?;
+    if existing.as_ref().is_some_and(|pending| {
+        passphrase
+            .as_ref()
+            .is_some_and(|requested| requested.as_str() != pending.passphrase)
+    }) {
+        // The previous seed may already protect server-side secrets. Replacing
+        // it on retry could destroy the only way to reopen a partial setup.
+        return Err(
+            "Pending recovery uses the original passphrase. Retry without a new passphrase.".into(),
+        );
+    }
     if let Some(summary) = pending_summary(client, custody).await? {
         return Ok(summary);
     }
-    let mut pending = match custody.load().await? {
+    let mut pending = match existing {
         Some(pending) => pending,
         None => {
             if client.encryption().recovery().state() != RecoveryState::Disabled {
@@ -313,6 +325,35 @@ mod tests {
             .await
             .unwrap();
         assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_rejects_a_different_passphrase_without_changing_custody() {
+        let client = Client::builder()
+            .homeserver_url("http://127.0.0.1:9")
+            .build()
+            .await
+            .unwrap();
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(pending())),
+            fail_save: false,
+        };
+        assert!(
+            setup_with_custody(&client, &custody, Some("different phrase".into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            custody.load().await.unwrap().unwrap().passphrase,
+            "private seed"
+        );
+        assert_eq!(
+            setup_with_custody(&client, &custody, None)
+                .await
+                .unwrap()
+                .recovery_key,
+            "issued key"
+        );
     }
 
     #[tokio::test]
