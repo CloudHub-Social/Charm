@@ -57,7 +57,9 @@ export function RoomKeyFilesCard() {
     transfer.reset();
   }
 
-  const passphraseIsValid = passphrase.length >= 8;
+  const passphraseIsValid =
+    new TextEncoder().encode(passphrase).length <= 1024 &&
+    (mode === "import" || Array.from(passphrase).length >= 8);
   const canSubmit =
     passphraseIsValid && mode !== null && (mode === "import" || confirmation === passphrase);
 

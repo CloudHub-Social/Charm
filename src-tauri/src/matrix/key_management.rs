@@ -37,8 +37,10 @@ pub struct RoomKeyImportSummary {
     pub total_count: usize,
 }
 
-fn validate_passphrase(passphrase: &str) -> Result<(), String> {
-    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
+fn validate_passphrase(passphrase: &str, exporting: bool) -> Result<(), String> {
+    // Existing files may use short or empty passphrases. Strength requirements
+    // apply only when creating a new export, never when decrypting an old one.
+    if exporting && passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
         return Err(format!(
             "Passphrase must be at least {MIN_PASSPHRASE_CHARS} characters."
         ));
@@ -153,7 +155,7 @@ pub async fn export_room_keys(
     if !feature_enabled(&app) {
         return Err("Room-key file import and export are not enabled.".to_string());
     }
-    validate_passphrase(&passphrase)?;
+    validate_passphrase(&passphrase, true)?;
     let client = state.require_client().await?;
     let Some(path) = pick_export_path(&app).await? else {
         return Ok(RoomKeyExportSummary { completed: false });
@@ -181,7 +183,7 @@ pub async fn import_room_keys(
     if !feature_enabled(&app) {
         return Err("Room-key file import and export are not enabled.".to_string());
     }
-    validate_passphrase(&passphrase)?;
+    validate_passphrase(&passphrase, false)?;
     let client = state.require_client().await?;
     let Some(path) = pick_import_path(&app).await? else {
         return Ok(RoomKeyImportSummary {
@@ -229,9 +231,18 @@ mod tests {
 
     #[test]
     fn passphrase_validation_is_bounded() {
-        assert!(validate_passphrase("correct horse battery staple").is_ok());
-        assert!(validate_passphrase("short").is_err());
-        assert!(validate_passphrase(&"x".repeat(MAX_PASSPHRASE_BYTES + 1)).is_err());
+        assert!(validate_passphrase("correct horse battery staple", true).is_ok());
+        assert!(validate_passphrase("short", true).is_err());
+        assert!(validate_passphrase("", true).is_err());
+        assert!(validate_passphrase("short", false).is_ok());
+        assert!(validate_passphrase("", false).is_ok());
+        assert!(validate_passphrase(&"🔑".repeat(4), true).is_err());
+        assert!(validate_passphrase(&"🔑".repeat(8), true).is_ok());
+        for exporting in [true, false] {
+            assert!(validate_passphrase(&"🔑".repeat(256), exporting).is_ok());
+            assert!(validate_passphrase(&"🔑".repeat(257), exporting).is_err());
+            assert!(validate_passphrase(&"x".repeat(MAX_PASSPHRASE_BYTES + 1), exporting).is_err());
+        }
     }
 
     #[tokio::test]

@@ -25,7 +25,10 @@ not first-time **setup** or manual key file I/O.
   active user/device and the feature flag. It uses the current client and holds
   the client lock until SDK file work finishes, including when the invoking
   future is dropped. Passphrases enter zeroizing storage before validation or
-  any early return. Real-device iOS file-provider export remains a manual gate;
+  any early return. New exports require at least eight Unicode code points;
+  imports accept existing short or empty passphrases without imposing a new
+  strength policy. Both paths enforce the same 1024-byte UTF-8 limit in the UI
+  and native command. Real-device iOS file-provider export remains a manual gate;
   the pinned dialog plugin's save implementation does not consume FileAccessMode.
 - **First-time key backup / 4S setup:** not yet implemented. Existing recovery-key
   restore still covers only accounts whose server-side recovery is already set up.

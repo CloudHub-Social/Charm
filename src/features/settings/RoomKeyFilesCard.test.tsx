@@ -21,6 +21,44 @@ beforeEach(() => {
 });
 
 describe("RoomKeyFilesCard", () => {
+  it.each(["", "short"])("accepts an existing import passphrase %j", async (passphrase) => {
+    renderWithProviders(<RoomKeyFilesCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Import keys" }));
+    fireEvent.change(screen.getByLabelText("Passphrase"), { target: { value: passphrase } });
+    fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
+    await waitFor(() => expect(importRoomKeys).toHaveBeenCalledWith(passphrase));
+  });
+
+  it("counts export characters as Unicode code points", () => {
+    renderWithProviders(<RoomKeyFilesCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Export keys" }));
+    for (const count of [4, 8]) {
+      const value = "🔑".repeat(count);
+      fireEvent.change(screen.getByLabelText("Passphrase"), { target: { value } });
+      fireEvent.change(screen.getByLabelText("Confirm passphrase"), { target: { value } });
+      const submit = screen.getByRole("button", { name: "Choose destination" });
+      if (count === 4) expect(submit).toBeDisabled();
+      else expect(submit).toBeEnabled();
+    }
+  });
+
+  it.each(["Import keys", "Export keys"])("bounds UTF-8 bytes for %s", (action) => {
+    renderWithProviders(<RoomKeyFilesCard />);
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    for (const count of [256, 257]) {
+      const value = "🔑".repeat(count);
+      fireEvent.change(screen.getByLabelText("Passphrase"), { target: { value } });
+      if (action === "Export keys") {
+        fireEvent.change(screen.getByLabelText("Confirm passphrase"), { target: { value } });
+      }
+      const submit = screen.getByRole("button", {
+        name: action === "Import keys" ? "Choose file" : "Choose destination",
+      });
+      if (count === 256) expect(submit).toBeEnabled();
+      else expect(submit).toBeDisabled();
+    }
+  });
+
   it("blocks dismissal until the native transfer settles", async () => {
     let finish!: (value: {
       completed: boolean;
