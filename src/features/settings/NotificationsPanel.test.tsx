@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { makeRoomSummary } from "@/features/rooms/testFixtures";
 import { renderWithProviders } from "@/test/renderWithProviders";
+import type { PushStatus } from "@/lib/matrix";
 
 const getNotificationSettings = vi.fn();
 const listRooms = vi.fn();
@@ -225,6 +226,27 @@ describe("NotificationsPanel", () => {
     expect(
       screen.queryByRole("button", { name: "Turn on push notifications" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps turn-off available when a registered device becomes unavailable", async () => {
+    const registered: PushStatus = {
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: true,
+    };
+    getPushStatus.mockResolvedValue(registered);
+    renderWithProviders(<NotificationsPanel />);
+    await screen.findByRole("button", { name: "Turn off push notifications" });
+
+    const notify = onPushStatus.mock.calls[0][0] as (status: PushStatus) => void;
+    act(() => notify({ ...registered, available: false }));
+
+    expect(await screen.findByText(/New push registrations are disabled/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off push notifications" }));
+    await waitFor(() => expect(unregisterPush).toHaveBeenCalledTimes(1));
+    expect(registerPush).not.toHaveBeenCalled();
   });
 
   it("suggests installing a UnifiedPush distributor when Android push registration fails", async () => {

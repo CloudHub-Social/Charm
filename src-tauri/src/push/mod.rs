@@ -196,18 +196,30 @@ pub(crate) fn global_app_handle() -> Option<AppHandle> {
 pub fn active_transport(
     #[allow(unused_variables)] app: &AppHandle,
 ) -> Option<Arc<dyn NotificationTransport>> {
+    #[cfg(target_os = "ios")]
+    {
+        let app_data_dir = app.path().app_data_dir().ok()?;
+        if !crate::feature_flags::flag(
+            &app_data_dir,
+            crate::feature_flags::FeatureFlagKey::IosPushNotifications,
+        ) {
+            return None;
+        }
+    }
+    platform_transport(app)
+}
+
+/// Cleanup must reach the OS even after a restart with registration disabled.
+/// Constructing a transport does not register it; new registrations must go
+/// through `active_transport` instead.
+fn platform_transport(app: &AppHandle) -> Option<Arc<dyn NotificationTransport>> {
     #[cfg(target_os = "android")]
     {
         Some(Arc::new(android::UnifiedPushTransport::new()) as Arc<dyn NotificationTransport>)
     }
     #[cfg(target_os = "ios")]
     {
-        let app_data_dir = app.path().app_data_dir().ok()?;
-        crate::feature_flags::flag(
-            &app_data_dir,
-            crate::feature_flags::FeatureFlagKey::IosPushNotifications,
-        )
-        .then(|| Arc::new(ios::ApnsTransport::new(app.clone())) as Arc<dyn NotificationTransport>)
+        Some(Arc::new(ios::ApnsTransport::new(app.clone())) as Arc<dyn NotificationTransport>)
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -476,7 +488,7 @@ pub(crate) async fn unregister_push_impl(
         }
     }
 
-    let transport = existing_transport.or_else(|| active_transport(app));
+    let transport = existing_transport.or_else(|| platform_transport(app));
     if let Some(transport) = transport {
         let _ = transport.unregister().await;
     }
