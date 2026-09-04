@@ -5896,6 +5896,23 @@ impl Drop for WsConnectionGuard {
     }
 }
 
+async fn send_session_message(
+    socket: &mut WebSocket,
+    session: &Session,
+    message: Message,
+) -> Result<(), ()> {
+    // Every replay/live frame crosses this boundary. An earlier successful
+    // upgrade check cannot authorize the remainder of a revoked snapshot.
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let _ = socket.send(Message::Close(None)).await;
+        return Err(());
+    }
+    socket.send(message).await.map_err(|_| ())
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
@@ -5936,7 +5953,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 return;
             }
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             // This socket died mid-flush — the entries not yet sent
             // (including this one) go back into the buffer rather than
             // being dropped, so the *next* connection attempt (this
@@ -5963,7 +5983,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -5984,7 +6007,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6006,7 +6032,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6034,7 +6063,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6054,7 +6086,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6068,7 +6103,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .clone();
     if let Some(event) = profile_snapshot {
         if let Ok(json) = serde_json::to_string(&event) {
-            if socket.send(Message::Text(json.into())).await.is_err() {
+            if send_session_message(&mut socket, &session, Message::Text(json.into()))
+                .await
+                .is_err()
+            {
                 return;
             }
         }
@@ -6087,7 +6125,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6100,7 +6141,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     loop {
         tokio::select! {
             _ = keepalive.tick() => {
-                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                if send_session_message(&mut socket, &session, Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
             }
@@ -6108,7 +6149,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 match event {
                     Ok(event) => {
                         let Ok(json) = serde_json::to_string(&event) else { continue };
-                        if socket.send(Message::Text(json.into())).await.is_err() {
+                        if send_session_message(&mut socket, &session, Message::Text(json.into())).await.is_err() {
                             break;
                         }
                     }
@@ -6154,7 +6195,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
+                        if send_session_message(&mut socket, &session, Message::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
@@ -6173,6 +6214,65 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 #[cfg(test)]
 mod websocket_revocation_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn revocation_between_replay_frames_closes_before_the_next_payload() {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("offline client");
+        let session = Arc::new(Session::new(
+            client,
+            "@removed:example.org".into(),
+            None,
+            false,
+        ));
+        let app = Router::new().route(
+            "/ws",
+            get(move |upgrade: WebSocketUpgrade| {
+                let session = Arc::clone(&session);
+                async move {
+                    upgrade.on_upgrade(move |mut socket| async move {
+                        send_session_message(&mut socket, &session, Message::Text("before".into()))
+                            .await
+                            .expect("first frame");
+                        // Match the permanent-removal signal, after the connection
+                        // was admitted but before the next retained payload.
+                        session
+                            .session_closed
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        let _ = send_session_message(
+                            &mut socket,
+                            &session,
+                            Message::Text("after".into()),
+                        )
+                        .await;
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+                .await
+                .unwrap();
+            (socket.next().await, socket.next().await)
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        let (first, second) = result.expect("bounded replay");
+        assert!(
+            matches!(first, Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) if text == "before")
+        );
+        assert!(matches!(
+            second,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ));
+    }
 
     #[tokio::test]
     async fn removed_session_closes_upgraded_socket_before_replaying_snapshots() {

@@ -38,6 +38,9 @@ WebSocket upgrades recheck permanent session revocation immediately after
 subscribing to session events, before replaying retained snapshots. This closes
 the lookup-to-upgrade gap where logout's invalidation broadcast had no receiver;
 the revoked socket closes so the browser can recheck its authenticated session.
+Every subsequent snapshot, live event, and keepalive send also checks revocation,
+so a removal during replay stops the remaining payloads. Frames already handed
+to the transport cannot be recalled.
 A deterministic companion regression exercises this handoff through a real
 loopback WebSocket. Its CI result is required before treating the fix as verified.
 
