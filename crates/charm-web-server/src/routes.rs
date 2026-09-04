@@ -1602,6 +1602,9 @@ async fn finish_login(
         initial_response,
         stored.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            session_closed: stored.session_closed.clone(),
+            sessions: state.sessions.clone(),
+            token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
             message_search: crate::sync_loop::message_search_context(
                 &stored,
@@ -2002,7 +2005,8 @@ async fn cancel_password_reset(
     jar: CookieJar,
     Json(request): Json<CancelAttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Turning off rollout must not disable owner-bound cleanup of existing work.
+    // The rollout gate prevents new recovery work, not cleanup of an
+    // existing attempt. Ownership remains mandatory after disabling it.
     let owner = require_preauth_owner(&jar)?;
     if let Some(attempt_id) = request.attempt_id {
         state
@@ -2028,6 +2032,8 @@ struct CancelAttemptRequest {
 #[cfg(test)]
 mod cancel_attempt_request_tests {
     use super::CancelAttemptRequest;
+    use axum::{extract::State, response::IntoResponse, Json};
+    use axum_extra::extract::cookie::{Cookie, CookieJar};
 
     #[test]
     fn accepts_owner_only_password_reset_cancellation() {
@@ -2035,6 +2041,31 @@ mod cancel_attempt_request_tests {
             serde_json::from_value(serde_json::json!({ "attempt_id": null }))
                 .expect("a null attempt id should cancel the pre-auth owner");
         assert!(request.attempt_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn password_reset_cleanup_remains_owner_bound_when_rollout_is_disabled() {
+        let state = crate::AppState {
+            registration_and_recovery_enabled: false,
+            ..crate::AppState::default()
+        };
+        let response = super::cancel_password_reset(
+            State(state.clone()),
+            CookieJar::new(),
+            Json(CancelAttemptRequest { attempt_id: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let response = super::cancel_password_reset(
+            State(state),
+            CookieJar::new().add(Cookie::new(super::PREAUTH_COOKIE, "test-owner")),
+            Json(CancelAttemptRequest { attempt_id: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
 }
 
@@ -2403,6 +2434,12 @@ async fn logout(
     require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
+        // Teardown is a security boundary, not request-scoped work. Axum may
+        // cancel this handler as soon as the initiating tab disconnects; keep
+        // local revocation, sync abortion, and persisted-token deletion owned
+        // by a detached task, while still awaiting it during the normal path.
+        let state = state.clone();
+        let cleanup = tokio::spawn(async move {
         // Captured before the live-session branch below moves `session`
         // into a spawned task — this is the fallback `persistence.remove`
         // needs at the very end to still clean up this session's crypto
@@ -2507,6 +2544,10 @@ async fn logout(
             if let Err(e) = persistence.remove(&token, live_crypto).await {
                 tracing::warn!("failed to remove persisted session on logout: {e}");
             }
+        }
+        });
+        if let Err(error) = cleanup.await {
+            tracing::warn!("logout cleanup task failed: {error}");
         }
     }
     // `remove` must be given a cookie matching the *original* cookie's
@@ -2633,6 +2674,8 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    let lifecycle_lock = state.sessions.lifecycle_lock(&token);
+    let _lifecycle = lifecycle_lock.lock().await;
     if let Some(session) = state.sessions.get(&token).await {
         // This fast path used to authenticate any resident session
         // unconditionally — neither of the checks below ran for it at all,
@@ -2709,17 +2752,9 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // window doesn't get forced into a full re-login for no reason other
     // than server-side memory pressure.
     //
-    // Known race, accepted rather than solved here: two requests for the
-    // same idle-evicted token arriving concurrently (e.g. a page load firing
-    // several API calls at once right after the eviction window) can both
-    // miss the `get` above and both restore + spawn their own `Client` and
-    // sync loop, with the second `insert` silently winning and orphaning the
-    // first's sync loop (never aborted, just abandoned — it'll keep polling
-    // until the process restarts). Narrow in practice (only matters in the
-    // instant right after an eviction, before either restore completes) and
-    // no worse than today's behavior for the equivalent case elsewhere in
-    // this file; closing it properly needs a per-token restore lock, which
-    // isn't worth the added complexity unless it shows up in practice.
+    // The token lifecycle lock covers lookup, restore, and insertion, as well
+    // as terminal sync cleanup. Concurrent requests cannot orphan a sync loop
+    // or reinsert this token while its durable credentials are being removed.
     let Some(persistence) = &state.persistence else {
         return Err(ApiError::unauthorized("unknown or expired session"));
     };
@@ -2780,6 +2815,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         persistence.touch_last_seen(&token);
     }
     session.touch();
+    // Admit before the sync task can observe an immediate hard auth error.
+    state.sessions.insert(token.clone(), session).await;
+    let session = state
+        .sessions
+        .get(&token)
+        .await
+        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))?;
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
         token: token.clone(),
@@ -2796,6 +2838,9 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         initial_response,
         session.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            session_closed: session.session_closed.clone(),
+            sessions: state.sessions.clone(),
+            token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
             message_search: crate::sync_loop::message_search_context(
                 &session,
@@ -2807,7 +2852,6 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .sync_handle
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-    state.sessions.insert(token.clone(), session).await;
     // `insert` takes the session by value and wraps it in its own `Arc`
     // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
     // rather than wrapping a second, disconnected one here, so every holder
@@ -2866,6 +2910,7 @@ async fn search_messages(
         return Err(ApiError::bad_request("message search is unavailable"));
     }
     let session = require_session(&state, &jar).await?;
+    crate::sync_loop::schedule_full_message_search_reconciliation(Arc::clone(&session));
     let crypto = session
         .persisted_crypto
         .clone()
@@ -2961,6 +3006,8 @@ async fn search_messages(
     page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     page.incomplete = session
         .message_search_incomplete
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
         .load(std::sync::atomic::Ordering::Acquire)
         || session
             .message_search_backfill_pending
@@ -3433,7 +3480,10 @@ async fn leave_room(
     if state.encrypted_local_message_search_enabled {
         let purge_result = crate::sync_loop::purge_room_after_leave(&session, &room_id).await;
         charm_lib::matrix::search::record_room_leave_purge_result(
-            &session.message_search_incomplete,
+            &session
+                .message_search_incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
             purge_result,
             "web_leave_room",
         );
@@ -6173,9 +6223,51 @@ impl Drop for WsConnectionGuard {
     }
 }
 
+async fn close_invalidated_socket(socket: &mut WebSocket) {
+    // This terminal frame contains no account data and must precede Close:
+    // otherwise another tab may interpret the close as a transient outage and
+    // attempt restoration while persisted logout cleanup is still in flight.
+    if let Ok(json) = serde_json::to_string(&crate::events::ServerEvent::SessionInvalidated(())) {
+        let _ = socket.send(Message::Text(json.into())).await;
+    }
+    let _ = socket.send(Message::Close(None)).await;
+}
+
+async fn send_session_message(
+    socket: &mut WebSocket,
+    session: &Session,
+    message: Message,
+) -> Result<(), ()> {
+    // Every replay/live frame crosses this boundary. An earlier successful
+    // upgrade check cannot authorize the remainder of a revoked snapshot.
+    let send_guard = session.socket_send_lock.read().await;
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        drop(send_guard);
+        close_invalidated_socket(socket).await;
+        return Err(());
+    }
+    // A stalled peer must not indefinitely hold up permanent revocation.
+    tokio::time::timeout(std::time::Duration::from_secs(5), socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
+    // Removal may win after HTTP lookup but before this subscription. The
+    // broadcast alone cannot notify a receiver that did not yet exist.
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        close_invalidated_socket(&mut socket).await;
+        return;
+    }
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see
     // `Session::pending_verification_requests`'s doc comment. Taken, not
@@ -6204,7 +6296,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 return;
             }
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             // This socket died mid-flush — the entries not yet sent
             // (including this one) go back into the buffer rather than
             // being dropped, so the *next* connection attempt (this
@@ -6231,7 +6326,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6252,7 +6350,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6274,7 +6375,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6302,7 +6406,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6322,7 +6429,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6336,7 +6446,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .clone();
     if let Some(event) = profile_snapshot {
         if let Ok(json) = serde_json::to_string(&event) {
-            if socket.send(Message::Text(json.into())).await.is_err() {
+            if send_session_message(&mut socket, &session, Message::Text(json.into()))
+                .await
+                .is_err()
+            {
                 return;
             }
         }
@@ -6355,7 +6468,10 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
+        if send_session_message(&mut socket, &session, Message::Text(json.into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -6368,7 +6484,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     loop {
         tokio::select! {
             _ = keepalive.tick() => {
-                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                if send_session_message(&mut socket, &session, Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
             }
@@ -6376,7 +6492,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 match event {
                     Ok(event) => {
                         let Ok(json) = serde_json::to_string(&event) else { continue };
-                        if socket.send(Message::Text(json.into())).await.is_err() {
+                        if send_session_message(&mut socket, &session, Message::Text(json.into())).await.is_err() {
                             break;
                         }
                     }
@@ -6422,7 +6538,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
+                        if send_session_message(&mut socket, &session, Message::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
@@ -6437,6 +6553,142 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 // ---------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod websocket_revocation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn revocation_between_replay_frames_closes_before_the_next_payload() {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("offline client");
+        let session = Arc::new(Session::new(
+            client,
+            "@removed:example.org".into(),
+            None,
+            false,
+        ));
+        let app = Router::new().route(
+            "/ws",
+            get(move |upgrade: WebSocketUpgrade| {
+                let session = Arc::clone(&session);
+                async move {
+                    upgrade.on_upgrade(move |mut socket| async move {
+                        send_session_message(&mut socket, &session, Message::Text("before".into()))
+                            .await
+                            .expect("first frame");
+                        // Match the permanent-removal signal, after the connection
+                        // was admitted but before the next retained payload.
+                        session
+                            .session_closed
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        let _ = send_session_message(
+                            &mut socket,
+                            &session,
+                            Message::Text("after".into()),
+                        )
+                        .await;
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+                .await
+                .unwrap();
+            (
+                socket.next().await,
+                socket.next().await,
+                socket.next().await,
+            )
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        let (first, second, third) = result.expect("bounded replay");
+        assert!(
+            matches!(first, Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) if text == "before")
+        );
+        let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(terminal))) = second else {
+            panic!("revocation must deliver invalidation before closing");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&terminal).unwrap(),
+            serde_json::json!({"event": "session:invalidated", "data": null})
+        );
+        assert!(matches!(
+            third,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn removed_session_closes_upgraded_socket_before_replaying_snapshots() {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("offline client");
+        let store = session::SessionStore::new();
+        let token = store
+            .create(Session::new(
+                client,
+                "@removed:example.org".into(),
+                None,
+                false,
+            ))
+            .await;
+        // Reproduce the upgrade handoff deterministically: lookup retains an
+        // Arc, then removal publishes while there are no event subscribers.
+        let retained = store.get(&token).await.expect("session lookup");
+        retained
+            .last_snapshot
+            .lock()
+            .unwrap()
+            .push(crate::events::ServerEvent::RoomList(Vec::new()));
+        assert_eq!(retained.events.receiver_count(), 0);
+        store.remove(&token).await.expect("permanent removal");
+        let app = Router::new().route(
+            "/ws",
+            get(move |upgrade: WebSocketUpgrade| {
+                let retained = Arc::clone(&retained);
+                async move { upgrade.on_upgrade(move |socket| handle_socket(socket, retained)) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+                .await
+                .expect("upgrade");
+            (socket.next().await, socket.next().await)
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        let (terminal, closed) = result.expect("socket must invalidate and close promptly");
+        let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(terminal))) = terminal else {
+            panic!("revoked session must send only invalidation before closing");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&terminal).unwrap(),
+            serde_json::json!({"event": "session:invalidated", "data": null})
+        );
+        assert!(matches!(
+            closed,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ));
+    }
+}
 
 pub struct ApiError {
     status: StatusCode,
