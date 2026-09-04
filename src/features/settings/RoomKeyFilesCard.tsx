@@ -1,6 +1,6 @@
-import { createContext, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useFeatureFlagPersistenceSettled, useFlag } from "@/featureFlags";
-import { isWebBuild, platformTag } from "@/lib/platform";
+import { isWebBuild, platformTag, preloadPlatformTag } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,13 +16,46 @@ import { exportRoomKeys, importRoomKeys } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 type TransferMode = "export" | "import";
-const TransferContext = createContext<((mode: TransferMode) => void) | null>(null);
+const TransferContext = createContext<{
+  openDialog: (mode: TransferMode) => void;
+  importEnabled: boolean;
+} | null>(null);
 
-export function RoomKeyFilesSessionProvider({ children }: { children: ReactNode }) {
+async function resolveNativePlatform() {
+  await preloadPlatformTag();
+  return platformTag();
+}
+
+export function RoomKeyFilesSessionProvider({
+  children,
+  resolvePlatform = resolveNativePlatform,
+}: {
+  children: ReactNode;
+  resolvePlatform?: () => Promise<string>;
+}) {
   const enabled = useFlag("crypto_key_files");
   const settled = useFeatureFlagPersistenceSettled("crypto_key_files");
+  const nativeEnabled = !isWebBuild() && enabled && settled;
+  const [importEnabled, setImportEnabled] = useState(false);
+  useEffect(() => {
+    if (!nativeEnabled) {
+      setImportEnabled(false);
+      return;
+    }
+    let active = true;
+    void resolvePlatform()
+      .then((platform) => {
+        if (active) setImportEnabled(["macos", "windows", "linux", "ios"].includes(platform));
+      })
+      .catch(() => {
+        if (active) setImportEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [nativeEnabled, resolvePlatform]);
   return (
-    <RoomKeyFilesProvider enabled={!isWebBuild() && enabled && settled}>
+    <RoomKeyFilesProvider enabled={nativeEnabled} importEnabled={importEnabled}>
       {children}
     </RoomKeyFilesProvider>
   );
@@ -31,9 +64,11 @@ export function RoomKeyFilesSessionProvider({ children }: { children: ReactNode 
 export function RoomKeyFilesProvider({
   children,
   enabled,
+  importEnabled = true,
 }: {
   children: ReactNode;
   enabled: boolean;
+  importEnabled?: boolean;
 }) {
   const [mode, setMode] = useState<TransferMode | null>(null);
   const [passphrase, setPassphrase] = useState("");
@@ -92,7 +127,7 @@ export function RoomKeyFilesProvider({
     passphraseIsValid && mode !== null && (mode === "import" || confirmation === passphrase);
 
   return (
-    <TransferContext.Provider value={openDialog}>
+    <TransferContext.Provider value={{ openDialog, importEnabled }}>
       {children}
 
       <Dialog
@@ -185,27 +220,28 @@ export function RoomKeyFilesProvider({
 
 export function RoomKeyFilesCard({
   enabled = true,
-  importEnabled = platformTag() !== "android",
+  importEnabled,
 }: {
   enabled?: boolean;
   importEnabled?: boolean;
 }) {
-  const openDialog = useContext(TransferContext);
-  if (!enabled || !openDialog) return null;
+  const transfer = useContext(TransferContext);
+  if (!enabled || !transfer) return null;
+  const canImport = importEnabled ?? transfer.importEnabled;
   return (
     <SettingsCard heading="Room key files">
       <SettingTile>
         <p className="mb-3 text-sm text-muted-foreground">
-          {importEnabled ? "Import or export" : "Export"} encrypted Matrix room keys for manual
+          {canImport ? "Import or export" : "Export"} encrypted Matrix room keys for manual
           backup or migration. These files do not replace account recovery or device verification.
         </p>
         <div className="flex gap-2">
-          {importEnabled && (
-            <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
+          {canImport && (
+            <Button size="sm" variant="outline" onClick={() => transfer.openDialog("import")}>
               Import keys
             </Button>
           )}
-          <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
+          <Button size="sm" variant="outline" onClick={() => transfer.openDialog("export")}>
             Export keys
           </Button>
         </div>

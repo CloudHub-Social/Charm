@@ -26,24 +26,32 @@ const MAX_IMPORT_KDF_ROUNDS: u32 = 1_000_000;
 
 fn validate_import_cost(path: &Path) -> Result<(), String> {
     // Resource policy only: the SDK remains the format/MAC/decryption owner.
-    // This reads the already-bounded private snapshot, before client admission.
+    // Decode only the fixed-size KDF prefix. The SDK validates the full armor,
+    // payload, MAC, and decryption after client admission.
     const HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
-    const FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
     let invalid = || "The selected encrypted room-key file is invalid.".to_string();
-    let input = std::fs::read_to_string(path).map_err(|_| invalid())?;
-    if !input.trim_start().starts_with(HEADER) || !input.trim_end().ends_with(FOOTER) {
+    let mut prefix = Vec::with_capacity(4096);
+    std::fs::File::open(path)
+        .map_err(|_| invalid())?
+        .take(4096)
+        .read_to_end(&mut prefix)
+        .map_err(|_| invalid())?;
+    let input = std::str::from_utf8(&prefix).map_err(|_| invalid())?;
+    let Some(payload_start) = input.trim_start().strip_prefix(HEADER) else {
         return Err(invalid());
-    }
-    let payload: String = input
-        .lines()
-        .filter(|line| !(line.starts_with(HEADER) || line.starts_with(FOOTER)))
+    };
+    // 37 decoded bytes cover version + salt + IV + KDF rounds. Collect a
+    // small complete base64 quantum beyond that boundary and nothing else.
+    let payload: String = payload_start
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .take(52)
         .collect();
     let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
-        .decode(&payload)
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&payload))
+        .decode(payload.as_bytes())
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload.as_bytes()))
         .map_err(|_| invalid())?;
-    // Version + 16-byte salt + 16-byte IV + big-endian rounds + 32-byte MAC.
-    if decoded.len() < 69 || decoded[0] != 1 {
+    if decoded.len() < 37 || decoded[0] != 1 {
         return Err(invalid());
     }
     let rounds = u32::from_be_bytes(decoded[33..37].try_into().map_err(|_| invalid())?);

@@ -116,13 +116,27 @@ describe("DevicesPanel", () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "desktop");
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
     renderWithProviders(
-      <RoomKeyFilesSessionProvider>
+      <RoomKeyFilesSessionProvider resolvePlatform={() => Promise.resolve("macos")}>
         <DevicesPanel />
       </RoomKeyFilesSessionProvider>,
     );
 
     expect(await screen.findByRole("button", { name: "Import keys" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export keys" })).toBeInTheDocument();
+  });
+
+  it("fails closed when the native platform cannot be identified", async () => {
+    featureFlagTestHooks.setCache({ crypto_key_files: true });
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "desktop");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
+    renderWithProviders(
+      <RoomKeyFilesSessionProvider resolvePlatform={() => Promise.reject(new Error("unknown"))}>
+        <DevicesPanel />
+      </RoomKeyFilesSessionProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Export keys" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
   });
 
   it("groups devices into This device / Verified / Unverified", async () => {
