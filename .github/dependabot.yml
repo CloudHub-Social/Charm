@@ -37,7 +37,8 @@ updates:
           - patch
 
   - package-ecosystem: cargo
-    directory: /src-tauri
+    # Cargo resolves both members through the root workspace lockfile.
+    directory: /
     target-branch: main
     schedule:
       interval: weekly
