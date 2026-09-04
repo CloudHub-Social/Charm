@@ -80,7 +80,8 @@ pub async fn search_public_rooms_impl(
 
     let mut request = get_public_rooms_filtered::v3::Request::new();
     request.filter = filter;
-    request.since = normalize_optional(since);
+    // Pagination tokens are opaque; only the human search query is trimmed.
+    request.since = since;
     request.limit = Some(
         limit
             .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -151,7 +152,7 @@ mod tests {
             .and(path("/_matrix/client/v3/publicRooms"))
             .and(body_json(serde_json::json!({
                 "limit": 20,
-                "since": "page-2",
+                "since": " page-2 ",
                 "filter": { "generic_search_term": "matrix" }
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -175,7 +176,7 @@ mod tests {
         let page = search_public_rooms_impl(
             &client,
             Some(" matrix ".to_string()),
-            Some("page-2".to_string()),
+            Some(" page-2 ".to_string()),
             None,
         )
         .await

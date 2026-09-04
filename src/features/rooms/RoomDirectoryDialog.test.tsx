@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import { RoomDirectoryDialog } from "./RoomDirectoryDialog";
@@ -112,6 +112,39 @@ describe("RoomDirectoryDialog", () => {
     expect(joinRoom).toHaveBeenCalledWith("#matrix:example.org");
     await waitFor(() => expect(onJoined).toHaveBeenCalledWith("!matrix:example.org"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("does not navigate or close a reopened dialog after an old join completes", async () => {
+    searchPublicRooms.mockResolvedValue({ rooms: [matrixRoom], next_batch: null });
+    let complete!: (value: { room_id: string; is_space: boolean }) => void;
+    joinRoom.mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const onJoined = vi.fn();
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <RoomDirectoryDialog open onJoined={onJoined} onOpenChange={onOpenChange} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    rerender(<RoomDirectoryDialog open={false} onJoined={onJoined} onOpenChange={onOpenChange} />);
+    rerender(<RoomDirectoryDialog open onJoined={onJoined} onOpenChange={onOpenChange} />);
+    await act(async () => complete({ room_id: matrixRoom.room_id, is_space: false }));
+    expect(onJoined).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("distinguishes successful membership from failed room navigation", async () => {
+    searchPublicRooms.mockResolvedValueOnce({ rooms: [matrixRoom], next_batch: null });
+    joinRoom.mockResolvedValueOnce({ room_id: matrixRoom.room_id, is_space: false });
+    const { onJoined } = renderDialog();
+    onJoined.mockRejectedValueOnce(new Error("navigation unavailable"));
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Joined the room, but couldn't open it",
+    );
   });
 
   it("disables old pagination as soon as a replacement search starts", async () => {

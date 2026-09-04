@@ -62,6 +62,14 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   const [joiningRoomId, setJoiningRoomId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const searchRequestIdRef = useRef(0);
+  const joinGeneration = useRef(0);
+
+  useEffect(() => {
+    setJoiningRoomId(null);
+    return () => {
+      joinGeneration.current += 1;
+    };
+  }, [open]);
 
   useEffect(() => {
     // A pagination request belongs to the query that started it. Changing the
@@ -128,17 +136,29 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   }
 
   async function join(room: PublicRoomSummary) {
-    if (joiningRoomId) return;
+    if (!open || joiningRoomId) return;
+    const generation = joinGeneration.current;
+    let membershipJoined = false;
     setJoiningRoomId(room.room_id);
     setError(null);
     try {
       const joined = await joinRoom(room.canonical_alias ?? room.room_id);
+      if (generation !== joinGeneration.current) return;
+      membershipJoined = true;
       await onJoined(joined.room_id);
+      if (generation !== joinGeneration.current) return;
       onOpenChange(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn't join the room.");
+      if (generation !== joinGeneration.current) return;
+      setError(
+        membershipJoined
+          ? "Joined the room, but couldn't open it. Select it from your room list."
+          : reason instanceof Error
+            ? reason.message
+            : "Couldn't join the room.",
+      );
     } finally {
-      setJoiningRoomId(null);
+      if (generation === joinGeneration.current) setJoiningRoomId(null);
     }
   }
 
