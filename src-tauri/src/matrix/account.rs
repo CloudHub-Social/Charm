@@ -477,7 +477,7 @@ pub async fn forget_local_data(
         .map_err(|_| "application data directory unavailable".to_string())?;
     if !crate::feature_flags::flag(
         &app_data_dir,
-        crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
+        crate::feature_flags::FeatureFlagKey::ForgetLocalData,
     ) {
         return Err("forget local data is unavailable".to_string());
     }

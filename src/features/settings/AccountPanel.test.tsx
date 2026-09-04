@@ -16,6 +16,7 @@ const getAccountDeactivateUrl = vi.fn();
 const get3pids = vi.fn();
 const getIgnoredUsers = vi.fn();
 const unignoreUser = vi.fn();
+const flags = vi.hoisted(() => ({ forgetLocalData: true, messageSearch: false }));
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
@@ -34,7 +35,11 @@ vi.mock("@/lib/matrix", () => ({
 }));
 
 vi.mock("@/featureFlags", () => ({
-  useFlag: () => true,
+  useFlag: (key: string) => {
+    if (key === "forget_local_data") return flags.forgetLocalData;
+    if (key === "encrypted_local_message_search") return flags.messageSearch;
+    return true;
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -57,6 +62,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  flags.forgetLocalData = true;
+  flags.messageSearch = false;
   getProfile.mockReset().mockResolvedValue({
     user_id: "@me:localhost",
     display_name: "Me",
@@ -73,6 +80,13 @@ beforeEach(() => {
 });
 
 describe("AccountPanel", () => {
+  it("does not expose device-data deletion when only unrelated flags are enabled", async () => {
+    flags.forgetLocalData = false;
+    flags.messageSearch = true;
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+    await waitFor(() => expect(getProfile).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Forget local data" })).not.toBeInTheDocument();
+  });
   it("logout confirm dialog invokes logout and the App reset callback", async () => {
     logout.mockResolvedValue(undefined);
     const onLoggedOut = vi.fn();

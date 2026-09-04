@@ -276,7 +276,9 @@ Surfaces changed:
     Local teardown publishes invalidation while login completion is excluded,
     including successful teardown followed by a physical-cleanup failure, so
     the renderer cannot remain authenticated after the active client is gone.
-15. The default-off **Forget local data** action requires typed and native-system
+15. The default-off **Forget local data** action uses its own `forget_local_data`
+    flag in both the renderer and native command, independently of message search.
+    It requires typed and native-system
     confirmation, signs out, and physically removes the retained Matrix store, keychain
     passphrase, and every encrypted search index for the account on this device without
     deleting the server-side Matrix account. Confirmation is bound to the account and
@@ -388,7 +390,7 @@ Surfaces changed:
   releases it before the next user-input round. This prevents an in-flight account
   action from clearing a replacement session. The new concurrency regression is
   pending CI verification.
-  The default-off Spec 28 account-management control "Forget local data" requires typed
+  The independently default-off `forget_local_data` account-management control requires typed
   confirmation plus a native system confirmation, closes the session, and removes every retained matrix-sdk store,
   keychain passphrase, and encrypted search index for that account on this device. It
   does not deactivate the Matrix account or erase server-side messages. Cleanup intent

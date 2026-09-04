@@ -34,7 +34,7 @@ interface AccountPanelProps {
 
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   const webBuild = isWebBuild();
-  const forgetLocalDataEnabled = useFlag("encrypted_local_message_search") && !webBuild;
+  const forgetLocalDataEnabled = useFlag("forget_local_data") && !webBuild;
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
   const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
