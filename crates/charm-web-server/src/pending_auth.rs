@@ -522,7 +522,7 @@ impl PendingAuthStore {
             return Err("single sign-on attempt expired or was already used".to_string());
         }
         let cleanup_crypto = crypto.clone();
-        let result = async {
+        let authenticate = async {
             client
                 .matrix_auth()
                 .login_token(&login_token)
@@ -530,11 +530,36 @@ impl PendingAuthStore {
                 .send()
                 .await
                 .map_err(|_| "single sign-on failed".to_string())?;
-            let completed =
-                crate::auth::finish_authenticated_client(client, crypto, "sso login").await?;
+            let completed = crate::auth::finish_authenticated_client(
+                client.clone(),
+                crypto.clone(),
+                "sso login",
+            )
+            .await?;
             Ok(Box::new(authenticated(completed, homeserver_url)))
-        }
-        .await;
+        };
+        let result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                // The authentication future is dropped before this branch:
+                // it can no longer publish a session or start initial sync.
+                // Release admission capacity before best-effort revocation,
+                // just as for a discarded completed SSO result.
+                drop(_capacity);
+                self.finish_attempt(attempt_id).await;
+                if client.matrix_auth().session().is_some() {
+                    let _ = tokio::time::timeout(
+                        CANCELLED_SSO_REVOKE_TIMEOUT,
+                        client.matrix_auth().logout(),
+                    ).await;
+                }
+                drop(client);
+                crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                return Err("single sign-on attempt expired or was already used".to_string());
+            }
+            result = authenticate => result,
+        };
+        drop(client);
         let failed = result.is_err();
         if failed {
             crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
@@ -2004,9 +2029,10 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 mod tests {
     use super::{
         is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
-        summarize_login_flows, AuthCapacity, PendingAuthStore, PendingPasswordReset, PendingSso,
-        PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
+        summarize_login_flows, AuthCapacity, AuthOwner, PendingAuthStore, PendingPasswordReset,
+        PendingSso, PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
     };
+    use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -2092,6 +2118,83 @@ mod tests {
             store.password_resets.lock().await["reset-attempt"].send_attempt,
             2
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_sso_callback_releases_capacity_during_a_stalled_request() {
+        let received = std::sync::Arc::new(tokio::sync::Notify::new());
+        let request_received = received.clone();
+        let router = axum::Router::new().fallback(move || {
+            let received = request_received.clone();
+            async move {
+                received.notify_one();
+                std::future::pending::<axum::http::StatusCode>().await
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let homeserver_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(&homeserver_url)
+            .build()
+            .await
+            .unwrap();
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let cancellation = CancellationToken::new();
+        let capacity = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "callback".to_owned(),
+                cancellation.clone(),
+            )
+            .await
+            .unwrap();
+        store.sso_attempts.lock().await.insert(
+            "callback".to_owned(),
+            PendingSso {
+                _capacity: capacity,
+                owner: "browser".to_owned(),
+                client,
+                crypto: None,
+                homeserver_url,
+                cancellation,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        let callback_store = store.clone();
+        let callback = tokio::spawn(async move {
+            callback_store
+                .complete_sso_callback("callback", "test-token".to_owned())
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), received.notified())
+            .await
+            .expect("callback must reach the stalled HTTP request");
+        let replacement = tokio::time::timeout(
+            Duration::from_secs(3),
+            store.admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("cancellation must release capacity before the five-second admission limit")
+        .expect("replacement is admitted");
+        assert!(tokio::time::timeout(Duration::from_secs(3), callback)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert!(store.completed_sso.lock().await.is_empty());
+        assert!(!store.cancellations.lock().await.contains_key("callback"));
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(store.reserve_capacity().is_err());
+        drop(replacement);
+        server.abort();
     }
 
     #[tokio::test]

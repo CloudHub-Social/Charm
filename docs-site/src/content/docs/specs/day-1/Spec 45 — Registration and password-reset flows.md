@@ -338,6 +338,13 @@ A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity
 before remote cleanup; unrelated browsers remain subject to the same limit.
+In-flight SSO callbacks also observe cancellation during token exchange and
+initial sync. Cancellation stops local authentication work and releases its
+admission slot before bounded best-effort logout of any session already known
+to the SDK. No completion is published for the cancelled callback. A stalled
+HTTP callback regression checks capacity handoff; execution in CI is pending.
+Cancellation cannot prove that an unacknowledged remote token exchange did not
+create a device; remote revocation remains best-effort rather than guaranteed.
 Discarding a completed SSO session attempts remote logout for at most five
 seconds, then releases its SDK client and removes temporary crypto storage.
 This bounds supersession latency without claiming remote revocation succeeded
