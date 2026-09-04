@@ -784,14 +784,6 @@ async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPus
     current_removed && record.retired.is_empty()
 }
 
-pub(crate) fn persisted_push_cleanup_pending(app: &AppHandle, client: &Client) -> bool {
-    client
-        .user_id()
-        .map(|id| persistence::account_key(id.as_str()))
-        .and_then(|key| load_persisted_endpoint(app, &key))
-        .is_some_and(|record| record.disabled)
-}
-
 /// Re-registers `endpoint` with the homeserver directly, bypassing
 /// `NotificationTransport::register()` — used when a transport hands over a
 /// *new* endpoint unprompted (e.g. `push::android`'s JNI bridge observing a

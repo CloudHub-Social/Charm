@@ -280,9 +280,6 @@ async fn clear_local_session_locked(
         .map_err(|_| {
             "Could not disable notifications before sign-out; retry when online.".to_string()
         })?;
-    if crate::push::persisted_push_cleanup_pending(app, &state.require_client().await?) {
-        return Err("Notifications are still being disabled; reconnect and retry sign-out.".into());
-    }
     let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
