@@ -16,11 +16,50 @@ pub struct PendingRecoverySetup {
     passphrase: String,
     recovery_key: Option<String>,
     room_keys_backed_up: bool,
+    #[serde(default)]
+    server_mutation_started: bool,
 }
 
 impl PendingRecoverySetup {
     pub fn has_issued_key(&self) -> bool {
         self.recovery_key.is_some()
+    }
+
+    pub fn requires_custody(&self) -> bool {
+        self.server_mutation_started || self.has_issued_key()
+    }
+
+    pub fn has_same_issued_key(&self, other: &Self) -> bool {
+        self.recovery_key.is_some() && self.recovery_key == other.recovery_key
+    }
+}
+
+fn secret_storage_error_is_definitively_stale(
+    error: &matrix_sdk::encryption::secret_storage::SecretStorageError,
+) -> bool {
+    matches!(
+        error,
+        matrix_sdk::encryption::secret_storage::SecretStorageError::SecretStorageKey(_)
+            | matrix_sdk::encryption::secret_storage::SecretStorageError::MissingKeyInfo { .. }
+    )
+}
+
+pub async fn issued_key_is_stale(
+    client: &Client,
+    pending: &PendingRecoverySetup,
+) -> Result<bool, String> {
+    let Some(recovery_key) = &pending.recovery_key else {
+        return Ok(false);
+    };
+    match client
+        .encryption()
+        .secret_storage()
+        .open_secret_store(recovery_key)
+        .await
+    {
+        Ok(_) => Ok(false),
+        Err(error) if secret_storage_error_is_definitively_stale(&error) => Ok(true),
+        Err(_) => Err("Could not validate pending recovery. Retry when online.".into()),
     }
 }
 
@@ -80,13 +119,13 @@ pub async fn pending_summary(
         // default store before displaying or acknowledging the cached value;
         // `open_secret_store` validates the key against the current key event,
         // so stale custody can never be mistaken for a usable credential.
-        storage
-            .open_secret_store(recovery_key)
-            .await
-            .map_err(|_| {
-                "Pending recovery no longer matches the account's current secret storage. Restart recovery setup."
-                    .to_string()
-            })?;
+        match storage.open_secret_store(recovery_key).await {
+            Ok(_) => {}
+            Err(error) if secret_storage_error_is_definitively_stale(&error) => {
+                return Err("Pending recovery no longer matches the account's current secret storage. Restart recovery setup.".into());
+            }
+            Err(_) => return Err("Could not validate pending recovery. Retry when online.".into()),
+        }
         return Ok(Some(RecoverySetupSummary {
             recovery_key: recovery_key.clone(),
             room_keys_backed_up: pending.room_keys_backed_up,
@@ -159,6 +198,7 @@ pub async fn setup_with_custody(
                     }),
                 recovery_key: None,
                 room_keys_backed_up: false,
+                server_mutation_started: false,
             };
             pending
         }
@@ -166,6 +206,12 @@ pub async fn setup_with_custody(
     let mut pending = custody.claim(&pending).await?;
     let operation = async {
         custody.checkpoint().await?;
+        // From this point onward an SDK call can create or replace remote
+        // recovery state. Persist the custody boundary first so cancellation,
+        // a failed follow-up checkpoint, or a failed result write cannot make
+        // logout delete the crypto store that can finish the operation.
+        pending.server_mutation_started = true;
+        custody.save_claimed(&pending).await?;
         if !client.encryption().backups().are_enabled().await {
             client
                 .encryption()
@@ -364,6 +410,7 @@ mod tests {
             passphrase: "private seed".into(),
             recovery_key: Some(ISSUED_KEY.into()),
             room_keys_backed_up: true,
+            server_mutation_started: true,
         }
     }
 
@@ -478,10 +525,11 @@ mod tests {
         stale.recovery_key =
             Some("DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd".into());
         let custody = MemoryCustody {
-            pending: Mutex::new(Some(stale)),
+            pending: Mutex::new(Some(stale.clone())),
             fail_save: false,
         };
 
+        assert!(issued_key_is_stale(&client, &stale).await.unwrap());
         assert!(pending_summary(&client, &custody).await.is_err());
         assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
             .await

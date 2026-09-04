@@ -733,6 +733,54 @@ impl PersistenceStore {
             .await
     }
 
+    /// Clears a definitively stale issued credential after the live Matrix
+    /// client has proved it no longer matches the account's current SSSS.
+    /// The compare-and-swap identity prevents that validation from deleting
+    /// a newer credential written by a concurrent setup request.
+    pub async fn discard_stale_pending_recovery(
+        &self,
+        token: &str,
+        stale: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if entry.recovery_setup_active {
+                return Err("Recovery setup is completing; retry sign out.".into());
+            }
+            let Some(current) = &entry.pending_recovery else {
+                return Ok(());
+            };
+            if !current.has_same_issued_key(stale) {
+                return Err("Pending recovery changed; retry sign out.".into());
+            }
+            entry.pending_recovery = None;
+            entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode stale recovery cleanup.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not clear stale protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery changed concurrently; retry sign out.".into())
+    }
+
     async fn begin_recovery_safe_teardown_at(
         &self,
         token: &str,
@@ -744,11 +792,11 @@ impl PersistenceStore {
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
                 return Ok(());
             };
-            let issued = entry
+            let custody_required = entry
                 .pending_recovery
                 .as_ref()
-                .is_some_and(|pending| pending.has_issued_key());
-            if issued {
+                .is_some_and(|pending| pending.requires_custody());
+            if custody_required {
                 return Err("Recovery setup is completing; retry sign out.".into());
             }
             if entry.recovery_setup_active {
@@ -2682,6 +2730,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_mutation_marker_blocks_logout_after_setup_release() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[79u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "mutated-setup-token",
+                "https://example.invalid",
+                &dummy_session("@mutated-setup:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("mutated-setup-token", &pending, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .save_claimed_pending_recovery("mutated-setup-token", &pending, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("mutated-setup-token", "setup-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .begin_recovery_safe_teardown("mutated-setup-token")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn recovery_claim_renewal_and_owner_fencing_survive_takeover() {
         let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let store = PersistenceStore {
@@ -2821,6 +2914,62 @@ mod tests {
             .unwrap();
         store
             .begin_recovery_safe_teardown("issued-key-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_issued_cleanup_only_discards_the_validated_record() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "stale-key-token",
+                "https://example.invalid",
+                &dummy_session("@stale-key:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        let replacement = serde_json::from_value(serde_json::json!({
+            "passphrase": "other-seed",
+            "recovery_key": "replacement-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("stale-key-token", &issued, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("stale-key-token", "setup-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .discard_stale_pending_recovery("stale-key-token", &replacement)
+            .await
+            .is_err());
+        store
+            .discard_stale_pending_recovery("stale-key-token", &issued)
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("stale-key-token")
             .await
             .unwrap();
     }

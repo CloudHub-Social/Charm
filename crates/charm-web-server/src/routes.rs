@@ -2439,6 +2439,32 @@ async fn logout(
         // removing any live state: a pending credential vetoes logout, while
         // a successful marker makes every later recovery claim/update fail.
         if let Some(persistence) = &state.persistence {
+            if let Some(pending) = persistence
+                .pending_recovery(&token)
+                .await
+                .map_err(ApiError::bad_request)?
+                .filter(|pending| pending.has_issued_key())
+            {
+                // A valid issued key must remain in custody until explicit
+                // acknowledgement. A definitively stale key, however, can
+                // never be acknowledged; validate it with the live/restored
+                // encrypted session and CAS-clear only that same record so
+                // logout cannot be trapped forever after another client
+                // replaces the account's default secret storage.
+                let session = require_session(&state, &jar).await?;
+                if charm_lib::matrix::recovery_custody::issued_key_is_stale(
+                    &session.client,
+                    &pending,
+                )
+                .await
+                .map_err(ApiError::bad_request)?
+                {
+                    persistence
+                        .discard_stale_pending_recovery(&token, &pending)
+                        .await
+                        .map_err(ApiError::bad_request)?;
+                }
+            }
             persistence
                 .begin_recovery_safe_teardown(&token)
                 .await
