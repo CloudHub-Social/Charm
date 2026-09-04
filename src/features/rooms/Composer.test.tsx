@@ -1,11 +1,12 @@
 import { createRef } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as FeatureFlagsModule from "@/featureFlags";
 import { Composer, type ComposerHandle } from "./Composer";
 
 const flags = vi.hoisted(() => ({ composerParity: false }));
 vi.mock("@/featureFlags", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/featureFlags")>();
+  const actual = await importOriginal<typeof FeatureFlagsModule>();
   return {
     ...actual,
     useFlag: (key: Parameters<typeof actual.useFlag>[0]) =>
