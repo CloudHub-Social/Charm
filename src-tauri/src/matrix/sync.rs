@@ -1269,7 +1269,8 @@ mod invite_notification_tests {
 
     #[test]
     fn soft_logout_does_not_authorize_terminal_session_cleanup() {
-        use matrix_sdk::ruma::api::error::UnknownTokenErrorData;
+        use super::is_terminal_auth_kind;
+        use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
 
         let mut data = UnknownTokenErrorData::new();
         assert!(is_terminal_auth_kind(&ErrorKind::UnknownToken(
