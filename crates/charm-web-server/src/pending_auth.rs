@@ -2029,10 +2029,11 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 mod tests {
     use super::{
         is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
-        summarize_login_flows, AuthCapacity, AuthOwner, PendingAuthStore, PendingPasswordReset,
-        PendingSso, PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
+        summarize_login_flows, AuthCapacity, AuthOwner, CompletedSso, PendingAuthStore,
+        PendingPasswordReset, PendingSso, PollSsoResult, SsoCompletionResult,
+        MAX_PENDING_AUTH_ATTEMPTS,
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
