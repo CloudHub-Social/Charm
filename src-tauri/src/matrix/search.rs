@@ -1749,9 +1749,8 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
-        reset_index_lifecycle(&state);
         let app_data_dir = app.path().app_data_dir().ok();
-        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())?;
+        reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())?;
         return Ok(());
     }
     let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
@@ -2597,9 +2596,8 @@ pub async fn search_messages(
         // Re-evaluate the trusted kill switch under the index lock so a flag
         // change during those awaits cannot reopen or query the local index.
         if !feature_enabled(&app) {
-            reset_index_lifecycle(&state);
             let app_data_dir = app.path().app_data_dir().ok();
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+            reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())
                 .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
@@ -2616,9 +2614,8 @@ pub async fn search_messages(
             cursor.as_deref(),
         )?;
         if !feature_enabled(&app) {
-            reset_index_lifecycle(&state);
             let app_data_dir = app.path().app_data_dir().ok();
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+            reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())
                 .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
@@ -2686,6 +2683,23 @@ pub(crate) async fn reconcile_disabled_search(
     })
     .await
     .map_err(|_| "message search cleanup worker unavailable".to_string())?
+}
+
+fn reset_and_purge_disabled_search(
+    state: &super::MatrixState,
+    slot: std::sync::MutexGuard<'_, Option<ActiveSearchIndex>>,
+    app_data_dir: Option<&Path>,
+) -> Result<(), String> {
+    // Reconciliation takes lifecycle -> index. Never wait for lifecycle while
+    // retaining index: release it, invalidate queued work, then reacquire it
+    // for the global kill-switch purge. No query result escapes this path.
+    drop(slot);
+    reset_index_lifecycle(state);
+    let mut slot = state
+        .search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    purge_disabled_search_indices_from_slot(&mut slot, app_data_dir)
 }
 
 fn purge_disabled_search_indices_from_slot(
@@ -3903,6 +3917,47 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn disabled_search_releases_index_before_waiting_for_lifecycle() {
+        let state = std::sync::Arc::new(super::super::MatrixState::default());
+        let directory = tempfile::tempdir().unwrap();
+        let lifecycle = state.search_lifecycle_lock.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            let slot = worker_state.search_index.lock().unwrap();
+            started_tx.send(()).unwrap();
+            let result =
+                reset_and_purge_disabled_search(&worker_state, slot, Some(directory.path()));
+            done_tx.send(result).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let released = loop {
+            if state.search_index.try_lock().is_ok() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        // Release even on failure so the regression cannot strand a thread.
+        drop(lifecycle);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert!(
+            released,
+            "kill-switch cleanup retained index while waiting for lifecycle"
+        );
     }
 
     #[test]

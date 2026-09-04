@@ -287,7 +287,10 @@ Surfaces changed:
 16. Terminal authentication failure revokes the in-memory client and invalidates
     search backfill before cleanup. The live search database is closed before
     its files are deleted, with the contended index lock and filesystem work on
-    a blocking worker. That worker owns the login-exclusion guard until it
+    a blocking worker. Query and indexing kill-switch cleanup release the index
+    lock before resetting lifecycle state, preventing lock-order inversion with
+    reconciliation; the index is reacquired for purge before returning unavailable.
+    That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
     the durable retry marker when marker persistence succeeds. Both credential
     deletions are attempted independently even if the marker write fails,
