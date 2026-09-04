@@ -74,6 +74,7 @@ log = "0.4.33"
 tracing-appender = "0.2.5"
 aes-gcm = "0.11.0"
 exif = { version = "0.6", package = "kamadak-exif" }
+tempfile = "3"
 
 
 # `keyring`'s "apple-native" feature backs both macOS and iOS (same Keychain
@@ -85,7 +86,6 @@ exif = { version = "0.6", package = "kamadak-exif" }
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-tempfile = "3"
 # SableClient's MIT-licensed Tauri notification plugin supplies the supported
 # Swift mobile-plugin bridge for APNs registration. Pin the audited revision so
 # an upstream force-push or API change cannot silently alter release builds.
@@ -121,7 +121,6 @@ matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # with a cookie jar, exactly like a browser would.
 reqwest = { version = "0.13", features = ["cookies"] }
 wiremock = "0.6"
-tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

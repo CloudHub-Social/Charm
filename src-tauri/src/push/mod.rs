@@ -702,7 +702,7 @@ pub(crate) async fn unregister_push_impl(
         .unwrap_or_else(|e| e.into_inner()) = None;
     let status = finalize_and_emit(app, PushStatus::default());
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-    persistence_error.map_or(Ok(()), |error| Err(error.into()))
+    persistence_error.map_or(Ok(()), Err)
 }
 
 /// Remote deletion is best-effort, but must not prevent platform and local
