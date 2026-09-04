@@ -108,6 +108,29 @@ describe("TimelineNotices", () => {
     ]);
   });
 
+  it("resets expanded groups when its room-scoped key changes", () => {
+    const notices = [
+      joined("alice", "Alice") as never,
+      joined("bob", "Bob") as never,
+      joined("carol", "Carol") as never,
+    ];
+    const view = render(<TimelineNoticeList key="!first:example.org" notices={notices} />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Alice (@alice:example.org), Bob (@bob:example.org) and 1 other joined",
+      }),
+    );
+    expect(screen.getByTestId("timeline-notices").querySelectorAll("p")).toHaveLength(3);
+
+    view.rerender(<TimelineNoticeList key="!second:example.org" notices={notices} />);
+    expect(
+      screen.getByRole("button", {
+        name: "Alice (@alice:example.org), Bob (@bob:example.org) and 1 other joined",
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("renders moderated membership reasons and room state notices", () => {
     render(
       <TimelineNoticeList

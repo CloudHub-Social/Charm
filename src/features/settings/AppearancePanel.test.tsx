@@ -3,7 +3,10 @@ import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearancePanel } from "./AppearancePanel";
 
-vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+const rollout = vi.hoisted(() => ({ appearance: true }));
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) => (key === "appearance_parity" ? rollout.appearance : true),
+}));
 
 const storeSet = vi.fn();
 const load = vi.fn();
@@ -31,6 +34,7 @@ function renderPanel() {
 }
 
 beforeEach(() => {
+  rollout.appearance = true;
   localStorage.clear();
   storeSet.mockReset();
   load.mockReset().mockResolvedValue({ get: vi.fn().mockResolvedValue(undefined), set: storeSet });
@@ -38,6 +42,45 @@ beforeEach(() => {
 });
 
 describe("AppearancePanel", () => {
+  it("hides clock and date controls when the rollout is disabled", () => {
+    rollout.appearance = false;
+    renderPanel();
+    expect(screen.queryByText("Clock format")).not.toBeInTheDocument();
+    expect(screen.queryByText("Date format")).not.toBeInTheDocument();
+    expect(screen.queryByText("Font family")).not.toBeInTheDocument();
+    expect(screen.queryByText("Message spacing")).not.toBeInTheDocument();
+  });
+
+  it("updates and persists clock and date choices", async () => {
+    renderPanel();
+    openMenu("System clock");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "24-hour" }));
+    expect(screen.getByRole("button", { name: "24-hour" })).toBeInTheDocument();
+    openMenu("System date");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "YYYY-MM-DD" }));
+    expect(screen.getByRole("button", { name: "YYYY-MM-DD" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({
+          state: expect.objectContaining({ clockFormat: "24h", dateFormat: "year-first" }),
+        }),
+      ),
+    );
+  });
+
+  it("selects and persists a local font family", async () => {
+    renderPanel();
+    openMenu("Charm default");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Serif$/ }));
+    expect(screen.getByRole("button", { name: /^Serif$/ })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ fontFamily: "serif" }) }),
+      ),
+    );
+  });
   it("renders the heading and all six appearance pickers", () => {
     renderPanel();
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();

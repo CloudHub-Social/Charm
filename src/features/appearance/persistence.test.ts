@@ -33,6 +33,10 @@ afterEach(() => {
 describe("local mirror", () => {
   it("round-trips through localStorage as a { state, updatedAt } envelope", () => {
     const state: AppearanceState = {
+      clockFormat: "locale",
+      fontFamily: "default",
+      messageSpacing: "0",
+      dateFormat: "locale",
       theme: "light",
       fontSize: "lg",
       density: "compact",
@@ -160,6 +164,21 @@ describe("pickNewerEnvelope", () => {
 });
 
 describe("mergeAppearance", () => {
+  it("validates spacing without accepting arbitrary CSS", () => {
+    expect(mergeAppearance({ messageSpacing: "16" }).messageSpacing).toBe("16");
+    expect(
+      mergeAppearance({ messageSpacing: "-100vh" } as unknown as Partial<AppearanceState>)
+        .messageSpacing,
+    ).toBe("0");
+  });
+  it("rejects arbitrary font CSS and accepts a local font preset", () => {
+    expect(mergeAppearance({ fontFamily: "mono" }).fontFamily).toBe("mono");
+    expect(
+      mergeAppearance({
+        fontFamily: "url(https://example.test/font)",
+      } as unknown as Partial<AppearanceState>).fontFamily,
+    ).toBe("default");
+  });
   it("returns defaults for null input", () => {
     expect(mergeAppearance(null)).toEqual(DEFAULT_APPEARANCE);
   });
@@ -170,6 +189,10 @@ describe("mergeAppearance", () => {
 
   it("passes through a fully-specified partial", () => {
     const full: AppearanceState = {
+      clockFormat: "24h",
+      fontFamily: "serif",
+      messageSpacing: "8",
+      dateFormat: "year-first",
       theme: "midnight",
       fontSize: "xl",
       density: "compact",
@@ -191,6 +214,25 @@ describe("mergeAppearance", () => {
     // or a store file written by an incompatible build) — `theme` is a
     // string, just not one of the supported values.
     const corrupted = { theme: "banana" } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it.each(["locale", "12h", "24h"] as const)("accepts clock format %s", (clockFormat) => {
+    expect(mergeAppearance({ clockFormat }).clockFormat).toBe(clockFormat);
+  });
+
+  it.each(["locale", "day-first", "month-first", "year-first"] as const)(
+    "accepts date format %s",
+    (dateFormat) => {
+      expect(mergeAppearance({ dateFormat }).dateFormat).toBe(dateFormat);
+    },
+  );
+
+  it.each(["unsupported", null, 24, {}, []])("rejects invalid time/date preference %j", (value) => {
+    const corrupted = {
+      clockFormat: value,
+      dateFormat: value,
+    } as unknown as Partial<AppearanceState>;
     expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
   });
 

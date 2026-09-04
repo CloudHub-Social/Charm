@@ -1,4 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
+import { useMessageSpacing } from "@/features/appearance/messageSpacing";
 import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
@@ -61,10 +63,13 @@ export function DiscordMessageRow({
   onViewEditHistory,
 }: MessageRowLayoutProps) {
   const showHeader = !sameSenderAsPrev;
+  const { clockFormat } = useDisplayFormats();
+  const spacingStyle = useMessageSpacing();
 
   return (
     <div
       id={`message-${message.event_id}`}
+      style={spacingStyle}
       className={cn(
         "group flex max-w-160 gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
@@ -118,8 +123,10 @@ export function DiscordMessageRow({
         )
       ) : (
         <div className="relative w-6 shrink-0">
-          <span className="absolute left-0 top-0.5 hidden w-6 text-center font-mono text-[10px] text-muted-foreground group-hover:block">
-            {formatTime(message.timestamp_ms).replace(/\s?[AP]M$/i, "")}
+          <span className="absolute left-0 top-0.5 hidden w-6 break-words text-center font-mono text-[10px] text-muted-foreground group-hover:block">
+            {clockFormat === "locale"
+              ? formatTime(message.timestamp_ms).replace(/\s?[AP]M$/i, "")
+              : formatTime(message.timestamp_ms, clockFormat)}
           </span>
         </div>
       )}
@@ -146,7 +153,7 @@ export function DiscordMessageRow({
               </span>
             )}
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-              {formatTime(message.timestamp_ms)}
+              {formatTime(message.timestamp_ms, clockFormat)}
               {message.edited && " (edited)"}
               {isPending && " · sending…"}
               {isError && " · failed to send"}
