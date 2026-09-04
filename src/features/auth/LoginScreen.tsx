@@ -666,7 +666,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       setPending(true);
       const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(() => {
         // Never display or log raw backend errors from this sensitive operation.
-        cancellationUncertain = true;
+        // Initial email setup cannot dispatch a password change. On web its
+        // first response may not yet have supplied the owner cookie, so an
+        // owner-only cancellation can fail; the stale response is cleaned up
+        // by handleRequestPasswordReset once its attempt id arrives.
+        cancellationUncertain = attemptId !== null;
       });
       passwordResetCancellationRef.current = cancellation;
       try {

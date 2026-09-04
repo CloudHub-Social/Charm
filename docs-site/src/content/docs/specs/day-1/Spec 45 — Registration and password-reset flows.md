@@ -407,6 +407,10 @@ disabled, with the companion still requiring the pre-auth owner cookie. Closing
 an empty recovery form or disabling recovery without an active request must not
 cancel an older, acknowledged reset or display dispatch uncertainty. In-flight
 discovery and issued attempts retain cancellation and late-result cleanup.
+The first web setup response may not yet have supplied an owner cookie. A failed
+owner-only cancellation during that initial email request does not imply password
+dispatch: the UI closes and cancels the late attempt by ID when it arrives.
+Cancellation failures for issued attempts retain the conservative uncertainty warning.
 An idle recovery rollout change must not clear another sign-in operation's busy
 state or error feedback.
 

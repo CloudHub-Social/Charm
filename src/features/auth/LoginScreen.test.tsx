@@ -1001,35 +1001,44 @@ describe("LoginScreen password recovery", () => {
     expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
   });
 
-  it("cancels a late opaque recovery attempt after closing a pending request", async () => {
-    let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
-    requestPasswordReset.mockReturnValue(
-      new Promise<PasswordResetChallenge>((resolve) => {
-        resolveRequest = resolve;
-      }),
-    );
-    render(<LoginScreen onSignedIn={vi.fn()} />);
-    await discoverLoginChoices();
+  it.each([false, true])(
+    "cleans up late setup after closing, even if early cancellation fails (%s)",
+    async (cancelFails) => {
+      let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
+      requestPasswordReset.mockReturnValue(
+        new Promise<PasswordResetChallenge>((resolve) => {
+          resolveRequest = resolve;
+        }),
+      );
+      if (cancelFails) {
+        cancelPasswordReset.mockRejectedValueOnce(new Error("pre-auth owner cookie missing"));
+      }
+      render(<LoginScreen onSignedIn={vi.fn()} />);
+      await discoverLoginChoices();
 
-    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "alice@example.org" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    });
-    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
-    expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
+      fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "alice@example.org" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      });
+      expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+      expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
+      expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+      expect(confirmPasswordReset).not.toHaveBeenCalled();
 
-    await act(async () => {
-      // Attempt IDs are opaque. Even a value resembling the obsolete
-      // synthetic-unavailable prefix must be returned to the backend for cleanup.
-      resolveRequest?.({ attempt_id: "unavailable-late-attempt", requires_token: false });
-      await Promise.resolve();
-    });
-    expect(cancelPasswordReset).toHaveBeenCalledWith("unavailable-late-attempt");
-  });
+      await act(async () => {
+        // Attempt IDs are opaque. Even a value resembling the obsolete
+        // synthetic-unavailable prefix must be returned to the backend for cleanup.
+        resolveRequest?.({ attempt_id: "unavailable-late-attempt", requires_token: false });
+        await Promise.resolve();
+      });
+      expect(cancelPasswordReset).toHaveBeenCalledWith("unavailable-late-attempt");
+      expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    },
+  );
 
   it("cancels password-reset discovery when the login screen unmounts", async () => {
     requestPasswordReset.mockReturnValue(new Promise<PasswordResetChallenge>(() => {}));
