@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { featureFlagTestHooks } from "@/featureFlags";
 import { DevicesPanel } from "./DevicesPanel";
+import { RoomKeyFilesSessionProvider } from "./RoomKeyFilesCard";
 import type { DeviceSummary } from "@/lib/matrix";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
@@ -99,7 +100,11 @@ describe("DevicesPanel", () => {
   it("hides native key-file actions on web even when their flag is enabled", async () => {
     featureFlagTestHooks.setCache({ crypto_key_files: true });
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
-    renderWithProviders(<DevicesPanel />);
+    renderWithProviders(
+      <RoomKeyFilesSessionProvider>
+        <DevicesPanel />
+      </RoomKeyFilesSessionProvider>,
+    );
 
     expect(await screen.findByText("This laptop")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
@@ -110,7 +115,11 @@ describe("DevicesPanel", () => {
     featureFlagTestHooks.setCache({ crypto_key_files: true });
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "desktop");
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
-    renderWithProviders(<DevicesPanel />);
+    renderWithProviders(
+      <RoomKeyFilesSessionProvider>
+        <DevicesPanel />
+      </RoomKeyFilesSessionProvider>,
+    );
 
     expect(await screen.findByRole("button", { name: "Import keys" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export keys" })).toBeInTheDocument();
