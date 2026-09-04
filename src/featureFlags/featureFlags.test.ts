@@ -8,11 +8,16 @@ const mocks = vi.hoisted(() => ({
   addFeatureFlag: vi.fn(),
   getClient: vi.fn(),
   load: vi.fn(),
+  invoke: vi.fn(),
 }));
 
-vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
+vi.mock("@/lib/platform", () => ({
+  isTauri: () => mocks.isTauri(),
+  isWebBuild: () => false,
+}));
 
 vi.mock("@sentry/react", () => ({
+  addBreadcrumb: vi.fn(),
   getClient: () => mocks.getClient(),
 }));
 
@@ -20,11 +25,19 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
+// Keep transport routing real; isolate the native IPC boundary so lazy
+// reconciliation never enters Tauri or its telemetry wrapper in this test.
+vi.mock("@/observability/ipc", () => ({
+  IPC_OPERATION_ID_HEADER: "x-charm-operation-id",
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
+
 beforeEach(() => {
   localStorage.clear();
   vi.resetModules();
   mocks.isTauri.mockReturnValue(false);
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
+  mocks.invoke.mockReset().mockResolvedValue(undefined);
   mocks.addFeatureFlag.mockReset();
   mocks.getClient.mockReset().mockReturnValue({
     getOptions: () => ({ enabled: true }),
@@ -152,6 +165,11 @@ describe("feature-flag client", () => {
     });
     await Promise.all([initialization, update]);
 
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "reconcile_message_search_flag",
+      undefined,
+      undefined,
+    );
     expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
     expect(mod.getFlag("canary")).toBe(true);
   });

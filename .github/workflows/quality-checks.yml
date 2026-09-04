@@ -194,13 +194,10 @@ jobs:
           node-version: 22.22.2
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - id: frontend_install
+        run: pnpm install --frozen-lockfile
 
-      # Audit stays unconditional because fresh advisory data is not tied to
-      # changed frontend files. Frontend-specific checks are gated below.
-      - run: pnpm audit --audit-level=high
-
-      # Unconditional like audit above: it's a cheap grep-based count over
+      # Unconditional like audit below: it's a cheap grep-based count over
       # both src/ and src-tauri/src/, so it isn't tied to the frontend-path
       # filter and should catch a rust-only PR that quietly removes
       # instrumentation too. See observability-ratchet.json for the floors
@@ -246,6 +243,14 @@ jobs:
         run: |
           pnpm tokens:pull
           git diff --exit-code src/styles/tokens.css
+
+      # Keep the audit required, but collect frontend test/build evidence
+      # before calling the external advisory service (#502). Audit failures
+      # still fail this required job. Run even if an earlier check failed,
+      # provided installation succeeded; do not gate on changed paths.
+      - name: Audit frontend dependencies
+        if: ${{ !cancelled() && steps.frontend_install.outcome == 'success' }}
+        run: pnpm audit --audit-level=high
 
   storybook-a11y:
     name: Storybook (build + axe a11y)
@@ -733,6 +738,9 @@ jobs:
           # without write-key exposure.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
+
+      - name: Web companion password-reset cancellation contract
+        run: cargo test -p charm-web-server --lib cancel_attempt_request_tests
 
       - name: Web companion live-homeserver API
         env:
