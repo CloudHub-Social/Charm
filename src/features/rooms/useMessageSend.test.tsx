@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   setDisplayName: vi.fn().mockResolvedValue(undefined),
   ignoreUser: vi.fn().mockResolvedValue(undefined),
   unignoreUser: vi.fn().mockResolvedValue(undefined),
+  joinRoom: vi.fn().mockResolvedValue({ room_id: "!joined:example.org", is_space: false }),
   useFlag: vi.fn(() => true),
   invalidateQueries: vi.fn().mockResolvedValue(undefined),
 }));
@@ -249,6 +250,43 @@ describe("formatted composer submission", () => {
     if (clearsReply) expect(setReplyTarget).toHaveBeenCalledExactlyOnceWith(null);
     else expect(setReplyTarget).not.toHaveBeenCalled();
   });
+
+  it.each(["#room:example.org", "!room:example.org"])(
+    "routes /join %s through the existing join boundary",
+    async (target) => {
+      const setReplyTarget = vi.fn();
+      const { result, rerender } = renderHook(() =>
+        useMessageSend({
+          room: makeRoomSummary(),
+          editingEventId: null,
+          replyTarget: null,
+          setEditingEventId: vi.fn(),
+          setReplyTarget,
+          stopTyping: vi.fn(),
+        }),
+      );
+      for (const args of [[], [target, "extra"]]) {
+        await act(async () => {
+          await result.current.handleSlashCommand({ command: "join", action: true, args });
+        });
+        expect(result.current.commandFeedback).toBe("Usage: /join <room id or alias>");
+      }
+      expect(mocks.joinRoom).not.toHaveBeenCalled();
+      await act(async () => {
+        await result.current.handleSlashCommand({ command: "join", action: true, args: [target] });
+      });
+      expect(mocks.joinRoom).toHaveBeenCalledExactlyOnceWith(target);
+      expect(mocks.sendMessage).not.toHaveBeenCalled();
+      expect(setReplyTarget).not.toHaveBeenCalled();
+      mocks.joinRoom.mockClear();
+      mocks.useFlag.mockReturnValue(false);
+      rerender();
+      await act(async () => {
+        await result.current.handleSlashCommand({ command: "join", action: true, args: [target] });
+      });
+      expect(mocks.joinRoom).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not send an empty /plain message", async () => {
     const { result } = renderHook(() =>

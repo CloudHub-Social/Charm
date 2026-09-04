@@ -182,6 +182,14 @@ new reply selected while that send is pending. Remaining slash-command
 requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
+`/join <room id or alias>` is also staged behind `composer_parity`, in parsing,
+suggestions, and dispatch. It requires exactly one target and reuses the existing
+`joinRoom` transport and SDK-backed identifier validation. It joins without changing
+the current selection, sending a message, or clearing reply context; the normal
+room-list stream exposes the joined room. Routing, argument-count, and flag-off
+regressions await CI. This follows the existing
+[Matrix join operation](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3joinroomidoralias).
+
 The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
 existing membership, global display-name, and ignored-user IPC operations.
 The web companion exposes ignored-user reads and mutations through authenticated

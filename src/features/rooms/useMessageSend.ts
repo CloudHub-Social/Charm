@@ -9,6 +9,7 @@ import {
   setDisplayName,
   ignoreUser,
   unignoreUser,
+  joinRoom,
 } from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import { isMessageSendingCommand, type ParsedSlashCommand } from "./slashCommands";
@@ -142,17 +143,23 @@ export function useMessageSend({
         const { command, args } = parsed;
         if (
           !args.length ||
-          ((command === "ignore" || command === "unignore") && args.length !== 1)
+          ((command === "ignore" || command === "unignore" || command === "join") &&
+            args.length !== 1)
         ) {
           setCommandFeedback(
             command === "nick"
               ? "Usage: /nick <display name>"
-              : `Usage: /${command} <user id>${command === "unban" ? " [reason]" : ""}`,
+              : command === "join"
+                ? "Usage: /join <room id or alias>"
+                : `Usage: /${command} <user id>${command === "unban" ? " [reason]" : ""}`,
           );
           return false;
         }
         try {
           switch (command) {
+            case "join":
+              await joinRoom(args[0]);
+              break;
             case "unban":
               await unbanMember(
                 targetRoomId,

@@ -1,7 +1,7 @@
 import type { SlashCommand } from "@/lib/matrix";
 
 type MessageStyleCommand = "plain" | "shrug" | "tableflip";
-type LocalActionCommand = "unban" | "nick" | "ignore" | "unignore";
+type LocalActionCommand = "unban" | "nick" | "ignore" | "unignore" | "join";
 
 export interface SlashCommandSpec {
   name: SlashCommand | MessageStyleCommand | LocalActionCommand;
@@ -50,6 +50,7 @@ export const STAGED_BACKEND_COMMANDS: (SlashCommandSpec & { name: SlashCommand }
 ];
 
 export const LOCAL_ACTION_COMMANDS: (SlashCommandSpec & { name: LocalActionCommand })[] = [
+  { name: "join", trigger: "/join", argsHint: "<room id or alias>", description: "Join a room" },
   {
     name: "unban",
     trigger: "/unban",

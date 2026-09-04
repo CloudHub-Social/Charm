@@ -12,7 +12,7 @@ describe("staged message-style commands", () => {
     });
     expect(filterSlashCommands("notice", true).map((spec) => spec.name)).toEqual(["notice"]);
   });
-  it.each(["unban", "nick", "ignore", "unignore"])(
+  it.each(["unban", "nick", "ignore", "unignore", "join"])(
     "stages /%s parsing and suggestions",
     (command) => {
       expect(parseSlashCommand(`/${command} @alice:example.org`)).toBeNull();
