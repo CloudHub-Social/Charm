@@ -8,6 +8,7 @@ use charm_lib::matrix::auth::{
     client_encryption_settings, register_with_dummy_auth, LoginRequest, LoginResponse,
     RegisterRequest,
 };
+use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 use std::time::Duration;
@@ -91,6 +92,7 @@ struct ClientWellKnownHomeserver {
 }
 
 async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> {
+    const MAX_WELL_KNOWN_BYTES: usize = 64 * 1024;
     let origin = reqwest::Url::parse(&format!("https://{server_name}"))
         .map_err(|_| "enter a valid Matrix server name or HTTPS homeserver URL".to_string())?;
     if origin.path() != "/"
@@ -128,12 +130,18 @@ async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> 
         if !response.status().is_success() {
             return Ok(origin);
         }
-        let body = response
-            .bytes()
-            .await
-            .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
-        if body.len() > 64 * 1024 {
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_WELL_KNOWN_BYTES as u64)
+        {
             return Err("homeserver discovery response was too large".to_string());
+        }
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|_| "homeserver discovery returned an invalid response".to_string())?;
+            append_bounded_chunk(&mut body, &chunk, MAX_WELL_KNOWN_BYTES)?;
         }
         let discovered: ClientWellKnown = match serde_json::from_slice(&body) {
             Ok(discovered) => discovered,
@@ -143,6 +151,14 @@ async fn discover_homeserver(server_name: &str) -> Result<reqwest::Url, String> 
             .map_err(|_| "homeserver discovery returned an invalid base URL".to_string());
     }
     unreachable!("the bounded discovery loop always returns")
+}
+
+fn append_bounded_chunk(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<(), String> {
+    if buffer.len().saturating_add(chunk.len()) > limit {
+        return Err("homeserver discovery response was too large".to_string());
+    }
+    buffer.extend_from_slice(chunk);
+    Ok(())
 }
 
 async fn validated_url_client(
@@ -214,6 +230,24 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // RFC 6052's well-known /96 embeds the destination in its final
+            // 32 bits. Apply the same IPv4 policy instead of rejecting public
+            // NAT64 destinations. Other translation prefixes remain denied.
+            if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+                let octets = ip.octets();
+                let embedded =
+                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                return is_public_network_ip(embedded.into());
+            }
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(embedded.into());
+            }
             !(ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
@@ -345,6 +379,51 @@ pub async fn register(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nat64_uses_embedded_ipv4_policy_without_allowing_local_translation() {
+        for address in ["64:ff9b::8.8.8.8", "64:ff9b::808:808"] {
+            assert!(super::is_public_network_ip(address.parse().unwrap()));
+        }
+        for address in [
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::192.168.1.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b::100.64.0.1",
+            "64:ff9b::192.0.2.1",
+            "64:ff9b::224.0.0.1",
+            "64:ff9b:1::8.8.8.8",
+            "64:ff9b:0:1::8.8.8.8",
+        ] {
+            assert!(!super::is_public_network_ip(address.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn compatible_ipv6_uses_embedded_ipv4_policy() {
+        for address in [
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::192.168.1.1",
+            "::169.254.169.254",
+        ] {
+            assert!(!super::is_public_network_ip(address.parse().unwrap()));
+        }
+        assert!(super::is_public_network_ip("::8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn discovery_body_limit_is_enforced_while_streaming() {
+        let mut body = vec![0; 4];
+        super::append_bounded_chunk(&mut body, &[1, 2], 6).expect("chunk reaches exact limit");
+        assert_eq!(body.len(), 6);
+
+        let error = super::append_bounded_chunk(&mut body, &[3], 6)
+            .expect_err("chunk beyond limit must be rejected before buffering");
+        assert_eq!(error, "homeserver discovery response was too large");
+        assert_eq!(body.len(), 6, "rejected bytes must never enter the buffer");
+    }
+
     #[tokio::test]
     async fn bare_server_names_reject_paths_before_discovery() {
         let error = super::discover_homeserver("example.org/not-a-server-name")
