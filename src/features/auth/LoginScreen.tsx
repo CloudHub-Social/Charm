@@ -288,7 +288,13 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           if (isCurrent()) onSignedIn(session);
         })
         .catch((err: unknown) => {
-          if (isCurrent() && ssoCancelledOperationRef.current !== operation) setError(String(err));
+          const confirmedCancellation =
+            (err instanceof Error ? err.message : String(err)) === "single sign-on cancelled";
+          if (
+            isCurrent() &&
+            !(ssoCancelledOperationRef.current === operation && confirmedCancellation)
+          )
+            setError(String(err));
         })
         .finally(() => {
           ssoCompletionInFlightRef.current = false;

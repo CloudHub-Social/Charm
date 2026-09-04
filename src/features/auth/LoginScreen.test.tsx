@@ -227,7 +227,7 @@ describe("LoginScreen SSO callback handling", () => {
     expect(onSignedIn).not.toHaveBeenCalled();
   });
 
-  it.each(["resolve", "reject"] as const)(
+  it.each(["resolve", "cancelled", "cleanup-error"] as const)(
     "waits for a cancelled callback to settle with %s before allowing restart",
     async (outcome) => {
       let resolveCompletion!: (session: LoginResponse) => void;
@@ -254,10 +254,14 @@ describe("LoginScreen SSO callback handling", () => {
       expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
       await act(async () => {
         if (outcome === "resolve") resolveCompletion(fakeSession());
-        else rejectCompletion(new Error("Old SSO completion cancelled"));
+        else if (outcome === "cancelled") rejectCompletion(new Error("single sign-on cancelled"));
+        else rejectCompletion(new Error("Could not confirm device revocation"));
       });
 
-      expect(screen.queryByText("Error: Old SSO completion cancelled")).not.toBeInTheDocument();
+      expect(screen.queryByText("Error: single sign-on cancelled")).not.toBeInTheDocument();
+      if (outcome === "cleanup-error") {
+        expect(screen.getByText("Error: Could not confirm device revocation")).toBeInTheDocument();
+      }
       if (outcome === "resolve") {
         expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
         return;

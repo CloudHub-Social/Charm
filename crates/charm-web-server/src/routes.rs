@@ -6337,13 +6337,21 @@ mod websocket_revocation_tests {
             let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
                 .await
                 .expect("upgrade");
-            socket.next().await
+            (socket.next().await, socket.next().await)
         })
         .await;
         server.abort();
         let _ = server.await;
+        let (terminal, closed) = result.expect("socket must invalidate and close promptly");
+        let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(terminal))) = terminal else {
+            panic!("revoked session must send only invalidation before closing");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&terminal).unwrap(),
+            serde_json::json!({"event": "session:invalidated", "data": null})
+        );
         assert!(matches!(
-            result.expect("socket must close promptly"),
+            closed,
             Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
         ));
     }

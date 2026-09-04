@@ -310,6 +310,9 @@ Surfaces changed:
     marker before relocating a store or saving credentials. An unreadable or
     malformed marker fails closed. The user must finish the pending cleanup
     (including its startup retry) before signing back into that account.
+    Cancelling an in-flight SSO callback suppresses only the backend's confirmed
+    cancellation result. Post-commit cleanup or device-revocation failures remain
+    visible, while restart waits for completion and cancellation to settle.
 16. Hard terminal authentication failure revokes the in-memory client and invalidates
     its push registration first, using the same transport and persisted-endpoint
     cleanup as explicit logout. A rejected homeserver pusher deletion does not
