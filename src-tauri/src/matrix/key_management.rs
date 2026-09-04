@@ -159,6 +159,10 @@ where
     // encryption/write task continues, so this task owns the guard independently.
     tokio::spawn(async move {
         let state = app.state::<MatrixState>();
+        // Share #490's teardown/adoption exclusion before reading identity:
+        // a picker returning during awaited logout cleanup must wait until
+        // the session is detached, then fail identity validation.
+        let _completion_guard = state.login_completion_lock.lock().await;
         let active = state.client.lock().await;
         let client = require_transfer_identity(active.as_ref(), &expected)?.clone();
         if !feature_enabled(&app) {
