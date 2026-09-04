@@ -347,6 +347,12 @@ both Matrix and OAuth credential deletions even if its durable marker cannot be
 written; failures remain errors rather than claims of durable cleanup. Regression
 coverage for these failure boundaries requires GitHub Actions verification.
 
+The default-off native `forget_local_data` preview has a public feature-gallery
+journey that opens its confirmation, verifies the destructive action stays
+disabled until `FORGET` is typed, and cancels back to account settings. Its
+CI-generated screenshot documents the consent boundary only: the deterministic
+mock backend does not establish native data deletion or remote token revocation.
+
 If callback exchange already
 authenticated a device, cancellation attempts Matrix logout with the bounded
 auth-network timeout before discarding the temporary local store. Offline or
