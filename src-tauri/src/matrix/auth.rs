@@ -88,6 +88,8 @@ const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_
 const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const PASSWORD_RESET_UNCERTAIN: &str =
+    "password reset may already have been submitted; check whether your new password works";
 const PASSWORD_RESET_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const PASSWORD_RESET_MAX_SEND_ATTEMPTS: u32 = 3;
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -136,19 +138,30 @@ impl PasswordResetCancellation {
         self.phase.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
     }
 
+    fn was_dispatched(&self) -> bool {
+        self.phase.load(std::sync::atomic::Ordering::SeqCst) & 2 != 0
+    }
+
     async fn cancelled(&self) {
         self.token.cancelled().await;
     }
 
     fn commit_dispatch(&self) -> Result<(), String> {
         self.phase
-            .fetch_update(
+            .compare_exchange(
+                0,
+                2,
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
-                |phase| (phase & 1 == 0).then_some(phase | 2),
             )
             .map(|_| ())
-            .map_err(|_| "password reset attempt expired or was cancelled".to_string())
+            .map_err(|phase| {
+                if phase & 2 != 0 {
+                    PASSWORD_RESET_UNCERTAIN.to_string()
+                } else {
+                    "password reset attempt expired or was cancelled".to_string()
+                }
+            })
     }
 }
 
@@ -2056,6 +2069,7 @@ pub async fn confirm_password_reset(
     if result.is_err() {
         let mut guard = state.pending_password_reset.lock().await;
         if !cancellation.is_cancelled()
+            && !cancellation.was_dispatched()
             && guard.is_none()
             && pending.created_at.elapsed() <= PASSWORD_RESET_ATTEMPT_TTL
         {
@@ -2215,10 +2229,10 @@ async fn complete_password_change(
     pending
         .client
         .send(request)
-        .with_request_config(RequestConfig::new().skip_auth())
+        .with_request_config(RequestConfig::new().skip_auth().retry_limit(0))
         .await
         .map(|_| ())
-        .map_err(|_| "could not confirm password reset".to_string())
+        .map_err(|_| PASSWORD_RESET_UNCERTAIN.to_string())
 }
 
 async fn email_validation_submission_client(
@@ -3751,6 +3765,60 @@ mod registration_uia_tests {
         assert!(!cancellation.cancel());
         assert!(!cancellation.cancel());
         assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn password_reset_dispatch_can_only_be_committed_once() {
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(!cancellation.was_dispatched());
+        cancellation.commit_dispatch().unwrap();
+        assert!(cancellation.was_dispatched());
+        assert_eq!(
+            cancellation.commit_dispatch(),
+            Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_password_change_reports_uncertainty_without_retrying() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "errcode": "M_UNKNOWN", "error": "response lost after mutation"
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: false,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = super::PasswordResetCancellation::default();
+        for _ in 0..2 {
+            assert_eq!(
+                complete_password_reset(
+                    &mut pending,
+                    None,
+                    "new correct horse".to_owned(),
+                    &cancellation
+                )
+                .await,
+                Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+            );
+        }
+        assert!(cancellation.was_dispatched());
+        assert!(!cancellation.cancel());
     }
 
     #[test]

@@ -235,6 +235,9 @@ homeservers. The parity audit (2026-07-13) found:
   share an atomic state transition. If cancellation wins, no request is dispatched;
   if dispatch wins, cancellation reports that it cannot undo the request, even
   before the network future is first polled. Charm awaits the request's result.
+  Dispatch is single-use and disables automatic network retries. A post-dispatch
+  failure is uncertain, never restores the pending attempt, and uses the same
+  acknowledged warning as the web companion. Failures before dispatch may retry.
   A bounded attempt-status record remains after completion until the next attempt;
   a late cancellation cannot claim it prevented a completed password change.
   Unknown or superseded attempt IDs likewise cannot claim prevention.
