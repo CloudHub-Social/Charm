@@ -28,12 +28,11 @@ export function PollMessage({
   const poll = message.poll;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  const [endedLocally, setEndedLocally] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
-  const ended = poll.ended || endedLocally;
+  const ended = poll.ended;
 
   const hasRealEventId = message.event_id.startsWith("$");
   const canEndPoll = own || (rowActions?.canRedact ?? false);
@@ -48,7 +47,6 @@ export function PollMessage({
   async function vote(answerId: string) {
     if (
       currentPoll.ended ||
-      endedLocally ||
       ending ||
       unsupportedSelectionCount ||
       mutationsDisabled ||
@@ -81,7 +79,6 @@ export function PollMessage({
     setError(null);
     try {
       await endPoll(roomId, message.event_id);
-      setEndedLocally(true);
     } catch {
       setError("The poll could not be ended.");
     } finally {

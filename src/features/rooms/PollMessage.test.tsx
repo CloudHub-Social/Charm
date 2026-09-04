@@ -122,7 +122,7 @@ describe("PollMessage", () => {
     expect(onSenderClick).toHaveBeenCalledWith("@alice:example.org", "Alice");
   });
 
-  it("excludes voting while closing and after close succeeds before the timeline catches up", async () => {
+  it("excludes voting during end admission without treating queue acceptance as closure", async () => {
     let finish!: () => void;
     endPoll.mockImplementationOnce(
       () =>
@@ -137,8 +137,9 @@ describe("PollMessage", () => {
     fireEvent.click(answer);
     expect(voteOnPoll).not.toHaveBeenCalled();
     await act(async () => finish());
-    expect(answer).toBeDisabled();
-    expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
+    expect(answer).toBeEnabled();
+    expect(screen.queryByText(/Poll closed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled();
   });
 
   it("does not end a poll while a vote is pending", async () => {
