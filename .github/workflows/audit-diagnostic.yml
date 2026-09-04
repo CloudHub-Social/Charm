@@ -1,0 +1,39 @@
+name: npm audit timeout diagnostic
+
+# Read-only investigation for #502. This does not replace any merge gate.
+on:
+  push:
+    branches: [diagnostic/npm-audit-timeout]
+    paths: [.github/workflows/audit-diagnostic.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit request timeout ${{ matrix.request_timeout_ms }}ms
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        request_timeout_ms: [60000, 120000]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+      - name: Identify toolchain and lockfile
+        run: |
+          node --version
+          pnpm --version
+          sha256sum pnpm-lock.yaml
+      - name: Audit committed lockfile against current advisories
+        env:
+          npm_config_fetch_timeout: ${{ matrix.request_timeout_ms }}
+        run: |
+          pnpm config get fetch-timeout
+          pnpm audit --audit-level=high
