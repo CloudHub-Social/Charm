@@ -86,7 +86,10 @@ export function RoomKeyFilesProvider({
     try {
       const summary =
         mode === "export" ? await exportRoomKeys(passphrase) : await importRoomKeys(passphrase);
-      if (!summary.completed) return;
+      if (!summary.completed) {
+        closeDialog();
+        return;
+      }
       if (
         "imported_count" in summary &&
         typeof summary.imported_count === "number" &&

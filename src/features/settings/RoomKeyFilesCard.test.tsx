@@ -142,9 +142,7 @@ describe("RoomKeyFilesCard", () => {
     await act(async () => {
       finish({ completed: false, imported_count: 0, total_count: 0 });
     });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("requires matching export passphrases before opening the native picker", async () => {
@@ -184,7 +182,7 @@ describe("RoomKeyFilesCard", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Imported 12 of 14 room keys.");
   });
 
-  it("keeps the dialog open when the native picker is cancelled", async () => {
+  it("closes the dialog when the native picker is cancelled", async () => {
     importRoomKeys.mockResolvedValue({ completed: false, imported_count: 0, total_count: 0 });
     renderWithProviders(<RoomKeyFilesCard />);
 
@@ -195,6 +193,6 @@ describe("RoomKeyFilesCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
 
     await waitFor(() => expect(importRoomKeys).toHaveBeenCalled());
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });
