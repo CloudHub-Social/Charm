@@ -1039,12 +1039,21 @@ impl ActiveSearchIndex {
 }
 
 fn feature_enabled(app: &AppHandle) -> bool {
+    if !flags_ready(&app.state::<super::MatrixState>()) {
+        return false;
+    }
     app.path().app_data_dir().is_ok_and(|directory| {
         crate::feature_flags::flag(
             &directory,
             crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
         ) && matches!(disabled_cleanup_pending(&directory), Ok(false))
     })
+}
+
+fn flags_ready(state: &super::MatrixState) -> bool {
+    state
+        .search_flags_ready
+        .load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn active_identity(client: &Client) -> Option<(String, String)> {
@@ -1524,6 +1533,9 @@ fn append_raw_event_mutation(
 
 fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), String> {
     let state = app.state::<super::MatrixState>();
+    if !flags_ready(&state) {
+        return Ok(());
+    }
     if generation
         != state
             .search_generation
@@ -2429,6 +2441,11 @@ pub(crate) async fn reconcile_disabled_search(
     app: &AppHandle,
     state: &super::MatrixState,
 ) -> Result<(), String> {
+    // A sync/receiver can arrive before the renderer has normalized the cached
+    // rollout cohort. Unknown is unavailable, not permission to delete data.
+    if !flags_ready(state) {
+        return Ok(());
+    }
     // Invalidate queued plaintext and force a fresh cache seed before taking
     // the derived index. Cleanup can fail after the live handle is removed;
     // that must not leave a later re-enable believing backfill is complete.
@@ -2470,6 +2487,15 @@ fn purge_disabled_search_indices_from_slot(
             Err("message search application data directory unavailable".to_string())
         }
     }
+}
+
+/// Before flag-cache normalization, only recover already-durable purge intent.
+/// A cached false from another cohort must not create new destructive intent.
+pub(crate) fn reconcile_startup_cleanup(app_data_dir: &Path) -> Result<(), String> {
+    if disabled_cleanup_pending(app_data_dir)? {
+        reconcile_disabled_cleanup(app_data_dir)?;
+    }
+    Ok(())
 }
 
 /// Records and completes the privacy kill-switch purge without a live index
@@ -4033,6 +4059,55 @@ mod tests {
             reconcile_disabled_cleanup(&absent_app_data).expect("already clean");
         }
         assert!(!absent_app_data.exists());
+    }
+
+    #[test]
+    fn startup_waits_for_flag_normalization_without_deleting_retained_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        std::fs::write(directory.path().join("feature-flags.json"), r#"{
+            "featureFlags":{"state":{"overrides":{"encrypted_local_message_search":true}}},
+            "featureFlagsRemote":{"state":{"remote":{"encrypted_local_message_search":false},"installId":"old-cohort"}}
+        }"#).expect("stale flag cache");
+        let state = super::super::MatrixState::default();
+        assert!(!flags_ready(&state));
+        reconcile_startup_cleanup(directory.path()).expect("defer new purge");
+        assert!(database_path.exists());
+        assert!(!disabled_cleanup_pending(directory.path()).expect("marker state"));
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(flags_ready(&state));
+    }
+
+    #[test]
+    fn startup_finishes_existing_purge_intent_before_normalization() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        create_private_directory(&disabled_cleanup_marker(directory.path())).expect("marker");
+        reconcile_startup_cleanup(directory.path()).expect("recover purge intent");
+        assert!(!database_path.exists());
+        assert!(!disabled_cleanup_pending(directory.path()).expect("marker removed"));
+    }
+
+    #[test]
+    fn startup_rejects_malformed_purge_intent_without_deleting_retained_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let marker = disabled_cleanup_marker(directory.path());
+        std::fs::write(&marker, "unexpected data").expect("malformed marker");
+        assert!(reconcile_startup_cleanup(directory.path()).is_err());
+        assert!(database_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("preserved marker"),
+            "unexpected data"
+        );
     }
 
     #[test]

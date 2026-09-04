@@ -316,8 +316,12 @@ without the user knowing which is which.
   cleanup intent before deletion begins. Repeated disabled syncs skip marker
   writes only when both the search root and cleanup marker are definitely absent;
   metadata errors, symlinks, and pending markers still take the recovery path.
-  Native startup reconciles disabled and
-  previously failed cleanup before session restoration; renderer startup also
+  Native startup recovers already-recorded cleanup intent before session
+  restoration, but does not create new destructive intent from an unvalidated
+  cached flag. Native search access and new flag-driven purges remain inactive
+  until the renderer has awaited cohort/endpoint cache normalization and called
+  native reconciliation. Receiver-only startup cannot use or newly purge search
+  before that point. Renderer startup also
   reconciles both disabled-to-disabled and cached-enabled state with the native
   backend. Search remains unavailable in the renderer until that reconciliation
   succeeds, without discarding the user's saved override or blocking unrelated
