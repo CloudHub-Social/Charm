@@ -2936,6 +2936,8 @@ async fn search_messages(
     page.retain_current_visibility(&current_allowed_rooms, &current_ignored_senders);
     page.incomplete = session
         .message_search_incomplete
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
         .load(std::sync::atomic::Ordering::Acquire)
         || session
             .message_search_backfill_pending
@@ -3408,7 +3410,10 @@ async fn leave_room(
     if state.encrypted_local_message_search_enabled {
         let purge_result = crate::sync_loop::purge_room_after_leave(&session, &room_id).await;
         charm_lib::matrix::search::record_room_leave_purge_result(
-            &session.message_search_incomplete,
+            &session
+                .message_search_incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
             purge_result,
             "web_leave_room",
         );

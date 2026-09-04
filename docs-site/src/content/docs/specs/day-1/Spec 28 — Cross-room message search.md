@@ -239,7 +239,9 @@ connection: the SDK owns that schema and migration lifecycle.
   bounded retry while results remain incomplete. Native retry admission clears
   the previous failure under the lifecycle lock before detaching the scan;
   subsequent live failures remain sticky and cannot be erased by task startup.
-  Web indexes are session-ephemeral,
+  Web retry admission likewise clears the prior failure under the same mutex
+  used by live sync, timeline-selection, pagination, and purge failure writers;
+  detached scan startup never clears failures. Web indexes are session-ephemeral,
   so a later search similarly coalesces one local-cache rebuild after failure and a
   process restart creates a fresh incomplete index; neither transport invokes
   homeserver search or forces history pagination for reconciliation.

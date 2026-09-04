@@ -43,7 +43,7 @@ const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct MessageSearchContext {
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
-    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    incomplete: Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     backfill_pending: Arc<std::sync::atomic::AtomicBool>,
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -51,7 +51,7 @@ pub struct MessageSearchContext {
 #[derive(Clone)]
 pub(crate) struct TimelineSearchContext {
     sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<QueuedSearchWork>>>>,
-    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    incomplete: Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     running: Arc<std::sync::atomic::AtomicBool>,
     pending_rooms: Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
     done: Arc<tokio::sync::Notify>,
@@ -107,6 +107,8 @@ pub(crate) fn submit_timeline_search_selection<'a>(
     {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
     }
 }
@@ -118,13 +120,16 @@ pub(crate) struct QueuedSearchWork {
 }
 
 fn record_search_work_outcome(
-    incomplete: &std::sync::atomic::AtomicBool,
+    incomplete: &std::sync::Mutex<std::sync::atomic::AtomicBool>,
     backfill_pending: &std::sync::atomic::AtomicBool,
     applied: bool,
     completes_backfill: bool,
 ) {
     if !applied {
-        incomplete.store(true, std::sync::atomic::Ordering::Release);
+        incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     if completes_backfill {
         backfill_pending.store(false, std::sync::atomic::Ordering::Release);
@@ -298,6 +303,8 @@ async fn submit_message_search(
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(work) = charm_lib::matrix::search::removal_work_from_sync(client, response) {
             enqueue_message_search_work(context, work).await;
@@ -341,6 +348,8 @@ async fn enqueue_message_search_work(
             if dropped_additions {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
                 tracing::warn!(
                     command = "web_message_search_index",
@@ -356,6 +365,8 @@ async fn enqueue_message_search_work(
     if !delivered {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(command = "web_message_search_index", status = "queue_full");
     }
@@ -395,7 +406,10 @@ async fn enqueue_reliable_search_work(
                         permit.send(queued);
                     }
                     Err(_) => {
-                        incomplete.store(true, std::sync::atomic::Ordering::Release);
+                        incomplete
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .store(true, std::sync::atomic::Ordering::Release);
                         tracing::warn!(
                             command = "web_message_search_index",
                             status = "worker_unavailable"
@@ -416,15 +430,13 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     if backfill_revoked(context) {
         return;
     }
-    // `backfill_pending` keeps results honest while this full local-only pass
-    // runs. Clear only the prior sticky failure so any new queue/cache/worker
-    // failure can set it again and survive the FIFO completion marker.
-    context
-        .incomplete
-        .store(false, std::sync::atomic::Ordering::Release);
+    // Retry admission already cleared the previous failure under its lock.
+    // A detached scan must preserve every failure recorded since admission.
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
@@ -444,6 +456,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             Err(_) => {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
                 continue;
             }
@@ -451,6 +465,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         let Ok(events) = events else {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             continue;
         };
@@ -465,6 +481,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         ) else {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             context
                 .backfill_pending
@@ -491,6 +509,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             context
                 .backfill_pending
@@ -505,6 +525,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     let Some(completion) = charm_lib::matrix::search::SearchWork::empty_for_client(client) else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
@@ -525,6 +547,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
@@ -571,18 +595,24 @@ pub fn schedule_full_message_search_reconciliation(session: Arc<crate::session::
 }
 
 fn claim_reconciliation_retry(
-    incomplete: &std::sync::atomic::AtomicBool,
+    incomplete: &std::sync::Mutex<std::sync::atomic::AtomicBool>,
     backfill_pending: &std::sync::atomic::AtomicBool,
 ) -> bool {
-    incomplete.load(std::sync::atomic::Ordering::Acquire)
-        && backfill_pending
+    let incomplete = incomplete.lock().unwrap_or_else(|error| error.into_inner());
+    if !incomplete.load(std::sync::atomic::Ordering::Acquire)
+        || backfill_pending
             .compare_exchange(
                 false,
                 true,
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
             )
-            .is_ok()
+            .is_err()
+    {
+        return false;
+    }
+    incomplete.store(false, std::sync::atomic::Ordering::Release);
+    true
 }
 
 /// Returns true after revoking the initial backfill's pending marker. Call it
@@ -676,6 +706,8 @@ async fn process_web_cached_room_seed(
         if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         return;
@@ -690,6 +722,8 @@ async fn process_web_cached_room_seed(
             if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             return;
@@ -699,6 +733,8 @@ async fn process_web_cached_room_seed(
         if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         return;
@@ -740,6 +776,8 @@ async fn process_web_cached_room_seed(
     {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(
             command = "web_message_search_pagination",
@@ -1597,39 +1635,65 @@ mod tests {
 
     #[test]
     fn search_backfill_stays_pending_until_its_fifo_marker_is_applied() {
-        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(false));
         let pending = std::sync::atomic::AtomicBool::new(true);
 
         record_search_work_outcome(&incomplete, &pending, true, false);
         assert!(pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
 
         record_search_work_outcome(&incomplete, &pending, true, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
     fn failed_web_reconciliation_has_one_retry_owner() {
-        let incomplete = std::sync::atomic::AtomicBool::new(true);
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(true));
         let pending = std::sync::atomic::AtomicBool::new(false);
 
         assert!(claim_reconciliation_retry(&incomplete, &pending));
         assert!(!claim_reconciliation_retry(&incomplete, &pending));
 
         record_search_work_outcome(&incomplete, &pending, true, true);
-        incomplete.store(false, std::sync::atomic::Ordering::Release);
         assert!(!claim_reconciliation_retry(&incomplete, &pending));
     }
 
     #[test]
+    fn web_retry_preserves_live_failure_before_detached_scan_starts() {
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(true));
+        let pending = std::sync::atomic::AtomicBool::new(false);
+        assert!(claim_reconciliation_retry(&incomplete, &pending));
+        // A live mutation fails after admission, before the detached scan
+        // starts. Neither another query nor successful scan completion may
+        // erase that failure.
+        record_search_work_outcome(&incomplete, &pending, false, false);
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        assert!(incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
     fn failed_search_work_is_sticky_but_a_completion_marker_clears_pending() {
-        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(false));
         let pending = std::sync::atomic::AtomicBool::new(true);
 
         record_search_work_outcome(&incomplete, &pending, false, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1638,7 +1702,9 @@ mod tests {
         let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let context = MessageSearchContext {
             sender,
-            incomplete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            incomplete: Arc::new(std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
             backfill_pending: Arc::clone(&pending),
             closed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };

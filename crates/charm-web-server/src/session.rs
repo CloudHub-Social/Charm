@@ -177,8 +177,10 @@ pub struct Session {
     /// part of durable crypto backup and is discarded with this web session.
     pub message_search_index: Arc<std::sync::Mutex<Option<charm_lib::matrix::search::SearchIndex>>>,
     /// Sticky disclosure that at least one live-sync batch could not be queued.
-    /// It stays set until this ephemeral session and its index are rebuilt.
-    pub message_search_incomplete: Arc<AtomicBool>,
+    /// Retry admission clears the prior failure under this lock. Every live
+    /// writer uses the same lock so detached startup cannot erase a new failure.
+    /// The inner atomic also supports the shared native/web purge helper.
+    pub message_search_incomplete: Arc<std::sync::Mutex<AtomicBool>>,
     /// True while the initial cached-history backfill still has queued work.
     /// Search responses combine this transient state with the sticky
     /// `message_search_incomplete` disclosure above.
@@ -566,7 +568,7 @@ impl Session {
             user_id,
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
-            message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_incomplete: Arc::new(std::sync::Mutex::new(AtomicBool::new(false))),
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
