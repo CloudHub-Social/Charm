@@ -5522,6 +5522,7 @@ async fn get_pending_recovery_setup(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     let _guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
     let summary =
         if let (Some(persistence), Some(cookie)) = (&state.persistence, jar.get(SESSION_COOKIE)) {
             charm_lib::matrix::recovery_custody::pending_summary(
@@ -5552,6 +5553,7 @@ async fn acknowledge_recovery_setup(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     let _guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
     let persistence = state
         .persistence
         .as_ref()
@@ -5578,6 +5580,18 @@ struct SetupRecoveryRequest {
     passphrase: Option<String>,
 }
 
+fn require_open_recovery_session(session: &Session) -> Result<(), ApiError> {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::unauthorized(
+            "Session closed; recovery operation was not started.",
+        ));
+    }
+    Ok(())
+}
+
 async fn setup_recovery(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -5588,6 +5602,7 @@ async fn setup_recovery(
         return Err(ApiError::not_found("recovery setup is not enabled"));
     }
     let _guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
     // Never mutate server-side recovery from a legacy in-memory-only session.
     // Verify persistence before enabling anything, not only after issuing a key.
     let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (

@@ -1266,8 +1266,18 @@ impl SessionStore {
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
+        let admitted = self.inner.read().await.get(token).cloned()?;
+        // Wait for admitted recovery before revoking credentials or deleting
+        // its encrypted store, without holding the global session map lock.
+        let _recovery_guard = admitted.recovery_setup_lock.lock().await;
         let session = {
             let mut inner = self.inner.write().await;
+            if !inner
+                .get(token)
+                .is_some_and(|current| Arc::ptr_eq(current, &admitted))
+            {
+                return None;
+            }
             let session = inner.remove(token);
             if let Some(session) = &session {
                 // Revoke detached work while removal is still atomic with
@@ -1608,6 +1618,41 @@ mod tests {
             "permanent session removal must delete the encrypted search database"
         );
         let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    #[tokio::test]
+    async fn removal_waits_for_recovery_without_blocking_unrelated_session_lookups() {
+        let store = Arc::new(SessionStore::new());
+        let token = store
+            .create(dummy_session("@recovering:example.org").await)
+            .await;
+        let other = store
+            .create(dummy_session("@other:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        let guard = session.recovery_setup_lock.lock().await;
+        let removal = tokio::spawn({
+            let store = Arc::clone(&store);
+            let token = token.clone();
+            async move { store.remove(&token).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!removal.is_finished());
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), store.get(&other))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        drop(guard);
+        assert!(removal.await.unwrap().is_some());
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(store.get(&token).await.is_none());
     }
 
     #[tokio::test]
