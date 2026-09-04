@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CategoryConfig, EmojiClickData, PickerProps } from "emoji-picker-react";
 import { useAtomValue } from "jotai";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -6,7 +6,30 @@ import { useFlag } from "@/featureFlags";
 import { themeAtom, type Theme } from "@/features/appearance/atoms";
 import { useRecentReactions } from "./useRecentReactions";
 
-const FullPicker = lazy(() => import("emoji-picker-react"));
+const FullPicker = lazy(async () => {
+  const { default: Picker } = await import("emoji-picker-react");
+  return {
+    default: function AccessiblePicker(props: PickerProps) {
+      const root = useRef<HTMLDivElement>(null);
+      const resultsId = useId();
+      useEffect(() => {
+        // emoji-picker-react 4.19.1 points aria-controls at a status node
+        // that disappears when search is empty. The filtered grid is the
+        // actual controlled surface and stays mounted in both states.
+        const input = root.current?.querySelector('input[aria-controls="epr-search-id"]');
+        const results = root.current?.querySelector(".epr-body");
+        if (!input || !results) return;
+        results.id = resultsId;
+        input.setAttribute("aria-controls", resultsId);
+      }, [resultsId]);
+      return (
+        <div ref={root}>
+          <Picker {...props} />
+        </div>
+      );
+    },
+  };
+});
 
 /** One custom-emoji group supplied by a future pack provider (day-2 Spec 05). */
 export interface EmojiPickerExtraCategory {
