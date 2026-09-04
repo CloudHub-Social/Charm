@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, FileAccessMode, FilePath, PickerMode};
@@ -55,6 +56,49 @@ fn feature_enabled(app: &AppHandle) -> bool {
             crate::feature_flags::FeatureFlagKey::CryptoKeyFiles,
         )
     })
+}
+
+fn require_transfer_identity<'a>(
+    active: Option<&'a Client>,
+    expected: &Client,
+) -> Result<&'a Client, String> {
+    active
+        .filter(|active| {
+            expected.user_id().is_some()
+                && expected.device_id().is_some()
+                && active.user_id() == expected.user_id()
+                && active.device_id() == expected.device_id()
+        })
+        .ok_or_else(|| "The active session changed. Start the key transfer again.".to_string())
+}
+
+async fn run_key_transfer<T, F, Fut>(
+    app: AppHandle,
+    expected: Client,
+    transfer: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Client) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+{
+    // No lock is held while the picker is open. Once admitted, keep logout or
+    // replacement from clearing the active client until SDK file work finishes.
+    // A dropped invoke must not release exclusion while the SDK's blocking
+    // encryption/write task continues, so this task owns the guard independently.
+    tokio::spawn(async move {
+        let state = app.state::<MatrixState>();
+        let active = state.client.lock().await;
+        let client = require_transfer_identity(active.as_ref(), &expected)?.clone();
+        if !feature_enabled(&app) {
+            return Err("Room-key file import and export are not enabled.".to_string());
+        }
+        let result = transfer(client).await;
+        drop(active);
+        result
+    })
+    .await
+    .map_err(|_| "The room-key transfer could not finish.".to_string())?
 }
 
 async fn receive_selected_path(
@@ -105,23 +149,26 @@ pub async fn export_room_keys(
     state: State<'_, MatrixState>,
     passphrase: String,
 ) -> Result<RoomKeyExportSummary, String> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     if !feature_enabled(&app) {
         return Err("Room-key file import and export are not enabled.".to_string());
     }
     validate_passphrase(&passphrase)?;
-    let passphrase = zeroize::Zeroizing::new(passphrase);
     let client = state.require_client().await?;
     let Some(path) = pick_export_path(&app).await? else {
         return Ok(RoomKeyExportSummary { completed: false });
     };
 
-    client
-        .encryption()
-        .export_room_keys(path, &passphrase, |_| true)
-        .await
-        .map_err(|_| "Could not export room keys to the selected file.".to_string())?;
-    tracing::info!("encrypted room-key export completed");
-    Ok(RoomKeyExportSummary { completed: true })
+    run_key_transfer(app, client, move |client| async move {
+        client
+            .encryption()
+            .export_room_keys(path, &passphrase, |_| true)
+            .await
+            .map_err(|_| "Could not export room keys to the selected file.".to_string())?;
+        tracing::info!("encrypted room-key export completed");
+        Ok(RoomKeyExportSummary { completed: true })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -130,11 +177,11 @@ pub async fn import_room_keys(
     state: State<'_, MatrixState>,
     passphrase: String,
 ) -> Result<RoomKeyImportSummary, String> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     if !feature_enabled(&app) {
         return Err("Room-key file import and export are not enabled.".to_string());
     }
     validate_passphrase(&passphrase)?;
-    let passphrase = zeroize::Zeroizing::new(passphrase);
     let client = state.require_client().await?;
     let Some(path) = pick_import_path(&app).await? else {
         return Ok(RoomKeyImportSummary {
@@ -154,23 +201,26 @@ pub async fn import_room_keys(
         return Err("The selected room-key file is invalid or larger than 100 MB.".to_string());
     }
 
-    let result = client
-        .encryption()
-        .import_room_keys(path, &passphrase)
-        .await
-        .map_err(|_| {
-            "Could not decrypt the room-key file. Check the file and passphrase.".to_string()
-        })?;
-    tracing::info!(
-        imported_count = result.imported_count,
-        total_count = result.total_count,
-        "encrypted room-key import completed"
-    );
-    Ok(RoomKeyImportSummary {
-        completed: true,
-        imported_count: result.imported_count,
-        total_count: result.total_count,
+    run_key_transfer(app, client, move |client| async move {
+        let result = client
+            .encryption()
+            .import_room_keys(path, &passphrase)
+            .await
+            .map_err(|_| {
+                "Could not decrypt the room-key file. Check the file and passphrase.".to_string()
+            })?;
+        tracing::info!(
+            imported_count = result.imported_count,
+            total_count = result.total_count,
+            "encrypted room-key import completed"
+        );
+        Ok(RoomKeyImportSummary {
+            completed: true,
+            imported_count: result.imported_count,
+            total_count: result.total_count,
+        })
     })
+    .await
 }
 
 #[cfg(test)]
@@ -182,5 +232,36 @@ mod tests {
         assert!(validate_passphrase("correct horse battery staple").is_ok());
         assert!(validate_passphrase("short").is_err());
         assert!(validate_passphrase(&"x".repeat(MAX_PASSPHRASE_BYTES + 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn transfer_rejects_logout_or_changed_account_or_device() {
+        use matrix_sdk::ruma::{device_id, user_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let server = MatrixMockServer::new().await;
+        let expected = server.client_builder().build().await;
+        assert!(require_transfer_identity(Some(&expected), &expected).is_ok());
+        assert!(require_transfer_identity(None, &expected).is_err());
+        let other_account = server
+            .client_builder()
+            .logged_in_with_token(
+                "test-only".into(),
+                user_id!("@other:localhost").to_owned(),
+                expected.device_id().unwrap().to_owned(),
+            )
+            .build()
+            .await;
+        assert!(require_transfer_identity(Some(&other_account), &expected).is_err());
+        let other_device = server
+            .client_builder()
+            .logged_in_with_token(
+                "test-only".into(),
+                expected.user_id().unwrap().to_owned(),
+                device_id!("OTHER_DEVICE").to_owned(),
+            )
+            .build()
+            .await;
+        assert!(require_transfer_identity(Some(&other_device), &expected).is_err());
     }
 }

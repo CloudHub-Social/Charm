@@ -21,6 +21,12 @@ not first-time **setup** or manual key file I/O.
   are hidden in web builds, even when the flag is enabled. While a transfer is
   pending, Cancel, close, Escape, and outside dismissal cannot hide its dialog;
   dismissal becomes available again after the native command settles.
+  After the picker and before SDK key access, the native command revalidates the
+  active user/device and the feature flag. It uses the current client and holds
+  the client lock until SDK file work finishes, including when the invoking
+  future is dropped. Passphrases enter zeroizing storage before validation or
+  any early return. Real-device iOS file-provider export remains a manual gate;
+  the pinned dialog plugin's save implementation does not consume FileAccessMode.
 - **First-time key backup / 4S setup:** not yet implemented. Existing recovery-key
   restore still covers only accounts whose server-side recovery is already set up.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** not yet
