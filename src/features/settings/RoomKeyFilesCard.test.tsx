@@ -1,7 +1,21 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
-import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
+import { RoomKeyFilesCard as Entry, RoomKeyFilesProvider } from "./RoomKeyFilesCard";
+
+function RoomKeyFilesCard({
+  enabled = true,
+  settingsOpen = true,
+}: {
+  enabled?: boolean;
+  settingsOpen?: boolean;
+}) {
+  return (
+    <RoomKeyFilesProvider enabled={enabled}>
+      {settingsOpen && <Entry enabled={enabled} />}
+    </RoomKeyFilesProvider>
+  );
+}
 
 const exportRoomKeys = vi.fn();
 const importRoomKeys = vi.fn();
@@ -21,6 +35,33 @@ beforeEach(() => {
 });
 
 describe("RoomKeyFilesCard", () => {
+  it("keeps progress and the result visible after the Settings entry unmounts", async () => {
+    let finish!: (value: {
+      completed: boolean;
+      imported_count: number;
+      total_count: number;
+    }) => void;
+    importRoomKeys.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { client, rerender } = renderWithProviders(<RoomKeyFilesCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Import keys" }));
+    fireEvent.change(screen.getByLabelText("Passphrase"), {
+      target: { value: "private-passphrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
+    await waitFor(() => expect(importRoomKeys).toHaveBeenCalledOnce());
+    rerender(wrapWithProviders(<RoomKeyFilesCard settingsOpen={false} />, client));
+    expect(screen.getByRole("button", { name: "Importing…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
+    expect(client.getMutationCache().getAll()).toEqual([]);
+    await act(async () => finish({ completed: true, imported_count: 2, total_count: 2 }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Imported 2 of 2 room keys.");
+    expect(screen.queryByLabelText("Passphrase")).not.toBeInTheDocument();
+    expect(client.getMutationCache().getAll()).toEqual([]);
+  });
   it.each(["", "short"])("accepts an existing import passphrase %j", async (passphrase) => {
     renderWithProviders(<RoomKeyFilesCard />);
     fireEvent.click(screen.getByRole("button", { name: "Import keys" }));

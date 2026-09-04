@@ -20,6 +20,10 @@ not first-time **setup** or manual key file I/O.
   file paths and key material never enter frontend IPC. These native-only controls
   are hidden in web builds, even when the flag is enabled. While a transfer is
   pending, Cancel, close, Escape, and outside dismissal cannot hide its dialog;
+  a session-scoped provider also keeps progress and completion visible across
+  Settings closure, tab changes, and browser Back/hash navigation. Credentials
+  stay in that owner's local state, not query/mutation caches, and are cleared on
+  completion or session teardown. These lifecycle regressions await CI.
   dismissal becomes available again after the native command settles.
   After the picker and before SDK key access, the native command revalidates the
   active user/device and the feature flag. It uses the current client and holds

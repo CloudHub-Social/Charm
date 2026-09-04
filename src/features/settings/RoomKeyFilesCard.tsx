@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { createContext, useContext, useRef, useState, type ReactNode } from "react";
+import { useFeatureFlagPersistenceSettled, useFlag } from "@/featureFlags";
+import { isWebBuild } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,21 +16,41 @@ import { exportRoomKeys, importRoomKeys } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 type TransferMode = "export" | "import";
+const TransferContext = createContext<((mode: TransferMode) => void) | null>(null);
 
-export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
+export function RoomKeyFilesSessionProvider({ children }: { children: ReactNode }) {
+  const enabled = useFlag("crypto_key_files");
+  const settled = useFeatureFlagPersistenceSettled("crypto_key_files");
+  return (
+    <RoomKeyFilesProvider enabled={!isWebBuild() && enabled && settled}>
+      {children}
+    </RoomKeyFilesProvider>
+  );
+}
+
+export function RoomKeyFilesProvider({
+  children,
+  enabled,
+}: {
+  children: ReactNode;
+  enabled: boolean;
+}) {
   const [mode, setMode] = useState<TransferMode | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [result, setResult] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
 
-  const transfer = useMutation({
-    mutationFn: async () => {
-      if (!enabled) throw new Error("Room key transfers are not enabled.");
-      if (mode === "export") return exportRoomKeys(passphrase);
-      if (mode === "import") return importRoomKeys(passphrase);
-      throw new Error("Choose an import or export operation.");
-    },
-    onSuccess: (summary) => {
+  async function startTransfer() {
+    if (!enabled || inFlight.current || !canSubmit || !mode) return;
+    inFlight.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const summary =
+        mode === "export" ? await exportRoomKeys(passphrase) : await importRoomKeys(passphrase);
       if (!summary.completed) return;
       if (
         "imported_count" in summary &&
@@ -42,12 +63,17 @@ export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
         setResult("Encrypted room keys exported successfully.");
       }
       closeDialog();
-    },
-  });
+    } catch {
+      setError("Room key transfer failed. Check the file and passphrase, then retry.");
+    } finally {
+      inFlight.current = false;
+      setPending(false);
+    }
+  }
 
   function openDialog(nextMode: TransferMode) {
-    if (!enabled || transfer.isPending) return;
-    transfer.reset();
+    if (!enabled || inFlight.current) return;
+    setError(null);
     setResult(null);
     setMode(nextMode);
   }
@@ -56,7 +82,7 @@ export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
     setMode(null);
     setPassphrase("");
     setConfirmation("");
-    transfer.reset();
+    setError(null);
   }
 
   const passphraseIsValid =
@@ -66,42 +92,22 @@ export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
     passphraseIsValid && mode !== null && (mode === "import" || confirmation === passphrase);
 
   return (
-    <>
-      {enabled && (
-        <SettingsCard heading="Room key files">
-          <SettingTile>
-            <p className="mb-3 text-sm text-muted-foreground">
-              Import or export encrypted Matrix room keys for manual backup or migration. These
-              files do not replace account recovery or device verification.
-            </p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
-                Import keys
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
-                Export keys
-              </Button>
-            </div>
-            {result && (
-              <output className="mt-3 block text-sm text-muted-foreground">{result}</output>
-            )}
-          </SettingTile>
-        </SettingsCard>
-      )}
+    <TransferContext.Provider value={openDialog}>
+      {children}
 
       <Dialog
         open={mode !== null}
         onOpenChange={(open) => {
-          if (!open && !transfer.isPending) closeDialog();
+          if (!open && !inFlight.current) closeDialog();
         }}
       >
         <DialogContent
-          showCloseButton={!transfer.isPending}
+          showCloseButton={!pending}
           onEscapeKeyDown={(event) => {
-            if (transfer.isPending) event.preventDefault();
+            if (inFlight.current) event.preventDefault();
           }}
           onInteractOutside={(event) => {
-            if (transfer.isPending) event.preventDefault();
+            if (inFlight.current) event.preventDefault();
           }}
         >
           <DialogHeader>
@@ -135,19 +141,17 @@ export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
                 />
               </div>
             )}
-            {transfer.isError && (
-              <p className="text-sm text-destructive">{String(transfer.error)}</p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
           </div>
           <DialogFooter>
-            <Button variant="secondary" onClick={closeDialog} disabled={transfer.isPending}>
+            <Button variant="secondary" onClick={closeDialog} disabled={pending}>
               Cancel
             </Button>
             <Button
-              onClick={() => transfer.mutate()}
-              disabled={!enabled || !canSubmit || transfer.isPending}
+              onClick={() => void startTransfer()}
+              disabled={!enabled || !canSubmit || pending}
             >
-              {transfer.isPending
+              {pending
                 ? mode === "export"
                   ? "Exporting…"
                   : "Importing…"
@@ -158,6 +162,46 @@ export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+      <Dialog
+        open={result !== null}
+        onOpenChange={(open) => {
+          if (!open) setResult(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Room key transfer complete</DialogTitle>
+            <DialogDescription>Keep exported files and their passphrase safe.</DialogDescription>
+          </DialogHeader>
+          <output>{result}</output>
+          <DialogFooter>
+            <Button onClick={() => setResult(null)}>Done</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </TransferContext.Provider>
+  );
+}
+
+export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
+  const openDialog = useContext(TransferContext);
+  if (!enabled || !openDialog) return null;
+  return (
+    <SettingsCard heading="Room key files">
+      <SettingTile>
+        <p className="mb-3 text-sm text-muted-foreground">
+          Import or export encrypted Matrix room keys for manual backup or migration. These files do
+          not replace account recovery or device verification.
+        </p>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
+            Import keys
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
+            Export keys
+          </Button>
+        </div>
+      </SettingTile>
+    </SettingsCard>
   );
 }
