@@ -76,6 +76,10 @@ the imported Windows private-key identity are removed in always-run cleanup
 steps. Missing credentials or failed signature verification blocks publication.
 No new signing identities are generated. Actual signed platform builds remain
 required evidence; PR workflow checks alone do not establish signing readiness.
+The manual `verify_platform_signing` input builds and verifies only Android and
+Windows with these same gates. It uploads CI artifacts but cannot publish a
+GitHub release, even when dispatched against a tag. Use it to validate signing
+before a release cut without creating a version tag.
 
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same
