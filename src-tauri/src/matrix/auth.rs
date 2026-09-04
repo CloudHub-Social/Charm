@@ -2321,8 +2321,8 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
             }
             // RFC 6052's well-known NAT64 prefix is public when the embedded
             // IPv4 destination is public. Blocking the whole /96 breaks
-            // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
-            // prefix remains denied below.
+            // IPv6-only clients. Other addresses in this reserved /32 remain
+            // denied, matching the companion's destination policy.
             if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
                 let v4 = std::net::Ipv4Addr::new(
                     (segments[6] >> 8) as u8,
@@ -2338,7 +2338,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || segments[0] == 0x2002
@@ -3573,6 +3573,8 @@ mod registration_uia_tests {
             "fc00::1",
             "fe80::1",
             "64:ff9b:1::1",
+            "64:ff9b:0:1::8.8.8.8",
+            "64:ff9b:2::8.8.8.8",
             "2001:db8::1",
             "::ffff:127.0.0.1",
             "::127.0.0.1",
