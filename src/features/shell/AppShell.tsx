@@ -83,68 +83,64 @@ export function AppShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoomId, selectionRequestId]);
 
-  if (layout === "desktop") {
-    return (
-      <div className="flex h-[100dvh]">
-        {spaceRail}
-        {roomList}
-        <div ref={contentRef} className="contents">
-          <ChatVisibilityContext.Provider value={chatVisible}>
-            {content}
-          </ChatVisibilityContext.Provider>
-        </div>
-        {rightPanel}
-      </div>
-    );
-  }
-
   return (
-    <div className="flex h-[100dvh] flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
-        {/* Keep admitted uploads owned across list/detail navigation. */}
-        <div
-          ref={contentRef}
-          hidden={mobileView !== "detail" || !activeRoomId || rightPanel !== null}
-          className="[&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
-        >
-          <ChatVisibilityContext.Provider value={chatVisible}>
-            {content}
-          </ChatVisibilityContext.Provider>
-        </div>
-        {mobileView === "detail" && activeRoomId ? (
+    <div className={layout === "desktop" ? "flex h-[100dvh]" : "flex h-[100dvh] flex-col"}>
+      {layout === "desktop" && spaceRail}
+      {layout === "desktop" && roomList}
+      {/* This keyed owner stays in the same parent across breakpoints so a
+          rotation cannot abort admitted attachment or voice uploads. */}
+      <div
+        key="chat-content"
+        ref={contentRef}
+        hidden={
+          layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null)
+        }
+        className={
+          layout === "desktop"
+            ? "contents"
+            : "h-full min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
+        }
+      >
+        <ChatVisibilityContext.Provider value={chatVisible}>
+          {content}
+        </ChatVisibilityContext.Provider>
+      </div>
+      {layout === "desktop" && rightPanel}
+      {layout === "mobile" &&
+        (mobileView === "detail" && activeRoomId ? (
           rightPanel
         ) : (
-          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
+          <div className="flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
             {spaceRail}
             {roomList}
           </div>
+        ))}
+      {layout === "mobile" &&
+        (!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
+          <nav
+            className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+            aria-label="Primary"
+          >
+            <button
+              type="button"
+              aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+              onClick={() => onMobileViewChange("list")}
+            >
+              <MessageSquare className="size-5" aria-hidden="true" />
+              Chats
+            </button>
+            <button
+              type="button"
+              aria-current={isSettingsActive ? "page" : undefined}
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+              onClick={() => openSettings("account")}
+            >
+              <SettingsIcon className="size-5" aria-hidden="true" />
+              Settings
+            </button>
+          </nav>
         )}
-      </div>
-      {(!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
-        <nav
-          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
-          aria-label="Primary"
-        >
-          <button
-            type="button"
-            aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
-            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
-            onClick={() => onMobileViewChange("list")}
-          >
-            <MessageSquare className="size-5" aria-hidden="true" />
-            Chats
-          </button>
-          <button
-            type="button"
-            aria-current={isSettingsActive ? "page" : undefined}
-            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
-            onClick={() => openSettings("account")}
-          >
-            <SettingsIcon className="size-5" aria-hidden="true" />
-            Settings
-          </button>
-        </nav>
-      )}
     </div>
   );
 }

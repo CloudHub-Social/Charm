@@ -189,6 +189,37 @@ describe("AppShell", () => {
     expect(disposed).toHaveBeenCalledOnce();
   });
 
+  it("retains the upload owner across desktop and mobile breakpoints", () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    const disposed = vi.fn();
+    function UploadOwner() {
+      useEffect(() => () => disposed(), []);
+      return <div>breakpoint-upload-owner</div>;
+    }
+    const props = {
+      spaceRail: <div>spaces</div>,
+      roomList: <div>rooms</div>,
+      content: <UploadOwner />,
+      rightPanel: null,
+      activeRoomId: "!room:example.org",
+      selectionRequestId: 0,
+      mobileView: "detail" as const,
+      onMobileViewChange: vi.fn(),
+    };
+    const view = render(<AppShell {...props} />);
+
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    view.rerender(<AppShell {...props} />);
+    expect(screen.getByText("breakpoint-upload-owner")).toBeVisible();
+    expect(disposed).not.toHaveBeenCalled();
+
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    view.rerender(<AppShell {...props} />);
+    expect(disposed).not.toHaveBeenCalled();
+    view.unmount();
+    expect(disposed).toHaveBeenCalledOnce();
+  });
+
   beforeEach(() => {
     mockUseFlag.mockReturnValue(true);
   });
