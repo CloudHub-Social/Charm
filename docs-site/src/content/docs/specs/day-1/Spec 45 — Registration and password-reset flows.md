@@ -55,7 +55,9 @@ the server reports that the outcome may be uncertain, disables automatic HTTP
 retries, and does not restore the attempt for another submission. Secret-free,
 browser-owner-bound receipts retain that distinction for twenty minutes, including
 after completion or request disconnection. Receipt capacity is bounded and new
-dispatches fail closed instead of evicting unexpired evidence. This does not
+dispatches fail closed instead of evicting unexpired evidence. Receipt-capacity
+rejection before dispatch preserves the unexpired, uncancelled attempt for retry.
+This does not
 prove whether a homeserver applied an already-dispatched password change.
 
 Homeserver `.well-known` discovery is read as a bounded stream: an oversized
@@ -268,6 +270,8 @@ homeservers. The parity audit (2026-07-13) found:
   addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
   `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
   do not infer its destination from the final 32 bits.
+  Email-submission destinations use the same NAT64 embedded-address policy,
+  including denial of translated private, loopback, and metadata-service addresses.
 
 ### Password reset
 
@@ -290,6 +294,28 @@ homeservers. The parity audit (2026-07-13) found:
   Matrix client; tests cover abandoned and quota-permitted attempt accumulation.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
+- Native cancellation and commitment to irreversible password-change dispatch
+  share an atomic state transition. If cancellation wins, no request is dispatched;
+  if dispatch wins, cancellation reports that it cannot undo the request, even
+  before the network future is first polled. Charm awaits the request's result.
+  Dispatch is single-use and disables automatic network retries. A post-dispatch
+  failure is uncertain, never restores the pending attempt, and uses the same
+  acknowledged warning as the web companion. Failures before dispatch may retry.
+  A bounded attempt-status record remains after completion until the next attempt;
+  a late cancellation cannot claim it prevented a completed password change.
+  Unknown or superseded attempt IDs likewise cannot claim prevention.
+  The recovery UI waits for cancellation before dismissing the form. If cancellation
+  cannot be confirmed, it clears sensitive inputs and shows an explicit warning
+  that the password may still change, with an acknowledged return to sign-in.
+  A confirmation response explicitly reporting uncertain dispatch uses this same
+  terminal warning, clears sensitive inputs, and does not offer to retry the
+  consumed attempt. Returning to sign-in acknowledges it without another cancel.
+  Disabling the recovery feature flag uses the same awaited cancellation path;
+  it stops new recovery entry without hiding an uncertain dispatched change or
+  an already acknowledged backend result. Only the user's return action dismisses
+  the terminal warning or completion screen.
+  Unauthenticated recovery networking classifies both IPv4-mapped and legacy
+  IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
   caps resends for an attempt, and honors upstream retry intervals before sending
   another homeserver request. Raw email addresses never become quota-map keys,
@@ -491,6 +517,18 @@ authorization boundaries.
 Completed web registration adopts the nested session returned by either the begin
 or continue endpoint and resumes live WebSocket events after an empty restore.
 Intermediate registration challenges do not resume an authenticated transport.
+
+Password-reset cancellation remains available after the recovery rollout is
+disabled, with the companion still requiring the pre-auth owner cookie. Closing
+an empty recovery form or disabling recovery without an active request must not
+cancel an older, acknowledged reset or display dispatch uncertainty. In-flight
+discovery and issued attempts retain cancellation and late-result cleanup.
+The first web setup response may not yet have supplied an owner cookie. A failed
+owner-only cancellation during that initial email request does not imply password
+dispatch: the UI closes and cancels the late attempt by ID when it arrives.
+Cancellation failures for issued attempts retain the conservative uncertainty warning.
+An idle recovery rollout change must not clear another sign-in operation's busy
+state or error feedback.
 
 ## Testing strategy
 

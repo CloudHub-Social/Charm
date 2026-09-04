@@ -88,6 +88,8 @@ const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_
 const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const PASSWORD_RESET_UNCERTAIN: &str =
+    "password reset may already have been submitted; check whether your new password works";
 const PASSWORD_RESET_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const PASSWORD_RESET_MAX_SEND_ATTEMPTS: u32 = 3;
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -286,6 +288,52 @@ struct PendingRegistrationEmail {
     submit_url: Option<url::Url>,
     homeserver: url::Url,
     submitted: bool,
+}
+
+/// Cancellation and commitment to password mutation share one atomic order.
+/// Bit 0 means cancelled; bit 1 means a mutation may have been dispatched.
+#[derive(Clone, Default)]
+pub(crate) struct PasswordResetCancellation {
+    token: tokio_util::sync::CancellationToken,
+    phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl PasswordResetCancellation {
+    fn cancel(&self) -> bool {
+        let previous = self.phase.fetch_or(1, std::sync::atomic::Ordering::SeqCst);
+        self.token.cancel();
+        previous & 2 == 0
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.phase.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+    }
+
+    fn was_dispatched(&self) -> bool {
+        self.phase.load(std::sync::atomic::Ordering::SeqCst) & 2 != 0
+    }
+
+    async fn cancelled(&self) {
+        self.token.cancelled().await;
+    }
+
+    fn commit_dispatch(&self) -> Result<(), String> {
+        self.phase
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .map(|_| ())
+            .map_err(|phase| {
+                if phase & 2 != 0 {
+                    PASSWORD_RESET_UNCERTAIN.to_string()
+                } else {
+                    "password reset attempt expired or was cancelled".to_string()
+                }
+            })
+    }
 }
 
 pub(crate) struct PendingPasswordReset {
@@ -1871,7 +1919,7 @@ pub async fn request_password_reset(
     let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
     state.pending_password_reset.lock().await.take();
     let attempt_id = generate_attempt_id();
-    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancellation = PasswordResetCancellation::default();
     let previous_cancellation = state
         .pending_password_reset_cancel
         .lock()
@@ -2095,7 +2143,7 @@ pub async fn resend_password_reset(
 async fn restore_pending_password_reset(
     state: &MatrixState,
     attempt_id: &str,
-    cancellation: &tokio_util::sync::CancellationToken,
+    cancellation: &PasswordResetCancellation,
     pending: PendingPasswordReset,
 ) -> bool {
     let mut guard = state.pending_password_reset.lock().await;
@@ -2258,18 +2306,21 @@ pub async fn confirm_password_reset(
     // not race that irreversible request against cancellation and then
     // report that nothing happened; the frontend operation token will
     // ignore this result if the user has already closed the surface.
-    let result = complete_password_reset(&mut pending, token.as_deref(), new_password).await;
+    let result =
+        complete_password_reset(&mut pending, token.as_deref(), new_password, &cancellation).await;
     if result.is_err() {
         let mut guard = state.pending_password_reset.lock().await;
         if !cancellation.is_cancelled()
+            && !cancellation.was_dispatched()
             && guard.is_none()
             && pending.created_at.elapsed() <= PASSWORD_RESET_ATTEMPT_TTL
         {
             *guard = Some(pending);
         }
-    } else {
-        clear_password_reset_cancellation(&state, &attempt_id);
     }
+    // Retain this one bounded status record after success: a racing cancel
+    // must still observe that dispatch won. It contains no password/client
+    // and is replaced by the next attempt.
     result
 }
 
@@ -2299,8 +2350,11 @@ pub async fn cancel_password_reset(
     {
         guard.take();
     }
-    cancel_password_reset_cancellation(&state, &attempt_id);
-    Ok(())
+    if cancel_password_reset_cancellation(&state, &attempt_id) {
+        Ok(())
+    } else {
+        Err("password change may already be in progress; cancellation cannot undo it".to_string())
+    }
 }
 
 fn sanitize_password_reset_submit_url(
@@ -2373,10 +2427,11 @@ async fn complete_password_reset(
     pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
+    cancellation: &PasswordResetCancellation,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
         if pending.token_submitted {
-            return complete_password_change(pending, new_password).await;
+            return complete_password_change(pending, new_password, cancellation).await;
         }
         let token = token
             .filter(|token| !token.is_empty())
@@ -2394,12 +2449,13 @@ async fn complete_password_reset(
         pending.token_submitted = true;
     }
 
-    complete_password_change(pending, new_password).await
+    complete_password_change(pending, new_password, cancellation).await
 }
 
 async fn complete_password_change(
     pending: &PendingPasswordReset,
     new_password: String,
+    cancellation: &PasswordResetCancellation,
 ) -> Result<(), String> {
     let thirdparty_id_creds =
         ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());
@@ -2409,13 +2465,16 @@ async fn complete_password_change(
     .map_err(|_| "could not confirm password reset".to_string())?;
     let mut request = change_password::v3::Request::new(new_password);
     request.auth = Some(AuthData::EmailIdentity(email_identity));
+    // Commit atomically before polling the irreversible request. Cancellation
+    // either wins and prevents dispatch, or reports that it cannot undo it.
+    cancellation.commit_dispatch()?;
     pending
         .client
         .send(request)
-        .with_request_config(RequestConfig::new().skip_auth())
+        .with_request_config(RequestConfig::new().skip_auth().retry_limit(0))
         .await
         .map(|_| ())
-        .map_err(|_| "could not confirm password reset".to_string())
+        .map_err(|_| PASSWORD_RESET_UNCERTAIN.to_string())
 }
 
 async fn email_validation_submission_client(
@@ -2490,10 +2549,22 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // IPv4-compatible IPv6 addresses (`::a.b.c.d`) are distinct from
+            // mapped addresses and are not covered by `to_ipv4_mapped`.
+            // Classify their embedded destination with the same deny list.
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let compatible = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(compatible.into());
+            }
             // RFC 6052's well-known NAT64 prefix is public when the embedded
             // IPv4 destination is public. Blocking the whole /96 breaks
-            // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
-            // prefix remains denied below.
+            // IPv6-only clients. Other addresses in this reserved /32 remain
+            // denied, matching the companion's destination policy.
             if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
                 let v4 = std::net::Ipv4Addr::new(
                     (segments[6] >> 8) as u8,
@@ -2509,7 +2580,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || segments[0] == 0x2002
@@ -2552,19 +2623,15 @@ fn clear_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
     }
 }
 
-fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
-    let mut guard = state
+fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) -> bool {
+    let guard = state
         .pending_password_reset_cancel
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if guard
+    guard
         .as_ref()
-        .is_some_and(|(current_id, _)| current_id == attempt_id)
-    {
-        if let Some((_, cancellation)) = guard.take() {
-            cancellation.cancel();
-        }
-    }
+        .filter(|(current_id, _)| current_id == attempt_id)
+        .is_some_and(|(_, cancellation)| cancellation.cancel())
 }
 
 #[tauri::command]
@@ -3796,8 +3863,12 @@ mod registration_uia_tests {
             "fc00::1",
             "fe80::1",
             "64:ff9b:1::1",
+            "64:ff9b:0:1::8.8.8.8",
+            "64:ff9b:2::8.8.8.8",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::10.0.0.1",
         ] {
             assert!(
                 !is_public_network_ip(address.parse().expect("valid IP")),
@@ -3809,6 +3880,9 @@ mod registration_uia_tests {
         ));
         assert!(is_public_network_ip(
             "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
+        assert!(is_public_network_ip(
+            "::8.8.8.8".parse().expect("valid compatible public IP")
         ));
     }
 
@@ -3932,9 +4006,170 @@ mod registration_uia_tests {
             attempt_id: "opaque".to_owned(),
             created_at: std::time::Instant::now(),
         };
-        complete_password_reset(&mut pending, Some("123456"), "new correct horse".to_owned())
-            .await
-            .expect("password reset completes");
+        complete_password_reset(
+            &mut pending,
+            Some("123456"),
+            "new correct horse".to_owned(),
+            &super::PasswordResetCancellation::default(),
+        )
+        .await
+        .expect("password reset completes");
+    }
+
+    #[tokio::test]
+    async fn cancelled_password_reset_stops_before_password_change_dispatch() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: true,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(cancellation.cancel());
+
+        let error = complete_password_reset(
+            &mut pending,
+            None,
+            "new correct horse".to_owned(),
+            &cancellation,
+        )
+        .await
+        .expect_err("cancelled attempt must not dispatch password change");
+
+        assert_eq!(error, "password reset attempt expired or was cancelled");
+    }
+
+    #[test]
+    fn password_reset_cancellation_cannot_claim_success_after_dispatch_commit() {
+        let cancellation = super::PasswordResetCancellation::default();
+        cancellation.commit_dispatch().expect("dispatch committed");
+        // The network future has not even been polled yet. Cancellation must
+        // already report uncertainty, including on repeated cancellation.
+        assert!(!cancellation.cancel());
+        assert!(!cancellation.cancel());
+        assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn password_reset_dispatch_can_only_be_committed_once() {
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(!cancellation.was_dispatched());
+        cancellation.commit_dispatch().unwrap();
+        assert!(cancellation.was_dispatched());
+        assert_eq!(
+            cancellation.commit_dispatch(),
+            Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_password_change_reports_uncertainty_without_retrying() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "errcode": "M_UNKNOWN", "error": "response lost after mutation"
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: false,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = super::PasswordResetCancellation::default();
+        for _ in 0..2 {
+            assert_eq!(
+                complete_password_reset(
+                    &mut pending,
+                    None,
+                    "new correct horse".to_owned(),
+                    &cancellation
+                )
+                .await,
+                Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+            );
+        }
+        assert!(cancellation.was_dispatched());
+        assert!(!cancellation.cancel());
+    }
+
+    #[test]
+    fn password_reset_cancellation_wins_before_dispatch_commit() {
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(cancellation.cancel());
+        assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn completed_or_unknown_reset_cannot_report_prevented_dispatch() {
+        let state = super::MatrixState::default();
+        let cancellation = super::PasswordResetCancellation::default();
+        cancellation.commit_dispatch().unwrap();
+        *state.pending_password_reset_cancel.lock().unwrap() =
+            Some(("completed".to_owned(), cancellation));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state, "unknown"
+        ));
+        super::clear_password_reset_cancellation(&state, "completed");
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+    }
+
+    #[test]
+    fn cancellation_before_dispatch_remains_idempotent() {
+        let state = super::MatrixState::default();
+        *state.pending_password_reset_cancel.lock().unwrap() = Some((
+            "pending".to_owned(),
+            super::PasswordResetCancellation::default(),
+        ));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
+    }
+
+    #[test]
+    fn password_reset_dispatch_and_cancel_have_one_winner() {
+        let cancellation = super::PasswordResetCancellation::default();
+        let worker = cancellation.clone();
+        let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            dispatch_tx.send(worker.commit_dispatch().is_ok()).unwrap();
+        });
+        let prevented_dispatch = cancellation.cancel();
+        let dispatched = dispatch_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("dispatch decision completes within the watchdog");
+        handle.join().expect("dispatch worker completes");
+        assert_ne!(prevented_dispatch, dispatched);
     }
 }
 

@@ -1009,6 +1009,65 @@ describe("LoginScreen password recovery", () => {
       "new correct horse",
     );
     expect(screen.getByText("Password updated")).toBeVisible();
+    const cancellationCount = cancelPasswordReset.mock.calls.length;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to sign in" }));
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+    // Reopening an empty form must not cancel the acknowledged backend record.
+    cancelPasswordReset.mockRejectedValue(new Error("previous reset already dispatched"));
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+  });
+
+  it.each([false, true])(
+    "does not cancel idle recovery on flag disable (form open: %s)",
+    async (openForm) => {
+      const onSignedIn = vi.fn();
+      const { rerender, unmount } = render(<LoginScreen onSignedIn={onSignedIn} />);
+      await discoverLoginChoices();
+      if (openForm) fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+      const cancellationCount = cancelPasswordReset.mock.calls.length;
+      cancelPasswordReset.mockRejectedValue(new Error("recovery disabled"));
+      featureFlags.registrationEnabled = false;
+      rerender(<LoginScreen onSignedIn={onSignedIn} />);
+      expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+      expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Password")).toBeVisible();
+      unmount();
+      expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    },
+  );
+
+  it("does not release a pending sign-in when recovery is disabled", async () => {
+    let finishLogin: ((session: LoginResponse) => void) | undefined;
+    login.mockReturnValue(
+      new Promise<LoginResponse>((resolve) => {
+        finishLogin = resolve;
+      }),
+    );
+    const onSignedIn = vi.fn();
+    const { rerender } = render(<LoginScreen onSignedIn={onSignedIn} />);
+    await discoverLoginChoices();
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    featureFlags.registrationEnabled = false;
+    rerender(<LoginScreen onSignedIn={onSignedIn} />);
+    expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    expect(cancelPasswordReset).not.toHaveBeenCalled();
+    expect(login).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishLogin?.(fakeSession());
+    });
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
   });
 
   it("shows the same pre-verification state for an opaque rejected recovery request", async () => {
@@ -1031,33 +1090,44 @@ describe("LoginScreen password recovery", () => {
     expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
   });
 
-  it("cancels a late opaque recovery attempt after closing a pending request", async () => {
-    let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
-    requestPasswordReset.mockReturnValue(
-      new Promise<PasswordResetChallenge>((resolve) => {
-        resolveRequest = resolve;
-      }),
-    );
-    render(<LoginScreen onSignedIn={vi.fn()} />);
-    await discoverLoginChoices();
+  it.each([false, true])(
+    "cleans up late setup after closing, even if early cancellation fails (%s)",
+    async (cancelFails) => {
+      let resolveRequest: ((challenge: PasswordResetChallenge) => void) | undefined;
+      requestPasswordReset.mockReturnValue(
+        new Promise<PasswordResetChallenge>((resolve) => {
+          resolveRequest = resolve;
+        }),
+      );
+      if (cancelFails) {
+        cancelPasswordReset.mockRejectedValueOnce(new Error("pre-auth owner cookie missing"));
+      }
+      render(<LoginScreen onSignedIn={vi.fn()} />);
+      await discoverLoginChoices();
 
-    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "alice@example.org" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
-    expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
+      fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "alice@example.org" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      });
+      expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+      expect(cancelPasswordReset).toHaveBeenCalledWith(undefined);
+      expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+      expect(confirmPasswordReset).not.toHaveBeenCalled();
 
-    await act(async () => {
-      // Attempt IDs are opaque. Even a value resembling the obsolete
-      // synthetic-unavailable prefix must be returned to the backend for cleanup.
-      resolveRequest?.({ attempt_id: "unavailable-late-attempt", requires_token: false });
-      await Promise.resolve();
-    });
-    expect(cancelPasswordReset).toHaveBeenCalledWith("unavailable-late-attempt");
-  });
+      await act(async () => {
+        // Attempt IDs are opaque. Even a value resembling the obsolete
+        // synthetic-unavailable prefix must be returned to the backend for cleanup.
+        resolveRequest?.({ attempt_id: "unavailable-late-attempt", requires_token: false });
+        await Promise.resolve();
+      });
+      expect(cancelPasswordReset).toHaveBeenCalledWith("unavailable-late-attempt");
+      expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    },
+  );
 
   it("cancels password-reset discovery when the login screen unmounts", async () => {
     requestPasswordReset.mockReturnValue(new Promise<PasswordResetChallenge>(() => {}));
@@ -1091,10 +1161,107 @@ describe("LoginScreen password recovery", () => {
     });
     expect(screen.getByLabelText("Email token (if provided)")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
 
     expect(cancelPasswordReset).toHaveBeenCalledWith("token-attempt");
     expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+  });
+
+  it.each(["cancel button", "feature flag"])(
+    "preserves dispatch uncertainty after %s cancellation",
+    async (cause) => {
+      requestPasswordReset.mockResolvedValue({ attempt_id: "reset-attempt", requires_token: true });
+      let finishConfirmation: (() => void) | undefined;
+      confirmPasswordReset.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finishConfirmation = resolve;
+        }),
+      );
+      const onSignedIn = vi.fn();
+      const { rerender } = render(<LoginScreen onSignedIn={onSignedIn} />);
+      await discoverLoginChoices();
+      fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+      fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.org" } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+      });
+      fireEvent.change(screen.getByLabelText("New password"), {
+        target: { value: "new correct horse" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+      let rejectCancellation: ((error: Error) => void) | undefined;
+      cancelPasswordReset.mockReturnValueOnce(
+        new Promise<void>((_, reject) => {
+          rejectCancellation = reject;
+        }),
+      );
+      if (cause === "feature flag") {
+        featureFlags.registrationEnabled = false;
+        rerender(<LoginScreen onSignedIn={onSignedIn} />);
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      }
+      expect(screen.queryByRole("button", { name: "Forgot password?" })).not.toBeInTheDocument();
+      await act(async () => {
+        rejectCancellation?.(new Error("private backend detail"));
+        finishConfirmation?.();
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("Your password may still change");
+      expect(screen.queryByText("Password updated")).not.toBeInTheDocument();
+      expect(screen.queryByText("private backend detail")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+      const cancellationCount = cancelPasswordReset.mock.calls.length;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Return to sign in" }));
+      });
+      expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+      if (cause === "feature flag") {
+        expect(screen.queryByRole("button", { name: "Forgot password?" })).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Password")).toBeVisible();
+      } else {
+        expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+      }
+    },
+  );
+
+  it("shows an acknowledged uncertain outcome when confirmation loses its response", async () => {
+    requestPasswordReset.mockResolvedValue({ attempt_id: "reset-attempt", requires_token: true });
+    confirmPasswordReset.mockRejectedValueOnce(
+      new Error(
+        "password reset may already have been submitted; check whether your new password works",
+      ),
+    );
+    const onSignedIn = vi.fn();
+    const { rerender } = render(<LoginScreen onSignedIn={onSignedIn} />);
+    await discoverLoginChoices();
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.org" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send recovery email" }));
+    });
+    fireEvent.change(screen.getByLabelText("New password"), {
+      target: { value: "new correct horse" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Your password may still change");
+    expect(screen.queryByRole("button", { name: "Reset password" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
+    expect(screen.queryByText("Password updated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Verify the email step/)).not.toBeInTheDocument();
+    const cancellationCount = cancelPasswordReset.mock.calls.length;
+    featureFlags.registrationEnabled = false;
+    rerender(<LoginScreen onSignedIn={onSignedIn} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Your password may still change");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to sign in" }));
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(confirmPasswordReset).toHaveBeenCalledTimes(1);
   });
 
   it("returns to the request step after a password-reset attempt expires", async () => {
