@@ -1182,15 +1182,19 @@ impl MatrixState {
     }
 
     /// Reattach listeners to the same views (including event-focused views).
-    /// The caller holds the login completion lock and has restored the client.
+    /// The caller holds the login completion lock. Publish the client only
+    /// inside lifecycle exclusion so new room opens cannot overtake rollback.
     pub(crate) async fn restore_timeline_snapshot(
         &self,
+        client: &Client,
         snapshot: Vec<TimelineRollbackEntry>,
         mut spawn_listener: impl FnMut(
             &matrix_sdk::ruma::RoomId,
             &std::sync::Arc<matrix_sdk_ui::Timeline>,
         ) -> tokio::task::JoinHandle<()>,
     ) {
+        let _lifecycle = self.timeline_lifecycle.write().await;
+        *self.client.lock().await = Some(client.clone());
         let mut timelines = self.timelines.lock().await;
         let mut evicted_handles = Vec::new();
         for (room_id, timeline, focused) in snapshot {
@@ -1380,9 +1384,12 @@ mod tests {
 
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let mut started_tx = Some(started_tx);
-            *state.client.lock().await = Some(client.clone());
-            state
-                .restore_timeline_snapshot(snapshot, |restored_room, restored_timeline| {
+            let room_open = state.timeline_lifecycle.read().await;
+            let restore = state.restore_timeline_snapshot(
+                &client,
+                snapshot,
+                |restored_room, restored_timeline| {
+                    assert!(state.timeline_lifecycle.try_read().is_err());
                     assert_eq!(restored_room, room_id);
                     assert!(std::sync::Arc::ptr_eq(restored_timeline, &timeline));
                     let started_tx = started_tx.take().expect("one replacement listener");
@@ -1390,8 +1397,17 @@ mod tests {
                         let _ = started_tx.send(());
                         std::future::pending::<()>().await;
                     })
-                })
-                .await;
+                },
+            );
+            tokio::pin!(restore);
+            tokio::select! {
+                biased;
+                _ = &mut restore => panic!("restore passed an in-flight room open"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(state.client.lock().await.is_none());
+            drop(room_open);
+            restore.await;
             started_rx.await.expect("replacement listener runs");
             {
                 let entries = state.timelines.lock().await;
@@ -1403,7 +1419,7 @@ mod tests {
             // A concurrent room-open replacement must not gain a second listener.
             let snapshot = state.snapshot_timelines_for_rollback().await;
             state
-                .restore_timeline_snapshot(snapshot, |_, _| panic!("duplicate listener"))
+                .restore_timeline_snapshot(&client, snapshot, |_, _| panic!("duplicate listener"))
                 .await;
             state.clear_timelines().await;
         }

@@ -337,6 +337,13 @@ session before touching the cache. Regression coverage exercises a temporarily
 removed entry and requires teardown to wait for its return. This closes the
 identified capture gap in code; combined CI and real-client verification remain
 pending.
+Rollback also holds exclusive timeline lifecycle access before republishing the
+prior client and throughout listener restoration. New room opens cannot enter
+between those operations and displace the newly restored views. Logout attempts
+both Matrix and OAuth credential deletions even if its durable marker cannot be
+written; failures remain errors rather than claims of durable cleanup. Regression
+coverage for these failure boundaries requires GitHub Actions verification.
+
 If callback exchange already
 authenticated a device, cancellation attempts Matrix logout with the bounded
 auth-network timeout before discarding the temporary local store. Offline or

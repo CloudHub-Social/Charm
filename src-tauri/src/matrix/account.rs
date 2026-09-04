@@ -288,15 +288,11 @@ async fn clear_local_session_locked(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    let mut credential_error = tombstone_result.err();
-    if credential_error.is_none() {
-        if let Err(error) = persistence::clear_session(&account_key) {
-            credential_error = Some(error);
-        }
-        if let Err(error) = persistence::clear_oauth_session(&account_key) {
-            credential_error.get_or_insert(error);
-        }
-    }
+    let mut credential_error = clear_logout_credentials(
+        tombstone_result,
+        || persistence::clear_session(&account_key),
+        || persistence::clear_oauth_session(&account_key),
+    );
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -967,6 +963,22 @@ pub async fn deactivate_account(
     cleanup_result.map_err(UiaCommandError::from)
 }
 
+// Marker persistence and both credential stores are independent cleanup
+// opportunities. A filesystem failure must not skip working keychain deletion.
+fn clear_logout_credentials(
+    marker: Result<(), String>,
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+) -> Option<String> {
+    let mut error = marker.err();
+    for result in [clear_matrix(), clear_oauth()] {
+        if let Err(failure) = result {
+            error.get_or_insert(failure);
+        }
+    }
+    error
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -975,6 +987,33 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn failed_logout_marker_still_attempts_both_credential_deletions() {
+        let matrix_cleared = std::cell::Cell::new(false);
+        let oauth_cleared = std::cell::Cell::new(false);
+        let result = clear_logout_credentials(
+            Err("marker unavailable".into()),
+            || {
+                matrix_cleared.set(true);
+                Err("matrix keychain unavailable".into())
+            },
+            || {
+                oauth_cleared.set(true);
+                Ok(())
+            },
+        );
+        assert!(matrix_cleared.get() && oauth_cleared.get());
+        assert_eq!(result.as_deref(), Some("marker unavailable"));
+    }
+
+    #[test]
+    fn logout_reports_credential_failure_even_with_a_durable_marker() {
+        assert_eq!(
+            clear_logout_credentials(Ok(()), || Ok(()), || Err("oauth unavailable".into())),
+            Some("oauth unavailable".into())
+        );
+    }
 
     #[tokio::test]
     async fn wipe_revoke_completes_the_remote_logout_when_available() {

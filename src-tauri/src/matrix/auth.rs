@@ -3845,17 +3845,20 @@ pub async fn complete_sso_login(
     // loop was draining, restore that loop and leave the prior client current.
     if pending.cancellation.is_cancelled() {
         if let Some(previous_client) = previous_client.as_ref() {
-            *state.client.lock().await = Some(previous_client.clone());
             state
-                .restore_timeline_snapshot(previous_timelines, |room_id, timeline| {
-                    super::timeline::spawn_timeline_listener(
-                        app.clone(),
-                        room_id.to_owned(),
-                        std::sync::Arc::downgrade(timeline),
-                        previous_client.clone(),
-                        previous_client.user_id().map(ToOwned::to_owned),
-                    )
-                })
+                .restore_timeline_snapshot(
+                    previous_client,
+                    previous_timelines,
+                    |room_id, timeline| {
+                        super::timeline::spawn_timeline_listener(
+                            app.clone(),
+                            room_id.to_owned(),
+                            std::sync::Arc::downgrade(timeline),
+                            previous_client.clone(),
+                            previous_client.user_id().map(ToOwned::to_owned),
+                        )
+                    },
+                )
                 .await;
             sync::spawn_sync_task(app.clone(), previous_client.clone());
         }
