@@ -224,6 +224,7 @@ pub struct Session {
     /// same first page. Caching per-room here, scoped to this session (never
     /// shared across sessions, keeping the same "session A can't see
     /// session B's state" isolation every other field on `Session` has).
+    pub recovery_setup_lock: Mutex<()>,
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, Arc<Timeline>>>,
     /// Most recently requested historical jump per room. A slower earlier
     /// `/context` response must not replace the timeline selected by a newer
@@ -580,6 +581,7 @@ impl Session {
                 charm_lib::matrix::presence::PresenceStateDto::default(),
             )),
             sync_handle: std::sync::Mutex::new(None),
+            recovery_setup_lock: Mutex::new(()),
             timelines: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),

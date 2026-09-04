@@ -248,6 +248,7 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
+    super::recovery_custody::clear_native_pending(&account_key)?;
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
 

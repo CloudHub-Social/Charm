@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { setupRecovery } from "@/lib/matrix";
+import { acknowledgeRecoverySetup, getPendingRecoverySetup, setupRecovery } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
@@ -28,6 +28,11 @@ export function RecoverySetupCard({
   const queryClient = useQueryClient();
   // Do not place credentials in TanStack's mutation variables/data cache.
   const setupInFlight = useRef(false);
+  const requestGeneration = useRef(0);
+  const acknowledgementInFlight = useRef(false);
+  const [acknowledging, setAcknowledging] = useState(false);
+  const [acknowledgementError, setAcknowledgementError] = useState<string | null>(null);
+  const [pendingReadError, setPendingReadError] = useState(false);
   const [setupPending, setSetupPending] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -37,6 +42,23 @@ export function RecoverySetupCard({
   const [roomKeysBackedUp, setRoomKeysBackedUp] = useState(true);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const generation = requestGeneration.current;
+    void getPendingRecoverySetup()
+      .then((summary) => {
+        if (!active || generation !== requestGeneration.current || !summary) return;
+        setRecoveryKey(summary.recovery_key);
+        setRoomKeysBackedUp(summary.room_keys_backed_up);
+      })
+      .catch(() => {
+        if (active && generation === requestGeneration.current) setPendingReadError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const hasPassphrase = passphrase.length > 0;
   const passphraseValid =
@@ -48,6 +70,8 @@ export function RecoverySetupCard({
   async function startSetup() {
     if (!enabled || setupInFlight.current || !passphraseValid || !crossSigningReady) return;
     setupInFlight.current = true;
+    requestGeneration.current += 1;
+    setPendingReadError(false);
     setSetupPending(true);
     setSetupError(null);
     try {
@@ -73,13 +97,25 @@ export function RecoverySetupCard({
     setSetupError(null);
   }
 
-  function finish() {
-    if (!saved) return;
-    setRecoveryKey(null);
-    setSaved(false);
-    setCopied(false);
-    setRoomKeysBackedUp(true);
-    void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
+  async function finish() {
+    if (!saved || !recoveryKey || acknowledgementInFlight.current) return;
+    acknowledgementInFlight.current = true;
+    setAcknowledging(true);
+    setAcknowledgementError(null);
+    try {
+      await acknowledgeRecoverySetup(recoveryKey);
+      requestGeneration.current += 1;
+      setRecoveryKey(null);
+      setSaved(false);
+      setCopied(false);
+      setRoomKeysBackedUp(true);
+      void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
+    } catch {
+      setAcknowledgementError("Could not acknowledge your saved key. Keep it safe and try again.");
+    } finally {
+      acknowledgementInFlight.current = false;
+      setAcknowledging(false);
+    }
   }
 
   function copyRecoveryKey() {
@@ -92,6 +128,11 @@ export function RecoverySetupCard({
 
   return (
     <>
+      {pendingReadError && (
+        <p role="alert">
+          Could not reopen pending recovery. Reopen Settings when online before signing out.
+        </p>
+      )}
       {enabled && recoveryDisabled && (
         <SettingsCard heading="Recovery">
           <SettingTile>
@@ -165,15 +206,16 @@ export function RecoverySetupCard({
       <Dialog
         open={recoveryKey !== null}
         onOpenChange={(open) => {
-          if (!open) finish();
+          if (!open) void finish();
         }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Save your recovery key</DialogTitle>
             <DialogDescription>
-              Store this somewhere safe and separate from this device. Charm cannot recover it for
-              you after this window closes.
+              Store this somewhere safe and separate from this device. Until you confirm, Charm
+              retains a protected pending copy across app or page restarts. Save it before signing
+              out or removing this device's data.
             </DialogDescription>
           </DialogHeader>
           <pre className="overflow-x-auto rounded-md border border-border bg-muted p-3 text-sm whitespace-pre-wrap">
@@ -201,7 +243,8 @@ export function RecoverySetupCard({
             I saved this recovery key somewhere safe.
           </label>
           <DialogFooter>
-            <Button onClick={finish} disabled={!saved}>
+            {acknowledgementError && <p role="alert">{acknowledgementError}</p>}
+            <Button onClick={() => void finish()} disabled={!saved || acknowledging}>
               Done
             </Button>
           </DialogFooter>

@@ -234,7 +234,7 @@ pub fn recovery_status_impl(client: &Client) -> RecoveryStatusSummary {
 const MIN_RECOVERY_PASSPHRASE_CHARS: usize = 8;
 const MAX_RECOVERY_PASSPHRASE_BYTES: usize = 1024;
 
-fn validate_recovery_passphrase(passphrase: Option<&str>) -> Result<(), String> {
+pub(crate) fn validate_recovery_passphrase(passphrase: Option<&str>) -> Result<(), String> {
     let Some(passphrase) = passphrase else {
         return Ok(());
     };
@@ -269,39 +269,20 @@ pub async fn setup_recovery(
         return Err("Recovery setup is not enabled.".to_string());
     }
 
+    let _guard = state.login_completion_lock.lock().await;
     let client = state.require_client().await?;
-    setup_recovery_with_passphrase_impl(&client, passphrase).await
+    super::recovery_custody::setup_with_custody(
+        &client,
+        &super::recovery_custody::NativeRecoveryCustody::for_client(&client)?,
+        passphrase,
+    )
+    .await
 }
 
-/// Shared native/HTTP boundary: validate and zeroize the owned passphrase.
-pub async fn setup_recovery_with_passphrase_impl(
-    client: &Client,
-    passphrase: Option<String>,
-) -> Result<RecoverySetupSummary, String> {
-    let passphrase = passphrase.map(zeroize::Zeroizing::new);
-    validate_recovery_passphrase(passphrase.as_ref().map(|value| value.as_str()))?;
-    setup_recovery_impl(client, passphrase.as_ref().map(|value| value.as_str())).await
-}
-
-pub async fn setup_recovery_impl(
+pub(crate) async fn enable_recovery_impl(
     client: &Client,
     passphrase: Option<&str>,
 ) -> Result<RecoverySetupSummary, String> {
-    if client.encryption().recovery().state() != RecoveryState::Disabled {
-        return Err("Recovery can only be set up when it is currently disabled.".to_string());
-    }
-
-    let cross_signing = cross_signing_status_impl(client).await?;
-    if !(cross_signing.has_master_key
-        && cross_signing.has_self_signing_key
-        && cross_signing.has_user_signing_key)
-    {
-        return Err(
-            "Set up or restore this session's cross-signing keys before enabling recovery."
-                .to_string(),
-        );
-    }
-
     let recovery = client.encryption().recovery();
     let enable = recovery.enable().wait_for_backups_to_upload();
     let mut progress = enable.subscribe_to_progress();

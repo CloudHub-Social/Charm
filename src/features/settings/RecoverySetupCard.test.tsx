@@ -4,12 +4,18 @@ import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProvide
 import { RecoverySetupCard } from "./RecoverySetupCard";
 
 const setupRecovery = vi.fn();
+const getPendingRecoverySetup = vi.fn();
+const acknowledgeRecoverySetup = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   setupRecovery: (...args: unknown[]) => setupRecovery(...args),
+  getPendingRecoverySetup: (...args: unknown[]) => getPendingRecoverySetup(...args),
+  acknowledgeRecoverySetup: (...args: unknown[]) => acknowledgeRecoverySetup(...args),
 }));
 
 beforeEach(() => {
+  getPendingRecoverySetup.mockReset().mockResolvedValue(null);
+  acknowledgeRecoverySetup.mockReset().mockResolvedValue(undefined);
   setupRecovery.mockReset().mockResolvedValue({
     recovery_key: "EsTx generated recovery key",
     room_keys_backed_up: true,
@@ -18,6 +24,57 @@ beforeEach(() => {
 });
 
 describe("RecoverySetupCard", () => {
+  it("reopens protected pending recovery after remount even with rollout disabled", async () => {
+    const summary = { recovery_key: "protected pending key", room_keys_backed_up: true };
+    setupRecovery.mockImplementation(async () => {
+      getPendingRecoverySetup.mockResolvedValue(summary);
+      return summary;
+    });
+    const first = renderWithProviders(
+      <RecoverySetupCard enabled crossSigningReady recoveryDisabled />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+    await screen.findByText(summary.recovery_key);
+    first.unmount();
+    const second = renderWithProviders(
+      <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled={false} />,
+    );
+    expect(await screen.findByText(summary.recovery_key)).toBeInTheDocument();
+    expect(first.client.getMutationCache().getAll()).toEqual([]);
+    expect(second.client.getMutationCache().getAll()).toEqual([]);
+    expect(acknowledgeRecoverySetup).not.toHaveBeenCalled();
+    acknowledgeRecoverySetup.mockImplementation(async () =>
+      getPendingRecoverySetup.mockResolvedValue(null),
+    );
+    fireEvent.click(screen.getByLabelText("I saved this recovery key somewhere safe."));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByText(summary.recovery_key)).not.toBeInTheDocument());
+    expect(acknowledgeRecoverySetup).toHaveBeenCalledWith(summary.recovery_key);
+    second.unmount();
+    renderWithProviders(
+      <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled={false} />,
+    );
+    await act(async () => {});
+    expect(screen.queryByText(summary.recovery_key)).not.toBeInTheDocument();
+  });
+
+  it("retains the key when protected acknowledgement fails", async () => {
+    getPendingRecoverySetup.mockResolvedValue({
+      recovery_key: "keep this key",
+      room_keys_backed_up: true,
+    });
+    acknowledgeRecoverySetup.mockRejectedValue(new Error("storage unavailable"));
+    renderWithProviders(
+      <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled={false} />,
+    );
+    await screen.findByText("keep this key");
+    fireEvent.click(screen.getByLabelText("I saved this recovery key somewhere safe."));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not acknowledge");
+    expect(screen.getByText("keep this key")).toBeInTheDocument();
+  });
+
   it("requires local cross-signing keys before setup", () => {
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady={false} recoveryDisabled />);
 

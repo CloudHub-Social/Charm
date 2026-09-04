@@ -737,6 +737,9 @@ jobs:
       - name: Web recovery setup authentication and rollout
         run: cargo test -p charm-web-server --lib recovery_setup_route_tests
 
+      - name: Protected pending recovery persistence
+        run: cargo test -p charm-web-server --lib pending_recovery
+
       - name: Web companion live-homeserver API
         env:
           # This test deliberately targets the ephemeral localhost Synapse

@@ -879,6 +879,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", "/api/verification/recovery/setup", {
         passphrase: args.passphrase ?? null,
       });
+    case "get_pending_recovery_setup":
+      return requestJson<T>("GET", "/api/verification/recovery/pending");
+    case "acknowledge_recovery_setup":
+      return requestJson<T>("POST", "/api/verification/recovery/pending", {
+        recovery_key: args.recoveryKey,
+      });
     case "recover_from_key":
       return requestJson<T>("POST", "/api/verification/recovery", {
         recovery_key: args.recoveryKey,

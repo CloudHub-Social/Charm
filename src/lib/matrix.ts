@@ -661,7 +661,15 @@ export function recoveryStatus(): Promise<RecoveryStatusSummary> {
 
 /** Creates Matrix secret storage and key backup, returning the recovery key the user must save. */
 export function setupRecovery(passphrase?: string): Promise<RecoverySetupSummary> {
-  return invoke("setup_recovery", { passphrase });
+  return invoke("setup_recovery", { passphrase }, { captureOnError: false });
+}
+
+export function getPendingRecoverySetup(): Promise<RecoverySetupSummary | null> {
+  return invoke("get_pending_recovery_setup", {}, { captureOnError: false });
+}
+
+export function acknowledgeRecoverySetup(recoveryKey: string): Promise<void> {
+  return invoke("acknowledge_recovery_setup", { recoveryKey }, { captureOnError: false });
 }
 
 // captureOnError: false — a wrong/invalid recovery key is an expected user-input

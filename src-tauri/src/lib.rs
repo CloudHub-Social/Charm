@@ -1491,6 +1491,8 @@ pub fn run() {
             matrix::verification::cross_signing_status,
             matrix::verification::recovery_status,
             matrix::verification::setup_recovery,
+            matrix::recovery_custody::get_pending_recovery_setup,
+            matrix::recovery_custody::acknowledge_recovery_setup,
             matrix::verification::recover_from_key,
             matrix::verification::accept_verification_request,
             matrix::verification::cancel_verification,

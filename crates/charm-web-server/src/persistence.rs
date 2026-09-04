@@ -101,6 +101,8 @@ const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::fro
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
+    #[serde(default)]
+    pending_recovery: Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
     token: String,
     homeserver_url: String,
     session: MatrixSession,
@@ -430,6 +432,55 @@ impl PersistenceStore {
     ) -> Self {
         self.crypto_backup = crypto_backup;
         self
+    }
+
+    pub fn has_crypto_backup(&self) -> bool {
+        self.crypto_backup.is_some()
+    }
+
+    pub async fn pending_recovery(
+        &self,
+        token: &str,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        let (entry, _) = self
+            .read_one_with_version_result(token)
+            .await?
+            .ok_or("The persisted session is no longer available.")?;
+        Ok(entry.pending_recovery)
+    }
+
+    pub async fn save_pending_recovery(
+        &self,
+        token: &str,
+        pending: Option<&charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            entry.pending_recovery = pending.cloned();
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json =
+                serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically persist protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
     pub async fn snapshot_crypto_store(
@@ -950,6 +1001,7 @@ impl PersistenceStore {
             let path = object_path_for_token(token);
             let blob = self.encrypt(
                 &PersistedSession {
+                    pending_recovery: None,
                     token: token.to_string(),
                     homeserver_url: homeserver_url.to_string(),
                     session: session.clone(),
@@ -1042,6 +1094,9 @@ impl PersistenceStore {
                     crypto_store_key,
                     crypto_passphrase,
                     last_seen_unix,
+                    pending_recovery: existing
+                        .as_ref()
+                        .and_then(|(entry, _)| entry.pending_recovery.clone()),
                 },
                 &path,
             )?;
@@ -1980,6 +2035,7 @@ pub(crate) async fn save_with_last_seen_for_test(
     last_seen_unix: u64,
 ) {
     let entry = PersistedSession {
+        pending_recovery: None,
         token: token.to_string(),
         homeserver_url: "https://example.invalid".to_string(),
         session: MatrixSession {
@@ -2033,6 +2089,119 @@ mod tests {
                 refresh_token: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_is_encrypted_retained_on_resave_and_never_resurrected() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[73; 32])),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": "protected-key-not-plaintext",
+            "room_keys_backed_up": true
+        }))
+        .unwrap();
+        let session = dummy_session("@pending:example.invalid");
+        for token in ["pending-token", "other-token"] {
+            store
+                .save(
+                    token,
+                    "https://example.invalid",
+                    &session,
+                    None,
+                    SaveMode::FreshLogin,
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .save_pending_recovery("pending-token", Some(&pending))
+            .await
+            .unwrap();
+        let bytes = shared
+            .get(&object_path_for_token("pending-token"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let raw = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!raw.contains("protected-seed-not-plaintext"));
+        assert!(!raw.contains("protected-key-not-plaintext"));
+        store
+            .save(
+                "pending-token",
+                "https://example.invalid",
+                &session,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(store.pending_recovery("pending-token").await.unwrap()).unwrap(),
+            serde_json::to_value(&pending).unwrap()
+        );
+        assert!(store
+            .pending_recovery("other-token")
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .save_pending_recovery("pending-token", None)
+            .await
+            .unwrap();
+        store
+            .save(
+                "pending-token",
+                "https://example.invalid",
+                &session,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .pending_recovery("pending-token")
+            .await
+            .unwrap()
+            .is_none());
+        store.remove("pending-token", None).await.unwrap();
+        assert!(store
+            .save_pending_recovery("pending-token", Some(&pending))
+            .await
+            .is_err());
+        assert!(store.read_one("pending-token").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_requires_conditional_writes() {
+        let dir = scratch_dir("pending-no-cas");
+        let store = PersistenceStore::new_for_test(&dir, [74; 32]);
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed", "recovery_key": null, "room_keys_backed_up": false
+        }))
+        .unwrap();
+        store
+            .save(
+                "pending",
+                "https://example.invalid",
+                &dummy_session("@pending:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .save_pending_recovery("pending", Some(&pending))
+            .await
+            .is_err());
+        assert!(store.pending_recovery("pending").await.unwrap().is_none());
     }
 
     /// Full path a given token's object lives at under `dir` — same layout
@@ -2856,6 +3025,7 @@ mod tests {
     #[test]
     fn persisted_crypto_from_entry_is_populated_regardless_of_whether_it_was_opened() {
         let entry = PersistedSession {
+            pending_recovery: None,
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@laura:example.invalid"),
@@ -2875,6 +3045,7 @@ mod tests {
     #[test]
     fn persisted_crypto_from_entry_is_none_when_the_entry_never_had_a_store() {
         let entry = PersistedSession {
+            pending_recovery: None,
             token: "tok-legacy".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@mallory:example.invalid"),
@@ -2892,6 +3063,7 @@ mod tests {
     /// without waiting real wall-clock time.
     async fn save_with_last_seen(store: &PersistenceStore, token: &str, last_seen_unix: u64) {
         let entry = PersistedSession {
+            pending_recovery: None,
             token: token.to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@sweep-target:example.invalid"),
@@ -3782,6 +3954,7 @@ mod tests {
         let dir = scratch_dir("sweep-expired-legacy-backfill");
         let store = PersistenceStore::new_for_test(&dir, [44u8; 32]);
         let entry = PersistedSession {
+            pending_recovery: None,
             token: "tok-legacy-no-timestamp".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@legacy:example.invalid"),

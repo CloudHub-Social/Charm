@@ -75,6 +75,14 @@ describe("matrix web transport", () => {
       { passphrase: "test-passphrase" },
     ],
     ["setup_recovery", {}, "POST", "/api/verification/recovery/setup", { passphrase: null }],
+    ["get_pending_recovery_setup", {}, "GET", "/api/verification/recovery/pending", undefined],
+    [
+      "acknowledge_recovery_setup",
+      { recoveryKey: "saved-key" },
+      "POST",
+      "/api/verification/recovery/pending",
+      { recovery_key: "saved-key" },
+    ],
     ["discover_homeserver", { input: "matrix.org" }, "POST", "/api/auth/discover", "matrix.org"],
     [
       "login",

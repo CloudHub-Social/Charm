@@ -598,6 +598,7 @@ fn discard_cancelled_account_store_locked(
 /// relocation commit writes its session credentials.
 pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    super::recovery_custody::clear_native_pending(account_key)?;
     clear_session(account_key)?;
     clear_oauth_session(account_key)?;
     discard_cancelled_account_store_locked(app, account_key)

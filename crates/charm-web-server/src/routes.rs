@@ -67,7 +67,7 @@ use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
-    recovery_status_impl, setup_recovery_with_passphrase_impl,
+    recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
@@ -383,6 +383,10 @@ pub fn router(state: AppState) -> Router {
             get(get_recovery_status).post(recover_from_key),
         )
         .route("/api/verification/recovery/setup", post(setup_recovery))
+        .route(
+            "/api/verification/recovery/pending",
+            get(get_pending_recovery_setup).post(acknowledge_recovery_setup),
+        )
         .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
             post(accept_verification),
@@ -5457,6 +5461,118 @@ struct RecoverFromKeyRequest {
     recovery_key: String,
 }
 
+struct WebRecoveryCustody<'a> {
+    persistence: &'a crate::persistence::PersistenceStore,
+    token: &'a str,
+    session: &'a Session,
+}
+
+#[charm_lib::matrix::recovery_custody::async_trait]
+impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody<'_> {
+    async fn load(
+        &self,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        self.persistence.pending_recovery(self.token).await
+    }
+    async fn save(
+        &self,
+        pending: Option<&charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    ) -> Result<(), String> {
+        self.persistence
+            .save_pending_recovery(self.token, pending)
+            .await
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        if !self.persistence.has_crypto_backup() {
+            return Err(
+                "Durable encrypted crypto snapshots are required for recovery setup.".into(),
+            );
+        }
+        if self
+            .session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed during recovery setup.".into());
+        }
+        let matrix_session = self
+            .session
+            .client
+            .matrix_auth()
+            .session()
+            .ok_or("No Matrix session.")?;
+        let crypto = self
+            .session
+            .persisted_crypto
+            .as_ref()
+            .ok_or("No durable crypto store.")?;
+        self.persistence
+            .snapshot_crypto_store(
+                self.token,
+                &matrix_session,
+                Some((&crypto.store_key, &crypto.passphrase)),
+            )
+            .await
+    }
+}
+
+async fn get_pending_recovery_setup(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let _guard = session.recovery_setup_lock.lock().await;
+    let summary =
+        if let (Some(persistence), Some(cookie)) = (&state.persistence, jar.get(SESSION_COOKIE)) {
+            charm_lib::matrix::recovery_custody::pending_summary(
+                &session.client,
+                &WebRecoveryCustody {
+                    persistence,
+                    token: cookie.value(),
+                    session: &session,
+                },
+            )
+            .await
+            .map_err(ApiError::bad_request)?
+        } else {
+            None
+        };
+    Ok(([("cache-control", "no-store")], Json(summary)))
+}
+
+#[derive(Deserialize)]
+struct AcknowledgeRecoveryRequest {
+    recovery_key: String,
+}
+
+async fn acknowledge_recovery_setup(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<AcknowledgeRecoveryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let _guard = session.recovery_setup_lock.lock().await;
+    let persistence = state
+        .persistence
+        .as_ref()
+        .ok_or_else(|| ApiError::bad_request("Protected recovery storage is unavailable."))?;
+    let cookie = jar
+        .get(SESSION_COOKIE)
+        .ok_or_else(|| ApiError::unauthorized("Not signed in."))?;
+    charm_lib::matrix::recovery_custody::acknowledge(
+        &session.client,
+        &WebRecoveryCustody {
+            persistence,
+            token: cookie.value(),
+            session: &session,
+        },
+        request.recovery_key,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(([("cache-control", "no-store")], Json(())))
+}
+
 #[derive(Deserialize)]
 struct SetupRecoveryRequest {
     passphrase: Option<String>,
@@ -5471,6 +5587,7 @@ async fn setup_recovery(
     if !state.crypto_backup_setup_enabled {
         return Err(ApiError::not_found("recovery setup is not enabled"));
     }
+    let _guard = session.recovery_setup_lock.lock().await;
     // Never mutate server-side recovery from a legacy in-memory-only session.
     // Verify persistence before enabling anything, not only after issuing a key.
     let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
@@ -5500,9 +5617,17 @@ async fn setup_recovery(
                 "Could not persist encrypted storage; recovery setup was not started.",
             )
         })?;
-    let summary = setup_recovery_with_passphrase_impl(&session.client, request.passphrase)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let summary = charm_lib::matrix::recovery_custody::setup_with_custody(
+        &session.client,
+        &WebRecoveryCustody {
+            persistence,
+            token: cookie.value(),
+            session: &session,
+        },
+        request.passphrase,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     if let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
         &state.persistence,
         session.client.matrix_auth().session(),

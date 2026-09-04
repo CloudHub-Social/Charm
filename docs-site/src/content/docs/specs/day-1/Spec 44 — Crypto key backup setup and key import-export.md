@@ -17,8 +17,10 @@ not first-time **setup** or manual key file I/O.
 Web setup now requires an actually opened encrypted crypto store and a successful
 durable snapshot before mutating server-side recovery. Legacy or ephemeral sessions
 must sign in again first. UI passphrase bounds match Rust Unicode scalar and UTF-8
-byte counts. Secure recovery-credential custody across panel/app teardown remains
-a merge blocker; a generated key held only in component state is not sufficient.
+byte counts. Pending recovery now uses account-bound native protected storage or
+the web session's existing encrypted record, not component state as its sole copy.
+The seed is committed before SDK enablement; it can reopen secret storage after an
+interrupted result write. This implementation and its regressions await CI.
 
 - **First-time key backup / 4S setup:** implemented behind the default-off
   `crypto_backup_setup` feature flag. The flow requires this session to hold all
@@ -32,15 +34,19 @@ a merge blocker; a generated key held only in component state is not sufficient.
   with a separate default-off server gate (`CHARM_WEB_CRYPTO_BACKUP_SETUP=1`).
   Route authorization, rollout, and transport regressions await CI; live creation
   and cross-session restore remain release gates.
-  **Readiness blocker:** the issued credential is still held by the settings
-  component, so closing/reloading that surface before acknowledgement can lose
-  the key. The rollout-lifetime regression does not prove teardown safety.
-  Completion requires account-bound encrypted pending-credential custody before
-  an irreversible setup operation, recovery after interruption, retrieval after
-  remount/restart, and acknowledgement-driven removal. Browser local storage and
-  the SDK state store's raw custom values are not suitable secret stores. Tests
-  must cover custody-write failure, interruption during setup, account switching,
-  remount/restart, and acknowledgement without resurrecting a removed credential.
+  Pending credentials are retrieved directly after remount, even when rollout is
+  disabled, and removed only after matching-key acknowledgement or explicit
+  session/device-data removal. A protected write failure prevents setup from
+  starting. The web deployment must provide encrypted crypto snapshots and an
+  object backend supporting conditional updates (such as the configured S3 store);
+  local-file-only persistence fails closed for setup. Session refresh preserves
+  the pending record with compare-and-swap; removed sessions are not resurrected.
+  Browser local storage, query/mutation caches, and SDK raw custom state values
+  never hold the pending credential. Save the key before logout, web session
+  expiry, or device-data removal. Real-account interrupted-setup/restart/restore
+  verification remains a release gate; CI regressions cover offline retrieval,
+  acknowledgement failure, remount, encrypted storage, token isolation, resave,
+  and deletion without resurrection.
 - **Manual encrypted room-key import/export:** remains to be implemented.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
   be implemented.
