@@ -5899,6 +5899,15 @@ impl Drop for WsConnectionGuard {
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
+    // Removal may win after HTTP lookup but before this subscription. The
+    // broadcast alone cannot notify a receiver that did not yet exist.
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see
     // `Session::pending_verification_requests`'s doc comment. Taken, not
@@ -6160,6 +6169,64 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 // ---------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod websocket_revocation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn removed_session_closes_upgraded_socket_before_replaying_snapshots() {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect("offline client");
+        let store = session::SessionStore::new();
+        let token = store
+            .create(Session::new(
+                client,
+                "@removed:example.org".into(),
+                None,
+                false,
+            ))
+            .await;
+        // Reproduce the upgrade handoff deterministically: lookup retains an
+        // Arc, then removal publishes while there are no event subscribers.
+        let retained = store.get(&token).await.expect("session lookup");
+        retained
+            .last_snapshot
+            .lock()
+            .unwrap()
+            .push(crate::events::ServerEvent::RoomList(Vec::new()));
+        assert_eq!(retained.events.receiver_count(), 0);
+        store.remove(&token).await.expect("permanent removal");
+        let app = Router::new().route(
+            "/ws",
+            get(move |upgrade: WebSocketUpgrade| {
+                let retained = Arc::clone(&retained);
+                async move { upgrade.on_upgrade(move |socket| handle_socket(socket, retained)) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+                .await
+                .expect("upgrade");
+            socket.next().await
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        assert!(matches!(
+            result.expect("socket must close promptly"),
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ));
+    }
+}
 
 pub struct ApiError {
     status: StatusCode,

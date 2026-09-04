@@ -34,6 +34,13 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+WebSocket upgrades recheck permanent session revocation immediately after
+subscribing to session events, before replaying retained snapshots. This closes
+the lookup-to-upgrade gap where logout's invalidation broadcast had no receiver;
+the revoked socket closes so the browser can recheck its authenticated session.
+A deterministic companion regression exercises this handoff through a real
+loopback WebSocket. Its CI result is required before treating the fix as verified.
+
 The implementation slices have merged in
 [#330](https://github.com/CloudHub-Social/Charm/pull/330),
 [#331](https://github.com/CloudHub-Social/Charm/pull/331),
