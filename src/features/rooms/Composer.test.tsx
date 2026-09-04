@@ -70,7 +70,7 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it.each(["unban", "ignore", "unignore", "plain", "shrug", "tableflip"])(
+  it.each(["unban", "ignore", "unignore", "plain", "shrug", "tableflip", "notice"])(
     "resolves mention IDs for /%s in replies",
     async (command) => {
       flags.composerParity = true;
@@ -108,7 +108,13 @@ describe("Composer", () => {
                 text: "@alice:example.org",
                 mentionIds: ["@alice:example.org"],
               }
-            : { command, args: ["@alice:example.org"], action: true },
+            : command === "notice"
+              ? {
+                  command,
+                  args: ["@alice:example.org"],
+                  mentionIds: ["@alice:example.org"],
+                }
+              : { command, args: ["@alice:example.org"], action: true },
         ),
       );
     },

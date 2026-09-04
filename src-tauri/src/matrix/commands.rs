@@ -4,7 +4,7 @@
 //! command name + args cross IPC, so this module never has to re-implement
 //! quoting/escaping rules for raw composer text.
 
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::room::message::{Mentions, RoomMessageEventContent};
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
@@ -90,6 +90,20 @@ fn notice_content_from_args(args: &[String]) -> Result<RoomMessageEventContent, 
     Ok(RoomMessageEventContent::notice_plain(text))
 }
 
+fn add_mentions(
+    content: RoomMessageEventContent,
+    mention_ids: Option<Vec<String>>,
+) -> Result<RoomMessageEventContent, String> {
+    let Some(mention_ids) = mention_ids.filter(|ids| !ids.is_empty()) else {
+        return Ok(content);
+    };
+    let user_ids = mention_ids
+        .into_iter()
+        .map(|id| UserId::parse(id).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(content.add_mentions(Mentions::with_user_ids(user_ids)))
+}
+
 /// Runs a resolved slash command against `room_id`. `args` is the
 /// whitespace-split remainder of the command line after the `/word` (e.g.
 /// `/kick @bob:example.org spamming` -> `args = ["@bob:example.org",
@@ -101,6 +115,7 @@ pub async fn run_command(
     command: SlashCommand,
     args: Vec<String>,
     in_reply_to_event_id: Option<String>,
+    mention_ids: Option<Vec<String>>,
 ) -> Result<CommandResult, String> {
     let client = state.require_client().await?;
     run_command_impl(
@@ -109,6 +124,7 @@ pub async fn run_command(
         command,
         args,
         in_reply_to_event_id.as_deref(),
+        mention_ids,
     )
     .await
 }
@@ -121,6 +137,7 @@ pub async fn run_command_impl(
     command: SlashCommand,
     args: Vec<String>,
     in_reply_to_event_id: Option<&str>,
+    mention_ids: Option<Vec<String>>,
 ) -> Result<CommandResult, String> {
     let room = get_room(client, room_id)?;
     // `/me` already goes through the serialized send helper below. Every
@@ -139,6 +156,7 @@ pub async fn run_command_impl(
                 Ok(content) => content,
                 Err(result) => return Ok(result),
             };
+            let content = add_mentions(content, mention_ids)?;
             if let Some(event_id) = in_reply_to_event_id {
                 super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
                     .await?;
@@ -157,7 +175,7 @@ pub async fn run_command_impl(
                 Ok(text) => text,
                 Err(result) => return Ok(result),
             };
-            let content = RoomMessageEventContent::emote_plain(text);
+            let content = add_mentions(RoomMessageEventContent::emote_plain(text), mention_ids)?;
             if let Some(event_id) = in_reply_to_event_id {
                 super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
                     .await?;
@@ -311,6 +329,18 @@ mod tests {
     fn slash_command_serializes_snake_case() {
         let json = serde_json::to_value(SlashCommand::Invite).unwrap();
         assert_eq!(json, "invite");
+    }
+
+    #[test]
+    fn notice_mentions_are_encoded_for_notification_routing() {
+        let content = add_mentions(
+            RoomMessageEventContent::notice_plain("hello"),
+            Some(vec!["@alice:example.org".into()]),
+        )
+        .unwrap();
+        assert!(content
+            .mentions
+            .is_some_and(|mentions| mentions.user_ids.contains(user_id!("@alice:example.org"))));
     }
 
     #[test]

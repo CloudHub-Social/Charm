@@ -24,7 +24,12 @@ import { resolveInlineShortcodes } from "./emojiShortcodes";
 import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
 import { MatrixSpoiler } from "./spoilerExtension";
-import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
+import {
+  isMessageSendingCommand,
+  parseSlashCommand,
+  unescapeLiteralSlash,
+  type ParsedSlashCommand,
+} from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
@@ -502,7 +507,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const slash =
       mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
-      onSlashCommand("text" in slash ? { ...slash, mentionIds: collectMentionIds(editor) } : slash);
+      const mentionIds = collectMentionIds(editor);
+      onSlashCommand(
+        isMessageSendingCommand(slash)
+          ? { ...slash, ...(mentionIds.length ? { mentionIds } : {}) }
+          : slash,
+      );
       // `clearContent(false)` skips emitting `onUpdate` — clearing after a
       // send/command isn't the user typing, so it shouldn't re-trigger
       // `onTypingInput` and send a spurious `typing: true` right after

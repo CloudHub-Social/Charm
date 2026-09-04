@@ -535,12 +535,14 @@ export function runCommand(
   command: SlashCommand,
   args: string[],
   inReplyToEventId?: string | null,
+  mentionIds?: string[] | null,
 ): Promise<CommandResult> {
   return invoke("run_command", {
     roomId,
     command,
     args,
     inReplyToEventId: inReplyToEventId ?? null,
+    mentionIds: mentionIds ?? null,
   });
 }
 

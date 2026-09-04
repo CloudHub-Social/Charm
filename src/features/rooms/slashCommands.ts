@@ -76,6 +76,7 @@ export type ParsedSlashCommand =
   | {
       command: SlashCommand;
       args: string[];
+      mentionIds?: string[];
     }
   | { command: MessageStyleCommand; args: string[]; text: string; mentionIds?: string[] }
   | { command: LocalActionCommand; args: string[]; action: true };

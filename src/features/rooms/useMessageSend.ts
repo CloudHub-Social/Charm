@@ -246,6 +246,7 @@ export function useMessageSend({
         parsed.command,
         parsed.args,
         replyingTo?.event_id ?? null,
+        parsed.mentionIds ?? null,
       );
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale

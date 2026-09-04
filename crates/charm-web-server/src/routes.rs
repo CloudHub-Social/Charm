@@ -3863,6 +3863,7 @@ struct RunCommandRequest {
     command: SlashCommand,
     args: Vec<String>,
     in_reply_to_event_id: Option<String>,
+    mention_ids: Option<Vec<String>>,
 }
 
 async fn run_command(
@@ -3878,6 +3879,7 @@ async fn run_command(
         request.command,
         request.args,
         request.in_reply_to_event_id.as_deref(),
+        request.mention_ids,
     )
     .await
     .map_err(|e| {

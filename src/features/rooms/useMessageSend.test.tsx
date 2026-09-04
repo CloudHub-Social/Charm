@@ -100,6 +100,7 @@ describe("formatted composer submission", () => {
       "notice",
       ["hello"],
       null,
+      null,
     );
     expect(result.current.commandFeedback).toBe("Cannot send notice");
     expect(mocks.sendMessage).not.toHaveBeenCalled();
@@ -139,6 +140,7 @@ describe("formatted composer submission", () => {
       room.room_id,
       "notice",
       ["hello"],
+      null,
       null,
     );
   });
@@ -349,6 +351,7 @@ describe("formatted composer submission", () => {
       command,
       ["hello"],
       "$target",
+      null,
     );
   });
 
