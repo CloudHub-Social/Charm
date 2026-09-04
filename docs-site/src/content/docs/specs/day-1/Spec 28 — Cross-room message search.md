@@ -360,7 +360,11 @@ without the user knowing which is which.
   normalize again, and stale queued work cannot bypass that boundary. After
   awaited reconciliation-marker cleanup, backfill completion revalidates its
   generation and clears its pending bit under lifecycle exclusion; an old
-  worker cannot clear the replacement scan's pending state. An
+  worker cannot clear the replacement scan's pending state. Detached scan
+  startup consumes the lifecycle-locked admission reservation rather than
+  setting pending again; all early exits use the same generation-checked
+  completion boundary. A scan first polled after reload cannot recreate a
+  stale reservation or block replacement scans indefinitely. An
   unavailable normalization state is not permission for an in-flight query to
   purge the index. Renderer startup also
   reconciles both disabled-to-disabled and cached-enabled state with the native

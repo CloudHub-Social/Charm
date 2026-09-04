@@ -1264,6 +1264,20 @@ fn finish_backfill_if_current(state: &super::MatrixState, generation: u64) {
     }
 }
 
+fn backfill_admission_is_current(state: &super::MatrixState, generation: u64) -> bool {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+        && state
+            .search_backfill_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Marks the active lifecycle incomplete without allowing an old worker to
 /// poison the account that replaced it. Session invalidation advances the
 /// generation while holding the same lifecycle lock, so the check and store
@@ -2227,19 +2241,17 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
 /// initial sync/timeline delivery behind local indexing work.
 pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, generation: u64) {
     let state = app.state::<super::MatrixState>();
-    state
-        .search_backfill_pending
-        .store(true, std::sync::atomic::Ordering::Release);
+    // Both callers reserve pending under lifecycle exclusion before spawning.
+    // A detached task must not recreate that reservation after a reload/reset.
+    if !backfill_admission_is_current(&state, generation) {
+        return;
+    }
     if !feature_enabled(app) {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     }
     let Some((account_store_key, device_id)) = active_identity(client) else {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     };
     let expected_identity = (account_store_key.clone(), device_id.clone());
@@ -2252,9 +2264,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
     }
     let Ok(ignored_senders) = ignored_senders else {
         persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     };
     let ignored_senders: HashSet<String> = ignored_senders
@@ -2314,9 +2324,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         // decrypted bodies cross into the bounded worker queue after it has
         // flipped off; the worker independently drops any older queued work.
         if !feature_enabled(app) {
-            state
-                .search_backfill_pending
-                .store(false, std::sync::atomic::Ordering::Release);
+            finish_backfill_if_current(&state, generation);
             return;
         }
         if sender
@@ -2329,9 +2337,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             .is_err()
         {
             persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
-            state
-                .search_backfill_pending
-                .store(false, std::sync::atomic::Ordering::Release);
+            finish_backfill_if_current(&state, generation);
             tracing::warn!(command = "message_search_backfill", status = "queue_full");
             return;
         }
@@ -2363,9 +2369,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         return;
     }
     if !feature_enabled(app) {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     }
     if sender
@@ -2378,9 +2382,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         .is_err()
     {
         persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
     }
 }
 
@@ -3992,6 +3994,23 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn detached_backfill_start_cannot_recreate_a_reset_reservation() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        assert!(super::claim_cached_history(&state, 0, false));
+        assert!(super::backfill_admission_is_current(&state, 0));
+        // The task has not received its first poll when the renderer resets.
+        super::reset_index_lifecycle(&state);
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        assert!(!state.search_backfill_pending.load(Ordering::Acquire));
+        assert!(super::claim_cached_history(&state, 1, false));
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        super::finish_backfill_if_current(&state, 0);
+        assert!(super::backfill_admission_is_current(&state, 1));
     }
 
     #[test]
