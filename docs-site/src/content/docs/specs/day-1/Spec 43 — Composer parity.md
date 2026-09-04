@@ -193,6 +193,8 @@ This does not provide distributed locking against other clients or companion
 processes: Matrix account data remains last-write-wins across those writers.
 Concurrent block/block and block/unblock regressions cover preservation of existing
 entries without waiting for sync, plus malformed-data and homeserver isolation.
+Successful ignore/unignore slash commands invalidate the settings ignored-user
+query; failed commands leave it untouched and retain inline failure feedback.
 Failures show inline feedback without logging action arguments, and completion
 does not update feedback after a room switch. Parsing and dispatch regressions
 are included, pending CI. These commands do not send chat messages or trigger

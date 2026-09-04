@@ -13,9 +13,11 @@ const mocks = vi.hoisted(() => ({
   ignoreUser: vi.fn().mockResolvedValue(undefined),
   unignoreUser: vi.fn().mockResolvedValue(undefined),
   useFlag: vi.fn(() => true),
+  invalidateQueries: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/matrix", () => mocks);
 vi.mock("@/featureFlags", () => ({ useFlag: () => mocks.useFlag() }));
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => mocks }));
 
 describe("formatted composer submission", () => {
   beforeEach(() => {
@@ -129,6 +131,13 @@ describe("formatted composer submission", () => {
       );
       expect(mocks.sendMessage).not.toHaveBeenCalled();
       expect(mocks.runCommand).not.toHaveBeenCalled();
+      if (command === "ignore" || command === "unignore") {
+        expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({
+          queryKey: ["settings", "ignored-users"],
+        });
+      } else {
+        expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+      }
       expected.mockClear();
       mocks.useFlag.mockReturnValue(false);
       rerender();
@@ -140,6 +149,34 @@ describe("formatted composer submission", () => {
         });
       });
       expect(expected).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ignore", "unignore"] as const)(
+    "does not invalidate the settings list when /%s fails",
+    async (command) => {
+      const mutation = command === "ignore" ? mocks.ignoreUser : mocks.unignoreUser;
+      mutation.mockRejectedValueOnce(new Error("Request failed"));
+      const { result } = renderHook(() =>
+        useMessageSend({
+          room: makeRoomSummary(),
+          editingEventId: null,
+          replyTarget: null,
+          setEditingEventId: vi.fn(),
+          setReplyTarget: vi.fn(),
+          stopTyping: vi.fn(),
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleSlashCommand({
+            command,
+            action: true,
+            args: ["@alice:example.org"],
+          }),
+        ).toBe(false);
+      });
+      expect(mocks.invalidateQueries).not.toHaveBeenCalled();
     },
   );
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   editMessage,
   runCommand,
@@ -38,6 +39,7 @@ export function useMessageSend({
   stopTyping,
   mutationsBlockedRef,
 }: UseMessageSendOptions) {
+  const queryClient = useQueryClient();
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const composerParityEnabled = useFlag("composer_parity");
   const roomId = room?.room_id ?? "";
@@ -163,9 +165,11 @@ export function useMessageSend({
               break;
             case "ignore":
               await ignoreUser(args[0]);
+              void queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] });
               break;
             case "unignore":
               await unignoreUser(args[0]);
+              void queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] });
               break;
           }
           if (currentRoomIdRef.current === targetRoomId) setCommandFeedback(null);
