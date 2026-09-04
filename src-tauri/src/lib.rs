@@ -656,6 +656,12 @@ async fn reconcile_message_search_flag(
         feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
     );
     let pending = matrix::search::disabled_cleanup_pending(&app_data_dir)?;
+    // The renderer calls this after awaiting cache normalization. This grants
+    // no flag override: the authoritative flag file and durable marker above
+    // still determine whether search can open or cleanup is required.
+    state
+        .search_flags_ready
+        .store(true, std::sync::atomic::Ordering::Release);
     if enabled && !pending {
         return Ok(());
     }
@@ -1286,19 +1292,11 @@ pub fn run() {
             // `push::global_app_handle`'s doc comment.
             #[cfg(any(target_os = "android", target_os = "ios"))]
             push::set_global_app_handle(handle.clone());
-            // Reconcile the sensitive local-search kill switch before any
-            // session restoration can open the derived index. A durable
-            // marker from a failed earlier purge vetoes re-enable too.
+            // Recover durable purge intent before session restoration. New
+            // flag-driven purges wait for the renderer to normalize stale
+            // remote cohorts; native search remains unavailable until then.
             if let Ok(app_data_dir) = handle.path().app_data_dir() {
-                let search_enabled = feature_flags::flag(
-                    &app_data_dir,
-                    feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
-                );
-                let cleanup_pending =
-                    matrix::search::disabled_cleanup_pending(&app_data_dir).unwrap_or(true);
-                if (!search_enabled || cleanup_pending)
-                    && matrix::search::reconcile_disabled_cleanup(&app_data_dir).is_err()
-                {
+                if matrix::search::reconcile_startup_cleanup(&app_data_dir).is_err() {
                     eprintln!("message-search disabled-state cleanup failed");
                 }
             }

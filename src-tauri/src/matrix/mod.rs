@@ -91,6 +91,9 @@ pub struct MatrixState {
     /// Logout increments this before deleting the index, so the long-lived
     /// worker cannot reopen that index from stale queue entries afterwards.
     pub(crate) search_generation: std::sync::atomic::AtomicU64,
+    /// False until the renderer has normalized the persisted remote flag cache.
+    /// Unknown startup state must not authorize search access or a new purge.
+    pub(crate) search_flags_ready: std::sync::atomic::AtomicBool,
     /// Serializes generation resets with sticky-incomplete writes so a stale
     /// worker cannot mark the lifecycle that replaced it as incomplete.
     pub(crate) search_lifecycle_lock: std::sync::Mutex<()>,
@@ -432,6 +435,7 @@ impl Default for MatrixState {
             search_index: std::sync::Arc::default(),
             search_work_tx: tokio::sync::OnceCell::default(),
             search_generation: std::sync::atomic::AtomicU64::default(),
+            search_flags_ready: std::sync::atomic::AtomicBool::default(),
             search_lifecycle_lock: std::sync::Mutex::default(),
             search_incomplete: std::sync::atomic::AtomicBool::default(),
             search_backfill_started: std::sync::atomic::AtomicBool::default(),

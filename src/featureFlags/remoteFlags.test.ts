@@ -190,6 +190,40 @@ describe("message search reconciliation", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
   });
 
+  it("keeps enabled search unavailable until native startup reconciliation succeeds", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { encrypted_local_message_search: true, canary: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+    let rejectCleanup: ((error: Error) => void) | undefined;
+    mocks.invoke.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectCleanup = reject;
+        }),
+    );
+    const mod = await import("./index");
+    const initializing = mod.initializeFeatureFlags();
+    await vi.waitFor(() => expect(rejectCleanup).toBeTypeOf("function"));
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(true);
+    rejectCleanup?.(new Error("cleanup pending"));
+    await initializing;
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
+
+    mocks.invoke.mockResolvedValue(undefined);
+    await mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(true);
+    expect(
+      mocks.invoke.mock.calls.filter(([name]) => name === "reconcile_message_search_flag"),
+    ).toHaveLength(2);
+  });
+
   it("does not persist a re-enable until disable cleanup finishes", async () => {
     let finishCleanup: (() => void) | undefined;
     mocks.invoke.mockImplementation(
