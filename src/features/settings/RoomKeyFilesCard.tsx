@@ -1,6 +1,6 @@
 import { createContext, useContext, useRef, useState, type ReactNode } from "react";
 import { useFeatureFlagPersistenceSettled, useFlag } from "@/featureFlags";
-import { isWebBuild } from "@/lib/platform";
+import { isWebBuild, platformTag } from "@/lib/platform";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -183,20 +183,28 @@ export function RoomKeyFilesProvider({
   );
 }
 
-export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
+export function RoomKeyFilesCard({
+  enabled = true,
+  importEnabled = platformTag() !== "android",
+}: {
+  enabled?: boolean;
+  importEnabled?: boolean;
+}) {
   const openDialog = useContext(TransferContext);
   if (!enabled || !openDialog) return null;
   return (
     <SettingsCard heading="Room key files">
       <SettingTile>
         <p className="mb-3 text-sm text-muted-foreground">
-          Import or export encrypted Matrix room keys for manual backup or migration. These files do
-          not replace account recovery or device verification.
+          {importEnabled ? "Import or export" : "Export"} encrypted Matrix room keys for manual
+          backup or migration. These files do not replace account recovery or device verification.
         </p>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
-            Import keys
-          </Button>
+          {importEnabled && (
+            <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
+              Import keys
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
             Export keys
           </Button>

@@ -6,13 +6,15 @@ import { RoomKeyFilesCard as Entry, RoomKeyFilesProvider } from "./RoomKeyFilesC
 function RoomKeyFilesCard({
   enabled = true,
   settingsOpen = true,
+  importEnabled = true,
 }: {
   enabled?: boolean;
   settingsOpen?: boolean;
+  importEnabled?: boolean;
 }) {
   return (
     <RoomKeyFilesProvider enabled={enabled}>
-      {settingsOpen && <Entry enabled={enabled} />}
+      {settingsOpen && <Entry enabled={enabled} importEnabled={importEnabled} />}
     </RoomKeyFilesProvider>
   );
 }
@@ -35,6 +37,14 @@ beforeEach(() => {
 });
 
 describe("RoomKeyFilesCard", () => {
+  it("hides Android's unavailable import action while retaining export", () => {
+    renderWithProviders(<RoomKeyFilesCard importEnabled={false} />);
+
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export keys" })).toBeInTheDocument();
+    expect(screen.getByText(/Export encrypted Matrix room keys/)).toBeInTheDocument();
+  });
+
   it("keeps progress and the result visible after the Settings entry unmounts", async () => {
     let finish!: (value: {
       completed: boolean;
