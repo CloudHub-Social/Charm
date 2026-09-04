@@ -200,7 +200,7 @@ describe("NotificationsPanel", () => {
 
     expect(
       await screen.findByText(
-        "Not available on this platform — desktop relies on the always-on sync loop instead.",
+        "Background push is not available or enabled for this build. Do not rely on notifications while Charm is closed or suspended.",
       ),
     ).toBeVisible();
     expect(

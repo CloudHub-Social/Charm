@@ -58,7 +58,7 @@ function PushTransportTile() {
         !status?.available && status?.registered ? (
           "New push registrations are disabled. You can still turn off this device's existing registration."
         ) : !status?.available ? (
-          "Not available on this platform — desktop relies on the always-on sync loop instead."
+          "Background push is not available or enabled for this build. Do not rely on notifications while Charm is closed or suspended."
         ) : (
           <>
             Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
