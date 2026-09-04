@@ -471,6 +471,28 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
+      - name: Import stable Windows signing certificate
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WINDOWS_CERT_PFX -or -not $env:WINDOWS_CERT_PASSWORD) {
+            throw 'Stable Windows signing requires WINDOWS_CERT_PFX and WINDOWS_CERT_PASSWORD'
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'stable-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            $certs = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password | Where-Object HasPrivateKey)
+            if ($certs.Count -ne 1) { throw 'Expected exactly one Windows signing identity' }
+            "WINDOWS_CERT_THUMBPRINT=$($certs[0].Thumbprint)" >> $env:GITHUB_ENV
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -ErrorAction SilentlyContinue
+          }
+
       - name: Build Tauri Windows app with release debuginfo
         env:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
@@ -484,8 +506,16 @@ jobs:
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $configArgs = @()
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Depth 5 -Compress
+            $configPath = Join-Path $env:RUNNER_TEMP 'tauri-stable-signing.json'
+            Set-Content -Path $configPath -Value $config -NoNewline -Encoding utf8NoBOM
+            $configArgs = @('--config', $configPath)
+          }
           $env:VITE_SENTRY_RELEASE = $env:SENTRY_RELEASE
-          pnpm tauri build
+          pnpm tauri build @configArgs
 
       - name: Resolve Windows debug-file directory
         id: windows-debug-files
@@ -500,6 +530,32 @@ jobs:
           }
           "path=$releaseDir" >> $env:GITHUB_OUTPUT
           "bundle-path=$bundleDir" >> $env:GITHUB_OUTPUT
+
+      - name: Verify stable Windows signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          RELEASE_DIR: ${{ steps.windows-debug-files.outputs.path }}
+          BUNDLE_DIR: ${{ steps.windows-debug-files.outputs.bundle-path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -Path $env:BUNDLE_DIR -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' })
+          if ($installers.Count -eq 0) { throw 'No Windows installers to verify' }
+          $app = Get-Item -LiteralPath (Join-Path $env:RELEASE_DIR 'charm.exe')
+          foreach ($file in (@($app) + $installers)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERT_THUMBPRINT) {
+              throw "Invalid or unexpected Windows signer: $($file.Name)"
+            }
+          }
+
+      - name: Remove imported Windows signing identity
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_CERT_THUMBPRINT" -DeleteKey
+          }
 
       - name: Upload Windows debug information files
         shell: pwsh
@@ -621,8 +677,31 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
+      - name: Import stable Android signing keystore
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ANDROID_KEYSTORE_JKS: ${{ secrets.ANDROID_KEYSTORE_JKS }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_JKS:?Missing ANDROID_KEYSTORE_JKS}"
+          : "${ANDROID_RELEASE_STORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD}"
+          : "${ANDROID_RELEASE_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS}"
+          : "${ANDROID_RELEASE_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD}"
+          umask 077
+          keystore_path="$RUNNER_TEMP/stable-signing.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_JKS" | base64 --decode > "$keystore_path"
+          keytool -exportcert -keystore "$keystore_path" -storepass:env ANDROID_RELEASE_STORE_PASSWORD \
+            -alias "$ANDROID_RELEASE_KEY_ALIAS" -file "$RUNNER_TEMP/stable-android-signer.der"
+          echo "ANDROID_RELEASE_STORE_FILE=$keystore_path" >> "$GITHUB_ENV"
+
       - name: Build Android app and prepare mappings/native symbols
         env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ANDROID_KEY_PASSWORD || '' }}
           SENTRY_ANDROID_UPLOAD: "true"
           # Generate and embed Sentry metadata during the build, but keep
           # network uploads out of the already-expensive Android task graph.
@@ -654,6 +733,35 @@ jobs:
           # match the universal release artifact.
           # Cold four-ABI APK+AAB builds take about 50 minutes on hosted runners.
           timeout --signal=TERM --kill-after=1m 65m pnpm tauri android build --ci
+
+      - name: Verify stable Android signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          test -n "$apksigner"
+          expected=$(sha256sum "$RUNNER_TEMP/stable-android-signer.der" | cut -d ' ' -f 1)
+          mapfile -d '' apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -type f -print0)
+          mapfile -d '' bundles < <(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' -type f -print0)
+          test "${#apks[@]}" -gt 0
+          test "${#bundles[@]}" -gt 0
+          for apk in "${apks[@]}"; do
+            certificates=$("$apksigner" verify --print-certs "$apk")
+            actual=$(printf '%s\n' "$certificates" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:upper:]' '[:lower:]')
+            test "$actual" = "$expected"
+          done
+          for bundle in "${bundles[@]}"; do
+            jarsigner -verify -strict -keystore "$ANDROID_RELEASE_STORE_FILE" \
+              -storepass:env ANDROID_RELEASE_STORE_PASSWORD "$bundle" "$ANDROID_RELEASE_KEY_ALIAS"
+          done
+
+      - name: Remove imported Android signing material
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          rm -f -- "$RUNNER_TEMP/stable-signing.keystore" "$RUNNER_TEMP/stable-android-signer.der"
 
       - name: Upload Android mappings and native symbols
         env:

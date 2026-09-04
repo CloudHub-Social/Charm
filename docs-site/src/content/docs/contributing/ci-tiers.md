@@ -59,6 +59,24 @@ dispatches and explicitly non-production nightlies retain their existing policy.
 These checks follow Apple's [code-signing verification guidance](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)
 and [notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
+Tagged Android builds require `ANDROID_KEYSTORE_JKS`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
+The workflow imports that existing identity, supplies Gradle's release signing
+configuration, verifies APK signatures and their SHA-256 signer fingerprint,
+and strictly verifies AAB signatures against the configured keystore alias.
+These checks use Android's [apksigner](https://developer.android.com/tools/apksigner)
+and Java's [jarsigner](https://docs.oracle.com/en/java/javase/18/docs/specs/man/jarsigner.html).
+
+Tagged Windows builds require `WINDOWS_CERT_PFX` and `WINDOWS_CERT_PASSWORD`.
+The imported identity is passed to Tauri's Authenticode configuration. The app
+and installers must have valid signatures from that same identity before upload.
+An untrusted self-signed certificate does not satisfy this stable-release gate;
+signing alone does not establish SmartScreen reputation. Android key files and
+the imported Windows private-key identity are removed in always-run cleanup
+steps. Missing credentials or failed signature verification blocks publication.
+No new signing identities are generated. Actual signed platform builds remain
+required evidence; PR workflow checks alone do not establish signing readiness.
+
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same
 integrity chain and retained alongside the binaries. SBOM generation scans a
