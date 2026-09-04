@@ -508,6 +508,13 @@ pub async fn refresh_push_registration(
         if previous.kind != PusherKind::Apns {
             return Ok(());
         }
+        if previous.disabled {
+            tracing::warn!(
+                command = "refresh_push_registration",
+                status = "ignored_while_push_disabled"
+            );
+            return Ok(());
+        }
         let Some(transport) = active_transport(&app) else {
             return Ok(());
         };
@@ -552,6 +559,9 @@ async fn refresh_existing_endpoint(
     previous: PersistedPushEndpoint,
     mut persist: impl FnMut(&PersistedPushEndpoint) -> Result<(), String>,
 ) -> Result<PushEndpoint, PushError> {
+    if previous.disabled {
+        return Err("Push remains disabled".into());
+    }
     let endpoint = transport.register().await?;
     let changed =
         previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id;
@@ -667,8 +677,16 @@ pub(crate) async fn unregister_push_impl(
         .as_ref()
         .and_then(|key| load_persisted_endpoint(app, key))
         .or_else(|| transport_endpoint.as_ref().map(PersistedPushEndpoint::from));
-    let remote_cleanup_complete = if let Some(record) = pending_cleanup.as_mut() {
+    let mut persistence_error = None;
+    if let (Some(account_key), Some(record)) = (&account_key, pending_cleanup.as_mut()) {
         record.disabled = true;
+        if let Err(error) = persisted_endpoint_path(app, account_key)
+            .and_then(|path| save_endpoint_record(&path, record))
+        {
+            persistence_error = Some(error);
+        }
+    }
+    let remote_cleanup_complete = if let Some(record) = pending_cleanup.as_mut() {
         retry_persisted_push_cleanup(&client, record).await
     } else {
         true
@@ -679,7 +697,6 @@ pub(crate) async fn unregister_push_impl(
         let _ = transport.unregister().await;
     }
 
-    let mut persistence_error = None;
     if let Some(account_key) = &account_key {
         if remote_cleanup_complete {
             clear_persisted_endpoint(app, account_key);
@@ -687,10 +704,13 @@ pub(crate) async fn unregister_push_impl(
             let save_result = persisted_endpoint_path(app, account_key)
                 .and_then(|path| save_endpoint_record(&path, record));
             match save_result {
-                Ok(()) => tracing::warn!(
-                    command = "unregister_push",
-                    status = "remote_cleanup_retained_for_retry"
-                ),
+                Ok(()) => {
+                    persistence_error = None;
+                    tracing::warn!(
+                        command = "unregister_push",
+                        status = "remote_cleanup_retained_for_retry"
+                    );
+                }
                 Err(error) => persistence_error = Some(error),
             }
         }
@@ -1544,6 +1564,38 @@ mod tests {
                 .unregistered
                 .load(std::sync::atomic::Ordering::SeqCst));
         }
+    }
+
+    #[tokio::test]
+    async fn apns_refresh_never_registers_a_disabled_record() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let transport = RefreshTransport {
+            fail: false,
+            unregistered: false.into(),
+        };
+        let mut old = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "old-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        old.disabled = true;
+        let mut writes = 0;
+
+        assert!(refresh_existing_endpoint(&client, &transport, old, |_| {
+            writes += 1;
+            Ok(())
+        })
+        .await
+        .is_err());
+        assert_eq!(writes, 0);
+        assert!(server
+            .server()
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
