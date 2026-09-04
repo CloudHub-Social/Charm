@@ -2011,56 +2011,8 @@ async fn email_submission_client(
 }
 
 fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 168)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113)
-                || a >= 224)
-        }
-        std::net::IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() {
-                return is_public_network_ip(mapped.into());
-            }
-            let segments = ip.segments();
-            // Match homeserver discovery: the well-known NAT64 /96 carries
-            // an IPv4 destination, which must satisfy the same public-IP policy.
-            if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
-                let octets = ip.octets();
-                let embedded =
-                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
-                return is_public_network_ip(embedded.into());
-            }
-            if segments[..6] == [0, 0, 0, 0, 0, 0] {
-                let embedded = std::net::Ipv4Addr::new(
-                    (segments[6] >> 8) as u8,
-                    segments[6] as u8,
-                    (segments[7] >> 8) as u8,
-                    segments[7] as u8,
-                );
-                return is_public_network_ip(embedded.into());
-            }
-            !(ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_multicast()
-                || (segments[0] & 0xfe00) == 0xfc00
-                || (segments[0] & 0xffc0) == 0xfe80
-                || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
-                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
-        }
-    }
+    // Email submission and homeserver discovery share one special-purpose policy.
+    crate::auth::is_public_network_ip(ip)
 }
 
 async fn complete_password_reset(
@@ -3164,6 +3116,9 @@ mod tests {
             "64:ff9b::169.254.169.254",
             "64:ff9b::100.64.0.1",
             "64:ff9b::192.0.2.1",
+            "64:ff9b::192.88.99.1",
+            "192.88.99.1",
+            "100::1",
             "64:ff9b::224.0.0.1",
             "64:ff9b:1::8.8.8.8",
             "64:ff9b:0:1::8.8.8.8",
