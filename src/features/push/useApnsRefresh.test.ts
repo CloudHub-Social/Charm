@@ -69,7 +69,7 @@ it("coalesces callbacks while a refresh is in flight", async () => {
 it("does not subscribe outside iOS or without an authenticated session", async () => {
   platform.mockReturnValue("web");
   const { rerender } = renderHook(({ user }: { user?: string }) => useApnsRefresh(user, "DEVICE"), {
-    initialProps: { user: "@alice:example.org" },
+    initialProps: { user: "@alice:example.org" as string | undefined },
   });
   platform.mockReturnValue("ios");
   rerender({ user: undefined });
