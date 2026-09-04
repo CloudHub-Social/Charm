@@ -3862,6 +3862,10 @@ pub async fn complete_sso_login(
                 .await;
             sync::spawn_sync_task(app.clone(), previous_client.clone());
         }
+        // The prior session is fully restored and the cancelled client owns
+        // only its unique temporary store. Remote revocation must not keep
+        // unrelated login/logout operations waiting on this homeserver.
+        drop(_completion_guard);
         revoke_cancelled_sso_device(&client).await;
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);

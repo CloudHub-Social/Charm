@@ -843,6 +843,22 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
             status = "credential_cleanup_incomplete"
         );
     }
+    // Finish volatile invalidation while the completion guard still excludes
+    // replacement login. Disk cleanup can panic or fail; neither may leave the
+    // renderer displaying an account whose client has already been revoked.
+    state.clear_timelines().await;
+    state.clear_pinned_event_cache().await;
+    *state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    *state
+        .push_status
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = crate::push::PushStatus::default();
+    let _ = shell::apply_native_badge(app, 0);
+    let _ = app.emit("session:invalidated", ());
+
     let search_index = std::sync::Arc::clone(&state.search_index);
     let cleanup_account_key = account_key.clone();
     let cleanup_device_id = device_id.to_string();
@@ -878,19 +894,6 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
     if credential_error.is_none() && index_cleared {
         let _ = persistence::clear_logout_tombstone(app, &account_key);
     }
-
-    state.clear_timelines().await;
-    state.clear_pinned_event_cache().await;
-    *state
-        .push_transport
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = None;
-    *state
-        .push_status
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = crate::push::PushStatus::default();
-    let _ = shell::apply_native_badge(app, 0);
-    let _ = app.emit("session:invalidated", ());
 }
 
 /// Keep replacement login excluded until blocking work really finishes, even

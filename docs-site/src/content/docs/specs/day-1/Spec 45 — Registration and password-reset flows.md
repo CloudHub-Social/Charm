@@ -315,7 +315,10 @@ applies. Regression tests cover fresh/resumed initialization and the privacy
 override, pending GitHub Actions verification.
 
 Native SSO cancellation before durable adoption restores both the prior client
-slot and its sync loop if shutdown had begun. Account teardown and SSO adoption
+slot and its sync loop if shutdown had begun. Once the prior session and its
+listeners are restored, cancellation releases login-completion exclusion before
+best-effort remote revocation of the cancelled device; the cancelled client owns
+only its unique temporary store at that point. Account teardown and SSO adoption
 share login-completion exclusion: logout cannot finish clearing a session while
 SSO still owns the rollback window. A queued teardown revalidates its original
 account and device after acquiring that exclusion, so it cannot clear a newly

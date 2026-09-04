@@ -294,6 +294,10 @@ Surfaces changed:
     a blocking worker. Query and indexing kill-switch cleanup release the index
     lock before resetting lifecycle state, preventing lock-order inversion with
     reconciliation; the index is reacquired for purge before returning unavailable.
+    Timeline and pinned-event caches, volatile push state, the native badge, and
+    renderer authentication are cleared before starting that blocking worker,
+    while replacement login is still excluded. A worker panic therefore cannot
+    strand the renderer in the invalidated account's authenticated shell.
     That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
     the durable retry marker when marker persistence succeeds. Both credential
