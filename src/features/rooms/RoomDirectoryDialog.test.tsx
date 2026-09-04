@@ -5,11 +5,13 @@ import { RoomDirectoryDialog } from "./RoomDirectoryDialog";
 
 const searchPublicRooms = vi.fn();
 const joinRoom = vi.fn();
+const resolveAvatar = vi.fn();
 
 vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixModule>()),
   searchPublicRooms: (...args: unknown[]) => searchPublicRooms(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
+  resolveAvatar: (...args: unknown[]) => resolveAvatar(...args),
 }));
 
 vi.mock("@/lib/platform", () => ({ isWebBuild: () => false }));
@@ -50,6 +52,19 @@ describe("RoomDirectoryDialog", () => {
     expect(screen.getByText("#matrix:example.org")).toBeInTheDocument();
     expect(screen.getByText("42 members")).toBeInTheDocument();
     expect(screen.getByText("About 120 public rooms")).toBeInTheDocument();
+  });
+
+  it("keeps the initials fallback when native avatar resolution fails", async () => {
+    resolveAvatar.mockRejectedValueOnce(new Error("media unavailable"));
+    searchPublicRooms.mockResolvedValueOnce({
+      rooms: [{ ...matrixRoom, avatar_url: "mxc://example.org/avatar" }],
+      next_batch: null,
+      total_room_count_estimate: 1,
+    });
+    renderDialog();
+    expect(await screen.findByText("Matrix HQ")).toBeInTheDocument();
+    await waitFor(() => expect(resolveAvatar).toHaveBeenCalledWith("mxc://example.org/avatar"));
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("debounces server-side search and appends a deduplicated next page", async () => {

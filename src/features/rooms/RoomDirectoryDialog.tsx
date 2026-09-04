@@ -23,9 +23,13 @@ function DirectoryRoomAvatar({ room }: { room: PublicRoomSummary }) {
     setDesktopPath(null);
     if (!room.avatar_url || isWebBuild()) return () => undefined;
 
-    void resolveAvatarMxc(room.avatar_url).then((path) => {
-      if (current) setDesktopPath(path);
-    });
+    void resolveAvatarMxc(room.avatar_url)
+      .then((path) => {
+        if (current) setDesktopPath(path);
+      })
+      .catch(() => {
+        if (current) setDesktopPath(null);
+      });
     return () => {
       current = false;
     };
