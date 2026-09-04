@@ -44,7 +44,7 @@ function render(ui: ReactElement) {
 }
 
 const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
-const mockUseFlag = vi.hoisted(() => vi.fn((_key: string) => true));
+const mockUseFlag = vi.hoisted(() => vi.fn<(key: string) => boolean>(() => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));

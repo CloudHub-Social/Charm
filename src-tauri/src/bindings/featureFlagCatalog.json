@@ -163,6 +163,12 @@
   },
   {
     "default": false,
+    "description": "Record, preview, and send voice messages from the composer.",
+    "key": "voice_recording",
+    "owner": "Spec 41 (voice message recording)"
+  },
+  {
+    "default": false,
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"
