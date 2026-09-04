@@ -34,6 +34,15 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+Web password-change dispatch and cancellation share an atomic boundary. A
+cancellation acknowledged before dispatch prevents the mutation; after dispatch,
+the server reports that the outcome may be uncertain, disables automatic HTTP
+retries, and does not restore the attempt for another submission. Secret-free,
+browser-owner-bound receipts retain that distinction for twenty minutes, including
+after completion or request disconnection. Receipt capacity is bounded and new
+dispatches fail closed instead of evicting unexpired evidence. This does not
+prove whether a homeserver applied an already-dispatched password change.
+
 Homeserver `.well-known` discovery is read as a bounded stream: an oversized
 declared length is rejected up front, and chunked responses are stopped before
 more than 64 KiB enters memory. Starting a replacement browser auth flow clears

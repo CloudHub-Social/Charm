@@ -7,6 +7,7 @@
 //! public attempt id.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,24 @@ const MAX_MAILS_PER_SOURCE: usize = 5;
 const MAX_MAILS_PER_ADDRESS: usize = 3;
 const MAX_MAIL_QUOTA_KEYS: usize = 4096;
 const REGISTRATION_EMAIL_RESEND_DELAY: Duration = Duration::from_secs(30);
+const MAX_PASSWORD_RESET_RECEIPTS: usize = 4096;
+const PASSWORD_RESET_UNCERTAIN: &str =
+    "password reset may already have been submitted; check whether your new password works";
+
+/// Secret-free receipt retained after the request leaves the pending store.
+/// Cancellation and dispatch must share one order, not two token checks.
+struct PasswordResetReceipt {
+    owner: String,
+    created_at: Instant,
+    phase: Arc<AtomicU8>,
+}
+
+fn commit_password_reset_dispatch(phase: &AtomicU8) -> Result<(), String> {
+    phase
+        .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| ())
+        .map_err(|_| "password reset attempt expired or was cancelled".to_owned())
+}
 
 type AuthenticatedClient = (
     LoginResponse,
@@ -163,6 +182,7 @@ pub struct PendingAuthStore {
     transitions: Arc<Mutex<()>>,
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     password_resets: Arc<Mutex<HashMap<String, PendingPasswordReset>>>,
+    password_reset_receipts: Arc<Mutex<HashMap<String, PasswordResetReceipt>>>,
     sso_attempts: Arc<Mutex<HashMap<String, PendingSso>>>,
     completed_sso: Arc<Mutex<HashMap<String, CompletedSso>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
@@ -217,6 +237,7 @@ impl Default for PendingAuthStore {
             transitions: Arc::default(),
             registrations: Arc::default(),
             password_resets: Arc::default(),
+            password_reset_receipts: Arc::default(),
             sso_attempts: Arc::default(),
             completed_sso: Arc::default(),
             cancellations: Arc::default(),
@@ -1255,13 +1276,17 @@ impl PendingAuthStore {
             .remove(attempt_id)
             .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
         drop(guard);
+        let phase = self
+            .password_reset_dispatch_phase(owner, attempt_id)
+            .await?;
         let result = tokio::select! {
-            result = complete_password_reset(&mut pending, token.as_deref(), new_password) => result,
+            result = complete_password_reset(&mut pending, token.as_deref(), new_password, &phase) => result,
             () = cancellation.cancelled() => {
                 Err("password reset attempt expired or was cancelled".to_string())
             }
         };
-        if result.is_err() && pending.created_at.elapsed() <= ATTEMPT_TTL {
+        let dispatched = phase.load(Ordering::SeqCst) & 2 != 0;
+        if result.is_err() && !dispatched && pending.created_at.elapsed() <= ATTEMPT_TTL {
             if !self
                 .restore_password_reset(attempt_id.to_owned(), pending)
                 .await
@@ -1271,14 +1296,90 @@ impl PendingAuthStore {
         } else {
             self.finish_attempt(attempt_id).await;
         }
-        result
+        if result.is_err() && dispatched {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            result
+        }
     }
 
     pub async fn cancel_password_reset(&self, owner: &str, attempt_id: &str) -> Result<(), String> {
-        self.owned_cancellation(owner, attempt_id).await?;
-        self.cancel_token(attempt_id).await;
+        // Lock order is shared with dispatch registration and generic cleanup.
+        let mut cancellations = self.cancellations.lock().await;
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        let receipt = receipts.get(attempt_id);
+        let owned = cancellations
+            .get(attempt_id)
+            .is_some_and(|(current, _)| current == owner)
+            || receipt.is_some_and(|receipt| receipt.owner == owner);
+        if !owned {
+            return Err("authentication attempt is no longer current".to_owned());
+        }
+        let dispatched =
+            receipt.is_some_and(|receipt| receipt.phase.fetch_or(1, Ordering::SeqCst) & 2 != 0);
+        if let Some((_, token)) = cancellations.remove(attempt_id) {
+            token.cancel();
+        }
+        drop(receipts);
+        drop(cancellations);
         self.password_resets.lock().await.remove(attempt_id);
-        Ok(())
+        if dispatched {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn cancel_password_resets_for_owner(&self, owner: &str) -> Result<(), String> {
+        self.cancel_owner(owner).await;
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        if receipts
+            .values()
+            .any(|receipt| receipt.owner == owner && receipt.phase.load(Ordering::SeqCst) & 2 != 0)
+        {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn password_reset_dispatch_phase(
+        &self,
+        owner: &str,
+        attempt_id: &str,
+    ) -> Result<Arc<AtomicU8>, String> {
+        let cancellations = self.cancellations.lock().await;
+        if !cancellations
+            .get(attempt_id)
+            .is_some_and(|(current, token)| current == owner && !token.is_cancelled())
+        {
+            return Err("password reset attempt expired or was cancelled".to_owned());
+        }
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        if let Some(receipt) = receipts.get(attempt_id) {
+            return if receipt.owner == owner && receipt.phase.load(Ordering::SeqCst) == 0 {
+                Ok(receipt.phase.clone())
+            } else {
+                Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+            };
+        }
+        // Never evict an unexpired receipt to admit another mutation.
+        if receipts.len() >= MAX_PASSWORD_RESET_RECEIPTS {
+            return Err("too many password reset attempts; try again later".to_owned());
+        }
+        let phase = Arc::new(AtomicU8::new(0));
+        receipts.insert(
+            attempt_id.to_owned(),
+            PasswordResetReceipt {
+                owner: owner.to_owned(),
+                created_at: Instant::now(),
+                phase: phase.clone(),
+            },
+        );
+        Ok(phase)
     }
 
     async fn take_registration(
@@ -1413,7 +1514,11 @@ impl PendingAuthStore {
     }
 
     async fn cancel_token(&self, attempt_id: &str) {
-        if let Some((_, token)) = self.cancellations.lock().await.remove(attempt_id) {
+        let mut cancellations = self.cancellations.lock().await;
+        if let Some(receipt) = self.password_reset_receipts.lock().await.get(attempt_id) {
+            receipt.phase.fetch_or(1, Ordering::SeqCst);
+        }
+        if let Some((_, token)) = cancellations.remove(attempt_id) {
             token.cancel();
         }
     }
@@ -1939,6 +2044,7 @@ async fn complete_password_reset(
     pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
+    phase: &AtomicU8,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
         // The token may be single-use. A retry after the password-change
@@ -1968,10 +2074,11 @@ async fn complete_password_reset(
     .map_err(|_| "could not confirm password reset".to_string())?;
     let mut request = change_password::v3::Request::new(new_password);
     request.auth = Some(AuthData::EmailIdentity(identity));
+    commit_password_reset_dispatch(phase)?;
     pending
         .client
         .send(request)
-        .with_request_config(RequestConfig::new().skip_auth())
+        .with_request_config(RequestConfig::new().skip_auth().retry_limit(0))
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
@@ -2103,6 +2210,210 @@ mod tests {
             store.password_resets.lock().await["reset-attempt"].send_attempt,
             2
         );
+    }
+
+    #[tokio::test]
+    async fn password_reset_cancellation_before_dispatch_prevents_mutation() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        store
+            .cancel_password_reset("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.password_resets.lock().await.is_empty());
+        assert!(store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn password_reset_late_cancellation_preserves_owner_bound_uncertainty() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        super::commit_password_reset_dispatch(&phase).unwrap();
+        assert!(store
+            .cancel_password_reset("browser-b", "reset-attempt")
+            .await
+            .is_err());
+        assert_eq!(phase.load(super::Ordering::SeqCst), 2);
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .cancel_password_reset("browser-a", "reset-attempt")
+                    .await
+                    .unwrap_err(),
+                super::PASSWORD_RESET_UNCERTAIN
+            );
+        }
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.cancellations.lock().await.is_empty());
+        assert!(store.password_resets.lock().await.is_empty());
+        assert_eq!(
+            store.capacity.available_permits(),
+            MAX_PENDING_AUTH_ATTEMPTS
+        );
+    }
+
+    #[tokio::test]
+    async fn password_reset_owner_cleanup_orders_before_dispatch() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        store.cancel_owner("browser-a").await;
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.password_resets.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_reset_owner_only_cleanup_does_not_hide_dispatched_mutation() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        super::commit_password_reset_dispatch(&phase).unwrap();
+        assert!(store
+            .cancel_password_resets_for_owner("browser-b")
+            .await
+            .is_ok());
+        assert_eq!(phase.load(super::Ordering::SeqCst), 2);
+        assert_eq!(
+            store
+                .cancel_password_resets_for_owner("browser-a")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert_eq!(
+            store
+                .cancel_password_resets_for_owner("browser-a")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert!(store.password_resets.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_reset_receipts_are_bounded_without_evicting_live_evidence() {
+        let store = reset_store_for_resend(false).await;
+        {
+            let mut receipts = store.password_reset_receipts.lock().await;
+            for index in 0..super::MAX_PASSWORD_RESET_RECEIPTS {
+                receipts.insert(
+                    index.to_string(),
+                    super::PasswordResetReceipt {
+                        owner: "another-browser".to_owned(),
+                        created_at: Instant::now(),
+                        phase: std::sync::Arc::new(super::AtomicU8::new(2)),
+                    },
+                );
+            }
+        }
+        assert!(store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .is_err());
+        {
+            let mut receipts = store.password_reset_receipts.lock().await;
+            assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);
+            receipts.get_mut("0").unwrap().created_at =
+                Instant::now() - super::ATTEMPT_TTL - Duration::from_secs(1);
+        }
+        store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        let receipts = store.password_reset_receipts.lock().await;
+        assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);
+        assert!(!receipts.contains_key("0"));
+        assert_eq!(receipts["1"].phase.load(super::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn password_reset_cancel_after_http_dispatch_does_not_restore_or_claim_prevention() {
+        let received = std::sync::Arc::new(tokio::sync::Notify::new());
+        let request_received = received.clone();
+        let router = axum::Router::new()
+            .route(
+                "/_matrix/client/versions",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"versions": ["v1.11"]}))
+                }),
+            )
+            .route(
+                "/_matrix/client/v3/account/password",
+                axum::routing::post(move || {
+                    let received = request_received.clone();
+                    async move {
+                        received.notify_one();
+                        std::future::pending::<axum::http::StatusCode>().await
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(format!("http://{}", listener.local_addr().unwrap()))
+            .build()
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let store = reset_store_for_resend(false).await;
+        store
+            .password_resets
+            .lock()
+            .await
+            .get_mut("reset-attempt")
+            .unwrap()
+            .client = client;
+        let confirming = store.clone();
+        let confirmation = tokio::spawn(async move {
+            confirming
+                .confirm_password_reset(
+                    "browser-a",
+                    "reset-attempt",
+                    None,
+                    "test-password".to_owned(),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), received.notified())
+            .await
+            .expect("password request reached server");
+        assert_eq!(
+            store
+                .cancel_password_reset("browser-a", "reset-attempt")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), confirmation)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert!(store.password_resets.lock().await.is_empty());
+        assert_eq!(
+            store
+                .cancel_password_reset("browser-a", "reset-attempt")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        server.abort();
     }
 
     #[tokio::test]

@@ -1997,7 +1997,7 @@ async fn cancel_password_reset(
     jar: CookieJar,
     Json(request): Json<CancelAttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_registration_and_recovery(&state)?;
+    // Turning off rollout must not disable owner-bound cleanup of existing work.
     let owner = require_preauth_owner(&jar)?;
     if let Some(attempt_id) = request.attempt_id {
         state
@@ -2006,7 +2006,11 @@ async fn cancel_password_reset(
             .await
             .map_err(ApiError::bad_request)?;
     } else {
-        state.pending_auth.cancel_owner(&owner).await;
+        state
+            .pending_auth
+            .cancel_password_resets_for_owner(&owner)
+            .await
+            .map_err(ApiError::bad_request)?;
     }
     Ok((jar.remove(clear_preauth_cookie()), Json(())))
 }
