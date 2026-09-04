@@ -76,8 +76,12 @@ export function AppShell({
   return (
     <div className="flex h-[100dvh] flex-col">
       <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
+        {/* Keep admitted uploads owned across list/detail navigation. */}
+        <div hidden={mobileView !== "detail" || !activeRoomId || rightPanel !== null}>
+          {content}
+        </div>
         {mobileView === "detail" && activeRoomId ? (
-          (rightPanel ?? content)
+          rightPanel
         ) : (
           <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
             {spaceRail}

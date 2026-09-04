@@ -1,4 +1,4 @@
-import { createElement, useState, type PropsWithChildren, type ReactNode } from "react";
+import { createElement, useEffect, useState, type PropsWithChildren, type ReactNode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +64,33 @@ function renderShell(
 }
 
 describe("AppShell", () => {
+  it("retains the upload owner through mobile navigation and disposes it on teardown", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const disposed = vi.fn();
+    function UploadOwner() {
+      useEffect(() => () => disposed(), []);
+      return <div>upload-owner</div>;
+    }
+    const props = {
+      spaceRail: <div>spaces</div>,
+      roomList: <div>rooms</div>,
+      content: <UploadOwner />,
+      rightPanel: null,
+      activeRoomId: "!room:example.org",
+      selectionRequestId: 0,
+      onMobileViewChange: vi.fn(),
+    };
+    const view = render(<AppShell {...props} mobileView="detail" />);
+    view.rerender(<AppShell {...props} mobileView="list" />);
+    expect(screen.getByText("upload-owner")).not.toBeVisible();
+    expect(disposed).not.toHaveBeenCalled();
+    view.rerender(<AppShell {...props} mobileView="detail" />);
+    expect(screen.getByText("upload-owner")).toBeVisible();
+    expect(disposed).not.toHaveBeenCalled();
+    view.unmount();
+    expect(disposed).toHaveBeenCalledOnce();
+  });
+
   beforeEach(() => {
     mockUseFlag.mockReturnValue(true);
   });
@@ -113,7 +140,7 @@ describe("AppShell", () => {
     renderShell("!room:example.org", { rightPanel: <div>right-panel</div> });
 
     expect(screen.getByText("right-panel")).toBeInTheDocument();
-    expect(screen.queryByText("chat-content")).not.toBeInTheDocument();
+    expect(screen.getByText("chat-content")).not.toBeVisible();
   });
 
   it("tapping Settings opens the settings overlay via settingsOpenAtom", () => {
