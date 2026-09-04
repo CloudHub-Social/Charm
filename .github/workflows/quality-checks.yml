@@ -564,7 +564,11 @@ jobs:
         if: steps.cache-cargo-audit.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --locked
 
-      - run: cargo audit
+      # Workspace builds (including Tauri invoked from src-tauri) resolve
+      # dependencies from the root lockfile. The legacy standalone lockfile
+      # can omit workspace-only dependencies such as the iOS push plugin.
+      # Scan the exact build graph rather than reporting a partial audit.
+      - run: cargo audit --file ../Cargo.lock
 
   rust-integration:
     name: Rust (verification, alias-resolution, discovery/registration, SSO, persistence)

@@ -77,11 +77,16 @@ the unread counts the Rust sync loop already computes.
   - Windows: taskbar **overlay icon** via `set_overlay_icon` (Tauri v2 window API,
     Windows-only) — render the count as a small overlay.
   - Linux: best-effort Unity launcher count where supported; otherwise tray badge only.
-- **Notifications**: `tauri-plugin-notification` (Rust + `@tauri-apps/plugin-notification`).
-  Notifications are triggered from Rust in the sync loop (so they fire even when the webview
-  is backgrounded) via the plugin's Rust `Notification` builder, OR surfaced to JS which
-  calls `sendNotification()` — **choose Rust-side triggering** so it works when the webview is
-  throttled. Request permission on first run.
+- **Notifications**: Rust owns the platform notification boundary. Desktop and Android use
+  `tauri-plugin-notification`; iOS uses the pinned SableClient
+  `tauri-plugin-notifications` bridge. The frontend does not depend on
+  `@tauri-apps/plugin-notification` or call `sendNotification()`. It requests and checks
+  OS permission through Charm's `request_notification_permission` and
+  `is_notification_permission_granted` Tauri commands. Local notifications are triggered
+  from Rust through the shared shell wrapper while the application process is running,
+  avoiding dependence on webview timers. This does not establish suspended/killed iOS
+  delivery: APNs signing, gateway, token lifecycle and notification-extension readiness
+  remain governed by Day-1 Spec 11. Request permission before enabling notifications.
 - **Autostart**: `tauri-plugin-autostart` (`enable()/disable()/is_enabled()`), toggled via a
   command.
 - **Window state**: `tauri-plugin-window-state` — auto save/restore size/position/maximized
