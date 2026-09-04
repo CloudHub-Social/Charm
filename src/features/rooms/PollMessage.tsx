@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { endPoll, getPendingPollEnd, resendMessage, voteOnPoll } from "@/lib/matrix";
+import {
+  discardFailedMessage,
+  endPoll,
+  getPendingPollEnd,
+  resendMessage,
+  voteOnPoll,
+} from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
@@ -121,6 +127,21 @@ export function PollMessage({
     } catch {
       setError("The poll could not be ended.");
       if (!endTransactionId) setEnding(false);
+    } finally {
+      setEndRequestPending(false);
+    }
+  }
+
+  async function abandonEnd() {
+    if (!endTransactionId || endRequestPending) return;
+    setEndRequestPending(true);
+    try {
+      await discardFailedMessage(roomId, endTransactionId);
+      setEndTransactionId(null);
+      setEnding(false);
+      setError(null);
+    } catch {
+      setError("The failed poll close could not be discarded.");
     } finally {
       setEndRequestPending(false);
     }
@@ -265,9 +286,18 @@ export function PollMessage({
             )}
           </div>
           {ending && !ended && !endRequestPending && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Close queued. Waiting for the timeline to confirm; retry uses the same queued event.
-            </p>
+            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <p>Close queued. Waiting for the timeline to confirm.</p>
+              {error && endTransactionId && (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent"
+                  onClick={() => void abandonEnd()}
+                >
+                  Discard failed close
+                </button>
+              )}
+            </div>
           )}
           {unsupportedSelectionCount && !poll.ended && (
             <p className="mt-2 text-xs text-muted-foreground">
