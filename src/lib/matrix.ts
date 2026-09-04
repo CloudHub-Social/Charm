@@ -1304,7 +1304,9 @@ export function registerPush(): Promise<PushRegistration> {
   return invoke("register_push");
 }
 
-export function requestNotificationPermission(): Promise<string> {
+export function requestNotificationPermission(): Promise<
+  "granted" | "denied" | "prompt" | "prompt-with-rationale"
+> {
   return invoke("request_notification_permission");
 }
 

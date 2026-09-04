@@ -65,7 +65,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
 
 pub const MASTER_KEY_ENV: &str = "CHARM_WEB_SERVER_MASTER_KEY";

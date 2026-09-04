@@ -47,6 +47,17 @@ pub(crate) async fn show_native_notification(
     }
 }
 
+fn notification_permission_label(state: tauri::plugin::PermissionState) -> String {
+    use tauri::plugin::PermissionState;
+    match state {
+        PermissionState::Granted => "granted",
+        PermissionState::Denied => "denied",
+        PermissionState::Prompt => "prompt",
+        PermissionState::PromptWithRationale => "prompt-with-rationale",
+    }
+    .to_owned()
+}
+
 #[tauri::command]
 pub async fn request_notification_permission(app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "ios")]
@@ -55,7 +66,7 @@ pub async fn request_notification_permission(app: AppHandle) -> Result<String, S
         app.notifications()
             .request_permission()
             .await
-            .map(|state| state.to_string())
+            .map(notification_permission_label)
             .map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "ios"))]
@@ -63,7 +74,7 @@ pub async fn request_notification_permission(app: AppHandle) -> Result<String, S
         use tauri_plugin_notification::NotificationExt;
         app.notification()
             .request_permission()
-            .map(|state| state.to_string())
+            .map(notification_permission_label)
             .map_err(|error| error.to_string())
     }
 }
@@ -590,6 +601,22 @@ pub fn set_autostart(_app: AppHandle, _enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_permission_contract_uses_stable_literals() {
+        use tauri::plugin::PermissionState;
+        for (state, expected) in [
+            (PermissionState::Granted, "granted"),
+            (PermissionState::Denied, "denied"),
+            (PermissionState::Prompt, "prompt"),
+            (
+                PermissionState::PromptWithRationale,
+                "prompt-with-rationale",
+            ),
+        ] {
+            assert_eq!(notification_permission_label(state), expected);
+        }
+    }
 
     fn room(
         unread_messages: u64,
