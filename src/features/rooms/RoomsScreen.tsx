@@ -741,6 +741,7 @@ export function RoomsScreen({
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
         isSettingsActive={settingsSection !== null}
+        chatObscured={createJoinDialogOpen || messageSearchOpen || quickSwitcherOpen}
         roomList={
           <RoomList
             rooms={roomInvitesEnabled ? rooms : joinedRooms}

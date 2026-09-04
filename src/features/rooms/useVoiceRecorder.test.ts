@@ -54,7 +54,9 @@ describe("useVoiceRecorder", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
+    vi.useFakeTimers({
+      toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "performance"],
+    });
     FakeRecorder.instances = [];
     getUserMedia.mockResolvedValue(stream);
     resumeContext.mockResolvedValue(undefined);
@@ -312,9 +314,9 @@ describe("useVoiceRecorder", () => {
     await act(async () => {
       await result.current.start();
     });
-    await act(async () => vi.advanceTimersByTime(600_000));
+    await act(async () => vi.advanceTimersByTime(599_000));
     expect(result.current.phase).toBe("preview");
-    expect(result.current.preview?.metadata.duration_ms).toBe(600_000);
+    expect(result.current.preview?.metadata.duration_ms).toBe(599_000);
     expect(result.current.preview?.metadata.waveform).toHaveLength(120);
     expect(stopTrack).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);

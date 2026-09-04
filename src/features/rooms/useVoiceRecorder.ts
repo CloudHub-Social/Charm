@@ -4,6 +4,7 @@ import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const MAX_DURATION_MS = 600_000;
+const AUTO_STOP_HEADROOM_MS = 1_000;
 const MIME_TYPES = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"];
 
 export function useVoiceRecorder() {
@@ -207,7 +208,13 @@ export function useVoiceRecorder() {
       }, 100);
       preparing.current = null;
       startedAt = performance.now();
-      const durationTimer = setTimeout(() => requestStop(), MAX_DURATION_MS);
+      // Ask the recorder to stop slightly before the hard cap. Browser timer
+      // callbacks can drift, and requestStop deliberately records the actual
+      // callback time so a materially stalled page is still rejected below.
+      const durationTimer = setTimeout(
+        () => requestStop(),
+        MAX_DURATION_MS - AUTO_STOP_HEADROOM_MS,
+      );
       active.current = { recorder, stream, context, timer, durationTimer, requestStop };
       recorder.start(250);
       setPhase("recording");

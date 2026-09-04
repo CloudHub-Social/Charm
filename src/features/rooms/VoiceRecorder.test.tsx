@@ -31,7 +31,7 @@ describe("VoiceRecorder", () => {
 
   it("does not upload a preview until explicitly sent", async () => {
     const onSend = vi.fn().mockResolvedValue(true);
-    render(<VoiceRecorder mobile={false} onSend={onSend} />);
+    render(<VoiceRecorder mobile={false} onSend={onSend} onClearFailedUpload={vi.fn()} />);
     expect(onSend).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Voice message preview")).toHaveAttribute(
       "src",
@@ -45,7 +45,13 @@ describe("VoiceRecorder", () => {
   });
 
   it("retains the preview after a failed send", async () => {
-    render(<VoiceRecorder mobile={false} onSend={vi.fn().mockResolvedValue(false)} />);
+    render(
+      <VoiceRecorder
+        mobile={false}
+        onSend={vi.fn().mockResolvedValue(false)}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Send voice message" })),
     );
@@ -55,7 +61,7 @@ describe("VoiceRecorder", () => {
 
   it("discards without uploading", () => {
     const onSend = vi.fn();
-    render(<VoiceRecorder mobile={false} onSend={onSend} />);
+    render(<VoiceRecorder mobile={false} onSend={onSend} onClearFailedUpload={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
     expect(capture.discard).toHaveBeenCalledOnce();
     expect(onSend).not.toHaveBeenCalled();
@@ -69,7 +75,9 @@ describe("VoiceRecorder", () => {
           finish = resolve;
         }),
     );
-    const view = render(<VoiceRecorder mobile={false} onSend={onSend} />);
+    const view = render(
+      <VoiceRecorder mobile={false} onSend={onSend} onClearFailedUpload={vi.fn()} />,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
     expect(screen.getByRole("button", { name: "Sending voice message…" })).toBeDisabled();
     view.unmount();
@@ -98,7 +106,7 @@ describe("VoiceRecorder", () => {
   function renderMobileRecorder() {
     capture.phase = "idle";
     capture.preview = null;
-    render(<VoiceRecorder mobile onSend={vi.fn()} />);
+    render(<VoiceRecorder mobile onSend={vi.fn()} onClearFailedUpload={vi.fn()} />);
     const button = screen.getByRole("button", { name: "Record voice message" });
     Object.defineProperty(button, "setPointerCapture", { value: vi.fn() });
     return button;
@@ -153,7 +161,7 @@ describe("VoiceRecorder", () => {
   it("supports keyboard stop on mobile", () => {
     capture.phase = "recording";
     capture.preview = null;
-    render(<VoiceRecorder mobile onSend={vi.fn()} />);
+    render(<VoiceRecorder mobile onSend={vi.fn()} onClearFailedUpload={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Stop recording" }), { detail: 0 });
     expect(capture.stop).toHaveBeenCalledOnce();
     expect(capture.start).not.toHaveBeenCalled();

@@ -18,6 +18,8 @@ interface AppShellProps {
   content: ReactNode;
   /** Whether the Settings destination is currently active in mobile navigation. */
   isSettingsActive?: boolean;
+  /** Whether a room-owned modal currently obscures the active chat. */
+  chatObscured?: boolean;
   /** The right-hand room-info panel, or `null` when closed — desktop-only; not shown on mobile (Day-2 per the spec's non-goals). */
   rightPanel: ReactNode | null;
   /** The currently selected room id, or `null` — drives the mobile list-vs-detail view. */
@@ -51,6 +53,7 @@ export function AppShell({
   mobileView,
   onMobileViewChange,
   isSettingsActive = false,
+  chatObscured = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
@@ -59,6 +62,7 @@ export function AppShell({
   const contentRef = useRef<HTMLDivElement>(null);
   const chatVisible =
     !isSettingsActive &&
+    !chatObscured &&
     !verificationOverlayOpen &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
 

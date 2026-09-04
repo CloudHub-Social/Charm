@@ -510,10 +510,11 @@ export function ChatShell({
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
-  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(
-    activeRoomId,
-    roomMutationsBlockedRef,
-  );
+  const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
+    useAttachmentUploads(
+      activeRoomId,
+      roomMutationsBlockedRef,
+    );
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);
@@ -1152,6 +1153,7 @@ export function ChatShell({
               key={`${currentUserId}:${room.room_id}`}
               mobile={layout === "mobile"}
               onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+              onClearFailedUpload={dismissFailedUploadForFile}
             />
           )}
         </div>

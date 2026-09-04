@@ -5,9 +5,10 @@ import { useVoiceRecorder } from "./useVoiceRecorder";
 interface VoiceRecorderProps {
   mobile: boolean;
   onSend: (file: File, metadata: VoiceMessageMetadata) => Promise<boolean>;
+  onClearFailedUpload: (file: File) => void;
 }
 
-export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
+export function VoiceRecorder({ mobile, onSend, onClearFailedUpload }: VoiceRecorderProps) {
   const recorder = useVoiceRecorder();
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(false);
@@ -31,6 +32,7 @@ export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
     sendingRef.current = true;
     setSending(true);
     setSendError(false);
+    onClearFailedUpload(recorder.preview.file);
     try {
       const sent = await onSend(recorder.preview.file, recorder.preview.metadata);
       if (!mounted.current) return;
@@ -139,6 +141,7 @@ export function VoiceRecorder({ mobile, onSend }: VoiceRecorderProps) {
             className={buttonClass}
             disabled={sending}
             onClick={() => {
+              if (recorder.preview) onClearFailedUpload(recorder.preview.file);
               recorder.discard();
               setSendError(false);
             }}

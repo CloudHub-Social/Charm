@@ -202,5 +202,9 @@ export function useAttachmentUploads(
     });
   }, []);
 
-  return { uploads, handleAttachFile, dismissUpload };
+  const dismissFailedUploadForFile = useCallback((file: File) => {
+    setUploads((prev) => prev.filter((upload) => !(upload.failed && upload.filename === file.name)));
+  }, []);
+
+  return { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile };
 }
