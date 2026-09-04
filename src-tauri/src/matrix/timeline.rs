@@ -1413,6 +1413,9 @@ async fn maybe_notify_new_message(
     {
         return;
     }
+    if message.poll.is_some() && !super::polls::notifications_enabled(app) {
+        return;
+    }
 
     let Some(room) = client.get_room(room_id) else {
         return;

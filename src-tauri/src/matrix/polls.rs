@@ -16,7 +16,7 @@ use matrix_sdk::ruma::events::poll::{
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::{EventId, RoomId};
 use matrix_sdk::Client;
-use tauri::State;
+use tauri::{Manager, State};
 
 use super::send::send_and_capture_transaction_id;
 use super::MatrixState;
@@ -24,10 +24,20 @@ use super::MatrixState;
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 20;
 
+pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|directory| {
+        crate::feature_flags::flag(&directory, crate::feature_flags::FeatureFlagKey::Polls)
+    })
+}
+
 fn normalize_poll(question: String, options: Vec<String>) -> Result<(String, Vec<String>), String> {
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("Poll question cannot be empty".to_string());
+    }
+    // Match HTML maxlength's UTF-16 units at the native/shared HTTP boundary.
+    if question.encode_utf16().count() > 500 {
+        return Err("Poll question is too long".to_string());
     }
     if options.len() < MIN_OPTIONS || options.len() > MAX_OPTIONS {
         return Err(format!(
@@ -41,6 +51,12 @@ fn normalize_poll(question: String, options: Vec<String>) -> Result<(String, Vec
         .collect();
     if options.iter().any(String::is_empty) {
         return Err("Poll options cannot be empty".to_string());
+    }
+    if options
+        .iter()
+        .any(|option| option.encode_utf16().count() > 200)
+    {
+        return Err("Poll option is too long".to_string());
     }
     let unique: std::collections::HashSet<String> =
         options.iter().map(|option| option.to_lowercase()).collect();
@@ -101,8 +117,8 @@ pub async fn vote_on_poll_impl(
     poll_event_id: &str,
     answer_id: String,
 ) -> Result<String, String> {
-    if answer_id.is_empty() {
-        return Err("Poll answer id cannot be empty".to_string());
+    if answer_id.is_empty() || answer_id.len() > 4096 {
+        return Err("Poll answer id is empty or too long".to_string());
     }
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
@@ -195,5 +211,14 @@ mod tests {
         assert!(
             poll_start_content("Q".into(), vec!["Pizza".into(), "pizza".into()], false).is_err()
         );
+    }
+
+    #[test]
+    fn enforces_ui_text_bounds_for_direct_command_callers() {
+        let options = vec!["A".to_string(), "B".to_string()];
+        assert!(super::normalize_poll("x".repeat(501), options.clone()).is_err());
+        assert!(super::normalize_poll("😀".repeat(251), options.clone()).is_err());
+        assert!(super::normalize_poll("😀".repeat(250), options).is_ok());
+        assert!(super::normalize_poll("Q".into(), vec!["x".repeat(201), "B".into()]).is_err());
     }
 }

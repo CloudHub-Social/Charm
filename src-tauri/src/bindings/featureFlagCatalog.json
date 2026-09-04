@@ -163,6 +163,12 @@
   },
   {
     "default": false,
+    "description": "Create, vote on, display, and end Matrix polls in the room timeline.",
+    "key": "polls",
+    "owner": "Day-2 Spec 03 (polls)"
+  },
+  {
+    "default": false,
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"

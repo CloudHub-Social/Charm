@@ -120,6 +120,10 @@ parallel protocol logic.
 
 ## Related documentation
 
+Both opened- and unopened-room poll notifications obey the default-off `polls`
+flag. Shared native/HTTP creation validation matches the form's 500 UTF-16-unit
+question and 200-unit option limits; vote answer IDs are bounded to 4096 bytes.
+
 - [Spec 14: matrix-sdk-ui Timeline](/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/)
   supplies the event stream and update semantics.
 - [Spec 58: rich message rendering](/specs/day-1/spec-58--rich-message-content-rendering/)

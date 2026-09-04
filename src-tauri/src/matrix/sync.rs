@@ -503,7 +503,10 @@ async fn notify_unopened_room_messages(
             let Ok(deserialized) = deserialize_result else {
                 continue;
             };
-            let Some(original) = unopened_notification_content(deserialized) else {
+            let Some(original) = unopened_notification_content(
+                deserialized,
+                super::polls::notifications_enabled(app),
+            ) else {
                 continue;
             };
             if own_user_id.is_some_and(|me| me == original.sender) {
@@ -544,6 +547,7 @@ struct UnopenedNotificationContent {
 
 fn unopened_notification_content(
     event: matrix_sdk::ruma::events::AnySyncTimelineEvent,
+    polls_enabled: bool,
 ) -> Option<UnopenedNotificationContent> {
     use matrix_sdk::ruma::events::poll::unstable_start::UnstablePollStartEventContent;
     use matrix_sdk::ruma::events::room::message::Relation;
@@ -566,7 +570,7 @@ fn unopened_notification_content(
                 mentions: original.content.mentions.clone(),
             })
         }
-        AnySyncMessageLikeEvent::UnstablePollStart(event) => {
+        AnySyncMessageLikeEvent::UnstablePollStart(event) if polls_enabled => {
             let original = event.as_original()?;
             let UnstablePollStartEventContent::New(content) = &original.content else {
                 return None;
@@ -581,7 +585,7 @@ fn unopened_notification_content(
                 mentions: None,
             })
         }
-        AnySyncMessageLikeEvent::PollStart(event) => {
+        AnySyncMessageLikeEvent::PollStart(event) if polls_enabled => {
             let original = event.as_original()?;
             if matches!(original.content.relates_to, Some(Relation::Replacement(_))) {
                 return None;
@@ -623,9 +627,16 @@ mod unopened_poll_notification_tests {
             "event_id": "$poll", "sender": "@alice:example.org",
             "origin_server_ts": 1, "content": content
         });
-        let notification =
-            super::unopened_notification_content(serde_json::from_value(event.clone()).unwrap())
-                .unwrap();
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            false
+        )
+        .is_none());
+        let notification = super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            true,
+        )
+        .unwrap();
         assert_eq!(notification.body, "Lunch?");
         assert_eq!(notification.event_id.as_str(), "$poll");
         assert_eq!(notification.sender.as_str(), "@alice:example.org");
@@ -635,7 +646,8 @@ mod unopened_poll_notification_tests {
             "rel_type": "m.replace", "event_id": "$original"
         });
         assert!(
-            super::unopened_notification_content(serde_json::from_value(event).unwrap()).is_none()
+            super::unopened_notification_content(serde_json::from_value(event).unwrap(), true)
+                .is_none()
         );
     }
 }
