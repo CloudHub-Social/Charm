@@ -63,4 +63,4 @@ rusqlite = { version = "0.37", features = ["backup"] }
 # Pinned to match the version axum/tungstenite already pull in transitively
 # (see Cargo.lock) so the dev-only WebSocket test client doesn't drag in a
 # second, differently-versioned copy of tokio-tungstenite.
-tokio-tungstenite = "0.30"
+tokio-tungstenite = "0.29"
