@@ -465,6 +465,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     editor.view.dispatch(editor.state.tr);
   }, [editor, placeholder, composerParityEnabled]);
 
+  useEffect(() => {
+    if (!editor || composerParityEnabled) return;
+    // Exit the active code block without converting or deleting authored code.
+    if (editor.isActive("codeBlock")) editor.commands.exitCode();
+    const { state } = editor;
+    // Change future typing marks only; unsetMark would strip a selected draft.
+    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter(
+      (mark) => mark.type.name !== "matrixSpoiler" && mark.type.name !== "strike",
+    );
+    editor.view.dispatch(state.tr.setStoredMarks(marks));
+  }, [editor, composerParityEnabled]);
+
   // Reports the editor's initial content emptiness once it's created
   // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
   // above only fires on subsequent keystrokes, so without this the parent
@@ -489,7 +501,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const commandText =
       mode === "send" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
     const slash =
-      mode === "send" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
+      mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
       onSlashCommand(slash);
       // `clearContent(false)` skips emitting `onUpdate` — clearing after a

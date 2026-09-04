@@ -49,6 +49,24 @@ describe("composer links", () => {
     expect(editor.getText()).toBe("hello");
   });
 
+  it("updates the existing link at a collapsed cursor without inserting text", () => {
+    const editor = new Editor({
+      extensions: [StarterKit],
+      content: '<p><a href="https://old.example/">hello</a></p>',
+    });
+    editors.push(editor);
+    editor.commands.setTextSelection(3);
+    render(<ComposerLinkButton editor={editor} />);
+    fireEvent.click(screen.getByRole("button", { name: "Insert link" }));
+    fireEvent.change(screen.getByLabelText("Link address"), {
+      target: { value: "https://new.example/" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply link" }));
+    expect(editor.getText()).toBe("hello");
+    expect(editor.getHTML()).toContain('href="https://new.example/"');
+    expect(editor.getHTML()).not.toContain("old.example");
+  });
+
   it("refuses to apply a stale selection after the document changes", () => {
     const editor = setup();
     editor.commands.setContent("<p>new draft</p>");

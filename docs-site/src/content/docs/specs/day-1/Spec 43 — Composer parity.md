@@ -11,6 +11,12 @@ already at full parity; this closes the slash-command breadth and formatting gap
 
 ## Problem & why now
 
+Message-sending slash commands also dispatch from reply mode; edit mode never
+parses them as commands. Editing an active link updates its existing text range
+instead of inserting another URL. Disabling composer parity clears future
+spoiler/strike typing marks and exits the active code block without stripping
+already-authored formatting. These boundaries have CI regression coverage.
+
 The parity audit (2026-07-13) found Charm 2.0's composer solid on autocomplete
 (@user, #room, :emoji:, /command all covered) but thin on two axes vs Charm 1.0:
 

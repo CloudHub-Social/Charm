@@ -26,6 +26,7 @@ export function ComposerLinkButton({ editor }: { editor: Editor | null }) {
     from: number;
     to: number;
     doc: Editor["state"]["doc"];
+    activeLink: boolean;
   } | null>(null);
 
   return (
@@ -44,6 +45,7 @@ export function ComposerLinkButton({ editor }: { editor: Editor | null }) {
             from: editor.state.selection.from,
             to: editor.state.selection.to,
             doc: editor.state.doc,
+            activeLink: editor.isActive("link"),
           });
         }}
         className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
@@ -84,7 +86,9 @@ export function ComposerLinkButton({ editor }: { editor: Editor | null }) {
               .chain()
               .focus()
               .setTextSelection({ from: selection.from, to: selection.to });
-            if (selection.from === selection.to) {
+            if (selection.from === selection.to && selection.activeLink) {
+              chain.extendMarkRange("link").setLink({ href: url }).run();
+            } else if (selection.from === selection.to) {
               chain
                 .insertContent({
                   type: "text",

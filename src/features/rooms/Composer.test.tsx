@@ -43,6 +43,58 @@ function pasteText(editable: Element, text: string) {
 }
 
 describe("Composer", () => {
+  it("dispatches message slash commands while replying", async () => {
+    flags.composerParity = true;
+    const onSlashCommand = vi.fn().mockResolvedValue(true);
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!reply-command:example.org"
+        mode="reply"
+        placeholder="Reply"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Reply");
+    pasteText(editable, "/plain reply body");
+    fireEvent.keyDown(editable, { key: "Enter" });
+    await waitFor(() => expect(onSlashCommand).toHaveBeenCalled());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Spoiler", "span[data-mx-spoiler]"],
+    ["Strikethrough", "s"],
+    ["Code block", "pre"],
+  ])(
+    "stops active %s formatting on kill switch without stripping the draft",
+    async (label, selector) => {
+      flags.composerParity = true;
+      const props = {
+        roomId: `!kill-${label.replaceAll(" ", "-")}:example.org`,
+        mode: "send" as const,
+        placeholder: "Message",
+        onSubmit: vi.fn(),
+        onSlashCommand: vi.fn(),
+        onEscape: vi.fn(),
+        onTypingInput: vi.fn(),
+      };
+      const view = render(<Composer {...props} />);
+      const editable = await screen.findByLabelText("Message");
+      fireEvent.click(screen.getByRole("button", { name: label, exact: true }));
+      pasteText(editable, "authored");
+      expect(editable.querySelector(selector)).toHaveTextContent("authored");
+      flags.composerParity = false;
+      view.rerender(<Composer {...props} />);
+      pasteText(editable, "new text");
+      expect(editable.querySelector(selector)).toHaveTextContent("authored");
+      expect(editable.querySelector(selector)).not.toHaveTextContent("new text");
+      expect(editable).toHaveTextContent("new text");
+    },
+  );
   it("edits on bare ArrowUp only while the send composer is truly empty", async () => {
     const onEditLastMessage = vi.fn(() => true);
     render(
