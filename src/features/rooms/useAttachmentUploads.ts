@@ -62,6 +62,7 @@ export function useAttachmentUploads(
   // conversion before invoking IPC. Native uploads themselves are cancelled
   // server-side (`cancel_attachment_upload`'s `tokio::select!`).
   const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
+  const failedVoiceUploads = useRef<WeakMap<File, string>>(new WeakMap());
   const ownerGeneration = useRef(0);
   const ownerDisposed = useRef(false);
 
@@ -128,6 +129,13 @@ export function useAttachmentUploads(
       !mutationsBlockedRef?.current;
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    if (voice && file instanceof File) {
+      const previousTxnId = failedVoiceUploads.current.get(file);
+      if (previousTxnId) {
+        setUploads((prev) => prev.filter((upload) => upload.txnId !== previousTxnId));
+        failedVoiceUploads.current.delete(file);
+      }
+    }
 
     // Fall back to a direct fetch rather than `null` when the mount-time
     // effect hasn't resolved yet — otherwise the very first attachment
@@ -141,6 +149,7 @@ export function useAttachmentUploads(
     const size = limit != null ? await fileSize(file) : null;
     if (!ownerIsCurrent()) return false;
     if (limit != null && size != null && size > limit) {
+      if (voice && file instanceof File) failedVoiceUploads.current.set(file, txnId);
       setUploads((prev) => [
         ...prev,
         {
@@ -185,6 +194,7 @@ export function useAttachmentUploads(
       setUploads((prev) =>
         prev.map((u) => (u.txnId === txnId ? { ...u, failed: true, errorMessage } : u)),
       );
+      if (voice && file instanceof File) failedVoiceUploads.current.set(file, txnId);
       return false;
     } finally {
       uploadAbortControllers.current.delete(txnId);
@@ -203,7 +213,10 @@ export function useAttachmentUploads(
   }, []);
 
   const dismissFailedUploadForFile = useCallback((file: File) => {
-    setUploads((prev) => prev.filter((upload) => !(upload.failed && upload.filename === file.name)));
+    const txnId = failedVoiceUploads.current.get(file);
+    if (!txnId) return;
+    failedVoiceUploads.current.delete(file);
+    setUploads((prev) => prev.filter((upload) => upload.txnId !== txnId));
   }, []);
 
   return { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile };

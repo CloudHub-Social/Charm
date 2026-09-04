@@ -72,4 +72,22 @@ describe("recorded upload ownership", () => {
     });
     expect(mocks.sendAttachment).not.toHaveBeenCalled();
   });
+
+  it("dismisses only the failed transaction owned by the same voice preview", async () => {
+    mocks.sendAttachment.mockRejectedValue(new Error("offline"));
+    const first = file();
+    const second = file();
+    const { result } = renderHook(() => useAttachmentUploads("!voice:localhost"));
+
+    await act(async () => {
+      expect(await result.current.handleAttachFile(first, undefined, voice)).toBe(false);
+      expect(await result.current.handleAttachFile(second, undefined, voice)).toBe(false);
+    });
+    expect(result.current.uploads).toHaveLength(2);
+
+    act(() => result.current.dismissFailedUploadForFile(second));
+    expect(result.current.uploads).toHaveLength(1);
+    act(() => result.current.dismissFailedUploadForFile(first));
+    expect(result.current.uploads).toHaveLength(0);
+  });
 });
