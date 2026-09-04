@@ -43,8 +43,14 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   onLoggedOutRef.current = onLoggedOut;
   sessionRef.current = session;
 
+  const handleSignedIn = useCallback((nextSession: LoginResponse) => {
+    sessionRef.current = nextSession;
+    setSession(nextSession);
+  }, []);
+
   const handleLoggedOut = useCallback(() => {
     if (sessionRef.current) clearQuickSwitcherRecents(sessionRef.current.user_id);
+    sessionRef.current = null;
     queryClient.clear();
     resetPrivacySettingsWriteQueue();
     resetRoomSendQueueBarrier();
@@ -73,7 +79,10 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
         return tryRestoreSession();
       })
       .then((restoredSession) => {
-        if (active && !invalidated) setSession(restoredSession);
+        if (active && !invalidated) {
+          sessionRef.current = restoredSession;
+          setSession(restoredSession);
+        }
       })
       .catch((cause) => {
         if (active) setRestoreError(String(cause));
@@ -116,7 +125,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   }
 
   if (!session) {
-    return <LoginScreen onSignedIn={setSession} />;
+    return <LoginScreen onSignedIn={handleSignedIn} />;
   }
 
   if (onboarding.status === "loading") {
@@ -143,7 +152,11 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
       crashRecoveryPromptOpen={crashRecoveryPromptOpen}
       onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
-      onLoggedOut={handleLoggedOut}
+      onLoggedOut={() => {
+        // A native invalidation may replace this session before the initiating
+        // settings command settles. Its old callback must not reset a new login.
+        if (sessionRef.current === session) handleLoggedOut();
+      }}
     />
   );
 }

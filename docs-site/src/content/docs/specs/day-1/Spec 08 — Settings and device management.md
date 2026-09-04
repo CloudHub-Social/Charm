@@ -306,6 +306,9 @@ Surfaces changed:
     Matrix credentials, OAuth credentials, the SDK store, and its passphrase are
     each attempted even if an earlier target fails. Any failure retains cleanup
     intent for retry rather than reporting a completed wipe.
+    A settings command's completion callback is bound to the renderer session
+    that initiated it. If native invalidation already permitted a replacement
+    login, the old callback cannot clear that replacement's state or caches.
     A fallback marker outside the Matrix-store directory retains the same full-wipe
     semantics if the primary marker cannot be written, including after remote
     deactivation. Neither marker permits session restoration while cleanup is pending.
