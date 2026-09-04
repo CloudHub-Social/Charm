@@ -12,6 +12,10 @@ settings the audit found in Charm 1.0 but not Charm 2.0.
 
 ## Problem & why now
 
+The [feature gallery](/features/#appearance-display) documents the default-off
+preview controls using the CI-captured Appearance settings journey. This preview
+entry does not imply completion of the remaining parity items below.
+
 Charm 2.0's appearance settings (`AppearancePanel.tsx`, `appearance/atoms.ts`) cover
 theme (dark/light/midnight/system), font size (4 steps), density (compact/cozy),
 reduced motion, and layout mode (bubble/discord/irc) — a solid base. But the parity
