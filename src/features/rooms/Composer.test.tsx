@@ -65,6 +65,43 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it.each(["unban", "ignore", "unignore"])(
+    "resolves mention IDs for /%s in replies",
+    async (command) => {
+      flags.composerParity = true;
+      const onSlashCommand = vi.fn();
+      render(
+        <Composer
+          roomId={`!reply-${command}:example.org`}
+          mode="reply"
+          placeholder="Reply"
+          onSubmit={vi.fn()}
+          onSlashCommand={onSlashCommand}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+        />,
+      );
+      const editable = await screen.findByLabelText("Reply");
+      fireEvent.paste(editable, {
+        clipboardData: {
+          getData: (type: string) =>
+            type === "text/html"
+              ? `<p>/${command} <a data-mx-pill="true" href="https://matrix.to/#/@alice:example.org">Alice</a></p>`
+              : `/${command} Alice`,
+          types: ["text/html", "text/plain"],
+        },
+      });
+      fireEvent.keyDown(editable, { key: "Enter" });
+      await waitFor(() =>
+        expect(onSlashCommand).toHaveBeenCalledWith({
+          command,
+          args: ["@alice:example.org"],
+          action: true,
+        }),
+      );
+    },
+  );
+
   it.each([
     ["Spoiler", "span[data-mx-spoiler]"],
     ["Strikethrough", "s"],

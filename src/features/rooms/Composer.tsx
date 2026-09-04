@@ -492,14 +492,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!rawPlainText) return;
 
     // Slash-command args need each `@mention` resolved to its real Matrix id
-    // (`@alice:example.org`), not its display label (`Alice`) — `getText()`
-    // above renders mentions by label, which `UserId::parse` on the Rust
-    // side would then reject. `textBetween`'s `leafText` hook substitutes
-    // the mention node's `id` attr for exactly this parsing pass; the
+    // (`@alice:example.org`), independently of the pill's display label.
+    // `textBetween`'s `leafText` hook explicitly substitutes the mention
+    // node's `id` attr for this parsing pass in both send and reply modes; the
     // regular send path doesn't need it since `m.mentions` is populated
     // separately via `collectMentionIds`.
     const commandText =
-      mode === "send" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
+      mode !== "edit" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
     const slash =
       mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
