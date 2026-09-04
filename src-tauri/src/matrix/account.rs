@@ -288,11 +288,22 @@ async fn clear_local_session_locked(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    let mut credential_error = clear_logout_credentials(
-        tombstone_result,
-        || persistence::clear_session(&account_key),
-        || persistence::clear_oauth_session(&account_key),
+    let matrix_result = persistence::clear_session(&account_key);
+    let oauth_result = persistence::clear_oauth_session(&account_key);
+    // If neither durable veto nor complete credential deletion succeeded,
+    // retain the live shell so the user can see and retry the failed logout.
+    let durable = logout_is_durable(
+        tombstone_result.is_ok(),
+        matrix_result.is_ok(),
+        oauth_result.is_ok(),
     );
+    let mut credential_error =
+        clear_logout_credentials(tombstone_result, || matrix_result, || oauth_result);
+    if !durable {
+        return Err(
+            "Could not persist sign-out. Your session remains open; retry signing out.".into(),
+        );
+    }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -440,23 +451,24 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
 
-    let revoke_client = client.clone();
-    tokio::spawn(async move {
-        if revoke_client.matrix_auth().logged_in() {
-            let _ = revoke_client.matrix_auth().logout().await;
-        } else {
-            let _ = revoke_client.oauth().logout().await;
-        }
-    });
-
-    clear_local_session_locked(
+    let result = clear_local_session_locked(
         &app,
         &state,
         &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::CurrentDevice,
     )
-    .await
+    .await;
+    if state.client.lock().await.is_none() {
+        tokio::spawn(async move {
+            if client.matrix_auth().logged_in() {
+                let _ = client.matrix_auth().logout().await;
+            } else {
+                let _ = client.oauth().logout().await;
+            }
+        });
+    }
+    result
 }
 
 /// Explicit device wipe for the active account. Unlike ordinary logout this
@@ -987,6 +999,10 @@ pub async fn deactivate_account(
 
 // Marker persistence and both credential stores are independent cleanup
 // opportunities. A filesystem failure must not skip working keychain deletion.
+fn logout_is_durable(marked: bool, matrix_cleared: bool, oauth_cleared: bool) -> bool {
+    marked || (matrix_cleared && oauth_cleared)
+}
+
 pub(super) fn clear_logout_credentials(
     marker: Result<(), String>,
     clear_matrix: impl FnOnce() -> Result<(), String>,
@@ -1009,6 +1025,19 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn logout_needs_a_durable_restore_veto_or_all_credentials_removed() {
+        for matrix_cleared in [false, true] {
+            for oauth_cleared in [false, true] {
+                assert!(logout_is_durable(true, matrix_cleared, oauth_cleared));
+                assert_eq!(
+                    logout_is_durable(false, matrix_cleared, oauth_cleared),
+                    matrix_cleared && oauth_cleared
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn physical_wipe_runs_after_teardown_failure_and_reports_both_outcomes() {

@@ -1280,24 +1280,16 @@ impl SessionStore {
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
-        let session = {
-            let mut inner = self.inner.write().await;
-            let session = inner.remove(token);
-            if let Some(session) = &session {
-                let _send_guard = session.socket_send_lock.lock().await;
-                // Revoke detached work while removal is still atomic with
-                // respect to lookups. Cleanup below may await, so it cannot
-                // remain under the store lock.
-                session
-                    .session_closed
-                    .store(true, std::sync::atomic::Ordering::Release);
-                // Publish while removal is atomic with session lookup, before
-                // fallible/awaited disk cleanup. Connected renderers must not
-                // retain their authenticated shell after permanent removal.
-                let _ = session.events.send(ServerEvent::SessionInvalidated(()));
-            }
+        // Remove admission first, but never hold the global map while a slow
+        // socket finishes its bounded send. Other accounts remain available.
+        let session = self.inner.write().await.remove(token);
+        if let Some(session) = &session {
+            let _send_guard = session.socket_send_lock.lock().await;
             session
-        };
+                .session_closed
+                .store(true, std::sync::atomic::Ordering::Release);
+            let _ = session.events.send(ServerEvent::SessionInvalidated(()));
+        }
 
         if let Some(session) = &session {
             // `remove` is the permanent-session boundary used by explicit
@@ -1608,6 +1600,12 @@ mod tests {
         assert!(!session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), store.get(&token))
+                .await
+                .expect("session lookups must not wait for a backpressured socket")
+                .is_none()
+        );
         drop(send_guard);
         removal.await.expect("removed session");
         let _next_send = session.socket_send_lock.lock().await;
