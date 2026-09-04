@@ -320,8 +320,10 @@ capacity outside the transition lock, and remains cancellable by a newer flow.
 Admission owns a cancellation-on-drop guard before its first await. Disconnecting
 while waiting for capacity cancels and removes that exact attempt entry without
 depending on the later expiry task; it does not release another flow's permit.
-Regression coverage drops a saturated-capacity waiter and checks bounded cleanup,
-pending GitHub Actions verification.
+Regression coverage drops a saturated-capacity waiter and checks bounded cleanup.
+GitHub Actions explicitly selects both `charm` and `charm-web-server` for library
+tests; native-only Rust job success does not verify companion authentication
+regressions. Verification of this expanded CI scope is pending.
 Fresh owners still fail immediately at capacity. Capacity ownership is tracked
 by weak permit-lifetime witnesses, not by cancellation entries: post-admission
 quota/setup failures cannot leave a cancellation-only owner eligible to wait.
