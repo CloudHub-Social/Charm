@@ -136,6 +136,7 @@ export function RoomsScreen({
     null,
   );
   const profileRoomNavigationRequestRef = useRef(0);
+  const profileRoomNavigationSignalRef = useRef<AbortSignal | undefined>(undefined);
   // "Jump to message" — the room + event to scroll to once that room is
   // selected and loaded. Shared by two entry points that both just need
   // "load this event into view, paginating around it if it's outside the
@@ -221,9 +222,11 @@ export function RoomsScreen({
       .catch(logAndIgnore);
   }
 
-  async function navigateToProfileRoom(roomId: string) {
+  async function navigateToProfileRoom(roomId: string, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     const requestId = profileRoomNavigationRequestRef.current + 1;
     profileRoomNavigationRequestRef.current = requestId;
+    profileRoomNavigationSignalRef.current = signal;
     // Arm the exact target before any refresh can publish a room snapshot.
     // This both lets a concurrent room-list update complete the navigation
     // and prevents initial auto-selection from stealing an explicit profile
@@ -248,6 +251,10 @@ export function RoomsScreen({
       }
     }
     if (profileRoomNavigationRequestRef.current !== requestId) return;
+    if (signal?.aborted) {
+      setProfileRoomPendingSelection(null);
+      return;
+    }
     if (joinedRoom) {
       selectRoomInVisibleMode(joinedRoom, visibleRooms);
       return;
@@ -447,6 +454,10 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (!profileRoomPendingSelection) return;
+    if (profileRoomNavigationSignalRef.current?.aborted) {
+      setProfileRoomPendingSelection(null);
+      return;
+    }
     const joinedRoom = rooms.find(
       (room) => room.room_id === profileRoomPendingSelection && room.membership === "join",
     );

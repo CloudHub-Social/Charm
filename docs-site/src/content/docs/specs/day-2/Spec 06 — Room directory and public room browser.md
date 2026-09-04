@@ -61,7 +61,7 @@ is a request/response query pattern, not a synced data source.
 
 The new command returns room id, name, topic, canonical alias, avatar MXC URI,
 joined-member count, the next pagination token, and the homeserver's optional
-total estimate. Queries and pagination tokens are trimmed, page size defaults to
+total estimate. Queries are trimmed and opaque pagination tokens pass through unchanged; page size defaults to
 20, and the backend caps it at 50. Joining deliberately continues through the
 existing `join_room` command.
 

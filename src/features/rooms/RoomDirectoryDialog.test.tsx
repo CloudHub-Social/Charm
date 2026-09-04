@@ -110,12 +110,18 @@ describe("RoomDirectoryDialog", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Join" }));
 
     expect(joinRoom).toHaveBeenCalledWith("#matrix:example.org");
-    await waitFor(() => expect(onJoined).toHaveBeenCalledWith("!matrix:example.org"));
+    await waitFor(() =>
+      expect(onJoined).toHaveBeenCalledWith("!matrix:example.org", expect.any(AbortSignal)),
+    );
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("does not navigate or close a reopened dialog after an old join completes", async () => {
-    searchPublicRooms.mockResolvedValue({ rooms: [matrixRoom], next_batch: null });
+    searchPublicRooms.mockResolvedValue({
+      rooms: [matrixRoom],
+      next_batch: null,
+      total_room_count_estimate: null,
+    });
     let complete!: (value: { room_id: string; is_space: boolean }) => void;
     joinRoom.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -137,7 +143,11 @@ describe("RoomDirectoryDialog", () => {
   });
 
   it("distinguishes successful membership from failed room navigation", async () => {
-    searchPublicRooms.mockResolvedValueOnce({ rooms: [matrixRoom], next_batch: null });
+    searchPublicRooms.mockResolvedValueOnce({
+      rooms: [matrixRoom],
+      next_batch: null,
+      total_room_count_estimate: null,
+    });
     joinRoom.mockResolvedValueOnce({ room_id: matrixRoom.room_id, is_space: false });
     const { onJoined } = renderDialog();
     onJoined.mockRejectedValueOnce(new Error("navigation unavailable"));
@@ -145,6 +155,34 @@ describe("RoomDirectoryDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Joined the room, but couldn't open it",
     );
+  });
+
+  it("aborts parent navigation when dismissed during its refresh", async () => {
+    searchPublicRooms.mockResolvedValueOnce({
+      rooms: [matrixRoom],
+      next_batch: null,
+      total_room_count_estimate: null,
+    });
+    joinRoom.mockResolvedValueOnce({ room_id: matrixRoom.room_id, is_space: false });
+    let finish!: () => void;
+    const onJoined = vi.fn(
+      (_id: string, _signal?: AbortSignal) =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <RoomDirectoryDialog open onJoined={onJoined} onOpenChange={onOpenChange} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    await waitFor(() => expect(onJoined).toHaveBeenCalledOnce());
+    const signal = onJoined.mock.calls[0][1];
+    expect(signal?.aborted).toBe(false);
+    rerender(<RoomDirectoryDialog open={false} onJoined={onJoined} onOpenChange={onOpenChange} />);
+    expect(signal?.aborted).toBe(true);
+    await act(async () => finish());
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
   it("disables old pagination as soon as a replacement search starts", async () => {

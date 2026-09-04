@@ -49,7 +49,7 @@ function DirectoryRoomAvatar({ room }: { room: PublicRoomSummary }) {
 interface RoomDirectoryDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onJoined: (roomId: string) => void | Promise<void>;
+  onJoined: (roomId: string, signal?: AbortSignal) => void | Promise<void>;
 }
 
 export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirectoryDialogProps) {
@@ -63,11 +63,14 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   const [error, setError] = useState<string | null>(null);
   const searchRequestIdRef = useRef(0);
   const joinGeneration = useRef(0);
+  const navigationAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setJoiningRoomId(null);
     return () => {
       joinGeneration.current += 1;
+      navigationAbort.current?.abort();
+      navigationAbort.current = null;
     };
   }, [open]);
 
@@ -94,7 +97,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
             if (searchRequestIdRef.current !== requestId) return;
             setRooms(page.rooms);
             setNextBatch(page.next_batch);
-            setTotalEstimate(page.total_room_count_estimate);
+            setTotalEstimate(page.total_room_count_estimate ?? null);
           })
           .catch((reason: unknown) => {
             if (searchRequestIdRef.current !== requestId) return;
@@ -145,8 +148,13 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
       const joined = await joinRoom(room.canonical_alias ?? room.room_id);
       if (generation !== joinGeneration.current) return;
       membershipJoined = true;
-      await onJoined(joined.room_id);
+      const navigation = new AbortController();
+      navigationAbort.current = navigation;
+      await onJoined(joined.room_id, navigation.signal);
       if (generation !== joinGeneration.current) return;
+      // Successful handoff may still be waiting for the room-list stream.
+      // Auto-closing must not cancel that intent; manual dismissal does.
+      navigationAbort.current = null;
       onOpenChange(false);
     } catch (reason) {
       if (generation !== joinGeneration.current) return;
@@ -163,7 +171,17 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          joinGeneration.current += 1;
+          navigationAbort.current?.abort();
+          navigationAbort.current = null;
+        }
+        onOpenChange(nextOpen);
+      }}
+    >
       <DialogContent className="flex max-h-[min(42rem,85vh)] flex-col sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Browse public rooms</DialogTitle>

@@ -72,7 +72,7 @@ interface RoomListProps {
   currentUserId: string;
   onSelectRoom: (id: string) => void;
   /** Refresh or retain a pending selection after a directory join. */
-  onDirectoryJoined?: (id: string) => void | Promise<void>;
+  onDirectoryJoined?: (id: string, signal?: AbortSignal) => void | Promise<void>;
   onSelectSpace: (id: string) => void;
   /**
    * Selecting a search result found via "Search everywhere" (or one that's
