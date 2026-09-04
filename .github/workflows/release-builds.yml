@@ -116,14 +116,11 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # Installable Linux packages are produced and exercised by nightly.yml.
-      # This job only uploads release-profile debug information to Sentry, so
-      # invoking tauri-bundler here is redundant. It is also unsafe for release
-      # reliability: the v0.1.2 tag built the ELF successfully and created both
-      # deb/rpm packages, then the bundler hung after RPM creation on all three
-      # retries. --no-bundle preserves the release-profile build and debuginfo
-      # generation while avoiding that unrelated packaging deadlock.
-      - name: Build Tauri Linux app with release debuginfo
+      # Stable publication requires packages from this exact source revision,
+      # not a nightly artifact. Restrict bundling to the published deb/rpm set.
+      # The v0.1.2 bundler hung after RPM creation; keep the build bounded and
+      # fail publication on a recurrence rather than uploading a partial set.
+      - name: Build Linux release packages with debuginfo
         timeout-minutes: 20
         env:
           # Safe to send straight to the webview build here (unlike the
@@ -151,7 +148,7 @@ jobs:
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
-          pnpm tauri build --no-bundle
+          pnpm tauri build --bundles deb,rpm
 
       - name: Resolve Cargo target directory
         id: cargo-target

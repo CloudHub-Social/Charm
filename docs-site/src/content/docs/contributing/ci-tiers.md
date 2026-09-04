@@ -39,8 +39,11 @@ nightly and Sentry symbolication both reflect what actually ships.
 Triggered by pushing a version tag (`v*`). Debug-symbol/release-artifact
 upload to Sentry is wired up. Linux, macOS, Windows, and Android jobs publish
 their distributable bundles plus platform-named SPDX JSON SBOMs to the matching
-GitHub release. The publication job requires the complete artifact/SBOM set,
-includes every file in `SHA256SUMS.txt`, and signs that manifest with the
+GitHub release. The Linux job explicitly builds DEB/RPM bundles from the release revision
+within a bounded build step; it cannot substitute nightly packages or debug-only
+output. A recurrence of the historical Linux bundler hang blocks publication.
+The publication job requires the complete artifact/SBOM set, includes every file
+in `SHA256SUMS.txt`, and signs that manifest with the
 repository release key. Platform-native production signing and Apple
 notarization remain gated on their provider credentials; an iOS simulator build
 is verification evidence, not a distributable release asset.
