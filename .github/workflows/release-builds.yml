@@ -1083,14 +1083,37 @@ jobs:
             fi
           done
           # Verify GitHub's complete stored set, not merely upload exit codes.
-          remote_count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[].name' | wc -l)
-          test "$remote_count" -eq "${#assets[@]}"
-          for file in "${assets[@]}"; do
-            name=$(basename "$file")
-            expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
-            actual=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
-              | jq -r --arg name "$name" '.[] | select(.name == $name and .state == "uploaded") | .digest')
-            test "$actual" = "$expected"
+          # Asset state and digest fields are eventually consistent after an
+          # upload, so allow a bounded publication window before failing.
+          verified=false
+          for attempt in {1..12}; do
+            ready=true
+            remote_count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[].name' | wc -l)
+            if [ "$remote_count" -ne "${#assets[@]}" ]; then
+              ready=false
+            fi
+            for file in "${assets[@]}"; do
+              name=$(basename "$file")
+              expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+              actual=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+                | jq -r --arg name "$name" '.[] | select(.name == $name and .state == "uploaded") | .digest // empty')
+              if [ -z "$actual" ]; then
+                ready=false
+              elif [ "$actual" != "$expected" ]; then
+                echo "::error::Stored draft asset digest differs for $name"
+                exit 1
+              fi
+            done
+            if [ "$ready" = true ]; then
+              verified=true
+              break
+            fi
+            echo "Release assets are not queryable yet (attempt $attempt/12); retrying."
+            sleep 5
           done
+          if [ "$verified" != true ]; then
+            echo "::error::Release assets did not become verifiable within 60 seconds"
+            exit 1
+          fi
           require_draft
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
