@@ -108,6 +108,30 @@ describe("PollMessage", () => {
     expect(screen.queryByText(/2 votes/)).not.toBeInTheDocument();
   });
 
+  it("does not start row long press from interactive poll controls", () => {
+    const startLongPress = vi.fn();
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own
+        rowActions={rowActions({
+          onSenderClick: vi.fn(),
+          getActionsHandle: () => ({
+            startLongPress,
+            cancelLongPress: vi.fn(),
+          }),
+        })}
+      />,
+    );
+    for (const name of ["Alice", /Pizza/, "End poll"]) {
+      fireEvent.touchStart(screen.getByRole("button", { name }));
+    }
+    expect(startLongPress).not.toHaveBeenCalled();
+    fireEvent.touchStart(screen.getByRole("heading", { name: "Lunch?" }));
+    expect(startLongPress).toHaveBeenCalledOnce();
+  });
+
   it("opens the sender profile through the shared row action", () => {
     const onSenderClick = vi.fn();
     render(

@@ -93,7 +93,11 @@ export function PollMessage({
         "group mt-3 flex w-full max-w-md items-center gap-1",
         own && "ml-auto flex-row-reverse",
       )}
-      onTouchStart={() => getActionsHandle()?.startLongPress()}
+      onTouchStart={(event) => {
+        // A held vote/profile/end control must not also open row actions.
+        if (event.target instanceof Element && event.target.closest("button, a, input")) return;
+        getActionsHandle()?.startLongPress();
+      }}
       onTouchEnd={() => getActionsHandle()?.cancelLongPress()}
       onTouchCancel={() => getActionsHandle()?.cancelLongPress()}
       onTouchMove={() => getActionsHandle()?.cancelLongPress()}
