@@ -41,7 +41,9 @@ use zeroize::Zeroizing;
 const SEARCH_ROOT: &str = "message_search";
 const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const CLEANUP_MARKER_PREFIX: &str = ".cleanup-";
-const SCHEMA_VERSION: u32 = 5;
+const RECONCILIATION_MARKER: &str = ".reconciliation-pending";
+const DISABLED_CLEANUP_MARKER: &str = ".message-search-disabled-cleanup-pending";
+const SCHEMA_VERSION: u32 = 6;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
 const MAX_QUERY_BYTES: usize = 512;
@@ -206,6 +208,7 @@ pub struct SearchIndex {
     incarnation: String,
     snapshot_query_key: Zeroizing<[u8; 32]>,
     snapshots: HashMap<String, SearchSnapshot>,
+    reconciliation_pending: bool,
 }
 
 pub(crate) struct ActiveSearchIndex {
@@ -228,6 +231,10 @@ pub(crate) enum SearchMutation {
     },
     PurgeRoom {
         room_id: String,
+    },
+    PurgeOriginal {
+        room_id: String,
+        event_id: String,
     },
 }
 
@@ -287,6 +294,7 @@ impl SearchIndex {
         let directory = index_directory(&app_data_dir, account_store_key, device_id);
         reconcile_pending_cleanup(&search_root, &directory)?;
         create_private_directory(&directory)?;
+        let reconciliation_pending = reconciliation_marker_pending(&directory)?;
         let database_path = directory.join(SEARCH_DATABASE);
         let mut connection = match open_encrypted_connection(
             &database_path,
@@ -327,6 +335,7 @@ impl SearchIndex {
             incarnation: random_id(),
             snapshot_query_key: Zeroizing::new(rand::rng().random()),
             snapshots: HashMap::new(),
+            reconciliation_pending,
         })
     }
 
@@ -343,6 +352,46 @@ impl SearchIndex {
     /// Returns the opaque database path for lifecycle coordination and tests.
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    /// Whether an earlier indexing lifecycle recorded dropped or failed work.
+    /// The marker contains no message content and survives process restart.
+    pub fn reconciliation_pending(&self) -> bool {
+        self.reconciliation_pending
+    }
+
+    /// Durably records that this derived index needs a complete local-cache
+    /// reconciliation. This is deliberately a directory marker so it cannot
+    /// be confused with or parsed as message-bearing diagnostic data.
+    pub fn mark_reconciliation_pending(&mut self) -> Result<(), String> {
+        create_private_directory(&reconciliation_marker(&self.database_path))?;
+        self.reconciliation_pending = true;
+        Ok(())
+    }
+
+    /// Clears failure intent only after a complete local-cache pass has
+    /// drained through the same FIFO as live mutations.
+    pub fn clear_reconciliation_pending(&mut self) -> Result<(), String> {
+        remove_reconciliation_marker(&self.database_path)?;
+        self.reconciliation_pending = false;
+        Ok(())
+    }
+
+    /// Records failure intent without opening SQLCipher or requiring access
+    /// to the source secret. Queue-overflow paths use this before returning.
+    pub fn mark_reconciliation_pending_for_source(
+        app_data_dir: &Path,
+        account_store_key: &str,
+        device_id: &str,
+    ) -> Result<(), String> {
+        let app_data_dir = std::fs::canonicalize(app_data_dir).map_err(safe_io_error)?;
+        let search_root = app_data_dir.join(SEARCH_ROOT);
+        create_private_directory(&search_root)?;
+        exclude_search_root_from_backup(&app_data_dir, &search_root)?;
+        let directory = index_directory(&app_data_dir, account_store_key, device_id);
+        reconcile_pending_cleanup(&search_root, &directory)?;
+        create_private_directory(&directory)?;
+        create_private_directory(&directory.join(RECONCILIATION_MARKER))
     }
 
     /// Closes and physically removes this derived index and SQLite sidecars.
@@ -457,17 +506,12 @@ impl SearchIndex {
             return transaction.commit().map_err(safe_storage_error);
         }
         if document.version_event_id != document.event_id {
-            let original_sender = transaction
-                .query_row(
-                    "SELECT sender FROM message_versions
-                     WHERE room_id = ?1 AND original_event_id = ?2
-                       AND version_event_id = original_event_id",
-                    params![&document.room_id, &document.event_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(safe_storage_error)?;
-            if original_sender.as_deref() != Some(document.sender.as_str()) {
+            let original_sender =
+                original_sender(&transaction, &document.room_id, &document.event_id)?;
+            if original_sender
+                .as_deref()
+                .is_some_and(|sender| sender != document.sender)
+            {
                 return transaction.commit().map_err(safe_storage_error);
             }
         }
@@ -488,6 +532,20 @@ impl SearchIndex {
                 ],
             )
             .map_err(safe_storage_error)?;
+        if document.version_event_id == document.event_id {
+            // An edit can arrive before its original. Retain it only as
+            // encrypted, non-visible provenance until the original makes the
+            // sender check possible, then remove every forged candidate in
+            // the same transaction that first exposes a visible row.
+            transaction
+                .execute(
+                    "DELETE FROM message_versions
+                     WHERE room_id = ?1 AND original_event_id = ?2
+                       AND version_event_id != original_event_id AND sender != ?3",
+                    params![&document.room_id, &document.event_id, &document.sender],
+                )
+                .map_err(safe_storage_error)?;
+        }
         restore_visible_row(&transaction, &document.room_id, &document.event_id)?;
         transaction.commit().map_err(safe_storage_error)
     }
@@ -585,6 +643,27 @@ impl SearchIndex {
             .map_err(safe_storage_error)?;
         restore_visible_row(&transaction, room_id, event_id)?;
         transaction.commit().map_err(safe_storage_error)
+    }
+
+    /// Remove ignored original-event provenance without a redaction tombstone:
+    /// unignoring the author may legitimately make a later replay visible.
+    fn purge_original(&mut self, room_id: &str, event_id: &str) -> Result<(), String> {
+        let transaction = self.connection.transaction().map_err(safe_storage_error)?;
+        delete_visible_row(&transaction, room_id, event_id)?;
+        let mut removed = 0;
+        for table in ["message_versions", "selected_versions"] {
+            removed += transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE room_id = ?1 AND original_event_id = ?2"),
+                    params![room_id, event_id],
+                )
+                .map_err(safe_storage_error)?;
+        }
+        transaction.commit().map_err(safe_storage_error)?;
+        if removed > 0 {
+            compact(&self.connection)?;
+        }
+        Ok(())
     }
 
     /// Physically removes searchable rows and provenance for one room.
@@ -922,6 +1001,9 @@ impl SearchWork {
                     index.redact(&room_id, &event_id)?
                 }
                 SearchMutation::PurgeRoom { room_id } => index.purge_room(&room_id)?,
+                SearchMutation::PurgeOriginal { room_id, event_id } => {
+                    index.purge_original(&room_id, &event_id)?
+                }
             }
         }
         Ok(())
@@ -941,7 +1023,9 @@ impl SearchWork {
         self.mutations.retain(|mutation| match mutation {
             SearchMutation::Apply(document) => joined_room_ids.contains(&document.room_id),
             SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
-            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+            SearchMutation::Redact { .. }
+            | SearchMutation::PurgeRoom { .. }
+            | SearchMutation::PurgeOriginal { .. } => true,
         });
     }
 
@@ -960,7 +1044,9 @@ impl SearchWork {
                     && !ignored_senders.contains(&document.sender)
             }
             SearchMutation::SelectVersion { room_id, .. } => joined_room_ids.contains(room_id),
-            SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. } => true,
+            SearchMutation::Redact { .. }
+            | SearchMutation::PurgeRoom { .. }
+            | SearchMutation::PurgeOriginal { .. } => true,
         });
         self.ignored_senders = ignored_senders;
     }
@@ -973,19 +1059,25 @@ impl SearchWork {
             || self.mutations.iter().any(|mutation| {
                 matches!(
                     mutation,
-                    SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+                    SearchMutation::Redact { .. }
+                        | SearchMutation::PurgeRoom { .. }
+                        | SearchMutation::PurgeOriginal { .. }
+                        | SearchMutation::SelectVersion { .. }
                 )
             })
     }
 
-    /// Drops decrypted message additions while retaining only removal metadata
-    /// that is safe to hold outside the bounded plaintext queue.
+    /// Drops decrypted message additions while retaining removal and renderer
+    /// selection metadata that is safe outside the bounded plaintext queue.
     pub fn into_privacy_removals(mut self) -> (Self, bool) {
         let original_len = self.mutations.len();
         self.mutations.retain(|mutation| {
             matches!(
                 mutation,
-                SearchMutation::Redact { .. } | SearchMutation::PurgeRoom { .. }
+                SearchMutation::Redact { .. }
+                    | SearchMutation::PurgeRoom { .. }
+                    | SearchMutation::PurgeOriginal { .. }
+                    | SearchMutation::SelectVersion { .. }
             )
         });
         let dropped_additions = self.mutations.len() != original_len;
@@ -1038,12 +1130,30 @@ impl ActiveSearchIndex {
 }
 
 fn feature_enabled(app: &AppHandle) -> bool {
+    if !flags_ready(&app.state::<super::MatrixState>()) {
+        return false;
+    }
     app.path().app_data_dir().is_ok_and(|directory| {
         crate::feature_flags::flag(
             &directory,
             crate::feature_flags::FeatureFlagKey::EncryptedLocalMessageSearch,
-        )
+        ) && matches!(disabled_cleanup_pending(&directory), Ok(false))
     })
+}
+
+fn flags_ready(state: &super::MatrixState) -> bool {
+    state
+        .search_flags_ready
+        .load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// A replacement renderer must normalize its own cache before native search
+/// trusts it. Page-load start runs natively, before the new page's JavaScript.
+pub(crate) fn renderer_page_started(state: &super::MatrixState) {
+    state
+        .search_flags_ready
+        .store(false, std::sync::atomic::Ordering::Release);
+    reset_index_lifecycle(state);
 }
 
 fn active_identity(client: &Client) -> Option<(String, String)> {
@@ -1135,6 +1245,39 @@ pub(crate) fn reset_index_lifecycle(state: &super::MatrixState) {
         .clear();
 }
 
+/// Complete only this worker's backfill, after any awaited marker cleanup.
+/// The lifecycle lock makes the generation check and pending-bit write atomic
+/// with respect to renderer reload and account replacement.
+fn finish_backfill_if_current(state: &super::MatrixState, generation: u64) {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn backfill_admission_is_current(state: &super::MatrixState, generation: u64) -> bool {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+        && state
+            .search_backfill_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Marks the active lifecycle incomplete without allowing an old worker to
 /// poison the account that replaced it. Session invalidation advances the
 /// generation while holding the same lifecycle lock, so the check and store
@@ -1155,6 +1298,115 @@ fn mark_incomplete_if_current(state: &super::MatrixState, generation: u64) -> bo
         .search_incomplete
         .store(true, std::sync::atomic::Ordering::Release);
     true
+}
+
+fn claim_cached_history(state: &super::MatrixState, generation: u64, retry: bool) -> bool {
+    use std::sync::atomic::Ordering;
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if generation != state.search_generation.load(Ordering::Acquire)
+        || state.search_backfill_pending.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    if state.search_backfill_started.load(Ordering::Acquire)
+        && !(retry && state.search_incomplete.load(Ordering::Acquire))
+    {
+        return false;
+    }
+    state.search_backfill_started.store(true, Ordering::Release);
+    state.search_backfill_pending.store(true, Ordering::Release);
+    // Clear the old failure while admitting the scan, under the same lock
+    // used by live failure writers. Detached startup must never clear it.
+    state.search_incomplete.store(false, Ordering::Release);
+    true
+}
+
+async fn persist_reconciliation_pending_if_current(
+    app: &AppHandle,
+    expected_identity: &(String, String),
+    generation: u64,
+) -> bool {
+    let state = app.state::<super::MatrixState>();
+    if !search_lifecycle_is_current(&state, expected_identity, generation).await
+        || !mark_incomplete_if_current(&state, generation)
+    {
+        return false;
+    }
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        tracing::warn!(
+            command = "message_search_reconciliation",
+            status = "checkpoint_failed"
+        );
+        return true;
+    };
+    let account_store_key = expected_identity.0.clone();
+    let device_id = expected_identity.1.clone();
+    if !matches!(
+        tokio::task::spawn_blocking(move || {
+            SearchIndex::mark_reconciliation_pending_for_source(
+                &app_data_dir,
+                &account_store_key,
+                &device_id,
+            )
+        })
+        .await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!(
+            command = "message_search_reconciliation",
+            status = "checkpoint_failed"
+        );
+    }
+    true
+}
+
+async fn clear_reconciliation_pending_if_complete(
+    app: &AppHandle,
+    expected_identity: &(String, String),
+    generation: u64,
+) -> bool {
+    let state = app.state::<super::MatrixState>();
+    if !search_lifecycle_is_current(&state, expected_identity, generation).await {
+        return false;
+    }
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let expected_identity = expected_identity.clone();
+    let app = app.clone();
+    matches!(
+        tokio::task::spawn_blocking(move || {
+            let state = app.state::<super::MatrixState>();
+            let _lifecycle = state
+                .search_lifecycle_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if generation
+                != state
+                    .search_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                || state
+                    .search_incomplete
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Ok(false);
+            }
+            let mut slot = search_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(active) = slot
+                .as_mut()
+                .filter(|active| active.matches(&expected_identity.0, &expected_identity.1))
+            else {
+                return Err("message search reconciliation index unavailable".to_string());
+            };
+            active.index.clear_reconciliation_pending()?;
+            Ok(true)
+        })
+        .await,
+        Ok(Ok(true))
+    )
 }
 
 /// Removes the encrypted search database for a client that has been
@@ -1206,6 +1458,16 @@ fn ensure_index<'a>(
             .app_data_dir()
             .map_err(|_| "message search application data directory unavailable".to_string())?;
         let index = SearchIndex::open(&app_data_dir, account_store_key, device_id)?;
+        let state = app.state::<super::MatrixState>();
+        if index.reconciliation_pending()
+            && !state
+                .search_backfill_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            state
+                .search_incomplete
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         *slot = Some(ActiveSearchIndex {
             account_store_key: account_store_key.to_owned(),
             device_id: device_id.to_owned(),
@@ -1475,6 +1737,14 @@ fn append_raw_event_mutation(
             SyncMessageLikeEvent::Original(original),
         )) => {
             if ignored_senders.contains(original.sender.as_str()) {
+                // An ignored edit cannot authorize purging its claimed target.
+                // Only the ignored original identifies the provenance to drop.
+                if !matches!(original.content.relates_to, Some(Relation::Replacement(_))) {
+                    mutations.push(SearchMutation::PurgeOriginal {
+                        room_id: room_id.to_string(),
+                        event_id: original.event_id.to_string(),
+                    });
+                }
                 return;
             }
             let timestamp: u64 = original.origin_server_ts.get().into();
@@ -1523,6 +1793,9 @@ fn append_raw_event_mutation(
 
 fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), String> {
     let state = app.state::<super::MatrixState>();
+    if !flags_ready(&state) {
+        return Ok(());
+    }
     if generation
         != state
             .search_generation
@@ -1531,6 +1804,9 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
+        if !flags_ready(&state) {
+            return Ok(());
+        }
         reset_index_lifecycle(&state);
         let app_data_dir = app.path().app_data_dir().ok();
         let mut slot = state
@@ -1556,9 +1832,8 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
-        reset_index_lifecycle(&state);
         let app_data_dir = app.path().app_data_dir().ok();
-        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())?;
+        reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())?;
         return Ok(());
     }
     let index = ensure_index(app, &mut slot, &work.account_store_key, &work.device_id)?;
@@ -1666,19 +1941,7 @@ pub(crate) async fn submit_sync_response(
 ) {
     let state = app.state::<super::MatrixState>();
     if !feature_enabled(app) {
-        reset_index_lifecycle(&state);
-        let app_data_dir = app.path().app_data_dir().ok();
-        let app = app.clone();
-        let deleted = tauri::async_runtime::spawn_blocking(move || {
-            let state = app.state::<super::MatrixState>();
-            let mut slot = state
-                .search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
-        })
-        .await;
-        if !matches!(deleted, Ok(Ok(()))) {
+        if reconcile_disabled_search(app, &state).await.is_err() {
             tracing::warn!(
                 command = "message_search_kill_switch",
                 status = "cleanup_failed"
@@ -1702,21 +1965,7 @@ pub(crate) async fn submit_sync_response(
             .search_generation
             .load(std::sync::atomic::Ordering::Acquire)
     };
-    if state
-        .search_backfill_started
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // Publish the disclosure before detaching so a search racing this
-        // spawn cannot briefly present the not-yet-seeded index as complete.
-        state
-            .search_backfill_pending
-            .store(true, std::sync::atomic::Ordering::Release);
+    if claim_cached_history(&state, generation, false) {
         let seed_app = app.clone();
         let seed_client = client.clone();
         tauri::async_runtime::spawn(async move {
@@ -1728,9 +1977,7 @@ pub(crate) async fn submit_sync_response(
         return;
     }
     let Ok(ignored_senders) = ignored_senders else {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &client_identity, generation).await;
         if let Some(work) = removal_work_from_sync(client, response) {
             enqueue_sync_work(app, &client_identity, generation, work).await;
         }
@@ -1755,6 +2002,7 @@ async fn enqueue_sync_work(
     if work.is_empty() {
         return;
     }
+    let work_identity = (work.account_store_key.clone(), work.device_id.clone());
     let state = app.state::<super::MatrixState>();
     let sender = search_work_sender(app).await;
     // Keep account replacement from clearing the client between the final
@@ -1784,9 +2032,7 @@ async fn enqueue_sync_work(
             let (privacy_work, dropped_additions) = queued.work.into_privacy_removals();
             queued.work = privacy_work;
             if dropped_additions {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &work_identity, generation).await;
                 tracing::warn!(
                     command = "message_search_index",
                     status = "queue_full_dropped_additions"
@@ -1794,15 +2040,13 @@ async fn enqueue_sync_work(
             }
             // Polling an owned reservation once establishes FIFO position
             // without waiting for capacity on the Matrix sync task. Only
-            // removal metadata can leave the bounded plaintext queue here.
+            // removal/selection IDs can leave the bounded plaintext queue here.
             enqueue_reliable_search_work(app, sender, queued).await
         }
         Err(_) => false,
     };
     if !delivered {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &work_identity, generation).await;
         tracing::warn!(command = "message_search_index", status = "queue_full");
     }
 }
@@ -1851,6 +2095,7 @@ async fn enqueue_reliable_search_work(
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     queued: QueuedSearchWork,
 ) -> bool {
+    let generation = queued.generation;
     let mut reservation = Box::pin(sender.reserve_owned());
     let immediate = std::future::poll_fn(|context| {
         Poll::Ready(match reservation.as_mut().poll(context) {
@@ -1873,9 +2118,7 @@ async fn enqueue_reliable_search_work(
                         permit.send(queued);
                     }
                     Err(_) => {
-                        app.state::<super::MatrixState>()
-                            .search_incomplete
-                            .store(true, std::sync::atomic::Ordering::Release);
+                        mark_incomplete_if_current(&app.state::<super::MatrixState>(), generation);
                         tracing::warn!(
                             command = "message_search_index",
                             status = "worker_unavailable"
@@ -1902,6 +2145,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                         completes_backfill,
                         completion,
                     } = queued;
+                    let work_identity = (work.account_store_key.clone(), work.device_id.clone());
                     let state = worker_app.state::<super::MatrixState>();
                     let current_visibility = match state
                         .require_client_with_search_generation()
@@ -1948,7 +2192,14 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                     };
                     let applied = visibility_complete && result.is_ok();
                     let state = worker_app.state::<super::MatrixState>();
-                    if !applied && mark_incomplete_if_current(&state, generation) {
+                    if !applied
+                        && persist_reconciliation_pending_if_current(
+                            &worker_app,
+                            &work_identity,
+                            generation,
+                        )
+                        .await
+                    {
                         tracing::warn!(command = "message_search_index", status = "worker_failed");
                     }
                     if completes_backfill
@@ -1957,9 +2208,22 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                                 .search_generation
                                 .load(std::sync::atomic::Ordering::Acquire)
                     {
-                        state
-                            .search_backfill_pending
-                            .store(false, std::sync::atomic::Ordering::Release);
+                        if applied
+                            && !clear_reconciliation_pending_if_complete(
+                                &worker_app,
+                                &work_identity,
+                                generation,
+                            )
+                            .await
+                        {
+                            persist_reconciliation_pending_if_current(
+                                &worker_app,
+                                &work_identity,
+                                generation,
+                            )
+                            .await;
+                        }
+                        finish_backfill_if_current(&state, generation);
                     }
                     if let Some(completion) = completion {
                         let _ = completion.send(result);
@@ -1977,33 +2241,30 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
 /// initial sync/timeline delivery behind local indexing work.
 pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, generation: u64) {
     let state = app.state::<super::MatrixState>();
-    state
-        .search_backfill_pending
-        .store(true, std::sync::atomic::Ordering::Release);
+    // Both callers reserve pending under lifecycle exclusion before spawning.
+    // A detached task must not recreate that reservation after a reload/reset.
+    if !backfill_admission_is_current(&state, generation) {
+        return;
+    }
     if !feature_enabled(app) {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     }
     let Some((account_store_key, device_id)) = active_identity(client) else {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     };
     let expected_identity = (account_store_key.clone(), device_id.clone());
+    if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+        return;
+    }
     let ignored_senders = super::account::ignored_user_ids(client).await;
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
         return;
     }
     let Ok(ignored_senders) = ignored_senders else {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
+        finish_backfill_if_current(&state, generation);
         return;
     };
     let ignored_senders: HashSet<String> = ignored_senders
@@ -2021,9 +2282,8 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
                 if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
                     return;
                 }
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &expected_identity, generation)
+                    .await;
                 continue;
             }
         };
@@ -2031,9 +2291,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
                 return;
             }
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
             continue;
         };
         if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
@@ -2045,9 +2303,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             &events,
             ignored_senders.clone(),
         ) else {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
             break;
         };
         if work.is_empty() {
@@ -2068,9 +2324,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         // decrypted bodies cross into the bounded worker queue after it has
         // flipped off; the worker independently drops any older queued work.
         if !feature_enabled(app) {
-            state
-                .search_backfill_pending
-                .store(false, std::sync::atomic::Ordering::Release);
+            finish_backfill_if_current(&state, generation);
             return;
         }
         if sender
@@ -2082,14 +2336,27 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
             })
             .is_err()
         {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
-            state
-                .search_backfill_pending
-                .store(false, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
+            finish_backfill_if_current(&state, generation);
             tracing::warn!(command = "message_search_backfill", status = "queue_full");
             return;
+        }
+    }
+    // Raw event-cache replay cannot recover renderer-authoritative choices
+    // between equal-timestamp edits. Replay live selections before the FIFO
+    // completion marker, including selections lost before this retry began.
+    for room in client.joined_rooms() {
+        let Some(timeline) = state.peek_timeline(room.room_id()).await else {
+            continue;
+        };
+        let (items, _stream) = timeline.subscribe().await;
+        if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+            return;
+        }
+        if let Some(work) =
+            SearchWork::from_timeline_items(client, room.room_id().as_str(), items.iter())
+        {
+            enqueue_sync_work(app, &expected_identity, generation, work).await;
         }
     }
     let completion = SearchWork {
@@ -2102,9 +2369,7 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         return;
     }
     if !feature_enabled(app) {
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        finish_backfill_if_current(&state, generation);
         return;
     }
     if sender
@@ -2116,12 +2381,8 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
         })
         .is_err()
     {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
-        state
-            .search_backfill_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
+        finish_backfill_if_current(&state, generation);
     }
 }
 
@@ -2225,9 +2486,7 @@ async fn process_cached_room_seed(
     }
     let Ok(ignored_senders) = super::account::ignored_user_ids(&client).await else {
         if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         }
         return;
     };
@@ -2239,18 +2498,15 @@ async fn process_cached_room_seed(
         Ok((cache, _drop_handles)) => cache.events().await,
         Err(_) => {
             if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-                state
-                    .search_incomplete
-                    .store(true, std::sync::atomic::Ordering::Release);
+                persist_reconciliation_pending_if_current(app, &expected_identity, generation)
+                    .await;
             }
             return;
         }
     };
     let Ok(events) = events else {
         if search_lifecycle_is_current(&state, &expected_identity, generation).await {
-            state
-                .search_incomplete
-                .store(true, std::sync::atomic::Ordering::Release);
+            persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         }
         return;
     };
@@ -2279,9 +2535,7 @@ async fn process_cached_room_seed(
         })
         .is_err()
     {
-        state
-            .search_incomplete
-            .store(true, std::sync::atomic::Ordering::Release);
+        persist_reconciliation_pending_if_current(app, &expected_identity, generation).await;
         tracing::warn!(command = "message_search_pagination", status = "queue_full");
     }
 }
@@ -2296,7 +2550,7 @@ pub async fn search_messages(
     cursor: Option<String>,
 ) -> Result<SearchResultPage, SearchCommandError> {
     if !feature_enabled(&app) {
-        purge_disabled_search_indices(&app, &state).await;
+        let _ = reconcile_disabled_search(&app, &state).await;
         return Err(SearchCommandError::unavailable());
     }
     validate_query(&query)?;
@@ -2307,22 +2561,8 @@ pub async fn search_messages(
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
-    if state
-        .search_backfill_started
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // Publish the disclosure before detaching so the first request can
-        // return promptly while still reporting that cached-history coverage
-        // is incomplete until the worker's FIFO completion marker drains.
-        state
-            .search_backfill_pending
-            .store(true, std::sync::atomic::Ordering::Release);
+    let should_start_backfill = claim_cached_history(&state, generation, true);
+    if should_start_backfill {
         let seed_app = app.clone();
         let seed_client = client.clone();
         tauri::async_runtime::spawn(async move {
@@ -2370,9 +2610,8 @@ pub async fn search_messages(
         // Re-evaluate the trusted kill switch under the index lock so a flag
         // change during those awaits cannot reopen or query the local index.
         if !feature_enabled(&app) {
-            reset_index_lifecycle(&state);
             let app_data_dir = app.path().app_data_dir().ok();
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+            reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())
                 .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
@@ -2389,9 +2628,8 @@ pub async fn search_messages(
             cursor.as_deref(),
         )?;
         if !feature_enabled(&app) {
-            reset_index_lifecycle(&state);
             let app_data_dir = app.path().app_data_dir().ok();
-            purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+            reset_and_purge_disabled_search(&state, slot, app_data_dir.as_deref())
                 .map_err(|_| SearchCommandError::unavailable())?;
             return Err(SearchCommandError::unavailable());
         }
@@ -2436,26 +2674,54 @@ pub async fn search_messages(
     Ok(page)
 }
 
-async fn purge_disabled_search_indices(app: &AppHandle, state: &super::MatrixState) {
+pub(crate) async fn reconcile_disabled_search(
+    app: &AppHandle,
+    state: &super::MatrixState,
+) -> Result<(), String> {
+    // A sync/receiver can arrive before the renderer has normalized the cached
+    // rollout cohort. Unknown is unavailable, not permission to delete data.
+    if !flags_ready(state) {
+        return Ok(());
+    }
     // Invalidate queued plaintext and force a fresh cache seed before taking
     // the derived index. Cleanup can fail after the live handle is removed;
     // that must not leave a later re-enable believing backfill is complete.
     reset_index_lifecycle(state);
-    let app_data_dir = app.path().app_data_dir().ok();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "message search filesystem unavailable".to_string())?;
     let search_index = std::sync::Arc::clone(&state.search_index);
-    let deleted = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut slot = search_index
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        purge_disabled_search_indices_from_slot(&mut slot, app_data_dir.as_deref())
+        let active = slot.take();
+        drop(active);
+        reconcile_disabled_cleanup(&app_data_dir)
     })
-    .await;
-    if !matches!(deleted, Ok(Ok(()))) {
-        tracing::warn!(
-            command = "message_search_kill_switch",
-            status = "cleanup_failed"
-        );
+    .await
+    .map_err(|_| "message search cleanup worker unavailable".to_string())?
+}
+
+fn reset_and_purge_disabled_search(
+    state: &super::MatrixState,
+    slot: std::sync::MutexGuard<'_, Option<ActiveSearchIndex>>,
+    app_data_dir: Option<&Path>,
+) -> Result<(), String> {
+    // Reconciliation takes lifecycle -> index. Never wait for lifecycle while
+    // retaining index: release it, invalidate queued work, then reacquire it
+    // for the global kill-switch purge. No query result escapes this path.
+    drop(slot);
+    if !flags_ready(state) {
+        return Ok(());
     }
+    reset_index_lifecycle(state);
+    let mut slot = state
+        .search_index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    purge_disabled_search_indices_from_slot(&mut slot, app_data_dir)
 }
 
 fn purge_disabled_search_indices_from_slot(
@@ -2469,7 +2735,7 @@ fn purge_disabled_search_indices_from_slot(
     match app_data_dir {
         Some(app_data_dir) => {
             drop(active);
-            SearchIndex::delete_all(app_data_dir)
+            reconcile_disabled_cleanup(app_data_dir)
         }
         None => {
             if let Some(active) = active {
@@ -2480,12 +2746,85 @@ fn purge_disabled_search_indices_from_slot(
     }
 }
 
+/// Before flag-cache normalization, only recover already-durable purge intent.
+/// A cached false from another cohort must not create new destructive intent.
+pub(crate) fn reconcile_startup_cleanup(app_data_dir: &Path) -> Result<(), String> {
+    if disabled_cleanup_pending(app_data_dir)? {
+        reconcile_disabled_cleanup(app_data_dir)?;
+    }
+    Ok(())
+}
+
+/// Records and completes the privacy kill-switch purge without a live index
+/// handle. The marker sits outside the directory being removed so a crash,
+/// renderer reload, or failed filesystem operation cannot erase the intent.
+pub(crate) fn reconcile_disabled_cleanup(app_data_dir: &Path) -> Result<(), String> {
+    let marker = disabled_cleanup_marker(app_data_dir);
+    // The default-disabled sync path is read-only once cleanup has completed.
+    // Only definite absence is clean: symlinks and metadata errors still take
+    // the fail-closed reconciliation path, including dangling symlinks.
+    let absent = |path: &Path| matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    if absent(&app_data_dir.join(SEARCH_ROOT)) && absent(&marker) {
+        return Ok(());
+    }
+    create_private_directory(&marker)?;
+    SearchIndex::delete_all(app_data_dir)?;
+    match std::fs::remove_dir(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+pub(crate) fn disabled_cleanup_pending(app_data_dir: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(disabled_cleanup_marker(app_data_dir)) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err("message search filesystem cleanup marker invalid".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+fn disabled_cleanup_marker(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(DISABLED_CLEANUP_MARKER)
+}
+
+fn reconciliation_marker(database_path: &Path) -> PathBuf {
+    database_path
+        .parent()
+        .expect("validated search database always has an index directory")
+        .join(RECONCILIATION_MARKER)
+}
+
+fn reconciliation_marker_pending(index_directory: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(index_directory.join(RECONCILIATION_MARKER)) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err("message search reconciliation marker invalid".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
+fn remove_reconciliation_marker(database_path: &Path) -> Result<(), String> {
+    let marker = reconciliation_marker(database_path);
+    match std::fs::remove_dir(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_io_error(error)),
+    }
+}
+
 fn restore_visible_row(
     transaction: &Transaction<'_>,
     room_id: &str,
     original_event_id: &str,
 ) -> Result<(), String> {
     delete_visible_row(transaction, room_id, original_event_id)?;
+    if original_sender(transaction, room_id, original_event_id)?.is_none() {
+        // Do not expose an edit until its original event establishes the
+        // authoritative sender and makes relation validation possible.
+        return Ok(());
+    }
     let selected_version = transaction
         .query_row(
             "SELECT version_event_id FROM selected_versions
@@ -2613,6 +2952,23 @@ fn restore_visible_row(
             .map_err(safe_storage_error)?;
     }
     Ok(())
+}
+
+fn original_sender(
+    transaction: &Transaction<'_>,
+    room_id: &str,
+    original_event_id: &str,
+) -> Result<Option<String>, String> {
+    transaction
+        .query_row(
+            "SELECT sender FROM message_versions
+             WHERE room_id = ?1 AND original_event_id = ?2
+               AND version_event_id = original_event_id",
+            params![room_id, original_event_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(safe_storage_error)
 }
 
 fn is_tombstoned(
@@ -2823,6 +3179,19 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                 )
                 .map_err(MigrationError::from_sqlite)?;
         }
+        (1, Some(5)) => {
+            // Version 5 may contain rows built before sender provenance was
+            // validated during migration. Preserve renderer selection order
+            // while rebuilding both visible tables from verified provenance.
+            create_current_schema(&transaction)?;
+            rebuild_visible_rows(&transaction)?;
+            transaction
+                .execute(
+                    "UPDATE search_metadata SET schema_version = ?1",
+                    [SCHEMA_VERSION],
+                )
+                .map_err(MigrationError::from_sqlite)?;
+        }
         (1, Some(SCHEMA_VERSION)) => {
             create_current_schema(&transaction)?;
         }
@@ -2909,7 +3278,16 @@ fn create_current_schema(transaction: &Transaction<'_>) -> Result<(), MigrationE
 fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationError> {
     transaction
         .execute_batch(
-            "DELETE FROM searchable_messages;
+            "DELETE FROM message_versions AS edit
+             WHERE edit.version_event_id != edit.original_event_id
+               AND EXISTS (
+                    SELECT 1 FROM message_versions AS original
+                    WHERE original.room_id = edit.room_id
+                      AND original.version_event_id = edit.original_event_id
+                      AND original.original_event_id = edit.original_event_id
+                      AND original.sender != edit.sender
+               );
+             DELETE FROM searchable_messages;
              INSERT INTO searchable_messages (
                 body, room_id, event_id, version_event_id, sender, origin_server_ts
              )
@@ -2917,17 +3295,34 @@ fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationEr
                     selected.version_event_id, selected.sender, selected.origin_server_ts
              FROM message_versions AS selected
              WHERE selected.body IS NOT NULL
+               AND EXISTS (
+                    SELECT 1 FROM message_versions AS original
+                    WHERE original.room_id = selected.room_id
+                      AND original.version_event_id = selected.original_event_id
+                      AND original.original_event_id = selected.original_event_id
+                      AND original.sender = selected.sender
+               )
                AND selected.version_event_id = (
                     SELECT candidate.version_event_id
                     FROM message_versions AS candidate
+                    LEFT JOIN selected_versions AS renderer
+                      ON renderer.room_id = candidate.room_id
+                     AND renderer.original_event_id = candidate.original_event_id
                     WHERE candidate.room_id = selected.room_id
                       AND candidate.original_event_id = selected.original_event_id
                     ORDER BY candidate.selection_order DESC,
+                             (candidate.version_event_id = renderer.version_event_id) DESC,
                              (candidate.version_event_id != candidate.original_event_id) DESC
                     LIMIT 1
                )
                AND (
                     selected.version_event_id = selected.original_event_id
+                    OR EXISTS (
+                        SELECT 1 FROM selected_versions AS renderer
+                        WHERE renderer.room_id = selected.room_id
+                          AND renderer.original_event_id = selected.original_event_id
+                          AND renderer.version_event_id = selected.version_event_id
+                    )
                     OR 1 = (
                         SELECT COUNT(*)
                         FROM message_versions AS tied
@@ -3167,7 +3562,8 @@ fn validate_index_directory(directory: &Path) -> Result<(), String> {
         ]
         .contains(&name);
         let metadata = std::fs::symlink_metadata(entry.path()).map_err(safe_io_error)?;
-        if !expected || !metadata.file_type().is_file() {
+        let reconciliation_marker = name == RECONCILIATION_MARKER && metadata.file_type().is_dir();
+        if (!expected || !metadata.file_type().is_file()) && !reconciliation_marker {
             return Err("message search filesystem entry invalid".to_string());
         }
     }
@@ -3259,6 +3655,11 @@ fn delete_database_path_once(database_path: &Path) -> Result<(), String> {
     let Some(directory) = database_path.parent() else {
         return Err("message search filesystem boundary invalid".to_string());
     };
+    match std::fs::remove_dir(directory.join(RECONCILIATION_MARKER)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(safe_io_error(error)),
+    }
     match std::fs::remove_dir(directory) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -3426,6 +3827,22 @@ mod tests {
     }
 
     #[test]
+    fn renderer_selection_survives_metadata_only_queue_backpressure() {
+        let selection = SearchMutation::SelectVersion {
+            room_id: "!room:example.org".to_owned(),
+            event_id: "$original".to_owned(),
+            version_event_id: "$selected".to_owned(),
+        };
+        let work = work_with(vec![selection]);
+        assert!(work.requires_reliable_delivery());
+        let (metadata, dropped) = work.into_privacy_removals();
+        assert!(!dropped);
+        assert!(
+            matches!(metadata.mutations.as_slice(), [SearchMutation::SelectVersion { version_event_id, .. }] if version_event_id == "$selected")
+        );
+    }
+
+    #[test]
     fn privacy_removals_require_reliable_queue_delivery() {
         let apply = work_with(vec![SearchMutation::Apply(document(
             Some("hello"),
@@ -3577,6 +3994,99 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn detached_backfill_start_cannot_recreate_a_reset_reservation() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        assert!(super::claim_cached_history(&state, 0, false));
+        assert!(super::backfill_admission_is_current(&state, 0));
+        // The task has not received its first poll when the renderer resets.
+        super::reset_index_lifecycle(&state);
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        assert!(!state.search_backfill_pending.load(Ordering::Acquire));
+        assert!(super::claim_cached_history(&state, 1, false));
+        assert!(!super::backfill_admission_is_current(&state, 0));
+        super::finish_backfill_if_current(&state, 0);
+        assert!(super::backfill_admission_is_current(&state, 1));
+    }
+
+    #[test]
+    fn stale_backfill_completion_preserves_replacement_pending_state() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        assert!(super::claim_cached_history(&state, 0, false));
+        // An old marker-cleanup await can yield across a renderer reload and
+        // admission of a new scan. Its completion must not clear the new bit.
+        super::reset_index_lifecycle(&state);
+        assert!(super::claim_cached_history(&state, 1, false));
+        super::finish_backfill_if_current(&state, 0);
+        assert!(state.search_backfill_pending.load(Ordering::Acquire));
+        super::finish_backfill_if_current(&state, 1);
+        assert!(!state.search_backfill_pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn retry_admission_preserves_failures_recorded_before_detached_startup() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        state.search_backfill_started.store(true, Ordering::Release);
+        assert!(super::mark_incomplete_if_current(&state, 0));
+        assert!(super::claim_cached_history(&state, 0, true));
+        assert!(!state.search_incomplete.load(Ordering::Acquire));
+        assert!(state.search_backfill_pending.load(Ordering::Acquire));
+        // Model a live failure after admission but before the spawned scan
+        // receives its first poll. Another query cannot clear that failure.
+        assert!(super::mark_incomplete_if_current(&state, 0));
+        assert!(!super::claim_cached_history(&state, 0, true));
+        assert!(state.search_incomplete.load(Ordering::Acquire));
+        assert!(!super::claim_cached_history(&state, 1, true));
+    }
+
+    #[test]
+    fn disabled_search_releases_index_before_waiting_for_lifecycle() {
+        let state = std::sync::Arc::new(super::super::MatrixState::default());
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        let directory = tempfile::tempdir().unwrap();
+        let lifecycle = state.search_lifecycle_lock.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            let slot = worker_state.search_index.lock().unwrap();
+            started_tx.send(()).unwrap();
+            let result =
+                reset_and_purge_disabled_search(&worker_state, slot, Some(directory.path()));
+            done_tx.send(result).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let released = loop {
+            if state.search_index.try_lock().is_ok() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        // Release even on failure so the regression cannot strand a thread.
+        drop(lifecycle);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert!(
+            released,
+            "kill-switch cleanup retained index while waiting for lifecycle"
+        );
     }
 
     #[test]
@@ -3743,8 +4253,11 @@ mod tests {
             &mut mutations,
         );
 
-        assert_eq!(mutations.len(), 1);
-        let SearchMutation::Redact { room_id, event_id } = &mutations[0] else {
+        assert_eq!(mutations.len(), 2);
+        assert!(
+            matches!(&mutations[0], SearchMutation::PurgeOriginal { event_id, .. } if event_id == "$ignored:example.org")
+        );
+        let SearchMutation::Redact { room_id, event_id } = &mutations[1] else {
             panic!("redaction should be preserved");
         };
         assert_eq!(room_id, "!room:example.org");
@@ -3776,6 +4289,30 @@ mod tests {
             })
             .expect("count rebuilt rows");
         assert_eq!(indexed_rows, 0);
+    }
+
+    #[test]
+    fn reconciliation_checkpoint_survives_restart_without_message_content() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        SearchIndex::mark_reconciliation_pending_for_source(directory.path(), "account", "DEVICE")
+            .expect("record checkpoint");
+
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        assert!(index.reconciliation_pending());
+        let marker = reconciliation_marker(index.database_path());
+        assert!(marker.is_dir());
+        assert_eq!(
+            std::fs::read_dir(&marker)
+                .expect("read content-free marker")
+                .count(),
+            0
+        );
+
+        index
+            .clear_reconciliation_pending()
+            .expect("verified rebuild clears checkpoint");
+        drop(index);
+        assert!(!open_index(directory.path(), "account", "DEVICE").reconciliation_pending());
     }
 
     #[test]
@@ -4000,6 +4537,155 @@ mod tests {
     }
 
     #[test]
+    fn clean_disabled_search_does_not_create_filesystem_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let absent_app_data = directory.path().join("not-created");
+        for _ in 0..3 {
+            reconcile_disabled_cleanup(&absent_app_data).expect("already clean");
+        }
+        assert!(!absent_app_data.exists());
+    }
+
+    #[test]
+    fn renderer_reload_requires_normalization_again_without_deleting_the_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let state = super::super::MatrixState::default();
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_backfill_started
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(flags_ready(&state));
+
+        renderer_page_started(&state);
+
+        let slot = state.search_index.lock().unwrap();
+        reset_and_purge_disabled_search(&state, slot, Some(directory.path()))
+            .expect("an in-flight query must not treat normalization as a kill switch");
+
+        assert!(
+            !flags_ready(&state),
+            "the previous page cannot authorize the new lifecycle"
+        );
+        assert!(
+            database_path.exists(),
+            "resetting readiness must not purge retained data"
+        );
+        assert!(!disabled_cleanup_pending(directory.path()).unwrap());
+        assert!(!state
+            .search_backfill_started
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            flags_ready(&state),
+            "normal reconciliation can acknowledge the new page"
+        );
+    }
+
+    #[test]
+    fn startup_waits_for_flag_normalization_without_deleting_retained_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        std::fs::write(directory.path().join("feature-flags.json"), r#"{
+            "featureFlags":{"state":{"overrides":{"encrypted_local_message_search":true}}},
+            "featureFlagsRemote":{"state":{"remote":{"encrypted_local_message_search":false},"installId":"old-cohort"}}
+        }"#).expect("stale flag cache");
+        let state = super::super::MatrixState::default();
+        assert!(!flags_ready(&state));
+        reconcile_startup_cleanup(directory.path()).expect("defer new purge");
+        assert!(database_path.exists());
+        assert!(!disabled_cleanup_pending(directory.path()).expect("marker state"));
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(flags_ready(&state));
+    }
+
+    #[test]
+    fn startup_finishes_existing_purge_intent_before_normalization() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        create_private_directory(&disabled_cleanup_marker(directory.path())).expect("marker");
+        reconcile_startup_cleanup(directory.path()).expect("recover purge intent");
+        assert!(!database_path.exists());
+        assert!(!disabled_cleanup_pending(directory.path()).expect("marker removed"));
+    }
+
+    #[test]
+    fn startup_rejects_malformed_purge_intent_without_deleting_retained_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let marker = disabled_cleanup_marker(directory.path());
+        std::fs::write(&marker, "unexpected data").expect("malformed marker");
+        assert!(reconcile_startup_cleanup(directory.path()).is_err());
+        assert!(database_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("preserved marker"),
+            "unexpected data"
+        );
+    }
+
+    #[test]
+    fn disabled_search_retries_a_marker_without_an_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let marker = disabled_cleanup_marker(directory.path());
+        create_private_directory(&marker).expect("pending marker");
+        reconcile_disabled_cleanup(directory.path()).expect("finish pending cleanup");
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disabled_search_does_not_treat_a_dangling_index_symlink_as_clean() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let outside = directory.path().join("missing-target");
+        std::os::unix::fs::symlink(&outside, directory.path().join(SEARCH_ROOT)).unwrap();
+        assert!(reconcile_disabled_cleanup(directory.path()).is_err());
+        assert!(disabled_cleanup_pending(directory.path()).unwrap());
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn failed_kill_switch_is_durable_and_blocks_reenable_until_recovery() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let index_directory = index
+            .database_path()
+            .parent()
+            .expect("index parent")
+            .to_owned();
+        drop(index);
+        let blocker = index_directory.join("unexpected.txt");
+        std::fs::write(&blocker, b"retain").expect("block bounded cleanup");
+
+        reconcile_disabled_cleanup(directory.path()).expect_err("cleanup remains blocked");
+        assert!(disabled_cleanup_pending(directory.path()).expect("read marker"));
+
+        std::fs::remove_file(blocker).expect("release cleanup");
+        reconcile_disabled_cleanup(directory.path()).expect("retry cleanup");
+        assert!(!disabled_cleanup_pending(directory.path()).expect("read marker"));
+        assert!(!index_directory.exists());
+    }
+
+    #[test]
     fn delete_all_continues_after_one_retained_index_fails() {
         let directory = tempfile::tempdir().expect("tempdir");
         let first = open_index(directory.path(), "account", "DEVICE-A");
@@ -4138,6 +4824,19 @@ mod tests {
         );
         assert!(!modern.contains("domain=\"file\" path=\"message_search/\""));
         assert!(!legacy.contains("domain=\"file\" path=\"message_search/\""));
+    }
+
+    #[test]
+    fn ios_backup_bridge_is_linked_into_the_rust_library() {
+        let build_script = include_str!("../../build.rs");
+        let bridge = include_str!("ios_backup.mm");
+        let apple_launcher = include_str!("../../gen/apple/Sources/charm/main.mm");
+
+        assert!(build_script.contains("src/matrix/ios_backup.mm"));
+        assert!(build_script.contains("cargo:rustc-link-lib=framework=Foundation"));
+        assert!(bridge.contains("charm_exclude_search_root_from_backup"));
+        assert!(bridge.contains("NSURLIsExcludedFromBackupKey"));
+        assert!(!apple_launcher.contains("charm_exclude_search_root_from_backup"));
     }
 
     #[test]
@@ -4626,6 +5325,206 @@ mod tests {
     }
 
     #[test]
+    fn edit_before_original_waits_for_sender_validation_and_then_converges() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("edited first"), "$edit"))
+            .expect("retain pending edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 4", [])
+            .unwrap();
+        migrate(&index.connection).expect("migrate pending edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .apply_document(&document(Some("original later"), "$original"))
+            .expect("insert original");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("edited first")
+        );
+    }
+
+    #[test]
+    fn ignored_original_purges_unverified_edits_without_preventing_replay() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let mut forged = document(Some("unverified edit"), "$edit");
+        forged.sender = "@mallory:example.org".to_string();
+        index.apply_document(&forged).expect("pending edit");
+        index
+            .purge_original("!room:example.org", "$original")
+            .expect("ignored original cleanup");
+        let versions: u32 = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE original_event_id = '$original'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 0);
+        index
+            .apply_document(&document(Some("visible after unignore"), "$original"))
+            .unwrap();
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("visible after unignore")
+        );
+    }
+
+    #[test]
+    fn version_five_migration_preserves_renderer_selected_tied_edit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .unwrap();
+        let mut first = document(Some("unselectedtoken"), "$tie-1");
+        first.selection_order = 10;
+        let mut second = document(Some("selectedtoken"), "$tie-2");
+        second.selection_order = 10;
+        index.apply_document(&first).unwrap();
+        index.apply_document(&second).unwrap();
+        index
+            .select_version("!room:example.org", "$original", "$tie-2")
+            .unwrap();
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 5", [])
+            .unwrap();
+
+        migrate(&index.connection).expect("migrate renderer selection without a room listener");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("selectedtoken")
+        );
+        let hits: Vec<String> = index.connection.prepare(
+            "SELECT version_event_id FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'selectedtoken'"
+        ).unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(hits, vec!["$tie-2"]);
+        let unselected: u32 = index.connection.query_row(
+            "SELECT COUNT(*) FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'unselectedtoken'", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(unselected, 0);
+    }
+
+    #[test]
+    fn version_five_migration_removes_stored_forged_provenance_and_fts_rows() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("authentic"), "$original"))
+            .unwrap();
+        // Model a v5 database produced before migration sanitized edit senders.
+        // Ingestion correctly rejects this row today, so seed the old SQL state.
+        index
+            .connection
+            .execute_batch(
+                "UPDATE message_versions SET selection_order = 777;
+             INSERT INTO message_versions (
+                room_id, original_event_id, version_event_id, sender, body,
+                origin_server_ts, selection_order
+             ) SELECT room_id, original_event_id, '$forged', '@mallory:example.org',
+                      'forgedtoken', origin_server_ts + 1, selection_order + 1
+               FROM message_versions WHERE version_event_id = '$original';
+             UPDATE searchable_messages SET body = 'forgedtoken',
+                version_event_id = '$forged', sender = '@mallory:example.org';
+             UPDATE searchable_messages_fts SET body = 'forgedtoken',
+                version_event_id = '$forged', sender = '@mallory:example.org';
+             INSERT INTO selected_versions (room_id, original_event_id, version_event_id)
+             SELECT room_id, original_event_id, '$forged' FROM message_versions
+             WHERE version_event_id = '$original';
+             UPDATE search_metadata SET schema_version = 5;",
+            )
+            .unwrap();
+        migrate(&index.connection).expect("sanitize existing v5 index");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("authentic")
+        );
+        let forged: u32 = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE version_event_id = '$forged'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let hits: u32 = index.connection.query_row(
+            "SELECT COUNT(*) FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'forgedtoken'", [], |row| row.get(0)
+        ).unwrap();
+        let version: u32 = index
+            .connection
+            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(forged, 0);
+        assert_eq!(hits, 0);
+        assert_eq!(version, SCHEMA_VERSION);
+        let selection: i64 = index
+            .connection
+            .query_row(
+                "SELECT selection_order FROM message_versions WHERE version_event_id = '$original'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(selection, 777, "v5 renderer ordering must be preserved");
+    }
+
+    #[test]
+    fn forged_edit_before_original_is_removed_before_visibility() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        let mut forged = document(Some("forged"), "$edit");
+        forged.sender = "@mallory:example.org".to_string();
+        index
+            .apply_document(&forged)
+            .expect("retain unverified edit as non-visible provenance");
+
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 4", [])
+            .unwrap();
+        migrate(&index.connection).expect("migrate unverified edit provenance");
+        assert_eq!(index.visible_body("!room:example.org", "$original"), None);
+
+        index
+            .apply_document(&document(Some("authentic"), "$original"))
+            .expect("insert original");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("authentic")
+        );
+        let forged_rows = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE version_event_id = '$edit'",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .expect("count forged provenance");
+        assert_eq!(forged_rows, 0);
+    }
+
+    #[test]
     fn equal_order_edits_defer_visibility_until_the_tie_is_resolved() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
@@ -4728,6 +5627,19 @@ mod tests {
             })
             .expect("count selections");
         assert_eq!(selected_rows, 0);
+        // A stale persisted mapping must not outrank a newer version during
+        // migration either, even if older v5 code left that mapping behind.
+        index.connection.execute_batch(
+            "INSERT INTO selected_versions VALUES ('!room:example.org', '$original', '$edit-1');
+             UPDATE search_metadata SET schema_version = 5;"
+        ).unwrap();
+        migrate(&index.connection).expect("migrate stale renderer selection");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("later edit")
+        );
     }
 
     #[test]

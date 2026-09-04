@@ -8,6 +8,46 @@
   ],
   "features": [
     {
+      "slug": "forget-local-data",
+      "title": "Forget local data",
+      "summary": "Preview an explicitly confirmed, account-scoped removal of retained Matrix data and cached encryption keys from this device, without deleting the Matrix account or server-side messages.",
+      "status": "preview",
+      "spec": "Spec 08",
+      "specLinks": [
+        {
+          "label": "Spec 08",
+          "href": "/specs/day-1/spec-08--settings-and-device-management/"
+        }
+      ],
+      "flag": "forget_local_data",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-forget-local-data-confirm",
+        "alt": "Charm settings showing the Forget local data confirmation and its disabled destructive button",
+        "caption": "Playwright opens the native-client preview confirmation, checks that typing FORGET is required, and cancels without deleting data. This mocked journey does not prove native storage deletion or remote token revocation."
+      }
+    },
+    {
+      "slug": "appearance-display",
+      "title": "Appearance and display preferences",
+      "summary": "Choose message spacing, font family, and clock and date formats in Appearance settings.",
+      "status": "preview",
+      "spec": "Day-1 Spec 47",
+      "specLinks": [
+        {
+          "label": "Day-1 Spec 47",
+          "href": "/specs/day-1/spec-47--appearance-and-display-parity/"
+        }
+      ],
+      "flag": "appearance_parity",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "appearance-display-formats",
+        "alt": "Charm Appearance settings with clock and date format controls",
+        "caption": "Playwright changes clock and date preferences, verifies persistence after reload, and checks that disabling the rollout restores effective defaults without losing the saved choices."
+      }
+    },
+    {
       "slug": "jump-to-date",
       "title": "Jump to date",
       "summary": "Open a room calendar and move directly to the first available message on or after a chosen date.",

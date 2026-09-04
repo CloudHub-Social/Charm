@@ -58,6 +58,8 @@ const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 /// ran to change it — is restored instead.
 const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
 const CANCELLED_ACCOUNT_CLEANUP_PREFIX: &str = ".cancelled-account-cleanup-";
+const LOGOUT_TOMBSTONE_PREFIX: &str = ".logout-pending-";
+const FALLBACK_LOGOUT_TOMBSTONE_PREFIX: &str = ".matrix-logout-pending-";
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -136,23 +138,44 @@ pub fn known_account_keys(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Pure, `AppHandle`-free variant of [`known_account_keys`].
 pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
+    let mut logout_tombstones = HashSet::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            continue;
-        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX)
+        if let Some(account_key) = name
+            .strip_prefix(LOGOUT_TOMBSTONE_PREFIX)
+            .or_else(|| name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX))
+        {
+            logout_tombstones.insert(account_key.to_string());
+            continue;
+        }
+        if file_type.is_dir()
+            && !name.starts_with(TEMP_STORE_PREFIX)
             && !name.ends_with(STALE_BACKUP_SUFFIX)
-            // An unreadable marker must never make its account restorable,
-            // but it must not prevent discovery of unrelated accounts either.
             && !cancelled_account_cleanup_pending_at(root, &name).unwrap_or(true)
         {
             keys.push(name);
         }
     }
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    for entry in std::fs::read_dir(app_data_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(account_key) = name
+            .strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX)
+            .or_else(|| name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX))
+        {
+            logout_tombstones.insert(account_key.to_string());
+        }
+    }
+    keys.retain(|key| !logout_tombstones.contains(key));
     // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
     // isn't creation order) — sort so callers that iterate multiple known
     // accounts (e.g. `try_restore_session`) get a stable, reproducible
@@ -191,13 +214,6 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
 
-pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    validate_cancelled_account_key(account_key)?;
-    let marker =
-        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    create_cancelled_account_marker(&marker)
-}
-
 fn validate_cancelled_account_key(account_key: &str) -> Result<(), String> {
     if account_key.len() == 32
         && account_key
@@ -219,34 +235,287 @@ fn create_cancelled_account_marker(marker: &Path) -> Result<(), String> {
         .open(marker)
     {
         Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::symlink_metadata(marker).is_ok_and(|metadata| metadata.is_dir()) {
+                Err("cleanup marker is a directory".to_string())
+            } else {
+                Ok(())
+            }
+        }
         Err(error) => Err(error.to_string()),
     }
 }
 
+fn discard_cancelled_account_session_at(
+    root: &Path,
+    account_key: &str,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    validate_cancelled_account_key(account_key)?;
+    // Record cancellation before touching the keychain: a failed cleanup must
+    // not leave an otherwise valid session eligible for restoration.
+    let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
+    let marker_result = create_cancelled_account_marker(&marker);
+    // Even if the filesystem cannot record a restore veto, keychain/store
+    // cleanup may still succeed. Never strand both by returning early here.
+    if let Err(cleanup_error) = cleanup() {
+        return Err(match marker_result {
+            Ok(()) => cleanup_error,
+            Err(marker_error) => format!(
+                "cancellation marker failed: {marker_error}; cleanup failed: {cleanup_error}"
+            ),
+        });
+    }
+    // Keep the marker until every artifact is gone. Do not leave a successful
+    // cleanup marker around to delete a later legitimate login on startup.
+    match std::fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Caller holds RELOCATE_LOCK from the marker check through cleanup.
+fn retry_cancelled_account_cleanup_at(
+    root: &Path,
+    account_key: &str,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // Marker filenames are untrusted filesystem data, not account identities.
+    // Reject before checking markers or invoking any keychain/filesystem cleanup.
+    validate_cancelled_account_key(account_key)?;
+    if !cancelled_account_cleanup_pending_at(root, account_key)? {
+        return Ok(());
+    }
+    discard_cancelled_account_session_at(root, account_key, cleanup)
+}
+
+pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    mark_cancelled_account_cleanup_at(&app_data_dir, account_key)
+}
+
+fn mark_cancelled_account_cleanup_at(app_data_dir: &Path, account_key: &str) -> Result<(), String> {
+    validate_cancelled_account_key(account_key)?;
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    if create_cancelled_account_marker(&root.join(&name)).is_ok() {
+        return Ok(());
+    }
+    // Keep the same account-wide semantics when the store directory cannot
+    // hold the marker; an ordinary logout marker intentionally retains keys.
+    create_cancelled_account_marker(&app_data_dir.join(name))
+        .map_err(|_| "failed to persist account cleanup intent".to_string())
+}
+
+/// Durably suppresses restoration before logout starts mutating credentials.
+/// The app-data sibling is a fallback when `matrix_store` is unwritable.
+pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
+    if std::fs::write(
+        root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        [],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    std::fs::write(
+        app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        [],
+    )
+    .map_err(|_| "failed to persist local sign-out intent".to_string())
+}
+
+pub fn clear_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    clear_logout_tombstones_at(
+        &app_data_dir.join("matrix_store"),
+        &app_data_dir,
+        account_key,
+    )
+}
+
+fn clear_logout_tombstones_at(
+    root: &Path,
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    for marker in [
+        root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+        app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
+    ] {
+        match std::fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("failed to clear local sign-out intent".to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
+    sweep_logout_tombstones_with(root, app_data_dir, clear_session, clear_oauth_session)
+}
+
+fn sweep_logout_tombstones_with(
+    root: &Path,
+    app_data_dir: &Path,
+    mut clear_matrix: impl FnMut(&str) -> Result<(), String>,
+    mut clear_oauth: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut account_keys = HashSet::new();
+    for directory in [root, app_data_dir] {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(account_key) = name
+                .strip_prefix(LOGOUT_TOMBSTONE_PREFIX)
+                .or_else(|| name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX))
+            {
+                account_keys.insert(account_key.to_string());
+            }
+        }
+    }
+    let mut result = Ok(());
+    for account_key in account_keys {
+        // Credential stores and derived files are independent cleanup targets.
+        // Evaluate every operation before combining errors, including when an
+        // earlier account could not finish. Only complete accounts lose markers.
+        let matrix = clear_matrix(&account_key);
+        let oauth = clear_oauth(&account_key);
+        let search = super::search::SearchIndex::delete_for_account(app_data_dir, &account_key);
+        let cleanup = matrix
+            .and(oauth)
+            .and(search)
+            .and_then(|()| clear_logout_tombstones_at(root, app_data_dir, &account_key));
+        result = result.and(cleanup);
+    }
+    result
+}
+
+pub fn clear_cancelled_account_cleanup_marker(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    for marker in [
+        app_data_dir.join("matrix_store").join(&name),
+        app_data_dir.join(&name),
+    ] {
+        match std::fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("failed to clear account cleanup intent".to_string()),
+        }
+    }
+    Ok(())
+}
+
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
     let root = matrix_store_root(app)?;
-    let entries = match std::fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_cancelled_account_cleanups_at(&root, &app_data_dir, |account_key| {
+        // The sweep owns RELOCATE_LOCK through its marker recheck and cleanup.
+        discard_cancelled_account_session_with(
+            || clear_session(account_key),
+            || clear_oauth_session(account_key),
+            || discard_cancelled_account_store_locked(app, account_key),
+        )
+    })
+}
+
+fn require_finished_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    require_finished_account_cleanup_at(&app_data_dir, account_key)
+}
+
+fn require_finished_account_cleanup_at(
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    for marker in [
+        app_data_dir.join("matrix_store").join(&name),
+        app_data_dir.join(&name),
+    ] {
+        // Even a malformed/dangling marker must block adoption: startup still
+        // treats its name as account-wide deletion intent. Never clear it here.
+        match std::fs::symlink_metadata(marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(
+                "Account cleanup is incomplete. Restart Charm to retry cleanup before signing in."
+                    .to_string(),
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn sweep_cancelled_account_cleanups_at(
+    root: &Path,
+    app_data_dir: &Path,
+    mut discard_session: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    for marker_root in [root, app_data_dir] {
+        let entries = match std::fs::read_dir(marker_root) {
+            Ok(entries) => entries,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue
+            }
+            Err(error) => return Err(error.to_string()),
         };
-        let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
-            continue;
-        };
-        // Recheck after taking the relocation lock: this directory entry may
-        // predate completed cleanup and a newer successful login.
-        let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = retry_cancelled_account_cleanup_at(&root, account_key, || {
-            clear_session(account_key)?;
-            clear_oauth_session(account_key)?;
-            discard_cancelled_account_store_locked(app, account_key)
-        });
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
+                continue;
+            };
+            // Revalidate the enumerated marker after excluding relocation.
+            // The callback includes search data, so marker removal commits the
+            // complete wipe, not merely credential deletion.
+            let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = retry_cancelled_account_cleanup_at(marker_root, account_key, || {
+                let session = discard_session(account_key);
+                let search =
+                    super::search::SearchIndex::delete_for_account(app_data_dir, account_key);
+                session.and(search)
+            });
+        }
     }
     Ok(())
 }
@@ -318,8 +587,13 @@ pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
 pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
     std::time::Duration::from_secs(5 * 60);
 
-/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
+/// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`]. Also
+/// completes durable logout cleanup before a headless caller can restore.
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    let app_data_dir = root
+        .parent()
+        .ok_or_else(|| "matrix app-data directory unavailable".to_string())?;
+    sweep_logout_tombstones_at(root, app_data_dir)?;
     sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
 }
 
@@ -461,6 +735,11 @@ pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscard
     // wrapper (which production startup intentionally does not call).
     sweep_cancelled_account_cleanups(app)?;
     let root = matrix_store_root(app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    sweep_logout_tombstones_at(&root, &app_data_dir)?;
     let entries = recover_stale_backups_at(&root)?;
     Ok(DeferredTempStoreDiscards(entries))
 }
@@ -620,10 +899,7 @@ fn recover_or_discard_stale_backup_locked(
     })();
 
     if restored.is_none() {
-        eprintln!(
-            "sweep_orphan_temp_stores: found an orphaned stale-backup for {account_key} at {} with no recoverable passphrase — leaving it in place rather than discarding possibly-unrecoverable data",
-            backup_path.display()
-        );
+        eprintln!("sweep_orphan_temp_stores: stale backup recovery failed; retaining it for retry");
     }
     restored.is_some()
 }
@@ -684,18 +960,33 @@ fn discard_cancelled_account_store_locked(
     // Resolve without `store_path`: its create-on-access contract is useful
     // for live stores but would manufacture an empty directory while cleanup
     // is trying to prove the cancelled store is absent.
-    let path = matrix_store_root(app)?.join(account_key);
-    match std::fs::remove_dir_all(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("failed to remove cancelled account store: {error}")),
-    }
-    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
-        .map_err(|error| error.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    discard_cancelled_account_store_with(
+        || {
+            let path = matrix_store_root(app)?.join(account_key);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("failed to remove cancelled account store: {error}")),
+            }
+        },
+        || {
+            let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+                .map_err(|error| error.to_string())?;
+            match entry.delete_credential() {
+                Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        },
+    )
+}
+
+fn discard_cancelled_account_store_with(
+    remove_store: impl FnOnce() -> Result<(), String>,
+    clear_passphrase: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let store = remove_store();
+    let passphrase = clear_passphrase();
+    store.and(passphrase)
 }
 
 /// Atomically removes every durable artifact for a registration that was
@@ -704,55 +995,30 @@ fn discard_cancelled_account_store_locked(
 /// relocation commit writes its session credentials.
 pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    discard_cancelled_account_session_at(&matrix_store_root(app)?, account_key, || {
-        clear_session(account_key)?;
-        clear_oauth_session(account_key)?;
-        discard_cancelled_account_store_locked(app, account_key)
-    })
+    validate_cancelled_account_key(account_key)?;
+    let marker = mark_cancelled_account_cleanup(app, account_key);
+    let cleanup = discard_cancelled_account_session_with(
+        || clear_session(account_key),
+        || clear_oauth_session(account_key),
+        || discard_cancelled_account_store_locked(app, account_key),
+    );
+    // Shutdown can win this lock before a pending finalization. Retain intent
+    // even when no artifacts exist yet, so that finalization cannot commit.
+    // Normal full-wipe callers clear it only after their search cleanup succeeds.
+    marker.and(cleanup)
 }
 
-fn discard_cancelled_account_session_at(
-    root: &Path,
-    account_key: &str,
-    cleanup: impl FnOnce() -> Result<(), String>,
+fn discard_cancelled_account_session_with(
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+    clear_store: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    validate_cancelled_account_key(account_key)?;
-    // Record cancellation before touching the keychain: a failed cleanup must
-    // not leave an otherwise valid session eligible for restoration.
-    let marker = root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    let marker_result = create_cancelled_account_marker(&marker);
-    // Even if the filesystem cannot record a restore veto, keychain/store
-    // cleanup may still succeed. Never strand both by returning early here.
-    if let Err(cleanup_error) = cleanup() {
-        return Err(match marker_result {
-            Ok(()) => cleanup_error,
-            Err(marker_error) => format!(
-                "cancellation marker failed: {marker_error}; cleanup failed: {cleanup_error}"
-            ),
-        });
-    }
-    // Keep the marker until every artifact is gone. Do not leave a successful
-    // cleanup marker around to delete a later legitimate login on startup.
-    match std::fs::remove_file(marker) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-/// Caller holds RELOCATE_LOCK from the marker check through cleanup.
-fn retry_cancelled_account_cleanup_at(
-    root: &Path,
-    account_key: &str,
-    cleanup: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    // Marker filenames are untrusted filesystem data, not account identities.
-    // Reject before checking markers or invoking any keychain/filesystem cleanup.
-    validate_cancelled_account_key(account_key)?;
-    if !cancelled_account_cleanup_pending_at(root, account_key)? {
-        return Ok(());
-    }
-    discard_cancelled_account_session_at(root, account_key, cleanup)
+    // A failed keychain operation must not prevent the independent wipe targets.
+    // Keep the first error so callers retain durable cleanup intent for retry.
+    let matrix = clear_matrix();
+    let oauth = clear_oauth();
+    let store = clear_store();
+    matrix.and(oauth).and(store)
 }
 
 /// One-time dev-only migration for the pre-Spec-15 layout, where
@@ -996,12 +1262,40 @@ pub fn relocate_store_and_save_session(
     session: &MatrixSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    require_finished_account_cleanup(app, account_key).map_err(RelocationFailure::cleanup_veto)?;
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_session(account_key, homeserver_url, session),
+    )?;
+    clear_oauth_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
+}
+
+/// Prevent a committed-but-rejected login from restoring on restart. Call
+/// under the login completion lock, before awaiting network revocation.
+/// Keep the ordinary logout marker for startup cleanup; do not delete a
+/// crypto store that the rejected client still has open.
+pub(crate) fn invalidate_rejected_session(app: &AppHandle, account_key: &str) -> bool {
+    invalidate_rejected_session_with(
+        || mark_logout_tombstone(app, account_key),
+        || clear_session(account_key),
+        || clear_oauth_session(account_key),
     )
+}
+
+fn invalidate_rejected_session_with(
+    mark: impl FnOnce() -> Result<(), String>,
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    // Never short-circuit: failure of one protection must not skip the others.
+    let marked = mark().is_ok();
+    let matrix_cleared = clear_matrix().is_ok();
+    let oauth_cleared = clear_oauth().is_ok();
+    marked && matrix_cleared && oauth_cleared
 }
 
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
@@ -1015,12 +1309,16 @@ pub fn relocate_store_and_save_oauth_session(
     session: &OAuthSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(
+    require_finished_account_cleanup(app, account_key).map_err(RelocationFailure::cleanup_veto)?;
+    let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
         account_key,
         || save_oauth_session(account_key, homeserver_url, session),
-    )
+    )?;
+    clear_session(account_key).map_err(RelocationFailure::committed)?;
+    clear_logout_tombstone(app, account_key).map_err(RelocationFailure::committed)?;
+    Ok(outcome)
 }
 
 /// Error from a failed [`relocate_store_and_save_session`]/
@@ -1043,6 +1341,10 @@ pub struct RelocationFailure {
     /// restore the old passphrase) — resuming a previous client in that
     /// case would paper over on-disk state nothing can reliably decrypt.
     pub safe_to_resume_previous: bool,
+    /// The replacement store and credentials were committed before final
+    /// cleanup failed. The caller must reject and revoke this new session;
+    /// this is distinct from an incomplete rollback of an uncommitted swap.
+    pub committed_session: bool,
 }
 
 impl RelocationFailure {
@@ -1051,6 +1353,25 @@ impl RelocationFailure {
             message: message.to_string(),
             cancelled_cleanup_veto: false,
             safe_to_resume_previous: true,
+            committed_session: false,
+        }
+    }
+
+    fn committed(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            cancelled_cleanup_veto: false,
+            safe_to_resume_previous: false,
+            committed_session: true,
+        }
+    }
+
+    fn cleanup_veto(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            cancelled_cleanup_veto: true,
+            safe_to_resume_previous: false,
+            committed_session: false,
         }
     }
 }
@@ -1133,6 +1454,7 @@ fn relocate_store_at_locked_with(
             message: "Previous cancelled login cleanup is pending. Restart Charm to retry cleanup before signing in to this account.".to_string(),
             cancelled_cleanup_veto: true,
             safe_to_resume_previous: false,
+            committed_session: false,
         });
     }
     let temp_path = root.join(temp_key);
@@ -1294,6 +1616,7 @@ fn relocate_store_at_locked_with(
             message: err,
             cancelled_cleanup_veto: false,
             safe_to_resume_previous: fully_restored,
+            committed_session: false,
         }
     };
 
@@ -1358,8 +1681,7 @@ fn relocate_store_at_locked_with(
     }
     if !marker_written {
         eprintln!(
-            "relocate_store: failed to write commit marker for {account_key} at {} after retries — a crash before the next successful startup sweep could incorrectly restore the superseded backup",
-            account_path.display()
+            "relocate_store: commit marker write failed after retries; crash recovery may restore a superseded backup"
         );
     }
 
@@ -1368,16 +1690,10 @@ fn relocate_store_at_locked_with(
         // its directory and its durable passphrase entry) is safe to
         // discard. Best-effort: failing to reclaim disk space or a keychain
         // entry shouldn't turn an otherwise-successful login into an error.
-        if let Err(e) = std::fs::remove_dir_all(&backup_path) {
-            eprintln!(
-                "relocate_store: failed to remove backup of superseded store for {account_key} at {}: {e}",
-                backup_path.display()
-            );
+        if std::fs::remove_dir_all(&backup_path).is_err() {
+            eprintln!("relocate_store: superseded backup removal failed");
         } else {
-            eprintln!(
-                "relocate_store: discarded stale store for {account_key} at {} (superseded by a fresh login)",
-                account_path.display()
-            );
+            eprintln!("relocate_store: discarded stale store superseded by a fresh login");
         }
         let _ = backup_passphrase_entry.delete_credential();
     }
@@ -1748,6 +2064,261 @@ mod tests {
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
 
+    #[test]
+    fn account_wipe_attempts_every_target_despite_independent_failures() {
+        for failing_step in [
+            None,
+            Some("matrix"),
+            Some("oauth"),
+            Some("store"),
+            Some("passphrase"),
+        ] {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let step = |name| {
+                calls.borrow_mut().push(name);
+                if failing_step == Some(name) {
+                    Err("injected cleanup failure".to_owned())
+                } else {
+                    Ok(())
+                }
+            };
+            let result = discard_cancelled_account_session_with(
+                || step("matrix"),
+                || step("oauth"),
+                || discard_cancelled_account_store_with(|| step("store"), || step("passphrase")),
+            );
+            assert_eq!(*calls.borrow(), ["matrix", "oauth", "store", "passphrase"]);
+            assert_eq!(result.is_err(), failing_step.is_some());
+        }
+    }
+
+    #[test]
+    fn committed_cleanup_failure_is_not_an_uncommitted_rollback() {
+        let before_commit = RelocationFailure::safe("not installed");
+        assert!(before_commit.safe_to_resume_previous);
+        assert!(!before_commit.committed_session);
+        let after_commit = RelocationFailure::committed("cleanup failed");
+        assert!(!after_commit.safe_to_resume_previous);
+        assert!(after_commit.committed_session);
+    }
+
+    #[test]
+    fn rejected_session_marks_before_clearing_both_credential_kinds_even_on_failure() {
+        // Each failing operation, including a failed marker write, must still
+        // leave both credential deletions attempted in the same order.
+        for failing_step in [None, Some("mark"), Some("matrix"), Some("oauth")] {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let step = |name| {
+                calls.borrow_mut().push(name);
+                if failing_step == Some(name) {
+                    Err("injected failure".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            let cleaned = invalidate_rejected_session_with(
+                || step("mark"),
+                || step("matrix"),
+                || step("oauth"),
+            );
+            assert_eq!(cleaned, failing_step.is_none());
+            assert_eq!(*calls.borrow(), ["mark", "matrix", "oauth"]);
+        }
+    }
+
+    #[test]
+    fn cancelled_cleanup_sweep_removes_search_before_clearing_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join(format!(
+            "{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef"
+        ));
+        std::fs::write(&marker, []).unwrap();
+        let index = super::super::search::SearchIndex::open_with_source_secret(
+            directory.path(),
+            "0123456789abcdef0123456789abcdef",
+            "DEVICE",
+            "test-secret",
+        )
+        .unwrap();
+        let database = index.database_path().to_path_buf();
+        drop(index);
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| Ok(())).unwrap();
+        assert!(!database.exists());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn fresh_login_waits_for_primary_or_fallback_wipe_cleanup() {
+        for fallback in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("matrix_store");
+            std::fs::create_dir(&root).unwrap();
+            let marker_root = if fallback { directory.path() } else { &root };
+            let marker = marker_root.join(format!(
+                "{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef"
+            ));
+            std::fs::write(&marker, []).unwrap();
+
+            assert!(require_finished_account_cleanup_at(
+                directory.path(),
+                "0123456789abcdef0123456789abcdef"
+            )
+            .is_err());
+            assert!(marker.exists(), "admission must not erase cleanup intent");
+            assert!(require_finished_account_cleanup_at(directory.path(), "other-account").is_ok());
+
+            sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| Ok(())).unwrap();
+            assert!(require_finished_account_cleanup_at(
+                directory.path(),
+                "0123456789abcdef0123456789abcdef"
+            )
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn fresh_login_fails_closed_when_cleanup_marker_cannot_be_inspected() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("matrix_store"), "not a directory").unwrap();
+        assert!(require_finished_account_cleanup_at(
+            directory.path(),
+            "0123456789abcdef0123456789abcdef"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn malformed_cleanup_marker_still_blocks_fresh_login() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join(format!(
+            "{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef"
+        ));
+        std::fs::create_dir(&marker).unwrap();
+        assert!(require_finished_account_cleanup_at(
+            directory.path(),
+            "0123456789abcdef0123456789abcdef"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cancelled_cleanup_sweep_keeps_marker_when_search_cleanup_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join(format!(
+            "{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef"
+        ));
+        std::fs::write(&marker, []).unwrap();
+        let invalid_app_data = directory.path().join("not-a-directory");
+        std::fs::write(&invalid_app_data, []).unwrap();
+        sweep_cancelled_account_cleanups_at(&root, &invalid_app_data, |_| Ok(())).unwrap();
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn account_cleanup_fallback_keeps_full_wipe_intent_until_retry_succeeds() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir_all(root.join("0123456789abcdef0123456789abcdef")).unwrap();
+        let marker_name =
+            format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef");
+        // A directory at the primary marker path injects a write failure.
+        let blocked_primary = root.join(&marker_name);
+        std::fs::create_dir(&blocked_primary).unwrap();
+        mark_cancelled_account_cleanup_at(directory.path(), "0123456789abcdef0123456789abcdef")
+            .unwrap();
+        let fallback = directory.path().join(&marker_name);
+        assert!(fallback.is_file());
+        assert!(!known_account_keys_at(&root)
+            .unwrap()
+            .contains(&"0123456789abcdef0123456789abcdef".to_owned()));
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| {
+            Err("injected full-store cleanup failure".to_owned())
+        })
+        .unwrap();
+        assert!(fallback.is_file());
+        std::fs::remove_dir(blocked_primary).unwrap();
+        let mut retried = false;
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |key| {
+            assert_eq!(key, "0123456789abcdef0123456789abcdef");
+            retried = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(retried);
+        assert!(!fallback.exists());
+    }
+
+    #[test]
+    fn logout_sweep_attempts_both_credentials_and_search_after_failures() {
+        for failing_credential in ["matrix", "oauth"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("matrix_store");
+            std::fs::create_dir(&root).unwrap();
+            let marker = root.join(format!(
+                "{LOGOUT_TOMBSTONE_PREFIX}0123456789abcdef0123456789abcdef"
+            ));
+            std::fs::write(&marker, []).unwrap();
+            let index = super::super::search::SearchIndex::open_with_source_secret(
+                directory.path(),
+                "0123456789abcdef0123456789abcdef",
+                "DEVICE",
+                "test-secret",
+            )
+            .unwrap();
+            let database = index.database_path().to_path_buf();
+            drop(index);
+            let calls = std::cell::RefCell::new(Vec::new());
+            let clear = |kind| {
+                calls.borrow_mut().push(kind);
+                if kind == failing_credential {
+                    Err("injected credential failure".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(sweep_logout_tombstones_with(
+                &root,
+                directory.path(),
+                |_| clear("matrix"),
+                |_| clear("oauth")
+            )
+            .is_err());
+            assert_eq!(*calls.borrow(), ["matrix", "oauth"]);
+            assert!(!database.exists());
+            assert!(marker.exists());
+            sweep_logout_tombstones_with(&root, directory.path(), |_| Ok(()), |_| Ok(())).unwrap();
+            assert!(!marker.exists());
+        }
+    }
+
+    #[test]
+    fn cancelled_cleanup_sweep_keeps_marker_when_session_cleanup_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join(format!(
+            "{CANCELLED_ACCOUNT_CLEANUP_PREFIX}0123456789abcdef0123456789abcdef"
+        ));
+        std::fs::write(&marker, []).unwrap();
+        let index = super::super::search::SearchIndex::open_with_source_secret(
+            directory.path(),
+            "0123456789abcdef0123456789abcdef",
+            "DEVICE",
+            "test-secret",
+        )
+        .unwrap();
+        let database = index.database_path().to_path_buf();
+        drop(index);
+        sweep_cancelled_account_cleanups_at(directory.path(), directory.path(), |_| {
+            Err("injected keychain failure".to_string())
+        })
+        .unwrap();
+        assert!(marker.exists());
+        assert!(!database.exists());
+    }
+
     const TEST_MXID_A: &str = "@charm-persistence-test-a:localhost";
     const TEST_MXID_B: &str = "@charm-persistence-test-b:localhost";
     // Every keychain-touching test below gets its own dedicated MXID pair
@@ -1818,6 +2389,31 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_cleanup_retains_intent_when_it_wins_before_relocation() {
+        let root = ScratchRoot::new("shutdown-before-relocation");
+        let key = account_key(TEST_MXID_A);
+        let marker = root
+            .0
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{key}"));
+        create_cancelled_account_marker(&marker).unwrap();
+        discard_cancelled_account_session_with(|| Ok(()), || Ok(()), || Ok(())).unwrap();
+        assert!(
+            marker.exists(),
+            "physical cleanup does not authorize a later commit"
+        );
+        let committed = std::cell::Cell::new(false);
+        let failure = relocate_store_at_locked_with(&root.0, &temp_store_key(), &key, || {
+            committed.set(true);
+            Ok(())
+        })
+        .err()
+        .expect("shutdown marker vetoes finalization");
+        assert!(failure.cancelled_cleanup_veto);
+        assert!(!failure.committed_session);
+        assert!(!committed.get());
+    }
+
+    #[test]
     fn temp_store_key_is_distinguishable_from_an_account_key() {
         let temp = temp_store_key();
         assert!(temp.starts_with(TEMP_STORE_PREFIX));
@@ -1865,6 +2461,30 @@ mod tests {
         ] {
             assert!(validate_temp_login_key(&key).is_err());
         }
+    }
+
+    #[test]
+    fn known_accounts_fail_closed_behind_primary_or_fallback_logout_markers() {
+        let app_data = ScratchRoot::new("known-logout-markers");
+        let root = app_data.0.join("matrix_store");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("primary-account")).unwrap();
+        std::fs::create_dir(root.join("fallback-account")).unwrap();
+        std::fs::create_dir(root.join("visible-account")).unwrap();
+        std::fs::write(
+            root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}primary-account")),
+            [],
+        )
+        .unwrap();
+        std::fs::write(
+            app_data.0.join(format!(
+                "{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}fallback-account"
+            )),
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(known_account_keys_at(&root).unwrap(), ["visible-account"]);
     }
 
     /// Exercises the real OS keychain, not a mock — this is the actual

@@ -427,6 +427,9 @@ pub async fn login(
                 discard_vetoed_login(&app, client, &temp_key).await;
                 return Err(e.into());
             }
+            if e.committed_session {
+                return Err(reject_committed_login(&app, &client, &account_key).await);
+            }
             // Only resume `previous_client` if relocation's own rollback left
             // the account's on-disk store consistent with it — otherwise doing
             // so would paper over a half-restored store neither this client nor
@@ -551,8 +554,8 @@ pub async fn try_restore_session(
         // rather than assuming which.
         let oauth_session = match persistence::load_oauth_session(&account_key) {
             Ok(session) => session,
-            Err(e) => {
-                eprintln!("failed to load oauth session for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to load oauth session; trying the next stored account");
                 continue;
             }
         };
@@ -560,7 +563,9 @@ pub async fn try_restore_session(
             match restore_oauth_session(&app, &state, &account_key, saved).await {
                 Ok(Some(response)) => return Ok(Some(response)),
                 Ok(None) => {}
-                Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
+                Err(_) => {
+                    eprintln!("failed to restore oauth session; trying Matrix session restore")
+                }
             }
             // Deliberately *not* `continue` here: an OAuth session that
             // exists but didn't yield a live restore isn't proof this
@@ -575,16 +580,16 @@ pub async fn try_restore_session(
         let saved = match persistence::load_session(&account_key) {
             Ok(Some(saved)) => saved,
             Ok(None) => continue,
-            Err(e) => {
-                eprintln!("failed to load session for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to load session; trying the next stored account");
                 continue;
             }
         };
 
         let client = match build_client(&app, &saved.homeserver_url, &account_key).await {
             Ok(client) => client,
-            Err(e) => {
-                eprintln!("failed to build client for {account_key}: {e}");
+            Err(_) => {
+                eprintln!("failed to build client; trying the next stored account");
                 continue;
             }
         };
@@ -912,6 +917,9 @@ async fn finish_registration(
             return Err(e.into());
         }
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            return Err(reject_committed_login(&app, &client, &account_key).await);
+        }
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
@@ -3291,10 +3299,11 @@ mod registration_uia_tests {
     use super::{
         check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
         is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
-        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
-        sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
-        PasswordResetChallenge, PendingPasswordReset, PendingRegistrationEmail,
-        RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
+        registration_auth_data, registration_fallback_url, revoke_cancelled_sso_device,
+        sanitize_password_reset_submit_url, sanitized_provider_name,
+        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
+        PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
+        AUTH_MAILS_PER_ADDRESS,
     };
     use crate::matrix::MatrixState;
 
@@ -3360,6 +3369,53 @@ mod registration_uia_tests {
             auth,
             AuthData::Terms(terms) if terms.session.as_deref() == Some("uia-session")
         ));
+    }
+
+    #[tokio::test]
+    async fn rejected_committed_login_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.matrix_auth().logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(super::revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn rejected_committed_login_does_not_claim_failed_revocation_succeeded() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "errcode": "M_FORBIDDEN",
+                "error": "revocation refused",
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(!super::revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_sso_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.matrix_auth().logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        revoke_cancelled_sso_device(&client).await;
+        server.server().verify().await;
     }
 
     #[tokio::test]
@@ -3889,18 +3945,28 @@ pub async fn complete_sso_login(
         },
     };
     if let Err(e) = callback_result {
+        revoke_cancelled_sso_device(&client).await;
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
-        // startup sweep — clean it up now instead, same as a cancelled
-        // attempt.
+        // startup sweep. Drop the Matrix client first so its SQLite handles
+        // cannot make the bounded temp-store deletion fail spuriously.
+        drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err(e);
     }
 
-    let session = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
+    let Some(session) = client.matrix_auth().session() else {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("SSO login succeeded but no session was returned".to_string());
+    };
+
+    if pending.cancellation.is_cancelled() {
+        revoke_cancelled_sso_device(&client).await;
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
@@ -3909,14 +3975,56 @@ pub async fn complete_sso_login(
     // `MatrixState::login_completion_lock`. Safe to acquire here: the
     // `pending_sso` lock taken earlier in this function was already
     // `drop`-ped before this point.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let _completion_guard = tokio::select! {
+        biased;
+        () = pending.cancellation.cancelled() => {
+            revoke_cancelled_sso_device(&client).await;
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            return Err("single sign-on cancelled".to_string());
+        }
+        guard = state.login_completion_lock.lock() => guard,
+    };
 
     // See `login`'s identical capture-and-restore-on-failure rationale.
     let previous_client = state.client.lock().await.clone();
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app).await;
+    let previous_timelines = sync::abort_current_sync_loop_for_rollback(&app).await;
+    // Cancellation remains authoritative until the irreversible store/session
+    // relocation begins. If it arrived while the completion lock or old sync
+    // loop was draining, restore that loop and leave the prior client current.
+    if pending.cancellation.is_cancelled() {
+        if let Some(previous_client) = previous_client.as_ref() {
+            state
+                .restore_timeline_snapshot(
+                    previous_client,
+                    previous_timelines,
+                    |room_id, timeline| {
+                        super::timeline::spawn_timeline_listener(
+                            app.clone(),
+                            room_id.to_owned(),
+                            std::sync::Arc::downgrade(timeline),
+                            previous_client.clone(),
+                            previous_client.user_id().map(ToOwned::to_owned),
+                        )
+                    },
+                )
+                .await;
+            sync::spawn_sync_task(app.clone(), previous_client.clone());
+        }
+        // The prior session is fully restored and the cancelled client owns
+        // only its unique temporary store. Remote revocation must not keep
+        // unrelated login/logout operations waiting on this homeserver.
+        drop(_completion_guard);
+        revoke_cancelled_sso_device(&client).await;
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
+    // No rollback snapshots may retain SQLite handles during relocation.
+    drop(previous_timelines);
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,
@@ -3929,6 +4037,9 @@ pub async fn complete_sso_login(
             return Err(e.into());
         }
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            return Err(reject_committed_login(&app, &client, &account_key).await);
+        }
         if e.safe_to_resume_previous {
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
@@ -3968,6 +4079,52 @@ pub async fn complete_sso_login(
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
+}
+
+/// Final persistence cleanup failed after the new session was committed.
+/// The previous client has already been detached and must not be resumed.
+/// Complete every local protection before the first await, so cancellation
+/// cannot skip it. No local writes follow the await: a later login must not
+/// have its credentials removed by this rejected attempt's network cleanup.
+pub(crate) async fn reject_committed_login(
+    app: &AppHandle,
+    client: &Client,
+    account_key: &str,
+) -> String {
+    let local_cleanup = persistence::invalidate_rejected_session(app, account_key);
+    let revoked = revoke_rejected_login_device(client).await;
+    match (local_cleanup, revoked) {
+        (true, true) => "Login could not be finalized. The new session was signed out; please try again.",
+        (true, false) => "Login could not be finalized. Local sign-in was removed, but server sign-out could not be confirmed. Review this device from another session.",
+        (false, true) => "Login could not be finalized. The new session was signed out on the server, but local credential cleanup is incomplete.",
+        (false, false) => "Login could not be finalized. Local credential cleanup and server sign-out could not be confirmed. Review this device from another session before retrying.",
+    }
+    .to_string()
+}
+
+async fn revoke_rejected_login_device(client: &Client) -> bool {
+    // SDK dispatch handles both Matrix password/SSO and OAuth QR sessions.
+    matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.logout()).await,
+        Ok(Ok(()))
+    )
+}
+
+/// A callback can authenticate a device immediately before cancellation wins.
+/// Revocation is bounded so an offline homeserver cannot prevent local cleanup.
+async fn revoke_cancelled_sso_device(client: &Client) {
+    if !client.matrix_auth().logged_in() {
+        return;
+    }
+    if !matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await,
+        Ok(Ok(_))
+    ) {
+        tracing::warn!(
+            command = "cancel_sso_login",
+            status = "device_revocation_failed"
+        );
+    }
 }
 
 /// Exchanges the `loginToken` in `callback_url` for a real session on

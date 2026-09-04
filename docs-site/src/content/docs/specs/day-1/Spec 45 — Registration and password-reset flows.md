@@ -34,6 +34,38 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+An empty web session restore suspends the socket and reconnect timer opened by
+pre-authentication listeners, without announcing that an initial anonymous session
+was revoked. A successful login resumes transport; a stale empty restore cannot
+suspend a newer login or overtake an in-flight logout's cookie cleanup.
+
+WebSocket upgrades recheck permanent session revocation immediately after
+subscribing to session events, before replaying retained snapshots. This closes
+the lookup-to-upgrade gap where logout's invalidation broadcast had no receiver;
+the revoked socket closes so the browser can recheck its authenticated session.
+Every subsequent snapshot, live event, and keepalive send also checks revocation,
+so a removal during replay stops the remaining payloads. Frames already handed
+to the transport cannot be recalled.
+A deterministic companion regression exercises this handoff through a real
+loopback WebSocket. Its CI result is required before treating the fix as verified.
+
+Web password-change dispatch and cancellation share an atomic boundary. A
+cancellation acknowledged before dispatch prevents the mutation; after dispatch,
+the server reports that the outcome may be uncertain, disables automatic HTTP
+retries, and does not restore the attempt for another submission. Secret-free,
+browser-owner-bound receipts retain that distinction for twenty minutes, including
+after completion or request disconnection. Receipt capacity is bounded and new
+dispatches fail closed instead of evicting unexpired evidence. This does not
+prove whether a homeserver applied an already-dispatched password change.
+
+Homeserver `.well-known` discovery is read as a bounded stream: an oversized
+declared length is rejected up front, and chunked responses are stopped before
+more than 64 KiB enters memory. Starting a replacement browser auth flow clears
+attempts owned by both the discovery and active pre-auth cookies under one store
+transition, preventing a new attempt from entering between those two cleanup
+operations. The separate password-mutation cancellation boundary is tracked in
+[#386](https://github.com/CloudHub-Social/Charm/issues/386).
+
 The implementation slices have merged in
 [#330](https://github.com/CloudHub-Social/Charm/pull/330),
 [#331](https://github.com/CloudHub-Social/Charm/pull/331),
@@ -61,6 +93,19 @@ and serves only recognized raster image formats. Browser-owner isolation,
 callback replay, provider allowlisting, polling, and transport/UI behavior have
 repository coverage. Live verification against a real configured SSO provider
 remains open.
+
+Desktop SSO cancellation remains authoritative through token exchange,
+completion-lock admission, and the final pre-relocation boundary. Cancellation
+or expiry drops the temporary Matrix client before deleting its encrypted
+temporary store, avoiding open SQLite handles during cleanup. Once durable
+session relocation starts, Charm finishes adoption and reports the real outcome
+rather than claiming the already-dispatched login was cancelled.
+Native callback UI updates are bound to the active SSO operation and mounted
+login screen. Cancellation during callback completion keeps restart disabled
+until both completion and cancellation settle. If cancellation wins, its stale
+error is suppressed; if durable adoption wins, the successful sign-in is shown.
+This prevents a previous operation from overwriting a newer attempt's UI without
+hiding a session that Rust has already committed.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque
@@ -212,10 +257,17 @@ homeservers. The parity audit (2026-07-13) found:
 - Before the web companion allocates a client or sends any unauthenticated auth
   request, validate the caller-supplied homeserver as an HTTPS public-network
   target. Resolve once and pin all addresses, reject loopback/link-local/private
-  and special-purpose ranges, disable implicit proxying, and reapply the same
+  and special-purpose ranges (including IPv4 embedded in mapped or compatible
+  IPv6 addresses), disable implicit proxying, and reapply the same
   scheme/host/DNS/address policy to every `.well-known` or HTTP redirect. Tests
   cover redirect-to-private and DNS-rebinding attempts. An explicit deployment
   allowlist may narrow this policy further.
+  For the [RFC 6052 well-known NAT64 prefix](https://www.rfc-editor.org/rfc/rfc6052),
+  `64:ff9b::/96`, apply the same IPv4 destination policy to the final 32 bits,
+  allowing public destinations without permitting private or special-purpose
+  addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
+  `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
+  do not infer its destination from the final 32 bits.
 
 ### Password reset
 
@@ -334,6 +386,100 @@ completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
 
+Resuming a retained native session preserves its current presence choice rather
+than reseeding it to online. Appear Offline still applies before the first resumed
+sync request; a genuinely fresh session starts online unless that privacy setting
+applies. Regression tests cover fresh/resumed initialization and the privacy
+override, pending GitHub Actions verification.
+
+Native SSO cancellation before durable adoption restores both the prior client
+slot and its sync loop if shutdown had begun. Once the prior session and its
+listeners are restored, cancellation releases login-completion exclusion before
+best-effort remote revocation of the cancelled device; the cancelled client owns
+only its unique temporary store at that point. Account teardown and SSO adoption
+share login-completion exclusion: logout cannot finish clearing a session while
+SSO still owns the rollback window. A queued teardown revalidates its original
+account and device after acquiring that exclusion, so it cannot clear a newly
+adopted session. This depends on the recoverable account-teardown implementation;
+combined GitHub Actions verification remains required.
+
+The cancellation window retains
+the exact cached timeline objects and their focused/live view markers, capturing
+cached entries when draining the cache rather than before shutdown, then
+reattaches listeners on rollback so the open room continues receiving updates
+without navigation. These temporary strong references are dropped before store
+relocation when adoption proceeds. Regression coverage verifies listener
+shutdown/restart, view identity, focus preservation, and duplicate prevention;
+GitHub Actions and real-client cancellation checks remain required.
+Timeline creation and replacement retain shared lifecycle access through their
+pop-to-repush windows. Teardown acquires exclusive access before capture and
+clears the active client before releasing it; queued mutations revalidate their
+session before touching the cache. Regression coverage exercises a temporarily
+removed entry and requires teardown to wait for its return. This closes the
+identified capture gap in code; combined CI and real-client verification remain
+pending.
+Rollback also holds exclusive timeline lifecycle access before republishing the
+prior client and throughout listener restoration. New room opens cannot enter
+between those operations and displace the newly restored views. Logout attempts
+both Matrix and OAuth credential deletions even if its durable marker cannot be
+written; failures remain errors rather than claims of durable cleanup. Regression
+coverage for these failure boundaries requires GitHub Actions verification.
+
+The default-off native `forget_local_data` preview has a public feature-gallery
+journey that opens its confirmation, verifies the destructive action stays
+disabled until `FORGET` is typed, and cancels back to account settings. Its
+CI-generated screenshot documents the consent boundary only: the deterministic
+mock backend does not establish native data deletion or remote token revocation.
+
+If callback exchange already
+authenticated a device, cancellation attempts Matrix logout with the bounded
+auth-network timeout before discarding the temporary local store. Offline or
+failed revocation remains best-effort and is reported without session details;
+it is not evidence that the homeserver device was removed.
+
+Companion registration, password-reset, token-login, and SSO admission cancels
+both server-derived browser cookie owners and inserts the replacement attempt
+under one transition lock. Capacity reservation happens after superseded payloads
+release their permits inside that transition, so a browser can replace its own
+stored attempt even at the global limit. If the cancelled attempt still holds
+its permit in an in-flight task, its replacement waits up to five seconds for
+capacity outside the transition lock, and remains cancellable by a newer flow.
+Admission owns a cancellation-on-drop guard before its first await. Disconnecting
+while waiting for capacity cancels and removes that exact attempt entry without
+depending on the later expiry task; it does not release another flow's permit.
+Regression coverage drops a saturated-capacity waiter and checks bounded cleanup.
+GitHub Actions explicitly selects both `charm` and `charm-web-server` for library
+tests; native-only Rust job success does not verify companion authentication
+regressions. Verification of this expanded CI scope is pending.
+Fresh owners still fail immediately at capacity. Capacity ownership is tracked
+by weak permit-lifetime witnesses, not by cancellation entries: post-admission
+quota/setup failures cannot leave a cancellation-only owner eligible to wait.
+Actual cancelled in-flight permits remain attributable to their browser until
+dropped, including when a newer attempt replaces an already waiting replacement.
+An eligible replacement retains that ownership witness through acquisition and
+publication; bounded failure or cancellation releases it automatically. This
+closes the cross-thread handoff gap without admitting cancellation-only owners.
+Teardown releases the semaphore slot before dropping its ownership witness, so
+a replacement cannot mistake a still-held slot for an unrelated owner's capacity.
+A regression test exercises
+release by an old task that itself needs the transition lock; CI is pending.
+Completed SSO results release capacity
+before remote cleanup; unrelated browsers remain subject to the same limit.
+In-flight SSO callbacks also observe cancellation during token exchange and
+initial sync. Cancellation stops local authentication work and releases its
+admission slot before bounded best-effort logout of any session already known
+to the SDK. No completion is published for the cancelled callback. A stalled
+HTTP callback regression checks capacity handoff; execution in CI is pending.
+Cancellation cannot prove that an unacknowledged remote token exchange did not
+create a device; remote revocation remains best-effort rather than guaranteed.
+Discarding a completed SSO session attempts remote logout for at most five
+seconds, then releases its SDK client and removes temporary crypto storage.
+This bounds supersession latency without claiming remote revocation succeeded
+when the homeserver was unreachable; live timeout verification remains pending.
+Routes do not split cancellation from admission for
+these flows; the replacement remains addressable for cancellation throughout
+network setup and finalization.
+
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag
 defaulting to `false`. The existing legacy dummy registration and generic SSO
@@ -341,6 +487,10 @@ actions remain available while the flag is off, so a dark launch cannot regress
 baseline authentication. Tauri commands enforce the same flag and fully validate
 attempt and stage inputs when enabled; flags are rollout controls, not
 authorization boundaries.
+
+Completed web registration adopts the nested session returned by either the begin
+or continue endpoint and resumes live WebSocket events after an empty restore.
+Intermediate registration challenges do not resume an authenticated transport.
 
 ## Testing strategy
 

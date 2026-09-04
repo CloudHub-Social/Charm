@@ -177,8 +177,10 @@ pub struct Session {
     /// part of durable crypto backup and is discarded with this web session.
     pub message_search_index: Arc<std::sync::Mutex<Option<charm_lib::matrix::search::SearchIndex>>>,
     /// Sticky disclosure that at least one live-sync batch could not be queued.
-    /// It stays set until this ephemeral session and its index are rebuilt.
-    pub message_search_incomplete: Arc<AtomicBool>,
+    /// Retry admission clears the prior failure under this lock. Every live
+    /// writer uses the same lock so detached startup cannot erase a new failure.
+    /// The inner atomic also supports the shared native/web purge helper.
+    pub message_search_incomplete: Arc<std::sync::Mutex<AtomicBool>>,
     /// True while the initial cached-history backfill still has queued work.
     /// Search responses combine this transient state with the sticky
     /// `message_search_incomplete` disclosure above.
@@ -203,6 +205,8 @@ pub struct Session {
     /// session. Search workers and timeline listeners recheck it immediately
     /// before writing storage or broadcasting decrypted state.
     pub session_closed: Arc<AtomicBool>,
+    /// Serializes permanent revocation with bounded WebSocket payload sends.
+    pub socket_send_lock: tokio::sync::Mutex<()>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -566,7 +570,7 @@ impl Session {
             user_id,
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
-            message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_incomplete: Arc::new(std::sync::Mutex::new(AtomicBool::new(false))),
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
@@ -575,6 +579,7 @@ impl Session {
             )),
             message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
+            socket_send_lock: tokio::sync::Mutex::new(()),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -717,6 +722,15 @@ impl Session {
                 .rooms()
                 .iter()
                 .any(|room| room.encryption_state().is_encrypted())
+    }
+
+    /// Reuses an open renderer timeline for search reconciliation without
+    /// creating a timeline or starting a new listener.
+    pub(crate) async fn peek_search_timeline(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<Arc<Timeline>> {
+        self.timelines.lock().await.peek(room_id).map(Arc::clone)
     }
 
     /// Returns this session's cached `Timeline` for `room_id`, building and
@@ -986,7 +1000,8 @@ fn spawn_timeline_listener(
             &client,
             room_id.as_str(),
             items.iter(),
-        );
+        )
+        .await;
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         // The first `tick()` fires immediately, not after the first
@@ -1076,7 +1091,8 @@ fn spawn_timeline_listener(
                 &client,
                 room_id.as_str(),
                 items.iter(),
-            );
+            )
+            .await;
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
         // drop this room's cached snapshot too, so a stale, possibly very
@@ -1268,12 +1284,17 @@ impl SessionStore {
             let mut inner = self.inner.write().await;
             let session = inner.remove(token);
             if let Some(session) = &session {
+                let _send_guard = session.socket_send_lock.lock().await;
                 // Revoke detached work while removal is still atomic with
                 // respect to lookups. Cleanup below may await, so it cannot
                 // remain under the store lock.
                 session
                     .session_closed
                     .store(true, std::sync::atomic::Ordering::Release);
+                // Publish while removal is atomic with session lookup, before
+                // fallible/awaited disk cleanup. Connected renderers must not
+                // retain their authenticated shell after permanent removal.
+                let _ = session.events.send(ServerEvent::SessionInvalidated(()));
             }
             session
         };
@@ -1570,6 +1591,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permanent_removal_waits_for_the_admitted_socket_send() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@send-boundary:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let send_guard = session.socket_send_lock.lock().await;
+        let removal = store.remove(&token);
+        tokio::pin!(removal);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut removal)
+                .await
+                .is_err()
+        );
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        drop(send_guard);
+        removal.await.expect("removed session");
+        let _next_send = session.socket_send_lock.lock().await;
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
     async fn removing_a_session_revokes_its_detached_decrypted_work() {
         let store = SessionStore::new();
         let token = store
@@ -1596,7 +1643,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(search_index);
 
+        let mut events = session.events.subscribe();
         store.remove(&token).await.expect("removed session");
+        let invalidated = events.try_recv().expect("session invalidation event");
+        assert_eq!(
+            serde_json::to_value(invalidated).unwrap(),
+            serde_json::json!({ "event": "session:invalidated", "data": null })
+        );
 
         assert!(session
             .session_closed

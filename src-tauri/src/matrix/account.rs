@@ -16,7 +16,8 @@ use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use ts_rs::TS;
 
 use super::media;
@@ -217,21 +218,60 @@ enum SearchCleanupScope {
     EntireAccount,
 }
 
-/// Tears down the local session for `logout` and `deactivate_account`: clears
-/// both keychain-backed session kinds
-/// (password/SSO's `MatrixSession` and QR login's `OAuthSession` — matching
-/// the dual-path handling in `mod::try_restore_session`) and drops the
-/// in-memory client. Deliberately does *not* delete the account's SQLCipher
-/// store — see Spec 08's "Logout store retention": this is a sign-out, not a
-/// device wipe, so a later re-login onto the same account reuses the
-/// existing store instead of starting cold.
-async fn clear_local_session(
+/// Shared ownership of one acquired login-exclusion lock, not another mutex.
+type TeardownGuard = std::sync::Arc<tokio::sync::OwnedMutexGuard<()>>;
+
+/// Both the command and any blocking worker retain login exclusion. Aborting
+/// the command cannot unlock a still-running filesystem cleanup, and a worker
+/// failure cannot unlock the command's remaining recovery steps.
+async fn run_account_cleanup<T, F>(
+    guard: TeardownGuard,
+    cleanup: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        cleanup()
+    })
+    .await
+}
+
+async fn begin_session_teardown(state: &MatrixState) -> Result<(TeardownGuard, Client), String> {
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let guard = std::sync::Arc::clone(&state.login_completion_lock)
+        .lock_owned()
+        .await;
+    let active = state.require_client().await?;
+    require_confirmed_session(
+        user_id.as_str(),
+        device_id.as_str(),
+        active.user_id().map(|id| id.as_str()),
+        active.device_id().map(|id| id.as_str()),
+    )
+    .map_err(|_| "session changed; retry the account action".to_string())?;
+    Ok((std::sync::Arc::new(guard), client))
+}
+
+/// Clears session credentials and in-memory state, retaining the SDK store for
+/// ordinary logout. The caller holds login exclusion through any later wipe.
+async fn clear_local_session_locked(
     app: &AppHandle,
     state: &State<'_, MatrixState>,
+    completion_guard: &TeardownGuard,
     user_id: &str,
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
         .await
@@ -248,8 +288,11 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    persistence::clear_session(&account_key)?;
-    persistence::clear_oauth_session(&account_key)?;
+    let mut credential_error = clear_logout_credentials(
+        tombstone_result,
+        || persistence::clear_session(&account_key),
+        || persistence::clear_oauth_session(&account_key),
+    );
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
@@ -310,49 +353,72 @@ async fn clear_local_session(
         crate::push::PushStatus::default();
 
     let search_index = std::sync::Arc::clone(&state.search_index);
+    let search_account_key = account_key.clone();
     let cleanup = match app.path().app_data_dir() {
-        Ok(app_data_dir) => tokio::task::spawn_blocking(move || {
-            let active = search_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            let mut first_error = None;
-            if let Some(active) = active {
-                if let Err(error) = active.index.delete() {
-                    first_error = Some(error);
-                }
-            }
-            let scoped_cleanup = match search_cleanup_scope {
-                SearchCleanupScope::CurrentDevice => {
-                    if let Some(device_id) = search_device_id {
-                        super::search::SearchIndex::delete_for_source(
-                            &app_data_dir,
-                            &account_key,
-                            &device_id,
-                        )
-                    } else {
-                        Ok(())
+        Ok(app_data_dir) => {
+            run_account_cleanup(std::sync::Arc::clone(completion_guard), move || {
+                let active = search_index
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let mut first_error = None;
+                if let Some(active) = active {
+                    if let Err(error) = active.index.delete() {
+                        first_error = Some(error);
                     }
                 }
-                SearchCleanupScope::EntireAccount => {
-                    super::search::SearchIndex::delete_for_account(&app_data_dir, &account_key)
+                let scoped_cleanup = match search_cleanup_scope {
+                    SearchCleanupScope::CurrentDevice => {
+                        if let Some(device_id) = search_device_id {
+                            super::search::SearchIndex::delete_for_source(
+                                &app_data_dir,
+                                &search_account_key,
+                                &device_id,
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    SearchCleanupScope::EntireAccount => {
+                        super::search::SearchIndex::delete_for_account(
+                            &app_data_dir,
+                            &search_account_key,
+                        )
+                    }
+                };
+                if let Err(error) = scoped_cleanup {
+                    first_error.get_or_insert(error);
                 }
-            };
-            if let Err(error) = scoped_cleanup {
-                first_error.get_or_insert(error);
-            }
-            match first_error {
-                Some(error) => Err(error),
-                None => Ok(()),
-            }
-        })
-        .await
-        .is_ok_and(|result| result.is_ok()),
+                match first_error {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                }
+            })
+            .await
+            .is_ok_and(|result| result.is_ok())
+        }
         Err(_) => false,
     };
     if !cleanup {
         tracing::warn!(command = "message_search_logout", status = "cleanup_failed");
     }
+    if credential_error.is_none() && cleanup {
+        if let Err(error) = persistence::clear_logout_tombstone(app, &account_key) {
+            credential_error = Some(error);
+        }
+    }
+    if let Some(error) = credential_error {
+        // The active client is already gone. Notify the renderer even though
+        // the initiating command rejects, while the durable marker (when it
+        // could be written) owns startup retry.
+        let _ = app.emit("session:invalidated", ());
+        return Err(error);
+    }
+    // The session is already gone even if a caller's subsequent physical
+    // store cleanup fails (notably remote account deactivation). Publish
+    // invalidation before releasing login exclusion rather than relying on
+    // the initiating command eventually returning success to the renderer.
+    let _ = app.emit("session:invalidated", ());
     Ok(())
 }
 
@@ -366,7 +432,9 @@ async fn clear_local_session(
 /// drops the client so a relaunch doesn't auto-restore.
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
-    let client = state.require_client().await?;
+    // Revalidate the requested target after excluding login completion so an
+    // old request cannot clear a replacement client.
+    let (completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -381,13 +449,169 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         }
     });
 
-    clear_local_session(
+    clear_local_session_locked(
         &app,
         &state,
+        &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::CurrentDevice,
     )
     .await
+}
+
+/// Explicit device wipe for the active account. Unlike ordinary logout this
+/// removes the retained matrix-sdk store, its keychain passphrase, and every
+/// device-scoped search index for the account. Cleanup intent is recorded
+/// before the session closes so a filesystem/keychain failure is retried at
+/// startup instead of leaving an unexplained restorable account behind.
+#[tauri::command]
+pub async fn forget_local_data(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    confirmed: bool,
+) -> Result<(), String> {
+    require_local_data_confirmation(confirmed)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    if !crate::feature_flags::flag(
+        &app_data_dir,
+        crate::feature_flags::FeatureFlagKey::ForgetLocalData,
+    ) {
+        return Err("forget local data is unavailable".to_string());
+    }
+    // Capture the session before showing the dialog, without blocking login
+    // completion while waiting for the user to respond.
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(
+            "Permanently remove this account's retained Matrix store, cached encryption keys, and encrypted search indexes from this device?",
+        )
+        .title("Forget local data")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Forget local data".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |accepted| {
+            let _ = confirmation_tx.send(accepted);
+        });
+    if !confirmation_rx.await.unwrap_or(false) {
+        return Err("local data deletion was cancelled".to_string());
+    }
+    // Keep this lock through physical deletion: a new login must not install
+    // a store underneath the wipe after the old client has been cleared.
+    let completion_guard = std::sync::Arc::new(
+        std::sync::Arc::clone(&state.login_completion_lock)
+            .lock_owned()
+            .await,
+    );
+    let active = state.require_client().await?;
+    require_confirmed_session(
+        user_id.as_str(),
+        device_id.as_str(),
+        active.user_id().map(|id| id.as_str()),
+        active.device_id().map(|id| id.as_str()),
+    )?;
+    drop(active);
+    let account_key = persistence::account_key(user_id.as_str());
+
+    persistence::mark_cancelled_account_cleanup(&app, &account_key)?;
+    let teardown_result = clear_local_session_locked(
+        &app,
+        &state,
+        &completion_guard,
+        user_id.as_str(),
+        SearchCleanupScope::EntireAccount,
+    )
+    .await;
+
+    // A detached revoke would retain SDK store handles during physical
+    // deletion (particularly problematic on Windows). This bounded attempt
+    // owns and drops our last client handle before filesystem cleanup starts.
+    revoke_before_local_wipe(client, std::time::Duration::from_secs(5)).await;
+
+    let cleanup_app = app.clone();
+    let cleanup_account_key = account_key.clone();
+    let cleanup = async {
+        run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
+            let mut first_error = None;
+            if let Err(error) =
+                persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
+            {
+                first_error = Some(error);
+            }
+            if let Err(error) =
+                super::search::SearchIndex::delete_for_account(&app_data_dir, &cleanup_account_key)
+            {
+                first_error.get_or_insert(error);
+            }
+            match first_error {
+                Some(error) => Err(error),
+                None => persistence::clear_cancelled_account_cleanup_marker(
+                    &cleanup_app,
+                    &cleanup_account_key,
+                ),
+            }
+        })
+        .await
+        .map_err(|_| "local account cleanup task failed".to_string())
+        .and_then(|result| result)
+    };
+    finish_local_wipe_cleanup(teardown_result, cleanup).await
+}
+
+async fn finish_local_wipe_cleanup(
+    teardown: Result<(), String>,
+    cleanup: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    // Teardown already closed the session. Its error must not prevent the
+    // account-wide physical wipe from making progress under login exclusion.
+    let cleanup = cleanup.await;
+    if teardown.is_err() || cleanup.is_err() {
+        tracing::warn!(command = "forget_local_data", status = "cleanup_pending");
+    }
+    teardown.and(cleanup)
+}
+
+async fn revoke_before_local_wipe(client: Client, timeout: std::time::Duration) {
+    let _ = tokio::time::timeout(timeout, async move {
+        if client.matrix_auth().logged_in() {
+            let _ = client.matrix_auth().logout().await;
+        } else {
+            let _ = client.oauth().logout().await;
+        }
+    })
+    .await;
+}
+
+fn require_local_data_confirmation(confirmed: bool) -> Result<(), String> {
+    confirmed
+        .then_some(())
+        .ok_or_else(|| "local data deletion requires confirmation".to_string())
+}
+
+fn require_confirmed_session(
+    user_id: &str,
+    device_id: &str,
+    active_user_id: Option<&str>,
+    active_device_id: Option<&str>,
+) -> Result<(), String> {
+    if active_user_id == Some(user_id) && active_device_id == Some(device_id) {
+        Ok(())
+    } else {
+        Err("session changed; confirm local data deletion again".to_string())
+    }
 }
 
 #[tauri::command]
@@ -693,7 +917,10 @@ pub async fn deactivate_account(
     state: State<'_, MatrixState>,
     password: Option<String>,
 ) -> Result<(), UiaCommandError> {
-    let client = state.require_client().await?;
+    // Remote deactivation and local deletion form one session transition.
+    // A UIA challenge returns from this call (releasing the lock); we never
+    // retain it while the user is entering a password between requests.
+    let (completion_guard, client) = begin_session_teardown(&state).await?;
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -705,14 +932,73 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(
+    // Release our SDK handles before attempting to remove its store files.
+    drop(account);
+    drop(client);
+
+    let account_key = persistence::account_key(user_id.as_str());
+    let marker_error = persistence::mark_cancelled_account_cleanup(&app, &account_key).err();
+    let teardown_result = clear_local_session_locked(
         &app,
         &state,
+        &completion_guard,
         user_id.as_str(),
         SearchCleanupScope::EntireAccount,
     )
+    .await;
+
+    // The remote account is gone, so unlike ordinary logout there is no
+    // reason to retain the SDK store. Attempt physical removal now; either
+    // the primary or fallback cancelled-account marker keeps startup
+    // fail-closed and owns full-store retry after a partial failure.
+    let cleanup_app = app.clone();
+    let cleanup_account_key = account_key.clone();
+    let cleanup_result = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
+        let store_result =
+            persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key);
+        let search_result = cleanup_app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "application data directory unavailable".to_string())
+            .and_then(|dir| {
+                super::search::SearchIndex::delete_for_account(&dir, &cleanup_account_key)
+            });
+        // Attempt both independent targets before propagating either failure.
+        // Full-wipe retry intent must outlive a failed search-index deletion.
+        store_result.and(search_result)?;
+        persistence::clear_cancelled_account_cleanup_marker(&cleanup_app, &cleanup_account_key)
+    })
     .await
-    .map_err(UiaCommandError::from)
+    .map_err(|_| "local account cleanup task failed".to_string())
+    .and_then(|result| result);
+
+    if let Some(error) = marker_error {
+        // `clear_local_session` may have completed its own logout marker.
+        // Re-establish durable account-wide retry intent before surfacing
+        // the original marker failure from this already-deactivated account.
+        persistence::mark_cancelled_account_cleanup(&app, &account_key)
+            .map_err(UiaCommandError::from)?;
+        let _ = app.emit("session:invalidated", ());
+        return Err(UiaCommandError::from(error));
+    }
+    teardown_result.map_err(UiaCommandError::from)?;
+    cleanup_result.map_err(UiaCommandError::from)
+}
+
+// Marker persistence and both credential stores are independent cleanup
+// opportunities. A filesystem failure must not skip working keychain deletion.
+pub(super) fn clear_logout_credentials(
+    marker: Result<(), String>,
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+) -> Option<String> {
+    let mut error = marker.err();
+    for result in [clear_matrix(), clear_oauth()] {
+        if let Err(failure) = result {
+            error.get_or_insert(failure);
+        }
+    }
+    error
 }
 
 #[cfg(test)]
@@ -723,6 +1009,177 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn physical_wipe_runs_after_teardown_failure_and_reports_both_outcomes() {
+        for teardown_fails in [false, true] {
+            for cleanup_fails in [false, true] {
+                let ran = std::cell::Cell::new(false);
+                let teardown = if teardown_fails {
+                    Err("teardown failed".to_string())
+                } else {
+                    Ok(())
+                };
+                let result = finish_local_wipe_cleanup(teardown, async {
+                    ran.set(true);
+                    if cleanup_fails {
+                        Err("cleanup failed".to_string())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await;
+                assert!(ran.get());
+                assert_eq!(result.is_err(), teardown_fails || cleanup_fails);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_logout_marker_still_attempts_both_credential_deletions() {
+        let matrix_cleared = std::cell::Cell::new(false);
+        let oauth_cleared = std::cell::Cell::new(false);
+        let result = clear_logout_credentials(
+            Err("marker unavailable".into()),
+            || {
+                matrix_cleared.set(true);
+                Err("matrix keychain unavailable".into())
+            },
+            || {
+                oauth_cleared.set(true);
+                Ok(())
+            },
+        );
+        assert!(matrix_cleared.get() && oauth_cleared.get());
+        assert_eq!(result.as_deref(), Some("marker unavailable"));
+    }
+
+    #[test]
+    fn logout_reports_credential_failure_even_with_a_durable_marker() {
+        assert_eq!(
+            clear_logout_credentials(Ok(()), || Ok(()), || Err("oauth unavailable".into())),
+            Some("oauth unavailable".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn wipe_revoke_completes_the_remote_logout_when_available() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        revoke_before_local_wipe(client, std::time::Duration::from_secs(5)).await;
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn wipe_revoke_does_not_wait_for_an_unresponsive_homeserver() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({}))
+                    .set_delay(std::time::Duration::from_secs(30)),
+            )
+            .mount(server.server())
+            .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            revoke_before_local_wipe(client, std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("local wipe must not wait for the delayed logout response");
+    }
+
+    #[tokio::test]
+    async fn account_cleanup_keeps_login_excluded_after_caller_cancellation() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::new(std::sync::Arc::clone(&lock).lock_owned().await);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(run_account_cleanup(guard, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.await.unwrap();
+        caller.abort();
+        let result = caller.await;
+        let replacement_blocked = lock.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        assert!(result.unwrap_err().is_cancelled());
+        assert!(replacement_blocked);
+        let _replacement = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock())
+            .await
+            .expect("finished cleanup must release login exclusion");
+    }
+
+    #[tokio::test]
+    async fn account_cleanup_panic_preserves_callers_recovery_exclusion() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::new(std::sync::Arc::clone(&lock).lock_owned().await);
+        let result = run_account_cleanup(std::sync::Arc::clone(&guard), || {
+            panic!("simulated filesystem worker failure");
+        })
+        .await;
+        assert!(result.unwrap_err().is_panic());
+        assert!(lock.try_lock().is_err());
+        drop(guard);
+        assert!(lock.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn teardown_rejects_a_session_change_while_waiting_for_login_exclusion() {
+        let state = MatrixState::default();
+        let server = MatrixMockServer::new().await;
+        let original = server.client_builder().build().await;
+        *state.client.lock().await = Some(original);
+        let login = state.login_completion_lock.lock().await;
+        let teardown = begin_session_teardown(&state);
+        tokio::pin!(teardown);
+        tokio::select! {
+            biased;
+            _ = &mut teardown => panic!("teardown read the client before login completed"),
+            () = std::future::ready(()) => {}
+        }
+        *state.client.lock().await = None;
+        drop(login);
+        assert!(teardown.await.is_err());
+        assert!(state.login_completion_lock.try_lock().is_ok());
+    }
+
+    #[test]
+    fn forget_local_data_requires_an_explicit_confirmation_bit() {
+        assert!(require_local_data_confirmation(false).is_err());
+        assert!(require_local_data_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn forget_local_data_rejects_a_changed_account_or_device() {
+        for (user, device) in [
+            (Some("@b:example.org"), Some("A")),
+            (Some("@a:example.org"), Some("B")),
+            (None, None),
+        ] {
+            assert!(require_confirmed_session("@a:example.org", "A", user, device).is_err());
+        }
+    }
+
+    #[test]
+    fn forget_local_data_accepts_the_confirmed_session() {
+        assert!(require_confirmed_session(
+            "@a:example.org",
+            "A",
+            Some("@a:example.org"),
+            Some("A")
+        )
+        .is_ok());
+    }
 
     #[tokio::test]
     async fn validate_avatar_path_accepts_a_real_image() {
