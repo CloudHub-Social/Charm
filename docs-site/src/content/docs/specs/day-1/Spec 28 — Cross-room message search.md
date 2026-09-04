@@ -147,8 +147,11 @@ connection: the SDK owns that schema and migration lifecycle.
   remain deferred and known mismatched-sender candidates are purged. Regression
   coverage migrates both legitimate and forged edits received before originals;
   schema version 6 also sanitizes already-installed version-5 databases, retaining
-  their renderer selection ordering while rebuilding visible rows and FTS. A
-  regression seeds forged provenance and an existing forged FTS row in v5.
+  their renderer selection ordering and saved equal-order edit choice while
+  rebuilding visible rows and FTS, even with no open room listener. Saved choices
+  cannot override a newer edit or restore a forged-sender candidate. Regressions
+  cover tied choices, stale choices, and forged provenance with a saved choice
+  and an existing forged FTS row in v5.
   GitHub Actions verification remains required. A late
   edit/redaction, backfill, or replay therefore converges without retaining or
   resurrecting stale or redacted text.

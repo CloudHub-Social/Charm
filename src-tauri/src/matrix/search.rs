@@ -3271,14 +3271,24 @@ fn rebuild_visible_rows(transaction: &Transaction<'_>) -> Result<(), MigrationEr
                AND selected.version_event_id = (
                     SELECT candidate.version_event_id
                     FROM message_versions AS candidate
+                    LEFT JOIN selected_versions AS renderer
+                      ON renderer.room_id = candidate.room_id
+                     AND renderer.original_event_id = candidate.original_event_id
                     WHERE candidate.room_id = selected.room_id
                       AND candidate.original_event_id = selected.original_event_id
                     ORDER BY candidate.selection_order DESC,
+                             (candidate.version_event_id = renderer.version_event_id) DESC,
                              (candidate.version_event_id != candidate.original_event_id) DESC
                     LIMIT 1
                )
                AND (
                     selected.version_event_id = selected.original_event_id
+                    OR EXISTS (
+                        SELECT 1 FROM selected_versions AS renderer
+                        WHERE renderer.room_id = selected.room_id
+                          AND renderer.original_event_id = selected.original_event_id
+                          AND renderer.version_event_id = selected.version_event_id
+                    )
                     OR 1 = (
                         SELECT COUNT(*)
                         FROM message_versions AS tied
@@ -5242,6 +5252,45 @@ mod tests {
     }
 
     #[test]
+    fn version_five_migration_preserves_renderer_selected_tied_edit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("original"), "$original"))
+            .unwrap();
+        let mut first = document(Some("unselectedtoken"), "$tie-1");
+        first.selection_order = 10;
+        let mut second = document(Some("selectedtoken"), "$tie-2");
+        second.selection_order = 10;
+        index.apply_document(&first).unwrap();
+        index.apply_document(&second).unwrap();
+        index
+            .select_version("!room:example.org", "$original", "$tie-2")
+            .unwrap();
+        index
+            .connection
+            .execute("UPDATE search_metadata SET schema_version = 5", [])
+            .unwrap();
+
+        migrate(&index.connection).expect("migrate renderer selection without a room listener");
+
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("selectedtoken")
+        );
+        let hits: Vec<String> = index.connection.prepare(
+            "SELECT version_event_id FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'selectedtoken'"
+        ).unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(hits, vec!["$tie-2"]);
+        let unselected: u32 = index.connection.query_row(
+            "SELECT COUNT(*) FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'unselectedtoken'", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(unselected, 0);
+    }
+
+    #[test]
     fn version_five_migration_removes_stored_forged_provenance_and_fts_rows() {
         let directory = tempfile::tempdir().expect("tempdir");
         let mut index = open_index(directory.path(), "account", "DEVICE");
@@ -5264,6 +5313,9 @@ mod tests {
                 version_event_id = '$forged', sender = '@mallory:example.org';
              UPDATE searchable_messages_fts SET body = 'forgedtoken',
                 version_event_id = '$forged', sender = '@mallory:example.org';
+             INSERT INTO selected_versions (room_id, original_event_id, version_event_id)
+             SELECT room_id, original_event_id, '$forged' FROM message_versions
+             WHERE version_event_id = '$original';
              UPDATE search_metadata SET schema_version = 5;",
             )
             .unwrap();
@@ -5445,6 +5497,19 @@ mod tests {
             })
             .expect("count selections");
         assert_eq!(selected_rows, 0);
+        // A stale persisted mapping must not outrank a newer version during
+        // migration either, even if older v5 code left that mapping behind.
+        index.connection.execute_batch(
+            "INSERT INTO selected_versions VALUES ('!room:example.org', '$original', '$edit-1');
+             UPDATE search_metadata SET schema_version = 5;"
+        ).unwrap();
+        migrate(&index.connection).expect("migrate stale renderer selection");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("later edit")
+        );
     }
 
     #[test]
