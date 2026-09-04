@@ -954,7 +954,18 @@ pub async fn deactivate_account(
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
     let cleanup_result = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
-        persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)?;
+        let store_result =
+            persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key);
+        let search_result = cleanup_app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "application data directory unavailable".to_string())
+            .and_then(|dir| {
+                super::search::SearchIndex::delete_for_account(&dir, &cleanup_account_key)
+            });
+        // Attempt both independent targets before propagating either failure.
+        // Full-wipe retry intent must outlive a failed search-index deletion.
+        store_result.and(search_result)?;
         persistence::clear_cancelled_account_cleanup_marker(&cleanup_app, &cleanup_account_key)
     })
     .await

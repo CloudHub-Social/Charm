@@ -433,6 +433,11 @@ Surfaces changed:
 - **Notification-settings API surface** (`NotificationSettings` helper method names) can
   vary across matrix-rust-sdk versions — verify against the pinned `Cargo.toml` version.
 
+Permanent web-session removal serializes its revocation boundary with each admitted
+WebSocket payload send. Sends time out after five seconds so an unresponsive peer
+cannot hold that boundary indefinitely. Deactivation clears full-wipe retry intent
+only after both retained SDK data and account-wide search indexes are removed.
+
 ## Effort estimate
 
 **L** — spans a new settings shell plus three substantive panels, ≈16 new commands

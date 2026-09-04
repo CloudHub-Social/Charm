@@ -5934,14 +5934,20 @@ async fn send_session_message(
 ) -> Result<(), ()> {
     // Every replay/live frame crosses this boundary. An earlier successful
     // upgrade check cannot authorize the remainder of a revoked snapshot.
+    let send_guard = session.socket_send_lock.lock().await;
     if session
         .session_closed
         .load(std::sync::atomic::Ordering::Acquire)
     {
+        drop(send_guard);
         close_invalidated_socket(socket).await;
         return Err(());
     }
-    socket.send(message).await.map_err(|_| ())
+    // A stalled peer must not indefinitely hold up permanent revocation.
+    tokio::time::timeout(std::time::Duration::from_secs(5), socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
 }
 
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {

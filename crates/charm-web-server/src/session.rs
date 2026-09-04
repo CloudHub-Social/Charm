@@ -205,6 +205,8 @@ pub struct Session {
     /// session. Search workers and timeline listeners recheck it immediately
     /// before writing storage or broadcasting decrypted state.
     pub session_closed: Arc<AtomicBool>,
+    /// Serializes permanent revocation with bounded WebSocket payload sends.
+    pub socket_send_lock: tokio::sync::Mutex<()>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -577,6 +579,7 @@ impl Session {
             )),
             message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
+            socket_send_lock: tokio::sync::Mutex::new(()),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -1281,6 +1284,7 @@ impl SessionStore {
             let mut inner = self.inner.write().await;
             let session = inner.remove(token);
             if let Some(session) = &session {
+                let _send_guard = session.socket_send_lock.lock().await;
                 // Revoke detached work while removal is still atomic with
                 // respect to lookups. Cleanup below may await, so it cannot
                 // remain under the store lock.
@@ -1584,6 +1588,32 @@ mod tests {
             .last_validated_active
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = backdated;
+    }
+
+    #[tokio::test]
+    async fn permanent_removal_waits_for_the_admitted_socket_send() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@send-boundary:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let send_guard = session.socket_send_lock.lock().await;
+        let removal = store.remove(&token);
+        tokio::pin!(removal);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut removal)
+                .await
+                .is_err()
+        );
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        drop(send_guard);
+        removal.await.expect("removed session");
+        let _next_send = session.socket_send_lock.lock().await;
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[tokio::test]
