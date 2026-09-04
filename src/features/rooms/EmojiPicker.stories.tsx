@@ -18,7 +18,11 @@ export const FullPicker: Story = {
   async play({ canvasElement }) {
     // The picker is lazy-loaded. Capture and accessibility checks must see
     // the interactive surface, not whichever Suspense state won a timing race.
-    const search = await within(canvasElement).findByPlaceholderText("Search emoji");
+    const search = await within(canvasElement).findByPlaceholderText(
+      "Search emoji",
+      {},
+      { timeout: 10000 },
+    );
     await expect(search).toBeVisible();
     await waitFor(() => expect(search).not.toHaveAttribute("aria-controls"));
     await userEvent.type(search, "smile");

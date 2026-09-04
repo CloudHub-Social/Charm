@@ -133,6 +133,12 @@
   },
   {
     "default": false,
+    "description": "Explicitly remove an account's retained Matrix store, encryption keys, and search indexes from this device.",
+    "key": "forget_local_data",
+    "owner": "Spec 08 (settings and device management)"
+  },
+  {
+    "default": false,
     "description": "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher.",
     "key": "quick_switcher",
     "owner": "Spec 55 (command palette and quick switcher)"

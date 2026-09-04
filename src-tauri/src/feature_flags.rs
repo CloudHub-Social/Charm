@@ -157,6 +157,8 @@ define_feature_flag_keys!(
         RegistrationAndRecovery,
         /// Spec 28 decrypted-message indexing and local message search.
         EncryptedLocalMessageSearch,
+        /// Spec 08 explicit deletion of this account's retained device data.
+        ForgetLocalData,
         /// Spec 55 command palette and quick room/DM/space navigation.
         QuickSwitcher,
         /// Spec 38 shared searchable Unicode emoji picker for reactions and
@@ -203,6 +205,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => false,
             FeatureFlagKey::RegistrationAndRecovery => false,
             FeatureFlagKey::EncryptedLocalMessageSearch => false,
+            FeatureFlagKey::ForgetLocalData => false,
             FeatureFlagKey::QuickSwitcher => false,
             FeatureFlagKey::FullEmojiPicker => false,
             FeatureFlagKey::AvatarPresenceVisuals => false,
@@ -283,6 +286,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::EncryptedLocalMessageSearch => {
                 "Build and query an encrypted device-local index of decrypted Matrix messages."
             }
+            FeatureFlagKey::ForgetLocalData => {
+                "Explicitly remove an account's retained Matrix store, encryption keys, and search indexes from this device."
+            }
             FeatureFlagKey::QuickSwitcher => {
                 "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher."
             }
@@ -341,6 +347,7 @@ impl FeatureFlagKey {
                 "Spec 45 (registration and password-reset flows)"
             }
             FeatureFlagKey::EncryptedLocalMessageSearch => "Spec 28 (cross-room message search)",
+            FeatureFlagKey::ForgetLocalData => "Spec 08 (settings and device management)",
             FeatureFlagKey::QuickSwitcher => "Spec 55 (command palette and quick switcher)",
             FeatureFlagKey::FullEmojiPicker => "Spec 38 (full emoji picker)",
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
@@ -377,6 +384,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::TimelineStateEvents => "timeline_state_events",
             FeatureFlagKey::RegistrationAndRecovery => "registration_and_recovery",
             FeatureFlagKey::EncryptedLocalMessageSearch => "encrypted_local_message_search",
+            FeatureFlagKey::ForgetLocalData => "forget_local_data",
             FeatureFlagKey::QuickSwitcher => "quick_switcher",
             FeatureFlagKey::FullEmojiPicker => "full_emoji_picker",
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
@@ -647,6 +655,31 @@ mod tests {
         let override_off = overrides(&[("canary", false)]);
         let remote_on = overrides(&[("canary", true)]);
         assert!(!resolve(FeatureFlagKey::Canary, &override_off, &remote_on));
+    }
+
+    #[test]
+    fn search_rollout_does_not_enable_local_data_deletion() {
+        let search_on = overrides(&[("encrypted_local_message_search", true)]);
+        assert!(!resolve(
+            FeatureFlagKey::ForgetLocalData,
+            &search_on,
+            &search_on
+        ));
+    }
+
+    #[test]
+    fn local_data_deletion_can_be_enabled_without_search() {
+        let deletion_on = overrides(&[("forget_local_data", true)]);
+        assert!(resolve(
+            FeatureFlagKey::ForgetLocalData,
+            &deletion_on,
+            &BTreeMap::new()
+        ));
+        assert!(!resolve(
+            FeatureFlagKey::EncryptedLocalMessageSearch,
+            &deletion_on,
+            &BTreeMap::new()
+        ));
     }
 
     #[test]
