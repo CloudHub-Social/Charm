@@ -16,9 +16,11 @@ import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { RECOVERY_STATUS_QUERY_KEY, useSetupRecovery } from "./useDevices";
 
 export function RecoverySetupCard({
+  enabled,
   crossSigningReady,
   recoveryDisabled,
 }: {
+  enabled: boolean;
   crossSigningReady: boolean;
   recoveryDisabled: boolean;
 }) {
@@ -38,6 +40,7 @@ export function RecoverySetupCard({
     (passphrase.length >= 8 && confirmation === passphrase);
 
   async function startSetup() {
+    if (!enabled || setup.isPending || !passphraseValid || !crossSigningReady) return;
     const summary = await setup.mutateAsync(hasPassphrase ? passphrase : undefined);
     setPassphrase("");
     setConfirmation("");
@@ -73,7 +76,7 @@ export function RecoverySetupCard({
 
   return (
     <>
-      {recoveryDisabled && (
+      {enabled && recoveryDisabled && (
         <SettingsCard heading="Recovery">
           <SettingTile>
             <p className="mb-3 text-sm text-muted-foreground">
@@ -135,7 +138,7 @@ export function RecoverySetupCard({
             </Button>
             <Button
               onClick={() => startSetup().catch(logAndIgnore)}
-              disabled={!passphraseValid || setup.isPending}
+              disabled={!enabled || !passphraseValid || setup.isPending}
             >
               {setup.isPending ? "Backing up room keys…" : "Create backup"}
             </Button>

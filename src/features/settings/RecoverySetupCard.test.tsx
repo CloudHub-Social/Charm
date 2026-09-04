@@ -1,6 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import { RecoverySetupCard } from "./RecoverySetupCard";
 
 const setupRecovery = vi.fn();
@@ -19,14 +19,14 @@ beforeEach(() => {
 
 describe("RecoverySetupCard", () => {
   it("requires local cross-signing keys before setup", () => {
-    renderWithProviders(<RecoverySetupCard crossSigningReady={false} recoveryDisabled />);
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady={false} recoveryDisabled />);
 
     expect(screen.getByRole("button", { name: "Set up recovery" })).toBeDisabled();
     expect(screen.getByText(/Set up or restore cross-signing/)).toBeInTheDocument();
   });
 
   it("keeps the generated recovery key visible until the user confirms it is saved", async () => {
-    renderWithProviders(<RecoverySetupCard crossSigningReady recoveryDisabled />);
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
 
     fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
     fireEvent.change(screen.getByLabelText("Optional passphrase"), {
@@ -50,11 +50,69 @@ describe("RecoverySetupCard", () => {
   });
 
   it("allows setup without an optional passphrase", async () => {
-    renderWithProviders(<RecoverySetupCard crossSigningReady recoveryDisabled />);
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
 
     fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
     fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
 
     await waitFor(() => expect(setupRecovery).toHaveBeenCalledWith(undefined));
+  });
+
+  it.each(["pending", "issued"] as const)(
+    "retains the recovery key when disabled while %s",
+    async (phase) => {
+      let complete!: (result: { recovery_key: string; room_keys_backed_up: boolean }) => void;
+      setupRecovery.mockReturnValue(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const { rerender, client } = renderWithProviders(
+        <RecoverySetupCard enabled crossSigningReady recoveryDisabled />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+      await waitFor(() => expect(setupRecovery).toHaveBeenCalledOnce());
+      if (phase === "pending")
+        rerender(
+          wrapWithProviders(
+            <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled />,
+            client,
+          ),
+        );
+      await act(async () =>
+        complete({ recovery_key: "issued recovery credential", room_keys_backed_up: true }),
+      );
+      expect(await screen.findByText("issued recovery credential")).toBeInTheDocument();
+      rerender(
+        wrapWithProviders(
+          <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled />,
+          client,
+        ),
+      );
+      expect(screen.getByText("issued recovery credential")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
+      fireEvent.click(screen.getByLabelText("I saved this recovery key somewhere safe."));
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      await waitFor(() =>
+        expect(screen.queryByText("issued recovery credential")).not.toBeInTheDocument(),
+      );
+      expect(screen.queryByRole("button", { name: "Set up recovery" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("prevents a new setup after the flag is disabled with the form open", () => {
+    const { rerender, client } = renderWithProviders(
+      <RecoverySetupCard enabled crossSigningReady recoveryDisabled />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    rerender(
+      wrapWithProviders(
+        <RecoverySetupCard enabled={false} crossSigningReady recoveryDisabled />,
+        client,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Create backup" })).toBeDisabled();
+    expect(setupRecovery).not.toHaveBeenCalled();
   });
 });

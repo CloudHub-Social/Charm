@@ -278,12 +278,11 @@ export function DevicesPanel() {
         </SettingsCard>
       )}
 
-      {recoverySetupEnabled && (
-        <RecoverySetupCard
-          crossSigningReady={hasLocalCrossSigningKeys}
-          recoveryDisabled={recoveryState === "disabled"}
-        />
-      )}
+      <RecoverySetupCard
+        enabled={recoverySetupEnabled}
+        crossSigningReady={hasLocalCrossSigningKeys}
+        recoveryDisabled={recoveryState === "disabled"}
+      />
 
       {verify.isError && (
         <p className="text-sm text-destructive">

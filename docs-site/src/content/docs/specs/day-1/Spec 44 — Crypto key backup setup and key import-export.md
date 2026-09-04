@@ -19,6 +19,10 @@ not first-time **setup** or manual key file I/O.
   local cross-signing private keys, delegates secret storage and backup creation
   to matrix-rust-sdk, waits for the initial room-key upload, and keeps the
   generated recovery key visible until the user confirms it is saved.
+  Disabling the rollout hides the entry point and prevents new submissions, but
+  does not unmount an in-flight setup or discard an issued recovery key. Both
+  flag-transition cases have regressions pending CI. Web companion setup still
+  requires an authenticated transport route before this slice is complete.
 - **Manual encrypted room-key import/export:** remains to be implemented.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
   be implemented.
