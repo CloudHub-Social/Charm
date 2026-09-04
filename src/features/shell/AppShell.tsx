@@ -2,6 +2,8 @@ import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
+import { useAtomValue } from "jotai";
+import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 import { ChatVisibilityContext } from "./chatVisibility";
 
@@ -52,10 +54,12 @@ export function AppShell({
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
   const contentRef = useRef<HTMLDivElement>(null);
   const chatVisible =
     !isSettingsActive &&
+    !verificationOverlayOpen &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
 
   useEffect(() => {

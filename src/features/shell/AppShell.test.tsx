@@ -7,11 +7,12 @@ import {
   type ReactNode,
 } from "react";
 import { ChatVisibilityContext } from "./chatVisibility";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell, type MobileView } from "./AppShell";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
 
 const mockUseAdaptiveLayout = vi.fn();
 const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
@@ -106,6 +107,39 @@ describe("AppShell", () => {
       pause.mockRestore();
     },
   );
+
+  it("hides capture and pauses media while verification covers the chat", () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const store = createStore();
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(Provider, { store }, children);
+    render(
+      <AppShell
+        activeRoomId="!room:example.org"
+        selectionRequestId={0}
+        mobileView="detail"
+        onMobileViewChange={vi.fn()}
+        spaceRail={null}
+        roomList={null}
+        content={
+          <>
+            <VisibilityProbe />
+            <audio />
+          </>
+        }
+        rightPanel={null}
+      />,
+      { wrapper },
+    );
+    expect(screen.getByText("chat-visible")).toBeInTheDocument();
+
+    act(() => store.set(verificationOverlayOpenAtom, true));
+
+    expect(screen.getByText("chat-hidden")).toBeInTheDocument();
+    expect(pause).toHaveBeenCalledOnce();
+    pause.mockRestore();
+  });
 
   it("pauses retained media on mobile list and right-panel navigation", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
