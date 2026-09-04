@@ -555,6 +555,11 @@ export function endPoll(roomId: string, pollEventId: string): Promise<string> {
   return invokeMatrix("end_poll", { roomId, pollEventId });
 }
 
+/** Returns the queued poll-close transaction, including after a row remount. */
+export function getPendingPollEnd(roomId: string, pollEventId: string): Promise<string | null> {
+  return invokeMatrix("get_pending_poll_end", { roomId, pollEventId });
+}
+
 /** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */
 export function runCommand(
   roomId: string,

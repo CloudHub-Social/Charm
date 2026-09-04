@@ -266,6 +266,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "get_pending_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end",
+      undefined,
+    ],
+    [
       "send_reply",
       { roomId: "!r:example.org", inReplyToEventId: "$e", body: "reply" },
       "POST",

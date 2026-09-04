@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { endPoll, resendMessage, voteOnPoll } from "@/lib/matrix";
+import { endPoll, getPendingPollEnd, resendMessage, voteOnPoll } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
@@ -17,6 +17,8 @@ interface PollMessageProps {
   rowActions?: MessageRowLayoutProps;
 }
 
+const pendingCloseTransactions = new Map<string, string>();
+
 export function PollMessage({
   message,
   roomId,
@@ -26,11 +28,35 @@ export function PollMessage({
 }: PollMessageProps) {
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
+  const closeKey = `${roomId}\u0000${message.event_id}`;
+  const cachedCloseTransaction = pendingCloseTransactions.get(closeKey) ?? null;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
-  const [ending, setEnding] = useState(false);
+  const [ending, setEnding] = useState(cachedCloseTransaction !== null);
   const [endRequestPending, setEndRequestPending] = useState(false);
-  const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
+  const [endTransactionId, setEndTransactionId] = useState<string | null>(
+    cachedCloseTransaction,
+  );
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!message.poll || message.poll.ended || !message.event_id.startsWith("$")) {
+      pendingCloseTransactions.delete(closeKey);
+      return;
+    }
+    let active = true;
+    void getPendingPollEnd(roomId, message.event_id)
+      .then((transactionId) => {
+        if (!active || !transactionId) return;
+        pendingCloseTransactions.set(closeKey, transactionId);
+        setEndTransactionId(transactionId);
+        setEnding(true);
+      })
+      .catch(() => {
+        // The mutation command still rejects votes while a close is queued.
+      });
+    return () => {
+      active = false;
+    };
+  }, [closeKey, message.event_id, message.poll?.ended, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
@@ -84,7 +110,9 @@ export function PollMessage({
       if (endTransactionId) {
         await resendMessage(roomId, endTransactionId);
       } else {
-        setEndTransactionId(await endPoll(roomId, message.event_id));
+        const transactionId = await endPoll(roomId, message.event_id);
+        pendingCloseTransactions.set(closeKey, transactionId);
+        setEndTransactionId(transactionId);
       }
     } catch {
       setError("The poll could not be ended.");

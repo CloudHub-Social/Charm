@@ -54,6 +54,16 @@ async fn pending_poll_end(
     }))
 }
 
+pub async fn pending_poll_end_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+) -> Result<Option<String>, String> {
+    let room = room_for(client, room_id)?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    pending_poll_end(&room, &poll_event_id).await
+}
+
 pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
     app.path().app_data_dir().is_ok_and(|directory| {
         crate::feature_flags::flag(&directory, crate::feature_flags::FeatureFlagKey::Polls)
@@ -216,6 +226,16 @@ pub async fn end_poll(
 ) -> Result<String, String> {
     let client = state.require_client().await?;
     end_poll_impl(&client, &room_id, &poll_event_id).await
+}
+
+#[tauri::command]
+pub async fn get_pending_poll_end(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+) -> Result<Option<String>, String> {
+    let client = state.require_client().await?;
+    pending_poll_end_impl(&client, &room_id, &poll_event_id).await
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ import type { MessageRowLayoutProps } from "./messageRowShared";
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
 const resendMessage = vi.fn();
+const getPendingPollEnd = vi.fn();
 const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
 
 vi.mock("@/features/appearance/useDisplayFormats", () => ({
@@ -23,6 +24,7 @@ vi.mock("@/lib/matrix", async () => {
     voteOnPoll: (...args: unknown[]) => voteOnPoll(...args),
     endPoll: (...args: unknown[]) => endPoll(...args),
     resendMessage: (...args: unknown[]) => resendMessage(...args),
+    getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
   };
 });
 
@@ -89,6 +91,7 @@ beforeEach(() => {
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
   resendMessage.mockReset().mockResolvedValue(undefined);
+  getPendingPollEnd.mockReset().mockResolvedValue(null);
 });
 
 describe("PollMessage", () => {
@@ -188,6 +191,19 @@ describe("PollMessage", () => {
     );
     expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
+  });
+
+  it("restores a queued close after the poll row remounts", async () => {
+    getPendingPollEnd.mockResolvedValueOnce("txn-restored-end");
+    render(
+      <PollMessage message={pollMessage()} roomId="!restored-room:example.org" own={false} />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Retry closing poll" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+    expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
 
   it("does not end a poll while a vote is pending", async () => {

@@ -1513,6 +1513,7 @@ pub fn run() {
             matrix::polls::create_poll,
             matrix::polls::vote_on_poll,
             matrix::polls::end_poll,
+            matrix::polls::get_pending_poll_end,
             matrix::send::send_attachment,
             matrix::send::forward_message,
             matrix::send::cancel_attachment_upload,
