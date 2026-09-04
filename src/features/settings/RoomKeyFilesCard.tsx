@@ -236,8 +236,8 @@ export function RoomKeyFilesCard({
     <SettingsCard heading="Room key files">
       <SettingTile>
         <p className="mb-3 text-sm text-muted-foreground">
-          Import or export encrypted Matrix room keys for manual backup or migration. These files
-          do not replace account recovery or device verification.
+          Import or export encrypted Matrix room keys for manual backup or migration. These files do
+          not replace account recovery or device verification.
         </p>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => transfer.openDialog("import")}>
