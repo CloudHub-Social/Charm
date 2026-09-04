@@ -257,8 +257,7 @@ mod tests {
                 "m.notice",
             ),
         ] {
-            let reply =
-                content.make_reply_to(metadata.clone(), ForwardThread::No, AddMentions::Yes);
+            let reply = content.make_reply_to(metadata, ForwardThread::No, AddMentions::Yes);
             let json = serde_json::to_value(reply).unwrap();
             assert_eq!(json["msgtype"], expected_type);
             assert_eq!(
