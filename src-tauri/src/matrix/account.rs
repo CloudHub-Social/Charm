@@ -517,6 +517,9 @@ pub async fn forget_local_data(
     if !confirmation_rx.await.unwrap_or(false) {
         return Err("local data deletion was cancelled".to_string());
     }
+    // Match login/headless-push lock order and exclude store users through
+    // physical deletion, including a blocking worker after caller cancellation.
+    let restore_guard = std::sync::Arc::new(super::auth::restore_store_lock().lock().await);
     // Keep this lock through physical deletion: a new login must not install
     // a store underneath the wipe after the old client has been cleared.
     let completion_guard = std::sync::Arc::new(
@@ -552,7 +555,9 @@ pub async fn forget_local_data(
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
     let cleanup = async {
+        let worker_restore_guard = std::sync::Arc::clone(&restore_guard);
         run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
+            let _restore_guard = worker_restore_guard;
             let mut first_error = None;
             if let Err(error) =
                 persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
@@ -925,6 +930,7 @@ pub async fn deactivate_account(
     state: State<'_, MatrixState>,
     password: Option<String>,
 ) -> Result<(), UiaCommandError> {
+    let restore_guard = std::sync::Arc::new(super::auth::restore_store_lock().lock().await);
     // Remote deactivation and local deletion form one session transition.
     // A UIA challenge returns from this call (releasing the lock); we never
     // retain it while the user is entering a password between requests.
@@ -961,7 +967,9 @@ pub async fn deactivate_account(
     // fail-closed and owns full-store retry after a partial failure.
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
+    let worker_restore_guard = std::sync::Arc::clone(&restore_guard);
     let cleanup_result = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
+        let _restore_guard = worker_restore_guard;
         let store_result =
             persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key);
         let search_result = cleanup_app
