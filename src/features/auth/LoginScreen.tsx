@@ -221,6 +221,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const ssoInProgressRef = useRef(false);
   const ssoPollInFlightRef = useRef(false);
   const ssoOperationRef = useRef(0);
+  const ssoCompletionInFlightRef = useRef(false);
+  const ssoCancellationInFlightRef = useRef(false);
+  const ssoCancelledOperationRef = useRef<number | null>(null);
   // Keeps cancellation from exposing the SSO buttons while the backend is
   // still creating an attempt. Once that setup settles, its stale-operation
   // branch cancels the exact pending attempt before allowing another start.
@@ -277,6 +280,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     function tryCompleteSsoCallback(callbackUrl: string) {
       const operation = ssoOperationRef.current;
       const isCurrent = () => !disposed && operation === ssoOperationRef.current;
+      ssoCompletionInFlightRef.current = true;
       ssoInProgressRef.current = false;
       setSsoPending(true);
       completeSsoLogin(callbackUrl)
@@ -284,10 +288,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           if (isCurrent()) onSignedIn(session);
         })
         .catch((err: unknown) => {
-          if (isCurrent()) setError(String(err));
+          if (isCurrent() && ssoCancelledOperationRef.current !== operation) setError(String(err));
         })
         .finally(() => {
-          if (isCurrent()) setSsoPending(false);
+          ssoCompletionInFlightRef.current = false;
+          if (isCurrent() && !ssoCancellationInFlightRef.current) setSsoPending(false);
         });
     }
 
@@ -519,7 +524,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       if (operation !== ssoOperationRef.current) {
         browserPopup?.close();
         await cancelSsoLogin().catch(logAndIgnore);
-        setSsoPending(false);
+        if (!ssoCancellationInFlightRef.current) setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = true;
@@ -536,7 +541,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       browserPopup?.close();
       ssoSetupInFlightRef.current = false;
       if (operation !== ssoOperationRef.current) {
-        setSsoPending(false);
+        if (!ssoCancellationInFlightRef.current) setSsoPending(false);
         return;
       }
       ssoInProgressRef.current = false;
@@ -547,20 +552,31 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   function handleCancelSso() {
-    ssoOperationRef.current += 1;
+    if (ssoCancellationInFlightRef.current) return;
+    ssoCancelledOperationRef.current = ssoOperationRef.current;
+    // Once callback completion is in flight, Rust owns the adoption boundary.
+    // Keep its success authoritative and prevent restart until both operations
+    // settle; cancellation may have arrived after durable relocation began.
+    if (!ssoCompletionInFlightRef.current) ssoOperationRef.current += 1;
+    const operation = ssoOperationRef.current;
+    ssoCancellationInFlightRef.current = true;
     ssoInProgressRef.current = false;
     setSsoPolling(false);
     // If setup is still in flight, keep the controls disabled. The stale
     // setup branch above performs a second cancellation after the backend
     // has actually installed its pending attempt, then clears this state.
     setError(null);
-    // Releases the client start_sso_login left pending on the Rust side
-    // (its SQLite connection and HTTP pool) — best-effort, since the UI has
-    // already moved on regardless of whether this succeeds.
+    // Releases the pending attempt where cancellation is still possible.
     cancelSsoLogin()
       .catch(logAndIgnore)
       .finally(() => {
-        if (!ssoSetupInFlightRef.current && !ssoPollInFlightRef.current) {
+        ssoCancellationInFlightRef.current = false;
+        if (
+          operation === ssoOperationRef.current &&
+          !ssoSetupInFlightRef.current &&
+          !ssoPollInFlightRef.current &&
+          !ssoCompletionInFlightRef.current
+        ) {
           setSsoPending(false);
         }
       });

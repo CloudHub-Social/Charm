@@ -84,8 +84,11 @@ temporary store, avoiding open SQLite handles during cleanup. Once durable
 session relocation starts, Charm finishes adoption and reports the real outcome
 rather than claiming the already-dispatched login was cancelled.
 Native callback UI updates are bound to the active SSO operation and mounted
-login screen. A cancelled completion settling after restart cannot clear the
-new attempt's pending state, display its old error, or invoke its sign-in callback.
+login screen. Cancellation during callback completion keeps restart disabled
+until both completion and cancellation settle. If cancellation wins, its stale
+error is suppressed; if durable adoption wins, the successful sign-in is shown.
+This prevents a previous operation from overwriting a newer attempt's UI without
+hiding a session that Rust has already committed.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque

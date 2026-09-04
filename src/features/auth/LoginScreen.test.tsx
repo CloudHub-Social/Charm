@@ -228,7 +228,7 @@ describe("LoginScreen SSO callback handling", () => {
   });
 
   it.each(["resolve", "reject"] as const)(
-    "ignores a cancelled callback that settles with %s after SSO restarts",
+    "waits for a cancelled callback to settle with %s before allowing restart",
     async (outcome) => {
       let resolveCompletion!: (session: LoginResponse) => void;
       let rejectCompletion!: (error: Error) => void;
@@ -251,18 +251,21 @@ describe("LoginScreen SSO callback handling", () => {
       await act(async () => {
         screen.getByRole("button", { name: "Cancel" }).click();
       });
-      await act(async () => {
-        screen.getByRole("button", { name: "Continue with SSO" }).click();
-      });
-
+      expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
       await act(async () => {
         if (outcome === "resolve") resolveCompletion(fakeSession());
         else rejectCompletion(new Error("Old SSO completion cancelled"));
       });
 
-      expect(onSignedIn).not.toHaveBeenCalled();
       expect(screen.queryByText("Error: Old SSO completion cancelled")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+      if (outcome === "resolve") {
+        expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
+        return;
+      }
+      expect(onSignedIn).not.toHaveBeenCalled();
+      await act(async () => {
+        screen.getByRole("button", { name: "Continue with SSO" }).click();
+      });
 
       completeSsoLogin.mockResolvedValueOnce(fakeSession());
       await act(async () => {
@@ -271,6 +274,43 @@ describe("LoginScreen SSO callback handling", () => {
       expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
     },
   );
+
+  it("keeps restart disabled until cancellation settles even when completion fails first", async () => {
+    let rejectCompletion!: (error: Error) => void;
+    let resolveCancellation!: () => void;
+    completeSsoLogin.mockImplementationOnce(
+      () =>
+        new Promise<LoginResponse>((_resolve, reject) => {
+          rejectCompletion = reject;
+        }),
+    );
+    cancelSsoLogin.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCancellation = resolve;
+        }),
+    );
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    await act(async () => {
+      screen.getByRole("button", { name: "Continue with SSO" }).click();
+    });
+    await act(async () => {
+      openUrlCallback?.(["charm://sso-callback?loginToken=old&state=old"]);
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Cancel" }).click();
+    });
+    await act(async () => {
+      rejectCompletion(new Error("Cancelled"));
+    });
+    expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
+    await act(async () => {
+      resolveCancellation();
+    });
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeInTheDocument();
+    expect(onSignedIn).not.toHaveBeenCalled();
+  });
 });
 
 describe("LoginScreen default homeserver URL", () => {
