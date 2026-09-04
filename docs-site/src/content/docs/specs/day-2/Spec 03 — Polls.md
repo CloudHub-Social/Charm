@@ -32,6 +32,13 @@ the fallback event row also omits the ordinary text-message editor for a poll.
 New polls support 2–20 case-insensitively unique options and one selection per
 voter.
 
+Incoming multi-select polls remain readable, but their vote controls are disabled
+with an explanation rather than replacing several selections with one answer.
+New poll starts in unopened rooms use the same notification permission, privacy,
+deduplication, and own-event filtering as ordinary messages. Poll replacements,
+responses, endings, and redactions do not create new-message notifications.
+The added regression checks require GitHub Actions verification.
+
 ## Problem & why now
 
 Matrix polls (MSC3381) let a room

@@ -84,6 +84,20 @@ beforeEach(() => {
 });
 
 describe("PollMessage", () => {
+  it("does not replace multi-select votes with single answers", () => {
+    render(
+      <PollMessage
+        message={pollMessage({ max_selections: 2 })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+    const answer = screen.getByRole("button", { name: /Pizza/ });
+    expect(answer).toBeDisabled();
+    fireEvent.click(answer);
+    expect(voteOnPoll).not.toHaveBeenCalled();
+    expect(screen.getByText(/Voting on multi-select polls is not supported/)).toBeInTheDocument();
+  });
   it("renders disclosed tallies and sends a replacement vote", async () => {
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />);
 

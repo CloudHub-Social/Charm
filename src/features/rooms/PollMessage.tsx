@@ -28,6 +28,7 @@ export function PollMessage({
   const [error, setError] = useState<string | null>(null);
   if (!poll) return null;
   const currentPoll = poll;
+  const unsupportedSelectionCount = poll.max_selections !== 1;
 
   const hasRealEventId = message.event_id.startsWith("$");
   const canEndPoll = own || (rowActions?.canRedact ?? false);
@@ -40,7 +41,13 @@ export function PollMessage({
   }
 
   async function vote(answerId: string) {
-    if (currentPoll.ended || mutationsDisabled || !hasRealEventId || pendingAnswerId !== null)
+    if (
+      currentPoll.ended ||
+      unsupportedSelectionCount ||
+      mutationsDisabled ||
+      !hasRealEventId ||
+      pendingAnswerId !== null
+    )
       return;
     setPendingAnswerId(answerId);
     setError(null);
@@ -107,7 +114,11 @@ export function PollMessage({
                   type="button"
                   aria-pressed={answer.selected_by_me}
                   disabled={
-                    poll.ended || mutationsDisabled || !hasRealEventId || pendingAnswerId !== null
+                    poll.ended ||
+                    unsupportedSelectionCount ||
+                    mutationsDisabled ||
+                    !hasRealEventId ||
+                    pendingAnswerId !== null
                   }
                   onClick={() => void vote(answer.id)}
                   className={cn(
@@ -165,6 +176,11 @@ export function PollMessage({
               </button>
             )}
           </div>
+          {unsupportedSelectionCount && !poll.ended && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Voting on multi-select polls is not supported yet. Use another Matrix client to vote.
+            </p>
+          )}
           {error && (
             <p role="alert" className="mt-2 text-xs text-destructive">
               {error}
