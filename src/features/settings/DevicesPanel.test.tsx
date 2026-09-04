@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { featureFlagTestHooks } from "@/featureFlags";
 import { DevicesPanel } from "./DevicesPanel";
 import type { DeviceSummary } from "@/lib/matrix";
 import { renderWithProviders } from "@/test/renderWithProviders";
@@ -64,6 +65,7 @@ const DEVICES: DeviceSummary[] = [
 ];
 
 beforeEach(() => {
+  featureFlagTestHooks.reset();
   listDevices.mockReset().mockResolvedValue(DEVICES);
   crossSigningStatus.mockReset().mockResolvedValue({
     has_identity: true,
@@ -89,6 +91,31 @@ beforeEach(() => {
 });
 
 describe("DevicesPanel", () => {
+  afterEach(() => {
+    featureFlagTestHooks.reset();
+    vi.unstubAllEnvs();
+  });
+
+  it("hides native key-file actions on web even when their flag is enabled", async () => {
+    featureFlagTestHooks.setCache({ crypto_key_files: true });
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    renderWithProviders(<DevicesPanel />);
+
+    expect(await screen.findByText("This laptop")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export keys" })).not.toBeInTheDocument();
+  });
+
+  it("shows native key-file actions when their flag is enabled outside web", async () => {
+    featureFlagTestHooks.setCache({ crypto_key_files: true });
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "desktop");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
+    renderWithProviders(<DevicesPanel />);
+
+    expect(await screen.findByRole("button", { name: "Import keys" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export keys" })).toBeInTheDocument();
+  });
+
   it("groups devices into This device / Verified / Unverified", async () => {
     renderWithProviders(<DevicesPanel />);
 

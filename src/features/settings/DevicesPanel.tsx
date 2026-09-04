@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
+import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { DeviceRow } from "./DeviceRow";
 import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
@@ -275,7 +276,7 @@ export function DevicesPanel() {
         </SettingsCard>
       )}
 
-      {keyFilesEnabled && <RoomKeyFilesCard />}
+      {keyFilesEnabled && !isWebBuild() && <RoomKeyFilesCard />}
 
       {verify.isError && (
         <p className="text-sm text-destructive">

@@ -84,10 +84,18 @@ export function RoomKeyFilesCard() {
       <Dialog
         open={mode !== null}
         onOpenChange={(open) => {
-          if (!open) closeDialog();
+          if (!open && !transfer.isPending) closeDialog();
         }}
       >
-        <DialogContent>
+        <DialogContent
+          showCloseButton={!transfer.isPending}
+          onEscapeKeyDown={(event) => {
+            if (transfer.isPending) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (transfer.isPending) event.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>{mode === "export" ? "Export room keys" : "Import room keys"}</DialogTitle>
             <DialogDescription>

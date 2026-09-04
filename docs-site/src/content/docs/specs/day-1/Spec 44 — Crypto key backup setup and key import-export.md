@@ -17,7 +17,10 @@ not first-time **setup** or manual key file I/O.
 - **Manual encrypted room-key import/export:** implemented behind the default-off
   `crypto_key_files` feature flag. Charm delegates the interoperable encrypted
   file format to matrix-rust-sdk and uses Rust-owned native pickers so selected
-  file paths and key material never enter frontend IPC.
+  file paths and key material never enter frontend IPC. These native-only controls
+  are hidden in web builds, even when the flag is enabled. While a transfer is
+  pending, Cancel, close, Escape, and outside dismissal cannot hide its dialog;
+  dismissal becomes available again after the native command settles.
 - **First-time key backup / 4S setup:** not yet implemented. Existing recovery-key
   restore still covers only accounts whose server-side recovery is already set up.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** not yet

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/test/renderWithProviders";
 import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
@@ -21,6 +21,40 @@ beforeEach(() => {
 });
 
 describe("RoomKeyFilesCard", () => {
+  it("blocks dismissal until the native transfer settles", async () => {
+    let finish!: (value: {
+      completed: boolean;
+      imported_count: number;
+      total_count: number;
+    }) => void;
+    importRoomKeys.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    renderWithProviders(<RoomKeyFilesCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Import keys" }));
+    fireEvent.change(screen.getByLabelText("Passphrase"), {
+      target: { value: "long-enough-passphrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Importing…" })).toBeDisabled());
+
+    expect(screen.queryByRole("button", { name: "Close", exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    fireEvent.pointerDown(document.body);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByLabelText("Passphrase")).toHaveValue("long-enough-passphrase");
+
+    await act(async () => {
+      finish({ completed: false, imported_count: 0, total_count: 0 });
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("requires matching export passphrases before opening the native picker", async () => {
     renderWithProviders(<RoomKeyFilesCard />);
 
