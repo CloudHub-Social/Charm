@@ -17,8 +17,6 @@ interface PollMessageProps {
   rowActions?: MessageRowLayoutProps;
 }
 
-const pendingCloseTransactions = new Map<string, string>();
-
 export function PollMessage({
   message,
   roomId,
@@ -28,35 +26,40 @@ export function PollMessage({
 }: PollMessageProps) {
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
-  const closeKey = `${roomId}\u0000${message.event_id}`;
-  const cachedCloseTransaction = pendingCloseTransactions.get(closeKey) ?? null;
-  const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
-  const [ending, setEnding] = useState(cachedCloseTransaction !== null);
-  const [endRequestPending, setEndRequestPending] = useState(false);
-  const [endTransactionId, setEndTransactionId] = useState<string | null>(
-    cachedCloseTransaction,
+  const shouldRestoreEnd = Boolean(
+    message.poll && !message.poll.ended && message.event_id.startsWith("$"),
   );
+  const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
+  const [ending, setEnding] = useState(false);
+  const [restoringEndState, setRestoringEndState] = useState(shouldRestoreEnd);
+  const [endRequestPending, setEndRequestPending] = useState(false);
+  const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!message.poll || message.poll.ended || !message.event_id.startsWith("$")) {
-      pendingCloseTransactions.delete(closeKey);
+      setRestoringEndState(false);
       return;
     }
     let active = true;
+    setRestoringEndState(true);
+    setEnding(false);
+    setEndTransactionId(null);
     void getPendingPollEnd(roomId, message.event_id)
       .then((transactionId) => {
         if (!active || !transactionId) return;
-        pendingCloseTransactions.set(closeKey, transactionId);
         setEndTransactionId(transactionId);
         setEnding(true);
       })
       .catch(() => {
         // The mutation command still rejects votes while a close is queued.
+      })
+      .finally(() => {
+        if (active) setRestoringEndState(false);
       });
     return () => {
       active = false;
     };
-  }, [closeKey, message.event_id, message.poll?.ended, roomId]);
+  }, [message.event_id, message.poll?.ended, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
@@ -76,6 +79,7 @@ export function PollMessage({
     if (
       currentPoll.ended ||
       ending ||
+      restoringEndState ||
       unsupportedSelectionCount ||
       mutationsDisabled ||
       !hasRealEventId ||
@@ -99,6 +103,7 @@ export function PollMessage({
       ended ||
       mutationsDisabled ||
       !hasRealEventId ||
+      restoringEndState ||
       endRequestPending ||
       pendingAnswerId !== null
     )
@@ -111,7 +116,6 @@ export function PollMessage({
         await resendMessage(roomId, endTransactionId);
       } else {
         const transactionId = await endPoll(roomId, message.event_id);
-        pendingCloseTransactions.set(closeKey, transactionId);
         setEndTransactionId(transactionId);
       }
     } catch {
@@ -187,6 +191,7 @@ export function PollMessage({
                   disabled={
                     ended ||
                     ending ||
+                    restoringEndState ||
                     unsupportedSelectionCount ||
                     mutationsDisabled ||
                     !hasRealEventId ||
@@ -245,6 +250,7 @@ export function PollMessage({
                 disabled={
                   mutationsDisabled ||
                   !hasRealEventId ||
+                  restoringEndState ||
                   endRequestPending ||
                   pendingAnswerId !== null
                 }

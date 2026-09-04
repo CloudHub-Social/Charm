@@ -174,7 +174,9 @@ describe("PollMessage", () => {
         }),
     );
     const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
-    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    const endButton = screen.getByRole("button", { name: "End poll" });
+    await waitFor(() => expect(endButton).toBeEnabled());
+    fireEvent.click(endButton);
     const answer = screen.getByRole("button", { name: /Pizza/ });
     expect(answer).toBeDisabled();
     fireEvent.click(answer);
@@ -206,6 +208,23 @@ describe("PollMessage", () => {
     expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
 
+  it("blocks mutations while a queued close is being restored", async () => {
+    let finish!: (transactionId: null) => void;
+    getPendingPollEnd.mockImplementationOnce(
+      () =>
+        new Promise<null>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PollMessage message={pollMessage()} roomId="!cold-room:example.org" own />);
+
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "End poll" })).toBeDisabled();
+    await act(async () => finish(null));
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled();
+  });
+
   it("does not end a poll while a vote is pending", async () => {
     let finish!: () => void;
     voteOnPoll.mockImplementationOnce(
@@ -215,7 +234,9 @@ describe("PollMessage", () => {
         }),
     );
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
-    fireEvent.click(screen.getByRole("button", { name: /Pizza/ }));
+    const answer = screen.getByRole("button", { name: /Pizza/ });
+    await waitFor(() => expect(answer).toBeEnabled());
+    fireEvent.click(answer);
     expect(screen.getByRole("button", { name: "End poll" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "End poll" }));
     expect(endPoll).not.toHaveBeenCalled();
@@ -271,7 +292,9 @@ describe("PollMessage", () => {
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />);
 
     expect(screen.getByText("2 · 67%")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Pizza/ }));
+    const answer = screen.getByRole("button", { name: /Pizza/ });
+    await waitFor(() => expect(answer).toBeEnabled());
+    fireEvent.click(answer);
 
     await waitFor(() => expect(voteOnPoll).toHaveBeenCalledWith("!room:example.org", "$poll", "0"));
   });
@@ -314,7 +337,9 @@ describe("PollMessage", () => {
 
   it("lets the poll creator end an open poll", async () => {
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
-    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    const endButton = screen.getByRole("button", { name: "End poll" });
+    await waitFor(() => expect(endButton).toBeEnabled());
+    fireEvent.click(endButton);
 
     await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));
   });
@@ -328,7 +353,9 @@ describe("PollMessage", () => {
         rowActions={rowActions({ canRedact: true })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    const endButton = screen.getByRole("button", { name: "End poll" });
+    await waitFor(() => expect(endButton).toBeEnabled());
+    fireEvent.click(endButton);
 
     await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));
   });
