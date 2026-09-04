@@ -936,7 +936,9 @@ describe("ChatShell", () => {
     act(() => {
       timelineUpdateCallback?.({
         room_id: room.room_id,
-        messages: [summary({ event_id: "$hidden", body: "unseen arrival" })],
+        messages: [
+          summary({ event_id: "$hidden", sender: "@alice:localhost", body: "unseen arrival" }),
+        ],
       });
     });
     await screen.findByText("unseen arrival");
