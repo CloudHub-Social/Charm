@@ -41,6 +41,8 @@ not first-time **setup** or manual key file I/O.
 
 ## Problem & why now
 
+Native key imports reject zero or more than 1,000,000 PBKDF2 rounds before
+client admission; matrix-rust-sdk still authenticates and decrypts the file.
 Native key imports read from one opened file into a private, size-bounded
 encrypted snapshot before acquiring account-transfer exclusion. The SDK imports
 that snapshot rather than reopening the user-selected pathname. Temporary

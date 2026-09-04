@@ -10,6 +10,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -21,6 +22,36 @@ use super::MatrixState;
 const MIN_PASSPHRASE_CHARS: usize = 8;
 const MAX_PASSPHRASE_BYTES: usize = 1024;
 const MAX_IMPORT_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_IMPORT_KDF_ROUNDS: u32 = 1_000_000;
+
+fn validate_import_cost(path: &Path) -> Result<(), String> {
+    // Resource policy only: the SDK remains the format/MAC/decryption owner.
+    // This reads the already-bounded private snapshot, before client admission.
+    const HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
+    const FOOTER: &str = "-----END MEGOLM SESSION DATA-----";
+    let invalid = || "The selected encrypted room-key file is invalid.".to_string();
+    let input = std::fs::read_to_string(path).map_err(|_| invalid())?;
+    if !input.trim_start().starts_with(HEADER) || !input.trim_end().ends_with(FOOTER) {
+        return Err(invalid());
+    }
+    let payload: String = input
+        .lines()
+        .filter(|line| !(line.starts_with(HEADER) || line.starts_with(FOOTER)))
+        .collect();
+    let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(&payload)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&payload))
+        .map_err(|_| invalid())?;
+    // Version + 16-byte salt + 16-byte IV + big-endian rounds + 32-byte MAC.
+    if decoded.len() < 69 || decoded[0] != 1 {
+        return Err(invalid());
+    }
+    let rounds = u32::from_be_bytes(decoded[33..37].try_into().map_err(|_| invalid())?);
+    if rounds == 0 || rounds > MAX_IMPORT_KDF_ROUNDS {
+        return Err("The room-key file uses an unsupported password-derivation cost (maximum 1,000,000 rounds).".into());
+    }
+    Ok(())
+}
 
 fn snapshot_import_file(
     path: &Path,
@@ -230,10 +261,13 @@ pub async fn import_room_keys(
             total_count: 0,
         });
     };
-    let snapshot =
-        tokio::task::spawn_blocking(move || snapshot_import_file(&path, MAX_IMPORT_BYTES))
-            .await
-            .map_err(|_| "Could not prepare the encrypted room-key import.".to_string())??;
+    let snapshot = tokio::task::spawn_blocking(move || {
+        let snapshot = snapshot_import_file(&path, MAX_IMPORT_BYTES)?;
+        validate_import_cost(snapshot.0.path())?;
+        Ok::<_, String>(snapshot)
+    })
+    .await
+    .map_err(|_| "Could not prepare the encrypted room-key import.".to_string())??;
 
     run_key_transfer(app, client, move |client| async move {
         let result = client
@@ -261,6 +295,31 @@ pub async fn import_room_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_kdf_cost_is_bounded_before_sdk_decryption() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for (rounds, allowed) in [
+            (0_u32, false),
+            (500_000, true),
+            (1_000_000, true),
+            (1_000_001, false),
+            (u32::MAX, false),
+        ] {
+            let mut bytes = vec![0_u8; 69];
+            bytes[0] = 1;
+            bytes[33..37].copy_from_slice(&rounds.to_be_bytes());
+            let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
+            std::fs::write(file.path(), format!("-----BEGIN MEGOLM SESSION DATA-----\n{encoded}\n-----END MEGOLM SESSION DATA-----")).unwrap();
+            assert_eq!(validate_import_cost(file.path()).is_ok(), allowed);
+        }
+        std::fs::write(
+            file.path(),
+            "-----BEGIN MEGOLM SESSION DATA-----\nAQ\n-----END MEGOLM SESSION DATA-----",
+        )
+        .unwrap();
+        assert!(validate_import_cost(file.path()).is_err());
+    }
 
     #[test]
     fn import_read_limit_applies_to_growing_or_unending_input() {
