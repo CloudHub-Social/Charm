@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRoomSummary } from "./testFixtures";
 import { useMessageSend } from "./useMessageSend";
+import { parseSlashCommand } from "./slashCommands";
 
 const mocks = vi.hoisted(() => ({
   editMessage: vi.fn().mockResolvedValue(undefined),
@@ -212,6 +213,42 @@ describe("formatted composer submission", () => {
       expect(mocks.sendMessage).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["/plain hello", true],
+    ["/shrug", true],
+    ["/tableflip", true],
+    ["/me waves", true],
+    ["/notice hello", true],
+    ["/nick Alice", false],
+    ["/ignore @other:example.org", false],
+    ["/topic new topic", false],
+  ] as const)("consumes reply context only for message-sending %s", async (input, clearsReply) => {
+    const setReplyTarget = vi.fn();
+    const { result } = renderHook(() =>
+      useMessageSend({
+        room: makeRoomSummary(),
+        editingEventId: null,
+        replyTarget: {
+          event_id: "$target",
+          sender: "@alice:example.org",
+          sender_display_name: "Alice",
+          preview: "original",
+        },
+        setEditingEventId: vi.fn(),
+        setReplyTarget,
+        stopTyping: vi.fn(),
+      }),
+    );
+    mocks.runCommand.mockResolvedValue({ status: "success" });
+    const parsed = parseSlashCommand(input, true);
+    expect(parsed).not.toBeNull();
+    await act(async () => {
+      await result.current.handleSlashCommand(parsed!);
+    });
+    if (clearsReply) expect(setReplyTarget).toHaveBeenCalledExactlyOnceWith(null);
+    else expect(setReplyTarget).not.toHaveBeenCalled();
+  });
 
   it("does not send an empty /plain message", async () => {
     const { result } = renderHook(() =>

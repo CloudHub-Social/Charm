@@ -11,7 +11,7 @@ import {
   unignoreUser,
 } from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
-import type { ParsedSlashCommand } from "./slashCommands";
+import { isMessageSendingCommand, type ParsedSlashCommand } from "./slashCommands";
 import { useFlag } from "@/featureFlags";
 
 interface ComposerContent {
@@ -193,12 +193,16 @@ export function useMessageSend({
           parsed.command === "plain"
             ? parsed.text
             : `${parsed.text}${parsed.text ? " " : ""}${suffix}`;
+        // Like normal submission, consume the reply context at dispatch, not
+        // after the await where a newly selected reply could be cleared.
+        setReplyTarget(null);
         await sendMessage(targetRoomId, body, null, null);
         if (currentRoomIdRef.current !== targetRoomId) return false;
         setCommandFeedback(null);
         return true;
       }
       if (parsed.command === "notice" && !composerParityEnabled) return false;
+      if (isMessageSendingCommand(parsed)) setReplyTarget(null);
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale

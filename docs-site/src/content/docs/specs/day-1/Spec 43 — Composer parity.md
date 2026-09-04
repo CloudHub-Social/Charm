@@ -175,7 +175,10 @@ The default-off composer flag also enables `/plain`, `/shrug`, and `/tableflip`
 in parsing and suggestions. These reuse the existing plain-message send path;
 `/plain` preserves internal whitespace and treats markup literally. Dispatch
 rechecks the flag and room mutation guard, rejects empty `/plain`, and only
-scrolls after a successful message send in the same room. Remaining slash-command
+scrolls after a successful message send in the same room. Message-sending commands
+consume reply context at dispatch, matching normal submission; non-message commands
+leave it intact. Clearing happens before awaiting the send so it cannot erase a
+new reply selected while that send is pending. Remaining slash-command
 requirements and CI/manual
 verification remain open; this does not establish full composer parity.
 
