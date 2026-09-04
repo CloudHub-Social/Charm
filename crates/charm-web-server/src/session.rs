@@ -177,8 +177,10 @@ pub struct Session {
     /// part of durable crypto backup and is discarded with this web session.
     pub message_search_index: Arc<std::sync::Mutex<Option<charm_lib::matrix::search::SearchIndex>>>,
     /// Sticky disclosure that at least one live-sync batch could not be queued.
-    /// It stays set until this ephemeral session and its index are rebuilt.
-    pub message_search_incomplete: Arc<AtomicBool>,
+    /// Retry admission clears the prior failure under this lock. Every live
+    /// writer uses the same lock so detached startup cannot erase a new failure.
+    /// The inner atomic also supports the shared native/web purge helper.
+    pub message_search_incomplete: Arc<std::sync::Mutex<AtomicBool>>,
     /// True while the initial cached-history backfill still has queued work.
     /// Search responses combine this transient state with the sticky
     /// `message_search_incomplete` disclosure above.
@@ -203,6 +205,11 @@ pub struct Session {
     /// session. Search workers and timeline listeners recheck it immediately
     /// before writing storage or broadcasting decrypted state.
     pub session_closed: Arc<AtomicBool>,
+    /// Serializes permanent revocation with bounded WebSocket payload sends.
+    /// Shared admission for ordinary socket writes, with permanent session
+    /// revocation taking the exclusive side. A slow browser tab therefore
+    /// cannot serialize or starve writes to every other tab in the session.
+    pub socket_send_lock: tokio::sync::RwLock<()>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -566,7 +573,7 @@ impl Session {
             user_id,
             persisted_crypto,
             message_search_index: Arc::new(std::sync::Mutex::new(None)),
-            message_search_incomplete: Arc::new(AtomicBool::new(false)),
+            message_search_incomplete: Arc::new(std::sync::Mutex::new(AtomicBool::new(false))),
             message_search_backfill_pending: Arc::new(AtomicBool::new(false)),
             message_search_sender: Arc::new(std::sync::Mutex::new(None)),
             message_search_pagination_seed_running: Arc::new(AtomicBool::new(false)),
@@ -575,6 +582,7 @@ impl Session {
             )),
             message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
+            socket_send_lock: tokio::sync::RwLock::new(()),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -717,6 +725,15 @@ impl Session {
                 .rooms()
                 .iter()
                 .any(|room| room.encryption_state().is_encrypted())
+    }
+
+    /// Reuses an open renderer timeline for search reconciliation without
+    /// creating a timeline or starting a new listener.
+    pub(crate) async fn peek_search_timeline(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<Arc<Timeline>> {
+        self.timelines.lock().await.peek(room_id).map(Arc::clone)
     }
 
     /// Returns this session's cached `Timeline` for `room_id`, building and
@@ -986,7 +1003,8 @@ fn spawn_timeline_listener(
             &client,
             room_id.as_str(),
             items.iter(),
-        );
+        )
+        .await;
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         // The first `tick()` fires immediately, not after the first
@@ -1076,7 +1094,8 @@ fn spawn_timeline_listener(
                 &client,
                 room_id.as_str(),
                 items.iter(),
-            );
+            )
+            .await;
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
         // drop this room's cached snapshot too, so a stale, possibly very
@@ -1104,11 +1123,15 @@ fn spawn_timeline_listener(
     });
 }
 
+type SessionLifecycleLocks =
+    std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>;
+
 /// `Arc<RwLock<HashMap<...>>>` so it can be cloned cheaply into axum's
 /// `State` and shared across request handlers/tasks.
 #[derive(Clone, Default)]
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    lifecycle_locks: Arc<SessionLifecycleLocks>,
     /// The presence choice an idle-evicted session had at the instant
     /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
     /// was recorded at — populated there, consumed once by
@@ -1263,29 +1286,75 @@ impl SessionStore {
         session.has_open_connection() || session.idle_for_validated() < max_age
     }
 
+    pub fn lifecycle_lock(&self, token: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .lifecycle_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(lock) = locks.get(token).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(token.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
+        self.remove_matching(token, None).await
+    }
+
+    pub async fn remove_if_current(
+        &self,
+        token: &str,
+        closed: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Option<Arc<Session>> {
+        self.remove_matching(token, Some(closed)).await
+    }
+
+    async fn remove_matching(
+        &self,
+        token: &str,
+        expected: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Option<Arc<Session>> {
+        // Revoke admission atomically with removal. Existing holders may keep
+        // an `Arc<Session>` after it leaves the map, so publish the closed bit
+        // before releasing the map lock; no detached worker can mistake the
+        // removed session for a live one.
         let session = {
-            let mut inner = self.inner.write().await;
-            let session = inner.remove(token);
+            let mut sessions = self.inner.write().await;
+            if expected.is_some_and(|closed| {
+                !sessions
+                    .get(token)
+                    .is_some_and(|session| Arc::ptr_eq(&session.session_closed, closed))
+            }) {
+                return None;
+            }
+            let session = sessions.remove(token);
             if let Some(session) = &session {
-                // Revoke detached work while removal is still atomic with
-                // respect to lookups. Cleanup below may await, so it cannot
-                // remain under the store lock.
                 session
                     .session_closed
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             session
         };
-
-        if let Some(session) = &session {
+        if let Some(removed) = &session {
             // `remove` is the permanent-session boundary used by explicit
             // logout, cross-instance revocation, and expiry. Keep encrypted
             // search-index deletion here so none of those callers can leave
             // decrypted message content orphaned on local disk. Idle eviction
             // deliberately uses `sweep_idle` instead and preserves the index
             // for a later persisted-session restore.
-            delete_message_search_index(session, crate::crypto_store::data_root_path()).await;
+            // Own the slow teardown independently of the caller. In
+            // particular, an HTTP request disappearing while a WebSocket send
+            // is backpressured must not strand decrypted state or skip the
+            // invalidation event.
+            let removed = Arc::clone(removed);
+            tokio::spawn(async move {
+                let _send_guard = removed.socket_send_lock.write().await;
+                let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
+                delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
+            });
         }
 
         session
@@ -1570,6 +1639,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permanent_removal_is_cancellation_safe_behind_an_admitted_socket_send() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@send-boundary:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let mut events = session.events.subscribe();
+        let send_guard = session.socket_send_lock.read().await;
+        store.remove(&token).await.expect("removed session");
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), store.get(&token))
+                .await
+                .expect("session lookups must not wait for a backpressured socket")
+                .is_none()
+        );
+        drop(send_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("detached teardown completed")
+            .expect("session invalidation event");
+    }
+
+    #[tokio::test]
     async fn removing_a_session_revokes_its_detached_decrypted_work() {
         let store = SessionStore::new();
         let token = store
@@ -1596,15 +1691,27 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(search_index);
 
+        let mut events = session.events.subscribe();
         store.remove(&token).await.expect("removed session");
+        let invalidated = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("detached teardown completed")
+            .expect("session invalidation event");
+        assert_eq!(
+            serde_json::to_value(invalidated).unwrap(),
+            serde_json::json!({ "event": "session:invalidated", "data": null })
+        );
 
         assert!(session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
-        assert!(
-            !database_path.exists(),
-            "permanent session removal must delete the encrypted search database"
-        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while database_path.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("permanent session removal must delete the encrypted search database");
         let _ = std::fs::remove_dir_all(app_data_dir);
     }
 

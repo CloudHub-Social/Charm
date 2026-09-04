@@ -110,6 +110,159 @@ describe("refreshRemoteFlags", () => {
     expect(reload).toHaveBeenCalled();
     expect(del).toHaveBeenCalledWith("featureFlagsRemote");
   });
+
+  it("immediately reconciles native search storage when remote disables it", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "fetch_remote_flags") {
+        return Promise.resolve({
+          flags: [{ key: "encrypted_local_message_search", value: false }],
+        });
+      }
+      if (command === "reconcile_message_search_flag") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ encrypted_local_message_search: true });
+    await mod.refreshRemoteFlags();
+
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
+  });
+});
+
+describe("message search reconciliation", () => {
+  beforeEach(() => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    mocks.invoke.mockResolvedValue(undefined);
+  });
+
+  it("keeps unrelated remote flags updating when cleanup repeatedly fails", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    let searchEnabled = false;
+    let canaryEnabled = true;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "fetch_remote_flags") {
+        return Promise.resolve({
+          flags: [
+            { key: "encrypted_local_message_search", value: searchEnabled },
+            { key: "canary", value: canaryEnabled },
+          ],
+        });
+      }
+      return Promise.reject(new Error("cleanup unavailable"));
+    });
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ encrypted_local_message_search: true });
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(true);
+
+    searchEnabled = true;
+    canaryEnabled = false;
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(false);
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toContain('"canary":false');
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toContain(
+      '"encrypted_local_message_search":false',
+    );
+  });
+
+  it("reconciles a disabled-to-disabled renderer startup", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("reconcile_message_search_flag");
+  });
+
+  it("keeps enabled search unavailable until native startup reconciliation succeeds", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { encrypted_local_message_search: true, canary: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+    let rejectCleanup: ((error: Error) => void) | undefined;
+    mocks.invoke.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectCleanup = reject;
+        }),
+    );
+    const mod = await import("./index");
+    const initializing = mod.initializeFeatureFlags();
+    await vi.waitFor(() => expect(rejectCleanup).toBeTypeOf("function"));
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(true);
+    rejectCleanup?.(new Error("cleanup pending"));
+    await initializing;
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
+
+    mocks.invoke.mockResolvedValue(undefined);
+    await mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(true);
+    expect(
+      mocks.invoke.mock.calls.filter(([name]) => name === "reconcile_message_search_flag"),
+    ).toHaveLength(2);
+  });
+
+  it("does not persist a re-enable until disable cleanup finishes", async () => {
+    let finishCleanup: (() => void) | undefined;
+    mocks.invoke.mockImplementation(
+      (command: string) =>
+        new Promise<void>((resolve, reject) => {
+          if (command === "reconcile_message_search_flag") finishCleanup = resolve;
+          else reject(new Error(`unexpected command: ${command}`));
+        }),
+    );
+
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setCache({ encrypted_local_message_search: true });
+    const disable = mod.setFeatureFlagOverride("encrypted_local_message_search", false);
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+
+    const reenable = mod.setFeatureFlagOverride("encrypted_local_message_search", true);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(false);
+
+    finishCleanup?.();
+    await Promise.all([disable, reenable]);
+    expect(mod.getFeatureFlagOverrides().encrypted_local_message_search).toBe(true);
+  });
+
+  it("retries rejected cleanup after a renderer module reload", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    mocks.invoke.mockRejectedValueOnce(new Error("index locked"));
+
+    const first = await import("./index");
+    await first.initializeFeatureFlags();
+    vi.resetModules();
+    mocks.invoke.mockResolvedValue(undefined);
+
+    const reloaded = await import("./index");
+    await reloaded.initializeFeatureFlags();
+
+    expect(
+      mocks.invoke.mock.calls.filter(([name]) => name === "reconcile_message_search_flag"),
+    ).toHaveLength(2);
+  });
 });
 
 describe("remote cache when no endpoint is configured", () => {

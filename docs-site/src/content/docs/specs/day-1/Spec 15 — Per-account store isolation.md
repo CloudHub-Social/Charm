@@ -97,6 +97,14 @@ Spec 08's logout so the account lifecycle is coherent.
 4. Password, SSO, and QR logins all land in the correct per-account store (SSO/QR via the
    post-auth relocation), and cross-signing/crypto persists correctly for each.
 5. `try_restore_session` restores against the correct per-account store.
+   If final cleanup fails after a replacement store and credentials have been
+   committed, password, registration, SSO, and QR login must reject that new
+   session rather than resume the superseded client. Before awaiting bounded
+   SDK sign-out (Matrix or OAuth as appropriate), attempt a durable logout marker
+   and removal of both saved credential kinds, even if one operation fails.
+   Preserve the open crypto store for the normal cleanup/relogin lifecycle.
+   Report local cleanup or server revocation failures explicitly; do not claim
+   successful login or guaranteed cleanup when either cannot be confirmed.
 6. A pre-existing single `matrix_store` is handled per the chosen migration (relocated, or
    a documented dev wipe) with no data-loss surprise for a logged-in user.
 7. Cancelled SSO/QR logins leave no orphan temp store.

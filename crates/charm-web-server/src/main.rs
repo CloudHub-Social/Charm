@@ -97,6 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         tracing::info!("restored {} persisted session(s)", restored.len());
         for (token, homeserver_url, session, initial_response, initial_access_token) in restored {
+            // Admit before spawning: even an immediate hard sync failure
+            // must remove this entry rather than race its later insertion.
+            state.sessions.insert(token.clone(), session).await;
+            let Some(session) = state.sessions.get(&token).await else {
+                continue;
+            };
             let persist = Some(sync_loop::PersistHandle {
                 store: Arc::clone(persistence),
                 token: token.clone(),
@@ -113,6 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 initial_response,
                 session.sync_snapshots(),
                 sync_loop::SpawnOptions {
+                    session_closed: session.session_closed.clone(),
+                    sessions: state.sessions.clone(),
+                    token: token.clone(),
                     include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
                     message_search: sync_loop::message_search_context(
                         &session,
@@ -124,7 +133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .sync_handle
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-            state.sessions.insert(token, session).await;
         }
     } else {
         tracing::warn!(

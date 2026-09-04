@@ -206,7 +206,7 @@ async fn validated_url_client(
     Ok((homeserver, http_client))
 }
 
-fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();
@@ -259,6 +259,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || segments[0] == 0x2002
+                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0])
                 || segments[0] == 0x5f00)
         }
     }

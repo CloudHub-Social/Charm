@@ -67,6 +67,12 @@ type TimelineEntry = (
     bool,
 );
 
+pub(crate) type TimelineRollbackEntry = (
+    matrix_sdk::ruma::OwnedRoomId,
+    std::sync::Arc<matrix_sdk_ui::Timeline>,
+    bool,
+);
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing (multiple
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
@@ -85,6 +91,10 @@ pub struct MatrixState {
     /// Logout increments this before deleting the index, so the long-lived
     /// worker cannot reopen that index from stale queue entries afterwards.
     pub(crate) search_generation: std::sync::atomic::AtomicU64,
+    /// False on each main-renderer page load until its persisted remote flag
+    /// cache has been normalized.
+    /// Unknown startup state must not authorize search access or a new purge.
+    pub(crate) search_flags_ready: std::sync::atomic::AtomicBool,
     /// Serializes generation resets with sticky-incomplete writes so a stale
     /// worker cannot mark the lifecycle that replaced it as incomplete.
     pub(crate) search_lifecycle_lock: std::sync::Mutex<()>,
@@ -124,7 +134,9 @@ pub struct MatrixState {
     /// step, so there's no window where "which client is currently active"
     /// is ambiguous. A `tokio::sync::Mutex`, not `std::sync::Mutex`, because
     /// this needs to be held across `.await` points.
-    pub(crate) login_completion_lock: Mutex<()>,
+    /// Arc ownership lets a non-cancellable cleanup worker retain this guard
+    /// even if the sync task awaiting it is aborted.
+    pub(crate) login_completion_lock: std::sync::Arc<Mutex<()>>,
     /// Set by `auth::start_sso_login`, consumed by `auth::complete_sso_login`.
     /// Built once and carried across the two calls (rather than rebuilt in
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
@@ -160,7 +172,7 @@ pub struct MatrixState {
     /// reset value during network requests, preventing a cancelled or
     /// superseded attempt from changing the password later.
     pub(crate) pending_password_reset_cancel:
-        std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+        std::sync::Mutex<Option<(String, auth::PasswordResetCancellation)>>,
     /// Set while a QR login is in the `QrScanned` stage (waiting for the
     /// user to type in the check code shown on the other device) — see
     /// `qr_login::submit_qr_check_code`.
@@ -264,6 +276,9 @@ pub struct MatrixState {
     /// check "is this room mid-transition" so it stays correct even while
     /// `timelines` itself briefly has no entry for it.
     transitioning_timelines: Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
+    /// Timeline mutations hold a reader through listener replacement; session
+    /// teardown takes the writer before capturing views and clearing the client.
+    timeline_lifecycle: tokio::sync::RwLock<()>,
     /// Per-room "most recently requested" Saved Messages jump target event
     /// id — set by `timeline::load_timeline_around_event` before it starts
     /// working, and checked by `timeline::load_focused_event_timeline`
@@ -421,6 +436,7 @@ impl Default for MatrixState {
             search_index: std::sync::Arc::default(),
             search_work_tx: tokio::sync::OnceCell::default(),
             search_generation: std::sync::atomic::AtomicU64::default(),
+            search_flags_ready: std::sync::atomic::AtomicBool::default(),
             search_lifecycle_lock: std::sync::Mutex::default(),
             search_incomplete: std::sync::atomic::AtomicBool::default(),
             search_backfill_started: std::sync::atomic::AtomicBool::default(),
@@ -428,7 +444,7 @@ impl Default for MatrixState {
             search_pagination_seed_running: std::sync::atomic::AtomicBool::default(),
             search_pending_seed_rooms: std::sync::Mutex::default(),
             search_pagination_seed_done: tokio::sync::Notify::new(),
-            login_completion_lock: Mutex::default(),
+            login_completion_lock: std::sync::Arc::default(),
             pending_sso: Mutex::default(),
             pending_registration: Mutex::default(),
             pending_registration_cancel: std::sync::Mutex::default(),
@@ -450,6 +466,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             transitioning_timelines: Mutex::default(),
+            timeline_lifecycle: tokio::sync::RwLock::default(),
             latest_jump_target: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
@@ -621,6 +638,12 @@ impl MatrixState {
         force_live: bool,
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
+        let _lifecycle = self.timeline_lifecycle.read().await;
+        if !self.client.lock().await.as_ref().is_some_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }) {
+            return Err("session changed while opening timeline".to_string());
+        }
         // Review fix: a focused entry being force-reset to live used to have
         // its listener merely `.abort()`-ed in place (via `get_mut`, keeping
         // the entry cached) and only *awaited* once displaced by the later
@@ -856,6 +879,12 @@ impl MatrixState {
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
         expected_event_id: Option<&matrix_sdk::ruma::EventId>,
     ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
+        let _lifecycle = self.timeline_lifecycle.read().await;
+        if !self.client.lock().await.as_ref().is_some_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }) {
+            return None;
+        }
         // Review fix: this used to only `.abort()` the previous listener *in
         // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
         // stayed correct) and defer the actual `.await` of its shutdown until
@@ -1142,10 +1171,70 @@ impl MatrixState {
     /// `sync::abort_current_sync_loop`, immediately before a login
     /// supersedes the account's store — need that guarantee now, not up to
     /// 30 seconds from now.
+    /// Retain the exact views only until cancellation has been decided. These
+    /// Arcs hold SDK stores open and must be dropped before session relocation.
+    #[cfg(test)]
+    pub(crate) async fn snapshot_timelines_for_rollback(&self) -> Vec<TimelineRollbackEntry> {
+        self.timelines
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .map(|(room_id, (timeline, _, focused))| {
+                (room_id.clone(), std::sync::Arc::clone(timeline), *focused)
+            })
+            .collect()
+    }
+
+    /// Reattach listeners to the same views (including event-focused views).
+    /// The caller holds the login completion lock. Publish the client only
+    /// inside lifecycle exclusion so new room opens cannot overtake rollback.
+    pub(crate) async fn restore_timeline_snapshot(
+        &self,
+        client: &Client,
+        snapshot: Vec<TimelineRollbackEntry>,
+        mut spawn_listener: impl FnMut(
+            &matrix_sdk::ruma::RoomId,
+            &std::sync::Arc<matrix_sdk_ui::Timeline>,
+        ) -> tokio::task::JoinHandle<()>,
+    ) {
+        let _lifecycle = self.timeline_lifecycle.write().await;
+        *self.client.lock().await = Some(client.clone());
+        let mut timelines = self.timelines.lock().await;
+        let mut evicted_handles = Vec::new();
+        for (room_id, timeline, focused) in snapshot {
+            // A room-open request may already have installed a replacement.
+            if timelines.contains(&room_id) {
+                continue;
+            }
+            let handle = spawn_listener(&room_id, &timeline);
+            if let Some((_, (_, evicted, _))) = timelines.push(room_id, (timeline, handle, focused))
+            {
+                evicted.abort();
+                evicted_handles.push(evicted);
+            }
+        }
+        drop(timelines);
+        for handle in evicted_handles {
+            let _ = handle.await;
+        }
+    }
+
     pub(crate) async fn clear_timelines(&self) {
+        self.drain_timelines(false).await;
+    }
+
+    /// Capture the rollback views in the same critical section that removes
+    /// their listeners. A separate snapshot can miss a newly opened room.
+    pub(crate) async fn drain_timelines(&self, retain_views: bool) -> Vec<TimelineRollbackEntry> {
+        let _lifecycle = self.timeline_lifecycle.write().await;
         let mut timelines = self.timelines.lock().await;
         let mut handles = Vec::new();
-        while let Some((_, (_, handle, _))) = timelines.pop_lru() {
+        let mut snapshot = Vec::new();
+        while let Some((room_id, (timeline, handle, focused))) = timelines.pop_lru() {
+            if retain_views {
+                snapshot.push((room_id, timeline, focused));
+            }
             handle.abort();
             handles.push(handle);
         }
@@ -1153,6 +1242,10 @@ impl MatrixState {
         for handle in handles {
             let _ = handle.await;
         }
+        // Readers queued behind teardown must reject the old client before
+        // touching the cache. Keep this inside the lifecycle writer.
+        *self.client.lock().await = None;
+        snapshot
     }
 
     /// Clears this module's authoritative pinned-events cache and its
@@ -1239,6 +1332,103 @@ impl MatrixState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_session_transition_restores_exact_timeline_and_listener() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_ui::timeline::RoomExt as _;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = matrix_sdk::ruma::room_id!("!rollback:example.org");
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+        let room = client.get_room(room_id).expect("joined room");
+        let timeline = std::sync::Arc::new(room.timeline().await.expect("timeline"));
+
+        for focused in [false, true] {
+            let state = MatrixState::default();
+            *state.client.lock().await = Some(client.clone());
+            let old_listener = tokio::spawn(std::future::pending::<()>());
+            let old_abort = old_listener.abort_handle();
+            state.timelines.lock().await.push(
+                room_id.to_owned(),
+                (std::sync::Arc::clone(&timeline), old_listener, focused),
+            );
+            // Model a replacement's pop-to-repush window. Teardown must not
+            // capture the temporarily empty cache or clear its active client.
+            let replacement = state.timeline_lifecycle.read().await;
+            let entry = state
+                .timelines
+                .lock()
+                .await
+                .pop(room_id)
+                .expect("open view");
+            let drain = state.drain_timelines(true);
+            tokio::pin!(drain);
+            tokio::select! {
+                biased;
+                _ = &mut drain => panic!("drain passed an in-flight replacement"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(state.client.lock().await.is_some());
+            state.timelines.lock().await.push(room_id.to_owned(), entry);
+            drop(replacement);
+            let snapshot = drain.await;
+            assert!(state.client.lock().await.is_none());
+            assert_eq!(
+                snapshot.len(),
+                1,
+                "drained view must be available for rollback"
+            );
+            assert!(
+                old_abort.is_finished(),
+                "old listener must stop before restart"
+            );
+            assert!(state.timelines.lock().await.is_empty());
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let mut started_tx = Some(started_tx);
+            let room_open = state.timeline_lifecycle.read().await;
+            let restore = state.restore_timeline_snapshot(
+                &client,
+                snapshot,
+                |restored_room, restored_timeline| {
+                    assert!(state.timeline_lifecycle.try_read().is_err());
+                    assert_eq!(restored_room, room_id);
+                    assert!(std::sync::Arc::ptr_eq(restored_timeline, &timeline));
+                    let started_tx = started_tx.take().expect("one replacement listener");
+                    tokio::spawn(async move {
+                        let _ = started_tx.send(());
+                        std::future::pending::<()>().await;
+                    })
+                },
+            );
+            tokio::pin!(restore);
+            tokio::select! {
+                biased;
+                _ = &mut restore => panic!("restore passed an in-flight room open"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(state.client.lock().await.is_none());
+            drop(room_open);
+            restore.await;
+            started_rx.await.expect("replacement listener runs");
+            {
+                let entries = state.timelines.lock().await;
+                let (restored, handle, restored_focus) = entries.peek(room_id).expect("restored");
+                assert!(std::sync::Arc::ptr_eq(restored, &timeline));
+                assert_eq!(*restored_focus, focused);
+                assert!(!handle.is_finished());
+            }
+            // A concurrent room-open replacement must not gain a second listener.
+            let snapshot = state.snapshot_timelines_for_rollback().await;
+            state
+                .restore_timeline_snapshot(&client, snapshot, |_, _| panic!("duplicate listener"))
+                .await;
+            state.clear_timelines().await;
+        }
+    }
 
     #[test]
     fn mark_notified_returns_true_only_the_first_time() {
