@@ -150,7 +150,7 @@ jobs:
   macos:
     name: macOS (tauri build)
     runs-on: macos-latest
-    environment: nightly-signing
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -409,7 +409,7 @@ jobs:
   windows:
     name: Windows (tauri build)
     runs-on: windows-latest
-    environment: nightly-signing
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -918,7 +918,7 @@ jobs:
   android:
     name: Android (tauri android build)
     runs-on: ubuntu-latest
-    environment: nightly-signing
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -1343,7 +1343,7 @@ jobs:
     needs: [frontend-sourcemaps, macos, windows, linux, android]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: nightly-signing
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: write
     # Job-level (rather than referencing secrets.* directly in a step's
