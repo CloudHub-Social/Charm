@@ -488,6 +488,7 @@ jobs:
     needs: signing-policy
     name: Windows debug files
     runs-on: windows-latest
+    environment: release-signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -669,6 +670,7 @@ jobs:
     needs: signing-policy
     name: Android mapping and native symbols
     runs-on: ubuntu-latest
+    environment: release-signing
     # Allows every bounded build/upload attempt to report its own failure
     # before GitHub's outer job safety cap takes over.
     timeout-minutes: 120
@@ -973,6 +975,7 @@ jobs:
       ]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.verify_platform_signing
     runs-on: ubuntu-latest
+    environment: release-signing
     permissions:
       actions: read
       contents: write
