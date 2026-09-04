@@ -43,6 +43,7 @@ async fn sas_verification_completes_with_matching_emojis() {
 
     let user_id = device_a.user_id().expect("logged in").to_owned();
     let device_a_id = device_a.device_id().expect("has device id").to_owned();
+    let device_b_id = device_b.device_id().expect("has device id").to_owned();
 
     // Continuous sync on both devices so to-device verification events flow.
     let sync_a = tokio::spawn({
@@ -81,6 +82,27 @@ async fn sas_verification_completes_with_matching_emojis() {
     })
     .await
     .expect("device A became visible to device B within timeout");
+
+    // The receiver must know the sender too. matrix-sdk-crypto ignores an
+    // incoming verification request when its sender's device data is absent;
+    // discovering that device later does not replay the discarded request.
+    // A logged in before B, so B knowing A does not imply the reverse.
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            if device_a
+                .encryption()
+                .get_device(&user_id, &device_b_id)
+                .await
+                .expect("get sender device")
+                .is_some()
+            {
+                return;
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("device B became visible to device A before verification");
 
     let request_from_b = device_a_seen_by_b
         .request_verification()
