@@ -89,11 +89,14 @@ configured (see below): every artifact gets its own detached
 `<filename>.asc`, and `SHA256SUMS.txt`/`SHA1SUMS.txt` are signed too (so
 verifying `SHA256SUMS.txt.asc` alone vouches for every artifact's hash,
 without checking each `.asc` individually — either approach works). The
-public key ships alongside every signed release as
-`charm-nightly-signing-key.asc`:
+public key ships as `charm-nightly-signing-key.asc` for nightlies and
+`charm-release-signing-key.asc` for stable releases. Import the key attached
+to the release you downloaded:
 
 ```sh
-gpg --import charm-nightly-signing-key.asc
+# Stable release:
+gpg --import charm-release-signing-key.asc
+# For a nightly, use: gpg --import charm-nightly-signing-key.asc
 gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
 # or, for one specific artifact:
 gpg --verify Charm_<version>_amd64.deb.asc Charm_<version>_amd64.deb

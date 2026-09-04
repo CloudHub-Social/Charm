@@ -57,6 +57,13 @@ jobs:
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --draft --target "$RELEASE_COMMIT" --title "$tag" --generate-notes "${prerelease[@]}"
           fi
-          # Push only after the draft exists. The app token triggers tagged
-          # platform builds; the publisher alone makes the draft public.
-          git push origin "refs/tags/$tag"
+          # Push only after the draft exists. If the tag already exists
+          # (including on a resumed run), pushing cannot emit another event.
+          # Validate its commit and explicitly dispatch the tagged workflow.
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$tag:refs/tags/$tag"
+            test "$(git rev-parse "$tag^{commit}")" = "$RELEASE_COMMIT"
+            gh workflow run release-builds.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          else
+            git push origin "refs/tags/$tag"
+          fi
