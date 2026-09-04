@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useFlag } from "@/featureFlags";
+import { useFeatureFlagPersistenceSettled, useFlag } from "@/featureFlags";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +39,7 @@ function groupDevices(devices: DeviceSummary[]) {
 
 export function DevicesPanel() {
   const keyFilesEnabled = useFlag("crypto_key_files");
+  const keyFilesSettled = useFeatureFlagPersistenceSettled("crypto_key_files");
   const { data: profile } = useProfile();
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
@@ -276,7 +277,7 @@ export function DevicesPanel() {
         </SettingsCard>
       )}
 
-      {keyFilesEnabled && !isWebBuild() && <RoomKeyFilesCard />}
+      {keyFilesEnabled && keyFilesSettled && !isWebBuild() && <RoomKeyFilesCard />}
 
       {verify.isError && (
         <p className="text-sm text-destructive">
