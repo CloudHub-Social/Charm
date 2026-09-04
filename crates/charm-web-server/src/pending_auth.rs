@@ -1276,9 +1276,24 @@ impl PendingAuthStore {
             .remove(attempt_id)
             .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
         drop(guard);
-        let phase = self
-            .password_reset_dispatch_phase(owner, attempt_id)
-            .await?;
+        let phase = match self.password_reset_dispatch_phase(owner, attempt_id).await {
+            Ok(phase) => phase,
+            Err(error) => {
+                // Admission can fail before any request is dispatched (for
+                // example, while all receipt slots hold unexpired evidence).
+                // Keep that attempt retryable without resurrecting a cancelled
+                // attempt or an already-dispatched mutation.
+                if error == PASSWORD_RESET_UNCERTAIN
+                    || pending.created_at.elapsed() > ATTEMPT_TTL
+                    || !self
+                        .restore_password_reset(attempt_id.to_owned(), pending)
+                        .await
+                {
+                    self.finish_attempt(attempt_id).await;
+                }
+                return Err(error);
+            }
+        };
         let result = tokio::select! {
             result = complete_password_reset(&mut pending, token.as_deref(), new_password, &phase) => result,
             () = cancellation.cancelled() => {
@@ -2313,7 +2328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn password_reset_receipts_are_bounded_without_evicting_live_evidence() {
+    async fn password_reset_receipts_are_bounded_without_consuming_retryable_attempts() {
         let store = reset_store_for_resend(false).await;
         {
             let mut receipts = store.password_reset_receipts.lock().await;
@@ -2332,6 +2347,27 @@ mod tests {
             .password_reset_dispatch_phase("browser-a", "reset-attempt")
             .await
             .is_err());
+        for _ in 0..2 {
+            let error = store
+                .confirm_password_reset(
+                    "browser-a",
+                    "reset-attempt",
+                    None,
+                    "replacement-password".to_owned(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error, "too many password reset attempts; try again later");
+            assert!(store
+                .password_resets
+                .lock()
+                .await
+                .contains_key("reset-attempt"));
+            assert!(store
+                .owned_cancellation("browser-a", "reset-attempt")
+                .await
+                .is_ok());
+        }
         {
             let mut receipts = store.password_reset_receipts.lock().await;
             assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);

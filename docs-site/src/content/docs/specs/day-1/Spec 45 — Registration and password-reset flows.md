@@ -40,7 +40,9 @@ the server reports that the outcome may be uncertain, disables automatic HTTP
 retries, and does not restore the attempt for another submission. Secret-free,
 browser-owner-bound receipts retain that distinction for twenty minutes, including
 after completion or request disconnection. Receipt capacity is bounded and new
-dispatches fail closed instead of evicting unexpired evidence. This does not
+dispatches fail closed instead of evicting unexpired evidence. Receipt-capacity
+rejection before dispatch preserves the unexpired, uncancelled attempt for retry.
+This does not
 prove whether a homeserver applied an already-dispatched password change.
 
 Homeserver `.well-known` discovery is read as a bounded stream: an oversized
