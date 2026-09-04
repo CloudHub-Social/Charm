@@ -1,5 +1,5 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -232,15 +232,6 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
   const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
-
-  useEffect(() => {
-    if (registrationUiaEnabled) return;
-    // A kill switch stops new recovery work, but cannot undo a dispatched
-    // password change. Preserve terminal results until the user acknowledges
-    // them and share the Cancel button's awaited, deduplicated cancellation.
-    if (passwordResetComplete || passwordResetCancellationUncertain) return;
-    void closePasswordReset();
-  }, [registrationUiaEnabled]);
 
   useEffect(
     () => () => {
@@ -646,7 +637,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  async function closePasswordReset() {
+  const closePasswordReset = useCallback(async () => {
     if (passwordResetCancellationRef.current) return;
     const operation = ++passwordResetOperationRef.current;
     const attemptId = passwordResetAttemptRef.current;
@@ -679,7 +670,21 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setNewPassword("");
     setPending(false);
     setError(null);
-  }
+  }, [passwordResetComplete, passwordResetCancellationUncertain]);
+
+  useEffect(() => {
+    if (registrationUiaEnabled) return;
+    // A kill switch stops new recovery work, but cannot undo a dispatched
+    // password change. Preserve terminal results until the user acknowledges
+    // them and share the Cancel button's awaited, deduplicated cancellation.
+    if (passwordResetComplete || passwordResetCancellationUncertain) return;
+    void closePasswordReset();
+  }, [
+    registrationUiaEnabled,
+    passwordResetComplete,
+    passwordResetCancellationUncertain,
+    closePasswordReset,
+  ]);
 
   return (
     <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
