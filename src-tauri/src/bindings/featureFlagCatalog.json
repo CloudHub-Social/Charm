@@ -166,5 +166,11 @@
     "description": "Use extended composer formatting and command controls.",
     "key": "composer_parity",
     "owner": "Spec 43 (composer parity)"
+  },
+  {
+    "default": false,
+    "description": "Customize appearance and display preferences, including clock and date formats.",
+    "key": "appearance_parity",
+    "owner": "Spec 47 (appearance customization)"
   }
 ]
