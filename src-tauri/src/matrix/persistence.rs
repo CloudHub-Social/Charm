@@ -274,6 +274,15 @@ fn clear_logout_tombstones_at(
 }
 
 fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), String> {
+    sweep_logout_tombstones_with(root, app_data_dir, clear_session, clear_oauth_session)
+}
+
+fn sweep_logout_tombstones_with(
+    root: &Path,
+    app_data_dir: &Path,
+    mut clear_matrix: impl FnMut(&str) -> Result<(), String>,
+    mut clear_oauth: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
     let mut account_keys = HashSet::new();
     for directory in [root, app_data_dir] {
         let entries = match std::fs::read_dir(directory) {
@@ -292,13 +301,21 @@ fn sweep_logout_tombstones_at(root: &Path, app_data_dir: &Path) -> Result<(), St
             }
         }
     }
+    let mut result = Ok(());
     for account_key in account_keys {
-        clear_session(&account_key)?;
-        clear_oauth_session(&account_key)?;
-        super::search::SearchIndex::delete_for_account(app_data_dir, &account_key)?;
-        clear_logout_tombstones_at(root, app_data_dir, &account_key)?;
+        // Credential stores and derived files are independent cleanup targets.
+        // Evaluate every operation before combining errors, including when an
+        // earlier account could not finish. Only complete accounts lose markers.
+        let matrix = clear_matrix(&account_key);
+        let oauth = clear_oauth(&account_key);
+        let search = super::search::SearchIndex::delete_for_account(app_data_dir, &account_key);
+        let cleanup = matrix
+            .and(oauth)
+            .and(search)
+            .and_then(|()| clear_logout_tombstones_at(root, app_data_dir, &account_key));
+        result = result.and(cleanup);
     }
-    Ok(())
+    result
 }
 
 pub fn clear_cancelled_account_cleanup_marker(
@@ -362,9 +379,9 @@ fn sweep_cancelled_account_cleanups_at(
             };
             // A wipe marker covers derived search data as well as the SDK store.
             // Retain it after either failure so the next startup retries both.
-            let cleanup = discard_session(account_key).and_then(|()| {
-                super::search::SearchIndex::delete_for_account(app_data_dir, account_key)
-            });
+            let session = discard_session(account_key);
+            let search = super::search::SearchIndex::delete_for_account(app_data_dir, account_key);
+            let cleanup = session.and(search);
             if cleanup.is_ok() {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1912,17 +1929,68 @@ mod tests {
     }
 
     #[test]
+    fn logout_sweep_attempts_both_credentials_and_search_after_failures() {
+        for failing_credential in ["matrix", "oauth"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("matrix_store");
+            std::fs::create_dir(&root).unwrap();
+            let marker = root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}account"));
+            std::fs::write(&marker, []).unwrap();
+            let index = super::super::search::SearchIndex::open_with_source_secret(
+                directory.path(),
+                "account",
+                "DEVICE",
+                "test-secret",
+            )
+            .unwrap();
+            let database = index.database_path().to_path_buf();
+            drop(index);
+            let calls = std::cell::RefCell::new(Vec::new());
+            let clear = |kind| {
+                calls.borrow_mut().push(kind);
+                if kind == failing_credential {
+                    Err("injected credential failure".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(sweep_logout_tombstones_with(
+                &root,
+                directory.path(),
+                |_| clear("matrix"),
+                |_| clear("oauth")
+            )
+            .is_err());
+            assert_eq!(*calls.borrow(), ["matrix", "oauth"]);
+            assert!(!database.exists());
+            assert!(marker.exists());
+            sweep_logout_tombstones_with(&root, directory.path(), |_| Ok(()), |_| Ok(())).unwrap();
+            assert!(!marker.exists());
+        }
+    }
+
+    #[test]
     fn cancelled_cleanup_sweep_keeps_marker_when_session_cleanup_fails() {
         let directory = tempfile::tempdir().unwrap();
         let marker = directory
             .path()
             .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
         std::fs::write(&marker, []).unwrap();
+        let index = super::super::search::SearchIndex::open_with_source_secret(
+            directory.path(),
+            "account",
+            "DEVICE",
+            "test-secret",
+        )
+        .unwrap();
+        let database = index.database_path().to_path_buf();
+        drop(index);
         sweep_cancelled_account_cleanups_at(directory.path(), directory.path(), |_| {
             Err("injected keychain failure".to_string())
         })
         .unwrap();
         assert!(marker.exists());
+        assert!(!database.exists());
     }
 
     const TEST_MXID_A: &str = "@charm-persistence-test-a:localhost";

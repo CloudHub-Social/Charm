@@ -242,6 +242,10 @@ Surfaces changed:
    tombstones suppress restore until interrupted credential and encrypted-search cleanup
    finishes; a newly committed login clears the tombstones only after the store/session
    pair is installed.
+   Startup retries attempt both credential kinds and encrypted-search deletion even
+   if a credential store is unavailable. Full-wipe retries likewise attempt search
+   deletion after an SDK-store cleanup failure. Markers remain until every required
+   target succeeds; failure-path regressions are included, pending current-head CI.
 2. Logout succeeds and clears local session even when the server-side revoke call fails
    (offline), and shows no false error.
 3. Editing display name persists via `set_display_name` and is reflected after refetch;
