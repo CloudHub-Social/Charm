@@ -3261,14 +3261,14 @@ mod registration_uia_tests {
     async fn rejected_committed_login_revokes_the_authenticated_device() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
-        assert!(client.logged_in());
+        assert!(client.matrix_auth().logged_in());
         Mock::given(method("POST"))
             .and(path("/_matrix/client/v3/logout"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
             .expect(1)
             .mount(server.server())
             .await;
-        assert!(revoke_rejected_login_device(&client).await);
+        assert!(super::revoke_rejected_login_device(&client).await);
         server.server().verify().await;
     }
 
@@ -3285,7 +3285,7 @@ mod registration_uia_tests {
             .expect(1)
             .mount(server.server())
             .await;
-        assert!(!revoke_rejected_login_device(&client).await);
+        assert!(!super::revoke_rejected_login_device(&client).await);
         server.server().verify().await;
     }
 
