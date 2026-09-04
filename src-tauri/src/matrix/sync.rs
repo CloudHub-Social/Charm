@@ -812,12 +812,16 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
     // prevents an in-flight backfill from reopening this session's index.
     *state.client.lock().await = None;
     search::reset_index_lifecycle(&state);
-    let tombstone_marked = persistence::mark_logout_tombstone(app, &account_key).is_ok();
-    let mut credentials_cleared = false;
-    if tombstone_marked {
-        let matrix_cleared = persistence::clear_session(&account_key).is_ok();
-        let oauth_cleared = persistence::clear_oauth_session(&account_key).is_ok();
-        credentials_cleared = matrix_cleared && oauth_cleared;
+    let credential_error = super::account::clear_logout_credentials(
+        persistence::mark_logout_tombstone(app, &account_key),
+        || persistence::clear_session(&account_key),
+        || persistence::clear_oauth_session(&account_key),
+    );
+    if credential_error.is_some() {
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "credential_cleanup_incomplete"
+        );
     }
     let search_index = std::sync::Arc::clone(&state.search_index);
     let cleanup_account_key = account_key.clone();
@@ -851,7 +855,7 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         );
         return;
     };
-    if tombstone_marked && credentials_cleared && index_cleared {
+    if credential_error.is_none() && index_cleared {
         let _ = persistence::clear_logout_tombstone(app, &account_key);
     }
 

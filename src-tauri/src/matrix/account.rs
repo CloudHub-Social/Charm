@@ -965,7 +965,7 @@ pub async fn deactivate_account(
 
 // Marker persistence and both credential stores are independent cleanup
 // opportunities. A filesystem failure must not skip working keychain deletion.
-fn clear_logout_credentials(
+pub(super) fn clear_logout_credentials(
     marker: Result<(), String>,
     clear_matrix: impl FnOnce() -> Result<(), String>,
     clear_oauth: impl FnOnce() -> Result<(), String>,

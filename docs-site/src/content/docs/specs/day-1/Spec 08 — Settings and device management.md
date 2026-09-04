@@ -289,7 +289,10 @@ Surfaces changed:
     its files are deleted, with the contended index lock and filesystem work on
     a blocking worker. That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
-    the durable retry marker.
+    the durable retry marker when marker persistence succeeds. Both credential
+    deletions are attempted independently even if the marker write fails,
+    matching ordinary logout; incomplete cleanup is reported without logging
+    keychain errors or treating the missing marker as successful cleanup.
     Logout, local-data removal, and deactivation workers likewise retain shared
     ownership of login exclusion through blocking cleanup, even if their caller
     is cancelled. The caller retains exclusion after a worker panic so recovery
