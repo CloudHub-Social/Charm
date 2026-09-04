@@ -464,9 +464,29 @@ impl DeferredTempStoreDiscards {
 }
 
 fn discard_temp_store(path: &Path, temp_key: &str) {
-    let _ = std::fs::remove_dir_all(path);
-    if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
-        let _ = entry.delete_credential();
+    let _ = remove_temp_store_after_secret(path, || remove_temp_store_secret(temp_key));
+}
+
+fn remove_temp_store_secret(temp_key: &str) -> Result<(), String> {
+    let result = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key))
+        .and_then(|entry| entry.delete_credential());
+    match result {
+        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+        Err(_) => Err("temporary store passphrase removal failed".to_string()),
+    }
+}
+
+fn remove_temp_store_after_secret(
+    path: &Path,
+    remove_secret: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // Startup discovers orphaned passphrases through these directories. Keep
+    // the directory until its secret is gone, including on repeated sweeps.
+    remove_secret()?;
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("temporary store removal failed".to_string()),
     }
 }
 
@@ -609,12 +629,7 @@ pub(super) fn discard_vetoed_temp_login_store(
     temp_key: &str,
 ) -> Result<(), String> {
     discard_vetoed_temp_store_at(&matrix_store_root(app)?, temp_key, || {
-        let result = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key))
-            .and_then(|entry| entry.delete_credential());
-        match result {
-            Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
-            Err(_) => Err("temporary store passphrase removal failed".to_string()),
-        }
+        remove_temp_store_secret(temp_key)
     })
 }
 
@@ -624,17 +639,7 @@ fn discard_vetoed_temp_store_at(
     remove_secret: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     validate_temp_login_key(temp_key)?;
-    let path = root.join(temp_key);
-    let directory_result = match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("temporary store removal failed".to_string()),
-    };
-    // Attempt both even if one fails, but never report full cleanup unless
-    // both the encrypted directory and its passphrase are gone.
-    let secret_result = remove_secret();
-    directory_result?;
-    secret_result
+    remove_temp_store_after_secret(&root.join(temp_key), remove_secret)
 }
 
 fn validate_temp_login_key(key: &str) -> Result<(), String> {
@@ -1817,13 +1822,19 @@ mod tests {
     }
 
     #[test]
-    fn veto_cleanup_reports_secret_failure_after_directory_removal() {
+    fn veto_cleanup_retains_directory_until_secret_removal_succeeds() {
         let root = ScratchRoot::new("veto-secret-failure");
         let key = temp_store_key();
         let path = store_path_at(&root.0, &key).unwrap();
         let result = discard_vetoed_temp_store_at(&root.0, &key, || Err("secret failed".into()));
-        assert!(!path.exists());
+        assert!(path.exists());
         assert_eq!(result, Err("secret failed".into()));
+        // The shared startup-sweep primitive must preserve discoverability
+        // on another failure, then remove the directory on a successful retry.
+        assert!(remove_temp_store_after_secret(&path, || Err("still unavailable".into())).is_err());
+        assert!(path.exists());
+        remove_temp_store_after_secret(&path, || Ok(())).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

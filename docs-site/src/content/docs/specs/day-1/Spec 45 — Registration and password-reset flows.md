@@ -182,8 +182,10 @@ homeservers. The parity audit (2026-07-13) found:
 - A fresh password, registration, SSO, or QR session rejected by the pending-cleanup
   relocation veto is never adopted. Its authentication-specific logout is attempted
   with a bounded timeout, then its client is released before removing only its
-  validated temporary store and passphrase. Both removals are attempted; failures
-  remain failures. Revocation failure cannot prove the server-side session is gone,
+  validated temporary store and passphrase. The passphrase is removed first; if
+  that fails, the directory remains discoverable for startup cleanup retries.
+  Repeated sweep failures retain the same ordering. Failures remain failures.
+  Revocation failure cannot prove the server-side session is gone,
   and is recorded without tokens, account IDs, or raw service errors. No prior
   account store is removed by this rejection cleanup. Regression coverage includes
   failed revocation, timeout releasing the client before cleanup, and invalid temp
