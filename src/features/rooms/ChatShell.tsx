@@ -511,10 +511,7 @@ export function ChatShell({
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
   const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
-    useAttachmentUploads(
-      activeRoomId,
-      roomMutationsBlockedRef,
-    );
+    useAttachmentUploads(activeRoomId, roomMutationsBlockedRef);
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);
@@ -1148,14 +1145,19 @@ export function ChatShell({
               <Send size={16} />
             </button>
           </div>
-          {voiceRecordingEnabled && !roomMutationsBlocked && !roomSettingsOpen && (
-            <VoiceRecorder
-              key={`${currentUserId}:${room.room_id}`}
-              mobile={layout === "mobile"}
-              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
-              onClearFailedUpload={dismissFailedUploadForFile}
-            />
-          )}
+          {voiceRecordingEnabled &&
+            !roomMutationsBlocked &&
+            !roomSettingsOpen &&
+            !messageActionController.visibleDialogTarget &&
+            !jumpToDateOpen &&
+            pillProfile === null && (
+              <VoiceRecorder
+                key={`${currentUserId}:${room.room_id}`}
+                mobile={layout === "mobile"}
+                onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+                onClearFailedUpload={dismissFailedUploadForFile}
+              />
+            )}
         </div>
       )}
       {!mobile && participants.length > 0 && (
