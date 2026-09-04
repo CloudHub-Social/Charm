@@ -1062,12 +1062,13 @@ impl SearchWork {
                     SearchMutation::Redact { .. }
                         | SearchMutation::PurgeRoom { .. }
                         | SearchMutation::PurgeOriginal { .. }
+                        | SearchMutation::SelectVersion { .. }
                 )
             })
     }
 
-    /// Drops decrypted message additions while retaining only removal metadata
-    /// that is safe to hold outside the bounded plaintext queue.
+    /// Drops decrypted message additions while retaining removal and renderer
+    /// selection metadata that is safe outside the bounded plaintext queue.
     pub fn into_privacy_removals(mut self) -> (Self, bool) {
         let original_len = self.mutations.len();
         self.mutations.retain(|mutation| {
@@ -1076,6 +1077,7 @@ impl SearchWork {
                 SearchMutation::Redact { .. }
                     | SearchMutation::PurgeRoom { .. }
                     | SearchMutation::PurgeOriginal { .. }
+                    | SearchMutation::SelectVersion { .. }
             )
         });
         let dropped_additions = self.mutations.len() != original_len;
@@ -1981,7 +1983,7 @@ async fn enqueue_sync_work(
             }
             // Polling an owned reservation once establishes FIFO position
             // without waiting for capacity on the Matrix sync task. Only
-            // removal metadata can leave the bounded plaintext queue here.
+            // removal/selection IDs can leave the bounded plaintext queue here.
             enqueue_reliable_search_work(app, sender, queued).await
         }
         Err(_) => false,
@@ -2291,6 +2293,23 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
                 .store(false, std::sync::atomic::Ordering::Release);
             tracing::warn!(command = "message_search_backfill", status = "queue_full");
             return;
+        }
+    }
+    // Raw event-cache replay cannot recover renderer-authoritative choices
+    // between equal-timestamp edits. Replay live selections before the FIFO
+    // completion marker, including selections lost before this retry began.
+    for room in client.joined_rooms() {
+        let Some(timeline) = state.peek_timeline(room.room_id()).await else {
+            continue;
+        };
+        let (items, _stream) = timeline.subscribe().await;
+        if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
+            return;
+        }
+        if let Some(work) =
+            SearchWork::from_timeline_items(client, room.room_id().as_str(), items.iter())
+        {
+            enqueue_sync_work(app, &expected_identity, generation, work).await;
         }
     }
     let completion = SearchWork {
@@ -3735,6 +3754,22 @@ mod tests {
         assert_eq!(take_cached_room_seed(&pending, &running), Some("!two"));
         assert_eq!(take_cached_room_seed(&pending, &running), None);
         assert!(!running.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn renderer_selection_survives_metadata_only_queue_backpressure() {
+        let selection = SearchMutation::SelectVersion {
+            room_id: "!room:example.org".to_owned(),
+            event_id: "$original".to_owned(),
+            version_event_id: "$selected".to_owned(),
+        };
+        let work = work_with(vec![selection]);
+        assert!(work.requires_reliable_delivery());
+        let (metadata, dropped) = work.into_privacy_removals();
+        assert!(!dropped);
+        assert!(
+            matches!(metadata.mutations.as_slice(), [SearchMutation::SelectVersion { version_event_id, .. }] if version_event_id == "$selected")
+        );
     }
 
     #[test]

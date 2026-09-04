@@ -721,6 +721,15 @@ impl Session {
                 .any(|room| room.encryption_state().is_encrypted())
     }
 
+    /// Reuses an open renderer timeline for search reconciliation without
+    /// creating a timeline or starting a new listener.
+    pub(crate) async fn peek_search_timeline(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<Arc<Timeline>> {
+        self.timelines.lock().await.peek(room_id).map(Arc::clone)
+    }
+
     /// Returns this session's cached `Timeline` for `room_id`, building and
     /// caching one on first access. Concurrent first-accesses for the same
     /// room can both build a `Timeline` (the lock isn't held across the
@@ -988,7 +997,8 @@ fn spawn_timeline_listener(
             &client,
             room_id.as_str(),
             items.iter(),
-        );
+        )
+        .await;
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         // The first `tick()` fires immediately, not after the first
@@ -1078,7 +1088,8 @@ fn spawn_timeline_listener(
                 &client,
                 room_id.as_str(),
                 items.iter(),
-            );
+            )
+            .await;
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
         // drop this room's cached snapshot too, so a stale, possibly very

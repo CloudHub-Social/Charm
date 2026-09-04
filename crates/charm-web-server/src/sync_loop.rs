@@ -71,7 +71,7 @@ pub(crate) fn timeline_search_context(session: &crate::session::Session) -> Time
 
 /// Queues matrix-sdk-ui's selected edit versions without copying message
 /// bodies into the listener queue.
-pub(crate) fn submit_timeline_search_selection<'a>(
+pub(crate) async fn submit_timeline_search_selection<'a>(
     context: &TimelineSearchContext,
     client: &Client,
     room_id: &str,
@@ -97,14 +97,21 @@ pub(crate) fn submit_timeline_search_selection<'a>(
         return;
     }
     let Some(sender) = sender else { return };
-    if sender
-        .try_send(QueuedSearchWork {
-            work,
-            completes_backfill: false,
-            completion: None,
-        })
-        .is_err()
-    {
+    let queued = QueuedSearchWork {
+        work,
+        completes_backfill: false,
+        completion: None,
+    };
+    let delivered = match sender.try_send(queued) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(queued)) => {
+            // These mutations contain IDs only. Reserve FIFO position before
+            // returning to the renderer rather than dropping its chosen edit.
+            enqueue_reliable_search_work(&sender, &context.incomplete, queued).await
+        }
+        Err(_) => false,
+    };
+    if !delivered {
         context
             .incomplete
             .lock()
@@ -357,8 +364,8 @@ async fn enqueue_message_search_work(
                 );
             }
             // Reserve FIFO position without waiting for queue capacity on the
-            // web sync loop. Only removal metadata leaves the bounded queue.
-            enqueue_reliable_search_work(context, queued).await
+            // web sync loop. Only removal/selection IDs leave the bounded queue.
+            enqueue_reliable_search_work(&context.sender, &context.incomplete, queued).await
         }
         Err(_) => false,
     };
@@ -381,10 +388,11 @@ fn try_enqueue_open_session<T>(
 }
 
 async fn enqueue_reliable_search_work(
-    context: &MessageSearchContext,
+    sender: &tokio::sync::mpsc::Sender<QueuedSearchWork>,
+    incomplete: &Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     queued: QueuedSearchWork,
 ) -> bool {
-    let mut reservation = Box::pin(context.sender.clone().reserve_owned());
+    let mut reservation = Box::pin(sender.clone().reserve_owned());
     let immediate = std::future::poll_fn(|poll_context| {
         Poll::Ready(match reservation.as_mut().poll(poll_context) {
             Poll::Ready(result) => Some(result),
@@ -399,7 +407,7 @@ async fn enqueue_reliable_search_work(
         }
         Some(Err(_)) => false,
         None => {
-            let incomplete = Arc::clone(&context.incomplete);
+            let incomplete = Arc::clone(incomplete);
             tokio::spawn(async move {
                 match reservation.await {
                     Ok(permit) => {
@@ -422,7 +430,11 @@ async fn enqueue_reliable_search_work(
     }
 }
 
-async fn backfill_message_search(context: &Option<MessageSearchContext>, client: &Client) {
+async fn backfill_message_search(
+    context: &Option<MessageSearchContext>,
+    client: &Client,
+    replay_session: Option<&crate::session::Session>,
+) {
     let Some(context) = context else { return };
     context
         .backfill_pending
@@ -522,6 +534,24 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             return;
         }
     }
+    if let Some(session) = replay_session {
+        for room in client.joined_rooms() {
+            let Some(timeline) = session.peek_search_timeline(room.room_id()).await else {
+                continue;
+            };
+            let (items, _stream) = timeline.subscribe().await;
+            if backfill_revoked(context) {
+                return;
+            }
+            if let Some(work) = charm_lib::matrix::search::SearchWork::from_timeline_items(
+                client,
+                room.room_id().as_str(),
+                items.iter(),
+            ) {
+                enqueue_message_search_work(context, work).await;
+            }
+        }
+    }
     let Some(completion) = charm_lib::matrix::search::SearchWork::empty_for_client(client) else {
         context
             .incomplete
@@ -590,7 +620,7 @@ pub fn schedule_full_message_search_reconciliation(session: Arc<crate::session::
     };
     let client = session.client.clone();
     tokio::spawn(async move {
-        backfill_message_search(&Some(context), &client).await;
+        backfill_message_search(&Some(context), &client, Some(&session)).await;
     });
 }
 
@@ -1138,7 +1168,7 @@ pub fn spawn(
         let backfill_context = message_search.clone();
         let backfill_client = client.clone();
         tokio::spawn(async move {
-            backfill_message_search(&backfill_context, &backfill_client).await;
+            backfill_message_search(&backfill_context, &backfill_client, None).await;
         });
         // The relation-aware index accepts the live batch before older cache
         // provenance (out-of-order edit/redaction tests cover that ordering),
@@ -1632,6 +1662,61 @@ pub async fn request_device_verification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reliable_metadata_is_reserved_before_a_later_completion_marker() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk::SessionMeta {
+                        user_id: matrix_sdk::ruma::UserId::parse("@queue:example.org").unwrap(),
+                        device_id: matrix_sdk::ruma::device_id!("QUEUEDEVICE").to_owned(),
+                    },
+                    tokens: matrix_sdk::authentication::SessionTokens {
+                        access_token: "test-token".to_owned(),
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .unwrap();
+        let queued = |completes_backfill| QueuedSearchWork {
+            work: charm_lib::matrix::search::SearchWork::empty_for_client(&client).unwrap(),
+            completes_backfill,
+            completion: None,
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        assert!(sender.try_send(queued(false)).is_ok());
+        let incomplete = Arc::new(std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        assert!(enqueue_reliable_search_work(&sender, &incomplete, queued(false)).await);
+        assert!(!receiver.recv().await.unwrap().completes_backfill);
+        // Even though the original item drained, the metadata reservation owns
+        // that capacity. A later completion cannot overtake it.
+        assert!(matches!(
+            sender.try_send(queued(true)),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        let metadata = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!metadata.completes_backfill);
+        assert!(sender.try_send(queued(true)).is_ok());
+        assert!(receiver.recv().await.unwrap().completes_backfill);
+        assert!(!incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
 
     #[test]
     fn search_backfill_stays_pending_until_its_fifo_marker_is_applied() {

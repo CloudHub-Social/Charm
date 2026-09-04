@@ -130,6 +130,11 @@ connection: the SDK owns that schema and migration lifecycle.
   contains multiple edits at the same timestamp and no authoritative collapsed
   projection is available, defer that original event until timeline
   reconciliation resolves it rather than choosing by local arrival or event ID.
+  Renderer selection mutations contain event IDs only and use reliable FIFO
+  reservations when the plaintext queue is full. Cached-history retries replay
+  current open timeline selections before their completion marker, rather than
+  assuming raw events can reconstruct equal-timestamp renderer choices. Native
+  metadata-retention and companion FIFO-order regressions require CI execution.
   Redacting the original writes a persistent
   tombstone, deletes the visible row, and purges every original/edit decrypted body
   in provenance; later edits and replay must remain suppressed by that tombstone.
