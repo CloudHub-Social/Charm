@@ -46,6 +46,7 @@ function serializeMessageSearchMutation(
       try {
         await invoke("reconcile_message_search_flag");
         messageSearchReconciliationPending = false;
+        emit();
       } catch (error) {
         if (!allowUnrelatedRemoteUpdates) throw error;
         // The remote mutation below pins search off while still publishing
@@ -88,10 +89,7 @@ async function reconcileMessageSearchState(
   isEnabled: boolean,
   forceDisabled = false,
 ): Promise<void> {
-  if (isEnabled) {
-    messageSearchReconciliationPending = false;
-    return;
-  }
+  if (isEnabled && !forceDisabled && !messageSearchReconciliationPending) return;
   if (!forceDisabled && !wasEnabled && !messageSearchReconciliationPending) return;
   if (!isTauri()) {
     messageSearchReconciliationPending = false;
@@ -99,9 +97,11 @@ async function reconcileMessageSearchState(
   }
 
   messageSearchReconciliationPending = true;
+  emit();
   const { invoke } = await import("@/lib/matrixTransport");
   await invoke("reconcile_message_search_flag");
   messageSearchReconciliationPending = false;
+  emit();
 }
 
 /**
@@ -157,6 +157,9 @@ async function initializeFeatureFlagsInner(mutationId: number): Promise<void> {
     overridesCache = persistedOverrides;
     persistedOverridesCache = persistedOverrides;
   }
+  // Even an enabled cache must reconcile an earlier native cleanup marker.
+  // Do not briefly publish search as available before that IPC completes.
+  if (isTauri()) messageSearchReconciliationPending = true;
   emit();
   try {
     await reconcileMessageSearchState(
@@ -178,15 +181,20 @@ async function initializeFeatureFlagsInner(mutationId: number): Promise<void> {
  * Resolves a flag outside React (event handlers, non-component logic) and
  * reports the evaluation to Sentry. React components use {@link useFlag}.
  */
+function resolvedAvailableFlag(key: FeatureFlagKey): boolean {
+  if (key === "encrypted_local_message_search" && messageSearchReconciliationPending) return false;
+  return resolveFlag(key, overridesCache, remoteCache);
+}
+
 export function getFlag(key: FeatureFlagKey): boolean {
-  const value = resolveFlag(key, overridesCache, remoteCache);
+  const value = resolvedAvailableFlag(key);
   reportFlagEvaluation(key, value);
   return value;
 }
 
 /** React hook: resolves a flag and re-renders when its override/remote changes. */
 export function useFlag(key: FeatureFlagKey): boolean {
-  const snapshot = () => resolveFlag(key, overridesCache, remoteCache);
+  const snapshot = () => resolvedAvailableFlag(key);
   const value = useSyncExternalStore(subscribe, snapshot, snapshot);
   // Report from an effect, not during render, so evaluation tracking has no
   // render-time side effect and fires once per resolved value.

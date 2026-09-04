@@ -318,7 +318,10 @@ without the user knowing which is which.
   metadata errors, symlinks, and pending markers still take the recovery path.
   Native startup reconciles disabled and
   previously failed cleanup before session restoration; renderer startup also
-  reconciles disabled-to-disabled state. Labs and OFREP writes are serialized so a
+  reconciles both disabled-to-disabled and cached-enabled state with the native
+  backend. Search remains unavailable in the renderer until that reconciliation
+  succeeds, without discarding the user's saved override or blocking unrelated
+  flag values. Labs and OFREP writes are serialized so a
   re-enable cannot overtake cleanup. Persistent cleanup failure pins the remote
   search value off without blocking durable updates to unrelated remote flags.
   Every open, write, and query fails closed
