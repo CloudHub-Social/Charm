@@ -1,5 +1,6 @@
 import type { RoomMessageSummary } from "@/lib/matrix";
 import type { MessageActionsHandle } from "./MessageActions";
+import { formatDisplayTime, type ClockFormat } from "@/features/appearance/dateTime";
 
 /** Caps the read-receipt avatar stack under a message; the rest collapse into a "+N". */
 export const MAX_RECEIPT_AVATARS = 3;
@@ -12,10 +13,8 @@ export const MAX_RECEIPT_AVATARS = 3;
  * so a link outside this set would be rejected at that layer too even if
  * this check were somehow bypassed.
  */
-export function formatTime(timestampMs: number): string {
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
-    new Date(timestampMs),
-  );
+export function formatTime(timestampMs: number, clock: ClockFormat = "locale"): string {
+  return formatDisplayTime(timestampMs, clock);
 }
 
 /** Stable identity for a timeline item across the local-echo -> ack lifecycle. */

@@ -1,164 +1,170 @@
 [
   {
-    "key": "canary",
     "default": false,
     "description": "Internal no-op flag used to exercise the feature-flag system. Not connected to any feature.",
+    "key": "canary",
     "owner": "Spec 35 (feature-flag plumbing)"
   },
   {
-    "key": "room_invites",
     "default": false,
     "description": "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications.",
+    "key": "room_invites",
     "owner": "Spec 56 (room invites surface)"
   },
   {
-    "key": "rich_message_rendering",
     "default": false,
     "description": "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji.",
+    "key": "rich_message_rendering",
     "owner": "Spec 58 (rich message content rendering)"
   },
   {
-    "key": "mobile_chat_redesign",
     "default": false,
     "description": "Use the compact mobile-first room header, composer, and chat navigation.",
+    "key": "mobile_chat_redesign",
     "owner": "Spec 52 (mobile chat UX)"
   },
   {
-    "key": "focus_mode",
     "default": false,
     "description": "Focus mode / Do Not Disturb: suppress notifications for a preset duration or indefinitely, from Settings or the tray menu.",
+    "key": "focus_mode",
     "owner": "Spec 30 (focus mode / do-not-disturb)"
   },
   {
-    "key": "link_previews",
     "default": false,
     "description": "Show an unfurled title/description/thumbnail card under messages containing a URL.",
+    "key": "link_previews",
     "owner": "Spec 29 (link previews)"
   },
   {
-    "key": "room_alias_management",
     "default": false,
     "description": "Manage room aliases and the canonical alias from room settings.",
+    "key": "room_alias_management",
     "owner": "Spec 32 (room alias management)"
   },
   {
-    "key": "room_list_unread_filter",
     "default": false,
     "description": "Filter Home, direct-message, and space room lists to rooms needing attention.",
+    "key": "room_list_unread_filter",
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
-    "key": "message_action_parity",
     "default": false,
     "description": "Add the next set of message actions, beginning with copying a canonical message permalink.",
+    "key": "message_action_parity",
     "owner": "Spec 37 (message action parity)"
   },
   {
-    "key": "media_send_polish",
     "default": false,
     "description": "Improve attachment sending with a visible file drag-and-drop target and later media-send controls.",
+    "key": "media_send_polish",
     "owner": "Spec 42 (media send polish)"
   },
   {
-    "key": "room_list_message_preview",
     "default": false,
     "description": "Show a compact last-message preview with sender label under each room-list row.",
+    "key": "room_list_message_preview",
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
-    "key": "space_rail_management",
     "default": false,
     "description": "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave).",
+    "key": "space_rail_management",
     "owner": "Spec 63 (sidebar and space management)"
   },
   {
-    "key": "space_hierarchy_reorganization",
     "default": false,
     "description": "Create and reorganize nested spaces, and open their space-management settings.",
+    "key": "space_hierarchy_reorganization",
     "owner": "Spec 33 (space hierarchy reorganization)"
   },
   {
-    "key": "message_pinning",
     "default": false,
     "description": "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge.",
+    "key": "message_pinning",
     "owner": "day-2 Spec 04 (message pinning)"
   },
   {
-    "key": "presence_privacy_controls",
     "default": false,
     "description": "Privacy controls for read receipts, typing indicators, presence (appear offline), and auto-idle timeout, plus expanded seen-by and presence status display.",
+    "key": "presence_privacy_controls",
     "owner": "Spec 40 (presence and receipt privacy controls)"
   },
   {
-    "key": "bookmarks",
     "default": false,
     "description": "Bookmark a message from its action menu and browse saved messages from a global Settings panel.",
+    "key": "bookmarks",
     "owner": "Day-2 Spec 12 (bookmarks and saved messages)"
   },
   {
-    "key": "room_list_sort",
     "default": false,
     "description": "Switch Home, direct-message, and space room lists between default, alphabetical, unread-first, and activity ordering.",
+    "key": "room_list_sort",
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
-    "key": "room_list_typing_indicator",
     "default": false,
     "description": "Show a typing badge on room-list rows for rooms with someone currently typing.",
+    "key": "room_list_typing_indicator",
     "owner": "Spec 54 (room-list enrichment and filtering)"
   },
   {
-    "key": "user_profile_cards",
     "default": false,
     "description": "Open profile cards for visible Matrix users, including room-specific identity, presence, and mutual rooms.",
+    "key": "user_profile_cards",
     "owner": "Spec 36 (user profile cards)"
   },
   {
-    "key": "timeline_state_events",
     "default": false,
     "description": "Render membership and room-state changes in the timeline.",
+    "key": "timeline_state_events",
     "owner": "Spec 39 (timeline state and membership events)"
   },
   {
-    "key": "registration_and_recovery",
     "default": false,
     "description": "Use multi-stage Matrix registration, password recovery, provider-aware SSO, and token login.",
+    "key": "registration_and_recovery",
     "owner": "Spec 45 (registration and password-reset flows)"
   },
   {
-    "key": "encrypted_local_message_search",
     "default": false,
     "description": "Build and query an encrypted device-local index of decrypted Matrix messages.",
+    "key": "encrypted_local_message_search",
     "owner": "Spec 28 (cross-room message search)"
   },
   {
-    "key": "quick_switcher",
     "default": false,
     "description": "Jump to joined rooms, direct messages, and spaces with a fuzzy keyboard launcher.",
+    "key": "quick_switcher",
     "owner": "Spec 55 (command palette and quick switcher)"
   },
   {
-    "key": "full_emoji_picker",
     "default": false,
     "description": "Use the searchable full-Unicode emoji picker for reactions and composer insertion.",
+    "key": "full_emoji_picker",
     "owner": "Spec 38 (full emoji picker)"
   },
   {
-    "key": "avatar_presence_visuals",
     "default": false,
     "description": "Show composite group-DM avatars and richer avatar/presence indicators in room and member lists.",
+    "key": "avatar_presence_visuals",
     "owner": "Spec 53 (avatars and presence visuals)"
   },
   {
-    "key": "jump_to_date",
     "default": false,
     "description": "Open a calendar from the room header and jump to the first event on that date.",
+    "key": "jump_to_date",
     "owner": "Day-2 Spec 11 (jump to date)"
   },
   {
-    "key": "room_upgrades",
     "default": false,
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
+    "key": "room_upgrades",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "default": false,
+    "description": "Customize appearance and display preferences, including clock and date formats.",
+    "key": "appearance_parity",
+    "owner": "Spec 47 (appearance customization)"
   }
 ]

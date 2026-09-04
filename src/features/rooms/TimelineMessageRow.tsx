@@ -1,4 +1,5 @@
 import type { RoomMessageSummary } from "@/lib/matrix";
+import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import {
   isDateDividerBetween,
   isDateDividerBoundary,
@@ -57,6 +58,7 @@ export function TimelineMessageRow({
   hasNoticesBeforeNext = false,
 }: TimelineMessageRowProps) {
   const own = message.sender === currentUserId;
+  const { dateFormat } = useDisplayFormats();
   const prev = messages[index - 1];
   const next = messages[index + 1];
   const isGroupBreakAt = (candidateIndex: number) =>
@@ -80,7 +82,7 @@ export function TimelineMessageRow({
     >
       {showDateDivider && (
         <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-          {formatDateDividerLabel(message.timestamp_ms)}
+          {formatDateDividerLabel(message.timestamp_ms, undefined, undefined, dateFormat)}
         </div>
       )}
       {index === unreadStartIndex && (

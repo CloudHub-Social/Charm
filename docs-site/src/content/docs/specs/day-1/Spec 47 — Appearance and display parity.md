@@ -12,6 +12,10 @@ settings the audit found in Charm 1.0 but not Charm 2.0.
 
 ## Problem & why now
 
+The [feature gallery](/features/) documents the default-off
+preview controls using the CI-captured Appearance settings journey. This preview
+entry does not imply completion of the remaining parity items below.
+
 Charm 2.0's appearance settings (`AppearancePanel.tsx`, `appearance/atoms.ts`) cover
 theme (dark/light/midnight/system), font size (4 steps), density (compact/cozy),
 reduced motion, and layout mode (bubble/discord/irc) — a solid base. But the parity
@@ -83,13 +87,41 @@ The owner ruled these **in** (they were previously flagged optional):
     approximating it — the point is visual continuity with 1.0, so an inexact
     recreation defeats the purpose.
 
-## Data flow
+## Implementation progress (2026-09-03)
 
-All are local appearance settings in the same store Spec 09 uses, consumed by
-rendering (message rows, dividers, emoji, media). Custom-theme import may need a
-small persistence addition for stored theme definitions. No Matrix sync (Charm
-2.0's appearance is local, per Spec 09 — Charm 1.0's cross-device settings sync is
-a separate, lower-priority gap tracked under Spec 48).
+The in-progress branch adds locale/12-hour/24-hour clock choices and locale,
+day-first, month-first, and year-first date choices. These use the platform Intl
+formatter, validated local persistence, and the default-off `appearance_parity`
+flag. Message layouts and message/state-notice date dividers consume the settings;
+relative Today/Yesterday labels remain unchanged. Disabling the flag restores
+locale presentation without erasing saved preferences.
+
+The branch also adds a global font-family picker with Charm default, system UI,
+sans-serif, serif, and monospace presets. Fixed local CSS font stacks avoid remote
+font requests or arbitrary CSS input; code-specific monospace styling is preserved.
+The value is persisted locally and remains a required portable input for Spec 50.
+The rollout flag gates its DOM application as well as its settings control.
+
+Six message-spacing levels add 0, 2, 4, 8, 12, or 16 pixels between rows in all
+three layouts. This is independent of the existing compact/cozy bubble-padding
+control and does not shrink touch targets. Flag-off restores the layout's original
+spacing while keeping the saved value. Extreme-spacing E2E snapshots cover bubble,
+Discord, and IRC rendering; CI verification is still required.
+
+This is not completion of Spec 47. The other scope items above, settings sync under
+Spec 50, generated catalog reconciliation, end-to-end coverage, visual review, and
+manual verification remain outstanding. CI is the verification environment.
+
+## Data flow and settings ownership
+
+Appearance settings use Spec 09's local store for immediate rendering (message
+rows, dividers, emoji, media). Their portable values, including the global font
+family, are required inputs to [Spec 50 — Cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/).
+Spec 50 owns per-setting classification, account-data transport, opt-in behavior,
+and export/import; synchronization is required, not an optional Spec 48 follow-up.
+Device-specific values stay local under that classification. Custom-theme import
+may need persistence for constrained theme definitions; arbitrary CSS and external
+asset URLs must not enter the synced settings payload.
 
 ## API/contract changes
 

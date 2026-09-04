@@ -6,6 +6,8 @@ import { ThemeProvider } from "./ThemeProvider";
 
 const storeGet = vi.fn();
 const load = vi.fn();
+const rollout = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/featureFlags", () => ({ useFlag: () => rollout.enabled }));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => load(...args),
@@ -26,6 +28,7 @@ function restoreMatchMedia() {
 }
 
 beforeEach(() => {
+  rollout.enabled = false;
   localStorage.clear();
   storeGet.mockReset();
   load.mockReset().mockResolvedValue({ get: storeGet, set: vi.fn() });
@@ -47,6 +50,27 @@ afterEach(() => {
 });
 
 describe("ThemeProvider", () => {
+  it("applies a persisted local font and restores the default when disabled", async () => {
+    rollout.enabled = true;
+    storeGet.mockResolvedValue({ fontFamily: "serif" });
+    const store = createStore();
+    const tree = () => (
+      <Provider store={store}>
+        <ThemeProvider>
+          <div>app</div>
+        </ThemeProvider>
+      </Provider>
+    );
+    const { rerender } = render(tree());
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--font-sans")).toContain("Georgia"),
+    );
+    rollout.enabled = false;
+    rerender(tree());
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe(""),
+    );
+  });
   it("renders children immediately without blocking on reconciliation", () => {
     storeGet.mockResolvedValue(undefined);
     render(

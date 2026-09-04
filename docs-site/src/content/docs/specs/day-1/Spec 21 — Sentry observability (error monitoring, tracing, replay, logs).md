@@ -341,6 +341,9 @@ document this limitation rather than attempting a workaround.
 
 ### Structured logs
 
+- Session-restore and store-relocation diagnostics use fixed operation/outcome
+  messages. Do not interpolate account identifiers, local store paths, or raw
+  keychain/filesystem errors, including in stderr output before SDK scrubbing.
 - JS: `enableLogs: true` + `consoleLoggingIntegration` for `error`/`warn`,
   same `beforeSendLog` scrub-and-filter pattern as Charm 1.0.
 - Rust: if the core adopts the `tracing` crate (see [Tracing](#tracing) — may
