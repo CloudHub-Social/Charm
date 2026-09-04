@@ -13,7 +13,7 @@ import { getPendingRecoverySetup } from "../src/lib/matrix";
 
 // Stories have no credential backend. Preserve the other Matrix implementations
 // while making the ordinary, no-pending-recovery state explicit.
-sb.mock(import("../src/lib/matrix"), { spy: true });
+sb.mock(import("../src/lib/matrix.ts"), { spy: true });
 
 // Stories document shipped UI states, including features that default off
 // while they are being staged for rollout.
