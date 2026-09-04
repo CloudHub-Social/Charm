@@ -278,16 +278,6 @@ async fn clear_local_session_locked(
         .ok()
         .and_then(|client| client.device_id().map(ToString::to_string));
 
-    // Best-effort, and must run before the client is cleared below (it needs
-    // one to delete the homeserver pusher): without this, logging out (or
-    // deactivating) leaves both the OS-level UnifiedPush/APNs registration
-    // and the homeserver pusher active for an account no longer signed in on
-    // this device. Never allowed to fail logout itself — a homeserver/
-    // network hiccup during cleanup shouldn't block signing out.
-    if let Err(e) = crate::push::unregister_push_impl(app, state).await {
-        eprintln!("failed to unregister push during logout/deactivate: {e}");
-    }
-
     let matrix_result = persistence::clear_session(&account_key);
     let oauth_result = persistence::clear_oauth_session(&account_key);
     // If neither durable veto nor complete credential deletion succeeded,
@@ -303,6 +293,12 @@ async fn clear_local_session_locked(
         return Err(
             "Could not persist sign-out. Your session remains open; retry signing out.".into(),
         );
+    }
+
+    // Do not remove notifications while a failed durable sign-out retains
+    // the live account. After admission, clean push before clearing client.
+    if let Err(e) = crate::push::unregister_push_impl(app, state).await {
+        eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
@@ -999,7 +995,7 @@ pub async fn deactivate_account(
 
 // Marker persistence and both credential stores are independent cleanup
 // opportunities. A filesystem failure must not skip working keychain deletion.
-fn logout_is_durable(marked: bool, matrix_cleared: bool, oauth_cleared: bool) -> bool {
+pub(crate) fn logout_is_durable(marked: bool, matrix_cleared: bool, oauth_cleared: bool) -> bool {
     marked || (matrix_cleared && oauth_cleared)
 }
 

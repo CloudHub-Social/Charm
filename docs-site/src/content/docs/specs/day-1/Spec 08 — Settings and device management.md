@@ -24,6 +24,13 @@ cross-signing status command to finally surface in UI.
 
 ## Current state (in repo)
 
+Hard (non-soft-logout) `M_UNKNOWN_TOKEN` sync failures remove web-session
+admission and notify the browser to return to sign-in. Native terminal cleanup
+must first establish a durable restore veto; if storage prevents that, the sync
+error remains visible in the retained shell for retry. Failed ordinary logout
+also retains push registration until that durable boundary succeeds. A late
+restore rejection cannot override an already-delivered session invalidation.
+
 - **Auth shipped**: `login`, `register`, `discover_homeserver`, `start_sso_login` /
   `complete_sso_login` / `cancel_sso_login`, `try_restore_session`, QR login — all in
   `src-tauri/src/matrix/mod.rs` + `qr_login.rs`. **No `logout`.**

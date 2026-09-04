@@ -132,6 +132,22 @@ describe("App", () => {
     expect(await screen.findByText("login screen")).toBeInTheDocument();
   });
 
+  it("ignores a late restore rejection after session invalidation", async () => {
+    let rejectRestore!: (error: Error) => void;
+    tryRestoreSession.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectRestore = reject;
+        }),
+    );
+    render(<App />);
+    await waitFor(() => expect(tryRestoreSession).toHaveBeenCalledOnce());
+    sessionInvalidatedCallback?.();
+    rejectRestore(new Error("401"));
+    expect(await screen.findByText("login screen")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn’t restore your session")).not.toBeInTheDocument();
+  });
+
   it("returns to login and clears account state when the backend invalidates the session", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
     const clearSpy = vi.spyOn(queryClient, "clear");

@@ -1597,6 +1597,8 @@ async fn finish_login(
         initial_response,
         stored.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            sessions: state.sessions.clone(),
+            token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
             message_search: crate::sync_loop::message_search_context(
                 &stored,
@@ -2775,6 +2777,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         persistence.touch_last_seen(&token);
     }
     session.touch();
+    // Admit before the sync task can observe an immediate hard auth error.
+    state.sessions.insert(token.clone(), session).await;
+    let session = state
+        .sessions
+        .get(&token)
+        .await
+        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))?;
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
         token: token.clone(),
@@ -2791,6 +2800,8 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         initial_response,
         session.sync_snapshots(),
         crate::sync_loop::SpawnOptions {
+            sessions: state.sessions.clone(),
+            token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
             message_search: crate::sync_loop::message_search_context(
                 &session,
@@ -2802,7 +2813,6 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .sync_handle
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-    state.sessions.insert(token.clone(), session).await;
     // `insert` takes the session by value and wraps it in its own `Arc`
     // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
     // rather than wrapping a second, disconnected one here, so every holder

@@ -85,7 +85,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
         }
       })
       .catch((cause) => {
-        if (active) setRestoreError(String(cause));
+        if (active && !invalidated) setRestoreError(String(cause));
       })
       .finally(() => {
         if (active) setRestoring(false);

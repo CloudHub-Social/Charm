@@ -814,6 +814,23 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         return;
     }
 
+    let tombstone = persistence::mark_logout_tombstone(app, &account_key);
+    let matrix = persistence::clear_session(&account_key);
+    let oauth = persistence::clear_oauth_session(&account_key);
+    let durable =
+        super::account::logout_is_durable(tombstone.is_ok(), matrix.is_ok(), oauth.is_ok());
+    let credential_error = super::account::clear_logout_credentials(tombstone, || matrix, || oauth);
+    if !durable {
+        // The caller reports the sync failure and stops syncing. Keep the
+        // shell available for a visible retry instead of claiming sign-out
+        // while the same saved session can still restore on next launch.
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "restore_veto_failed"
+        );
+        return;
+    }
+
     // Match explicit logout: unregister the OS transport and remove its
     // persisted endpoint while the active client is still available. A stale
     // token may prevent deleting the homeserver pusher, but the shared helper
@@ -832,11 +849,6 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
     // prevents an in-flight backfill from reopening this session's index.
     *state.client.lock().await = None;
     search::reset_index_lifecycle(&state);
-    let credential_error = super::account::clear_logout_credentials(
-        persistence::mark_logout_tombstone(app, &account_key),
-        || persistence::clear_session(&account_key),
-        || persistence::clear_oauth_session(&account_key),
-    );
     if credential_error.is_some() {
         tracing::warn!(
             command = "terminal_session_cleanup",

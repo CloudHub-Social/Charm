@@ -146,6 +146,44 @@ fn record_search_work_outcome(
 pub struct SpawnOptions {
     pub include_canonical_space_hierarchy: bool,
     pub message_search: Option<MessageSearchContext>,
+    pub sessions: crate::session::SessionStore,
+    pub token: String,
+}
+
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    error
+        .client_api_error_kind()
+        .is_some_and(is_terminal_auth_kind)
+}
+
+fn is_terminal_auth_kind(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> bool {
+    matches!(kind, matrix_sdk::ruma::api::error::ErrorKind::UnknownToken(data) if !data.soft_logout)
+}
+
+async fn invalidate_terminal_session(
+    sessions: &crate::session::SessionStore,
+    token: &str,
+    persist: Option<&PersistHandle>,
+) {
+    // This is the sync task itself: remove admission and notify sockets, but
+    // do not abort our own handle before durable cleanup completes.
+    let removed = sessions.remove(token).await;
+    let crypto = removed
+        .as_ref()
+        .and_then(|session| session.persisted_crypto.as_ref());
+    if let Some(persist) = persist {
+        if persist
+            .store
+            .remove(
+                token,
+                crypto.map(|crypto| (crypto.store_key.as_str(), crypto.passphrase.as_str())),
+            )
+            .await
+            .is_err()
+        {
+            tracing::warn!("Revoked web session cleanup requires a retry");
+        }
+    }
 }
 
 pub fn message_search_context(
@@ -1110,6 +1148,8 @@ pub fn spawn(
     let SpawnOptions {
         include_canonical_space_hierarchy,
         message_search,
+        sessions,
+        token,
     } = options;
     // Keep matrix-sdk's local event cache current for restart/flag-enable
     // search seeding. Subscription is idempotent and performs no pagination.
@@ -1233,6 +1273,10 @@ pub fn spawn(
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        invalidate_terminal_session(&sessions, &token, persist.as_ref()).await;
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         emit_snapshot(
@@ -1662,6 +1706,40 @@ pub async fn request_device_verification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_hard_unknown_tokens_invalidate_web_sessions() {
+        use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
+        let mut data = UnknownTokenErrorData::new();
+        assert!(is_terminal_auth_kind(&ErrorKind::UnknownToken(
+            data.clone()
+        )));
+        data.soft_logout = true;
+        assert!(!is_terminal_auth_kind(&ErrorKind::UnknownToken(data)));
+        assert!(!is_terminal_auth_kind(&ErrorKind::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn hard_auth_invalidation_removes_admission_and_notifies_the_browser() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        let session =
+            crate::session::Session::new(client, "@revoked:example.org".into(), None, false);
+        let mut events = session.events.subscribe();
+        let closed = session.session_closed.clone();
+        let sessions = crate::session::SessionStore::new();
+        let token = sessions.create(session).await;
+        invalidate_terminal_session(&sessions, &token, None).await;
+        assert!(sessions.get(&token).await.is_none());
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ServerEvent::SessionInvalidated(())
+        ));
+    }
 
     #[tokio::test]
     async fn reliable_metadata_is_reserved_before_a_later_completion_marker() {
