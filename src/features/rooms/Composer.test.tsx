@@ -69,7 +69,7 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it.each(["unban", "ignore", "unignore"])(
+  it.each(["unban", "ignore", "unignore", "plain", "shrug", "tableflip"])(
     "resolves mention IDs for /%s in replies",
     async (command) => {
       flags.composerParity = true;
@@ -99,11 +99,16 @@ describe("Composer", () => {
       });
       fireEvent.keyDown(editable, { key: "Enter" });
       await waitFor(() =>
-        expect(onSlashCommand).toHaveBeenCalledWith({
-          command,
-          args: ["@alice:example.org"],
-          action: true,
-        }),
+        expect(onSlashCommand).toHaveBeenCalledWith(
+          ["plain", "shrug", "tableflip"].includes(command)
+            ? {
+                command,
+                args: ["@alice:example.org"],
+                text: "@alice:example.org",
+                mentionIds: ["@alice:example.org"],
+              }
+            : { command, args: ["@alice:example.org"], action: true },
+        ),
       );
     },
   );

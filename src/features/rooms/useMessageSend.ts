@@ -217,7 +217,12 @@ export function useMessageSend({
         // Like normal submission, consume the reply context at dispatch, not
         // after the await where a newly selected reply could be cleared.
         setReplyTarget(null);
-        await sendMessage(targetRoomId, body, null, null);
+        await sendMessage(
+          targetRoomId,
+          body,
+          null,
+          parsed.mentionIds?.length ? parsed.mentionIds : null,
+        );
         if (currentRoomIdRef.current !== targetRoomId) return false;
         setCommandFeedback(null);
         return true;

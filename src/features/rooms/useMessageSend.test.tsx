@@ -253,6 +253,18 @@ describe("formatted composer submission", () => {
       expect(mocks.sendMessage).toHaveBeenCalledExactlyOnceWith(room.room_id, expected, null, null);
       expect(mocks.runCommand).not.toHaveBeenCalled();
       mocks.sendMessage.mockClear();
+      await act(async () => {
+        await result.current.handleSlashCommand({
+          command,
+          args: [],
+          text,
+          mentionIds: ["@alice:example.org"],
+        });
+      });
+      expect(mocks.sendMessage).toHaveBeenCalledExactlyOnceWith(room.room_id, expected, null, [
+        "@alice:example.org",
+      ]);
+      mocks.sendMessage.mockClear();
       mocks.useFlag.mockReturnValue(false);
       rerender();
       await act(async () => {

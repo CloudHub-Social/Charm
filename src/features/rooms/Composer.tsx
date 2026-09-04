@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { PluginKey } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
+import { guardedStarterKit } from "./guardedStarterKit";
 import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { getRoomMembers, listRooms } from "@/lib/matrix";
@@ -267,7 +267,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const extensions = useMemo(
     () => [
-      StarterKit,
+      guardedStarterKit(() => composerParityRef.current),
       MatrixSpoiler,
       UserMention.configure({
         suggestion: {
@@ -502,7 +502,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const slash =
       mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
-      onSlashCommand(slash);
+      onSlashCommand("text" in slash ? { ...slash, mentionIds: collectMentionIds(editor) } : slash);
       // `clearContent(false)` skips emitting `onUpdate` — clearing after a
       // send/command isn't the user typing, so it shouldn't re-trigger
       // `onTypingInput` and send a spurious `typing: true` right after
