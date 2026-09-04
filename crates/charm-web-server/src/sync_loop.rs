@@ -43,7 +43,7 @@ const ROOM_LEAVE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct MessageSearchContext {
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
-    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    incomplete: Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     backfill_pending: Arc<std::sync::atomic::AtomicBool>,
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -51,7 +51,7 @@ pub struct MessageSearchContext {
 #[derive(Clone)]
 pub(crate) struct TimelineSearchContext {
     sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<QueuedSearchWork>>>>,
-    incomplete: Arc<std::sync::atomic::AtomicBool>,
+    incomplete: Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     running: Arc<std::sync::atomic::AtomicBool>,
     pending_rooms: Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
     done: Arc<tokio::sync::Notify>,
@@ -71,7 +71,7 @@ pub(crate) fn timeline_search_context(session: &crate::session::Session) -> Time
 
 /// Queues matrix-sdk-ui's selected edit versions without copying message
 /// bodies into the listener queue.
-pub(crate) fn submit_timeline_search_selection<'a>(
+pub(crate) async fn submit_timeline_search_selection<'a>(
     context: &TimelineSearchContext,
     client: &Client,
     room_id: &str,
@@ -97,16 +97,25 @@ pub(crate) fn submit_timeline_search_selection<'a>(
         return;
     }
     let Some(sender) = sender else { return };
-    if sender
-        .try_send(QueuedSearchWork {
-            work,
-            completes_backfill: false,
-            completion: None,
-        })
-        .is_err()
-    {
+    let queued = QueuedSearchWork {
+        work,
+        completes_backfill: false,
+        completion: None,
+    };
+    let delivered = match sender.try_send(queued) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(queued)) => {
+            // These mutations contain IDs only. Reserve FIFO position before
+            // returning to the renderer rather than dropping its chosen edit.
+            enqueue_reliable_search_work(&sender, &context.incomplete, queued).await
+        }
+        Err(_) => false,
+    };
+    if !delivered {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
     }
 }
@@ -118,13 +127,16 @@ pub(crate) struct QueuedSearchWork {
 }
 
 fn record_search_work_outcome(
-    incomplete: &std::sync::atomic::AtomicBool,
+    incomplete: &std::sync::Mutex<std::sync::atomic::AtomicBool>,
     backfill_pending: &std::sync::atomic::AtomicBool,
     applied: bool,
     completes_backfill: bool,
 ) {
     if !applied {
-        incomplete.store(true, std::sync::atomic::Ordering::Release);
+        incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     if completes_backfill {
         backfill_pending.store(false, std::sync::atomic::Ordering::Release);
@@ -132,8 +144,50 @@ fn record_search_work_outcome(
 }
 
 pub struct SpawnOptions {
+    pub session_closed: Arc<std::sync::atomic::AtomicBool>,
     pub include_canonical_space_hierarchy: bool,
     pub message_search: Option<MessageSearchContext>,
+    pub sessions: crate::session::SessionStore,
+    pub token: String,
+}
+
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    error
+        .client_api_error_kind()
+        .is_some_and(is_terminal_auth_kind)
+}
+
+fn is_terminal_auth_kind(kind: &matrix_sdk::ruma::api::error::ErrorKind) -> bool {
+    matches!(kind, matrix_sdk::ruma::api::error::ErrorKind::UnknownToken(data) if !data.soft_logout)
+}
+
+async fn invalidate_terminal_session(
+    sessions: &crate::session::SessionStore,
+    token: &str,
+    closed: &Arc<std::sync::atomic::AtomicBool>,
+    persist: Option<&PersistHandle>,
+) {
+    // This is the sync task itself: remove admission and notify sockets, but
+    // do not abort our own handle before durable cleanup completes.
+    let lock = sessions.lifecycle_lock(token);
+    let _guard = lock.lock().await;
+    let Some(removed) = sessions.remove_if_current(token, closed).await else {
+        return;
+    };
+    let crypto = removed.persisted_crypto.as_ref();
+    if let Some(persist) = persist {
+        if persist
+            .store
+            .remove(
+                token,
+                crypto.map(|crypto| (crypto.store_key.as_str(), crypto.passphrase.as_str())),
+            )
+            .await
+            .is_err()
+        {
+            tracing::warn!("Revoked web session cleanup requires a retry");
+        }
+    }
 }
 
 pub fn message_search_context(
@@ -298,6 +352,8 @@ async fn submit_message_search(
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(work) = charm_lib::matrix::search::removal_work_from_sync(client, response) {
             enqueue_message_search_work(context, work).await;
@@ -341,6 +397,8 @@ async fn enqueue_message_search_work(
             if dropped_additions {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
                 tracing::warn!(
                     command = "web_message_search_index",
@@ -348,14 +406,16 @@ async fn enqueue_message_search_work(
                 );
             }
             // Reserve FIFO position without waiting for queue capacity on the
-            // web sync loop. Only removal metadata leaves the bounded queue.
-            enqueue_reliable_search_work(context, queued).await
+            // web sync loop. Only removal/selection IDs leave the bounded queue.
+            enqueue_reliable_search_work(&context.sender, &context.incomplete, queued).await
         }
         Err(_) => false,
     };
     if !delivered {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(command = "web_message_search_index", status = "queue_full");
     }
@@ -370,10 +430,11 @@ fn try_enqueue_open_session<T>(
 }
 
 async fn enqueue_reliable_search_work(
-    context: &MessageSearchContext,
+    sender: &tokio::sync::mpsc::Sender<QueuedSearchWork>,
+    incomplete: &Arc<std::sync::Mutex<std::sync::atomic::AtomicBool>>,
     queued: QueuedSearchWork,
 ) -> bool {
-    let mut reservation = Box::pin(context.sender.clone().reserve_owned());
+    let mut reservation = Box::pin(sender.clone().reserve_owned());
     let immediate = std::future::poll_fn(|poll_context| {
         Poll::Ready(match reservation.as_mut().poll(poll_context) {
             Poll::Ready(result) => Some(result),
@@ -388,14 +449,17 @@ async fn enqueue_reliable_search_work(
         }
         Some(Err(_)) => false,
         None => {
-            let incomplete = Arc::clone(&context.incomplete);
+            let incomplete = Arc::clone(incomplete);
             tokio::spawn(async move {
                 match reservation.await {
                     Ok(permit) => {
                         permit.send(queued);
                     }
                     Err(_) => {
-                        incomplete.store(true, std::sync::atomic::Ordering::Release);
+                        incomplete
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .store(true, std::sync::atomic::Ordering::Release);
                         tracing::warn!(
                             command = "web_message_search_index",
                             status = "worker_unavailable"
@@ -408,7 +472,11 @@ async fn enqueue_reliable_search_work(
     }
 }
 
-async fn backfill_message_search(context: &Option<MessageSearchContext>, client: &Client) {
+async fn backfill_message_search(
+    context: &Option<MessageSearchContext>,
+    client: &Client,
+    replay_session: Option<&crate::session::Session>,
+) {
     let Some(context) = context else { return };
     context
         .backfill_pending
@@ -416,9 +484,13 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     if backfill_revoked(context) {
         return;
     }
+    // Retry admission already cleared the previous failure under its lock.
+    // A detached scan must preserve every failure recorded since admission.
     let Ok(ignored) = charm_lib::matrix::account::ignored_user_ids(client).await else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
@@ -438,6 +510,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             Err(_) => {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
                 continue;
             }
@@ -445,6 +519,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         let Ok(events) = events else {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             continue;
         };
@@ -459,6 +535,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         ) else {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             context
                 .backfill_pending
@@ -485,6 +563,8 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
         {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
             context
                 .backfill_pending
@@ -496,9 +576,29 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
             return;
         }
     }
+    if let Some(session) = replay_session {
+        for room in client.joined_rooms() {
+            let Some(timeline) = session.peek_search_timeline(room.room_id()).await else {
+                continue;
+            };
+            let (items, _stream) = timeline.subscribe().await;
+            if backfill_revoked(context) {
+                return;
+            }
+            if let Some(work) = charm_lib::matrix::search::SearchWork::from_timeline_items(
+                client,
+                room.room_id().as_str(),
+                items.iter(),
+            ) {
+                enqueue_message_search_work(context, work).await;
+            }
+        }
+    }
     let Some(completion) = charm_lib::matrix::search::SearchWork::empty_for_client(client) else {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
@@ -519,11 +619,72 @@ async fn backfill_message_search(context: &Option<MessageSearchContext>, client:
     {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         context
             .backfill_pending
             .store(false, std::sync::atomic::Ordering::Release);
     }
+}
+
+/// Starts one bounded retry of a failed web index reconciliation. Concurrent
+/// searches coalesce on `backfill_pending`; no homeserver search or history
+/// pagination is performed because `backfill_message_search` reads only the
+/// matrix-sdk event cache already owned by this session.
+pub fn schedule_full_message_search_reconciliation(session: Arc<crate::session::Session>) {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+        || !claim_reconciliation_retry(
+            &session.message_search_incomplete,
+            &session.message_search_backfill_pending,
+        )
+    {
+        return;
+    }
+    let sender = session
+        .message_search_sender
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let Some(sender) = sender else {
+        session
+            .message_search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        return;
+    };
+    let context = MessageSearchContext {
+        sender,
+        incomplete: Arc::clone(&session.message_search_incomplete),
+        backfill_pending: Arc::clone(&session.message_search_backfill_pending),
+        closed: Arc::clone(&session.session_closed),
+    };
+    let client = session.client.clone();
+    tokio::spawn(async move {
+        backfill_message_search(&Some(context), &client, Some(&session)).await;
+    });
+}
+
+fn claim_reconciliation_retry(
+    incomplete: &std::sync::Mutex<std::sync::atomic::AtomicBool>,
+    backfill_pending: &std::sync::atomic::AtomicBool,
+) -> bool {
+    let incomplete = incomplete.lock().unwrap_or_else(|error| error.into_inner());
+    if !incomplete.load(std::sync::atomic::Ordering::Acquire)
+        || backfill_pending
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+    {
+        return false;
+    }
+    incomplete.store(false, std::sync::atomic::Ordering::Release);
+    true
 }
 
 /// Returns true after revoking the initial backfill's pending marker. Call it
@@ -617,6 +778,8 @@ async fn process_web_cached_room_seed(
         if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         return;
@@ -631,6 +794,8 @@ async fn process_web_cached_room_seed(
             if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
                 context
                     .incomplete
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             return;
@@ -640,6 +805,8 @@ async fn process_web_cached_room_seed(
         if !context.closed.load(std::sync::atomic::Ordering::Acquire) {
             context
                 .incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .store(true, std::sync::atomic::Ordering::Release);
         }
         return;
@@ -681,6 +848,8 @@ async fn process_web_cached_room_seed(
     {
         context
             .incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(
             command = "web_message_search_pagination",
@@ -981,8 +1150,11 @@ pub fn spawn(
     options: SpawnOptions,
 ) -> tokio::task::JoinHandle<()> {
     let SpawnOptions {
+        session_closed,
         include_canonical_space_hierarchy,
         message_search,
+        sessions,
+        token,
     } = options;
     // Keep matrix-sdk's local event cache current for restart/flag-enable
     // search seeding. Subscription is idempotent and performs no pagination.
@@ -1041,7 +1213,7 @@ pub fn spawn(
         let backfill_context = message_search.clone();
         let backfill_client = client.clone();
         tokio::spawn(async move {
-            backfill_message_search(&backfill_context, &backfill_client).await;
+            backfill_message_search(&backfill_context, &backfill_client, None).await;
         });
         // The relation-aware index accepts the live batch before older cache
         // provenance (out-of-order edit/redaction tests cover that ordering),
@@ -1106,6 +1278,16 @@ pub fn spawn(
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        invalidate_terminal_session(
+                            &sessions,
+                            &token,
+                            &session_closed,
+                            persist.as_ref(),
+                        )
+                        .await;
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         emit_snapshot(
@@ -1537,27 +1719,183 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_hard_unknown_tokens_invalidate_web_sessions() {
+        use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
+        let mut data = UnknownTokenErrorData::new();
+        assert!(is_terminal_auth_kind(&ErrorKind::UnknownToken(
+            data.clone()
+        )));
+        data.soft_logout = true;
+        assert!(!is_terminal_auth_kind(&ErrorKind::UnknownToken(data)));
+        assert!(!is_terminal_auth_kind(&ErrorKind::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn stale_sync_failure_does_not_remove_a_replacement_session() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        let old =
+            crate::session::Session::new(client.clone(), "@user:example.org".into(), None, false);
+        let old_closed = old.session_closed.clone();
+        let sessions = crate::session::SessionStore::new();
+        let token = sessions.create(old).await;
+        let replacement =
+            crate::session::Session::new(client, "@user:example.org".into(), None, false);
+        let replacement_closed = replacement.session_closed.clone();
+        let mut replacement_events = replacement.events.subscribe();
+        sessions.insert(token.clone(), replacement).await;
+        invalidate_terminal_session(&sessions, &token, &old_closed, None).await;
+        let current = sessions.get(&token).await.unwrap();
+        assert!(Arc::ptr_eq(&current.session_closed, &replacement_closed));
+        assert!(!replacement_closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(replacement_events.try_recv().is_err());
+        assert!(Arc::ptr_eq(
+            &sessions.lifecycle_lock(&token),
+            &sessions.clone().lifecycle_lock(&token)
+        ));
+    }
+
+    #[tokio::test]
+    async fn hard_auth_invalidation_removes_admission_and_notifies_the_browser() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        let session =
+            crate::session::Session::new(client, "@revoked:example.org".into(), None, false);
+        let mut events = session.events.subscribe();
+        let closed = session.session_closed.clone();
+        let sessions = crate::session::SessionStore::new();
+        let token = sessions.create(session).await;
+        invalidate_terminal_session(&sessions, &token, &closed, None).await;
+        assert!(sessions.get(&token).await.is_none());
+        assert!(closed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ServerEvent::SessionInvalidated(())
+        ));
+    }
+
+    #[tokio::test]
+    async fn reliable_metadata_is_reserved_before_a_later_completion_marker() {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .unwrap();
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_sdk::authentication::matrix::MatrixSession {
+                    meta: matrix_sdk::SessionMeta {
+                        user_id: matrix_sdk::ruma::UserId::parse("@queue:example.org").unwrap(),
+                        device_id: matrix_sdk::ruma::device_id!("QUEUEDEVICE").to_owned(),
+                    },
+                    tokens: matrix_sdk::authentication::SessionTokens {
+                        access_token: "test-token".to_owned(),
+                        refresh_token: None,
+                    },
+                },
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .unwrap();
+        let queued = |completes_backfill| QueuedSearchWork {
+            work: charm_lib::matrix::search::SearchWork::empty_for_client(&client).unwrap(),
+            completes_backfill,
+            completion: None,
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        assert!(sender.try_send(queued(false)).is_ok());
+        let incomplete = Arc::new(std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        assert!(enqueue_reliable_search_work(&sender, &incomplete, queued(false)).await);
+        assert!(!receiver.recv().await.unwrap().completes_backfill);
+        // Even though the original item drained, the metadata reservation owns
+        // that capacity. A later completion cannot overtake it.
+        assert!(matches!(
+            sender.try_send(queued(true)),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        let metadata = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!metadata.completes_backfill);
+        assert!(sender.try_send(queued(true)).is_ok());
+        assert!(receiver.recv().await.unwrap().completes_backfill);
+        assert!(!incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
     fn search_backfill_stays_pending_until_its_fifo_marker_is_applied() {
-        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(false));
         let pending = std::sync::atomic::AtomicBool::new(true);
 
         record_search_work_outcome(&incomplete, &pending, true, false);
         assert!(pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
 
         record_search_work_outcome(&incomplete, &pending, true, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn failed_web_reconciliation_has_one_retry_owner() {
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(true));
+        let pending = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(claim_reconciliation_retry(&incomplete, &pending));
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
+
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
+    }
+
+    #[test]
+    fn web_retry_preserves_live_failure_before_detached_scan_starts() {
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(true));
+        let pending = std::sync::atomic::AtomicBool::new(false);
+        assert!(claim_reconciliation_retry(&incomplete, &pending));
+        // A live mutation fails after admission, before the detached scan
+        // starts. Neither another query nor successful scan completion may
+        // erase that failure.
+        record_search_work_outcome(&incomplete, &pending, false, false);
+        assert!(!claim_reconciliation_retry(&incomplete, &pending));
+        record_search_work_outcome(&incomplete, &pending, true, true);
+        assert!(incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
     fn failed_search_work_is_sticky_but_a_completion_marker_clears_pending() {
-        let incomplete = std::sync::atomic::AtomicBool::new(false);
+        let incomplete = std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(false));
         let pending = std::sync::atomic::AtomicBool::new(true);
 
         record_search_work_outcome(&incomplete, &pending, false, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(incomplete.load(std::sync::atomic::Ordering::Acquire));
+        assert!(incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1566,7 +1904,9 @@ mod tests {
         let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let context = MessageSearchContext {
             sender,
-            incomplete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            incomplete: Arc::new(std::sync::Mutex::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
             backfill_pending: Arc::clone(&pending),
             closed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };

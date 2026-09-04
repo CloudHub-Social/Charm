@@ -88,12 +88,185 @@ const REGISTRATION_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_
 const REGISTRATION_EMAIL_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const REGISTRATION_EMAIL_MAX_SEND_ATTEMPTS: u32 = 3;
 const PASSWORD_RESET_ATTEMPT_TTL: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+const PASSWORD_RESET_UNCERTAIN: &str =
+    "password reset may already have been submitted; check whether your new password works";
 const PASSWORD_RESET_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 const PASSWORD_RESET_MAX_SEND_ATTEMPTS: u32 = 3;
 const AUTH_MAIL_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const AUTH_MAILS_PER_ADDRESS: usize = 3;
 const AUTH_MAILS_PER_PROCESS: usize = 12;
 const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A cleanup veto must not restore its own account, but can preserve another.
+fn is_unaffected_account(previous_user_id: Option<&str>, rejected_account_key: &str) -> bool {
+    previous_user_id
+        .is_some_and(|user_id| persistence::account_key(user_id) != rejected_account_key)
+}
+
+pub(super) async fn drain_for_account_replacement(
+    app: &AppHandle,
+    previous: Option<&Client>,
+    account_key: &str,
+) -> Vec<super::TimelineRollbackEntry> {
+    if is_unaffected_account(
+        previous.and_then(|client| client.user_id().map(|id| id.as_str())),
+        account_key,
+    ) {
+        sync::abort_current_sync_loop_for_rollback(app).await
+    } else {
+        sync::abort_current_sync_loop(app).await;
+        Vec::new()
+    }
+}
+
+pub(super) async fn restore_unaffected_account(
+    app: &AppHandle,
+    state: &MatrixState,
+    previous: Option<&Client>,
+    account_key: &str,
+    snapshot: Vec<super::TimelineRollbackEntry>,
+) {
+    let Some(previous) = previous else { return };
+    if !is_unaffected_account(previous.user_id().map(|id| id.as_str()), account_key) {
+        return;
+    }
+    restore_previous_snapshot(app, state, Some(previous), snapshot).await;
+}
+
+pub(super) async fn restore_previous_snapshot(
+    app: &AppHandle,
+    state: &MatrixState,
+    previous: Option<&Client>,
+    snapshot: Vec<super::TimelineRollbackEntry>,
+) {
+    let Some(previous) = previous else { return };
+    state
+        .restore_timeline_snapshot(previous, snapshot, |room_id, timeline| {
+            super::timeline::spawn_timeline_listener(
+                app.clone(),
+                room_id.to_owned(),
+                std::sync::Arc::downgrade(timeline),
+                previous.clone(),
+                previous.user_id().map(ToOwned::to_owned),
+            )
+        })
+        .await;
+    sync::spawn_sync_task(app.clone(), previous.clone());
+}
+
+pub(super) async fn discard_vetoed_login(app: &AppHandle, client: Client, temp_key: &str) {
+    let revoke = async move {
+        if client.oauth().full_session().is_some() {
+            client.oauth().logout().await.map_err(|_| ())
+        } else {
+            client
+                .matrix_auth()
+                .logout()
+                .await
+                .map(|_| ())
+                .map_err(|_| ())
+        }
+    };
+    let (revoked, cleaned) = finish_vetoed_login(
+        revoke,
+        || persistence::discard_vetoed_temp_login_store(app, temp_key),
+        AUTH_NETWORK_TIMEOUT,
+    )
+    .await;
+    if !revoked {
+        tracing::warn!("fresh login revocation failed after cancellation cleanup veto");
+    }
+    if !cleaned {
+        tracing::warn!("temporary login cleanup failed after cancellation cleanup veto");
+    }
+}
+
+async fn finish_vetoed_login(
+    revoke: impl std::future::Future<Output = Result<(), ()>>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+    timeout: std::time::Duration,
+) -> (bool, bool) {
+    // The revocation future owns the fresh client. Completion or timeout drops
+    // it before attempting to remove its open SQLite store.
+    let revoked = matches!(tokio::time::timeout(timeout, revoke).await, Ok(Ok(())));
+    let cleaned = cleanup().is_ok();
+    (revoked, cleaned)
+}
+
+#[cfg(test)]
+mod vetoed_login_tests {
+    use super::finish_vetoed_login;
+    use std::{cell::Cell, time::Duration};
+
+    #[test]
+    fn cleanup_veto_only_allows_an_unaffected_account_to_resume() {
+        let rejected = super::persistence::account_key("@rejected:example.org");
+        assert!(!super::is_unaffected_account(None, &rejected));
+        assert!(!super::is_unaffected_account(
+            Some("@rejected:example.org"),
+            &rejected
+        ));
+        assert!(super::is_unaffected_account(
+            Some("@retained:example.org"),
+            &rejected
+        ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_runs_after_revocation_error() {
+        let cleaned = Cell::new(false);
+        let outcome = finish_vetoed_login(
+            async { Err(()) },
+            || {
+                cleaned.set(true);
+                Ok(())
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(cleaned.get());
+        assert_eq!(outcome, (false, true));
+    }
+
+    #[tokio::test]
+    async fn timeout_drops_fresh_owner_before_cleanup() {
+        struct Owner<'a>(&'a Cell<bool>);
+        impl Drop for Owner<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Cell::new(false);
+        let owner = Owner(&dropped);
+        let revoke = async move {
+            let _owner = owner;
+            std::future::pending::<Result<(), ()>>().await
+        };
+        let outcome = finish_vetoed_login(
+            revoke,
+            || {
+                assert!(dropped.get());
+                Ok(())
+            },
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(outcome, (false, true));
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_is_not_reported_as_success() {
+        assert_eq!(
+            finish_vetoed_login(
+                async { Ok(()) },
+                || Err("cleanup failed".into()),
+                Duration::from_secs(1)
+            )
+            .await,
+            (true, false)
+        );
+    }
+}
 
 pub(crate) struct PendingRegistration {
     pub(crate) client: Client,
@@ -115,6 +288,52 @@ struct PendingRegistrationEmail {
     submit_url: Option<url::Url>,
     homeserver: url::Url,
     submitted: bool,
+}
+
+/// Cancellation and commitment to password mutation share one atomic order.
+/// Bit 0 means cancelled; bit 1 means a mutation may have been dispatched.
+#[derive(Clone, Default)]
+pub(crate) struct PasswordResetCancellation {
+    token: tokio_util::sync::CancellationToken,
+    phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl PasswordResetCancellation {
+    fn cancel(&self) -> bool {
+        let previous = self.phase.fetch_or(1, std::sync::atomic::Ordering::SeqCst);
+        self.token.cancel();
+        previous & 2 == 0
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.phase.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+    }
+
+    fn was_dispatched(&self) -> bool {
+        self.phase.load(std::sync::atomic::Ordering::SeqCst) & 2 != 0
+    }
+
+    async fn cancelled(&self) {
+        self.token.cancelled().await;
+    }
+
+    fn commit_dispatch(&self) -> Result<(), String> {
+        self.phase
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .map(|_| ())
+            .map_err(|phase| {
+                if phase & 2 != 0 {
+                    PASSWORD_RESET_UNCERTAIN.to_string()
+                } else {
+                    "password reset attempt expired or was cancelled".to_string()
+                }
+            })
+    }
 }
 
 pub(crate) struct PendingPasswordReset {
@@ -314,7 +533,8 @@ pub async fn login(
         // relocating its store — otherwise a live client from an earlier login
         // (e.g. a double-submitted login button) could still be mid-`/sync` and
         // writing to the directory this is about to rename out from under it.
-        sync::abort_current_sync_loop(&app).await;
+        let previous_timelines =
+            drain_for_account_replacement(&app, previous_client.as_ref(), &account_key).await;
         if let Err(e) = persistence::relocate_store_and_save_session(
             &app,
             &temp_key,
@@ -322,16 +542,43 @@ pub async fn login(
             &homeserver_url,
             &session,
         ) {
+            if e.cancelled_cleanup_veto {
+                restore_unaffected_account(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
+                discard_vetoed_login(&app, client, &temp_key).await;
+                return Err(e.into());
+            }
+            if e.committed_session {
+                let error = reject_committed_login(&app, &client, &account_key).await;
+                restore_unaffected_account(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
+                return Err(error);
+            }
             // Only resume `previous_client` if relocation's own rollback left
             // the account's on-disk store consistent with it — otherwise doing
             // so would paper over a half-restored store neither this client nor
             // anything else can reliably decrypt. See `RelocationFailure`'s doc
             // comment.
             if e.safe_to_resume_previous {
-                if let Some(previous_client) = previous_client {
-                    *state.client.lock().await = Some(previous_client.clone());
-                    sync::spawn_sync_task(app, previous_client);
-                }
+                restore_previous_snapshot(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    previous_timelines,
+                )
+                .await;
             }
             return Err(e.into());
         }
@@ -348,10 +595,14 @@ pub async fn login(
             // is the same "don't leave a working session logged out over this
             // completion's own failure" rationale, just for the later failure
             // point rather than the relocation itself.
-            if let Some(previous_client) = previous_client {
-                *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app, previous_client);
-            }
+            restore_unaffected_account(
+                &app,
+                &state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
             return Err(
                 "login succeeded but was superseded by a concurrent login for the same account"
                     .to_string(),
@@ -593,6 +844,9 @@ pub(crate) async fn restore_session_for_push_at(
     store_root: &std::path::Path,
     account_key: &str,
 ) -> Result<Option<Client>, String> {
+    if persistence::cancelled_account_cleanup_pending_at(store_root, account_key)? {
+        return Ok(None);
+    }
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
         let client =
             build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
@@ -782,12 +1036,10 @@ async fn finish_registration(
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app).await;
+    let previous_timelines =
+        drain_for_account_replacement(&app, previous_client.as_ref(), &account_key).await;
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app.clone(), previous_client);
-        }
+        restore_previous_snapshot(&app, state, previous_client.as_ref(), previous_timelines).await;
         let _ = tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await;
         drop(client);
         let _ = persistence::discard_temp_login_store(&app, &temp_key);
@@ -801,12 +1053,34 @@ async fn finish_registration(
         &homeserver_url,
         &session,
     ) {
+        if e.cancelled_cleanup_veto {
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            discard_vetoed_login(&app, client, &temp_key).await;
+            return Err(e.into());
+        }
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            let error = reject_committed_login(&app, &client, &account_key).await;
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return Err(error);
+        }
         if e.safe_to_resume_previous {
-            if let Some(previous_client) = previous_client {
-                *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app, previous_client);
-            }
+            restore_previous_snapshot(&app, state, previous_client.as_ref(), previous_timelines)
+                .await;
         }
         return Err(e.into());
     }
@@ -816,20 +1090,30 @@ async fn finish_registration(
         // otherwise startup can restore an account the user explicitly
         // cancelled. Retry once for transient keychain failures and surface
         // any remaining cleanup failure instead of silently claiming success.
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app.clone(), previous_client);
-        }
         drop(client);
-        return clear_cancelled_registration_session(&app, &account_key);
+        let result = clear_cancelled_registration_session(&app, &account_key);
+        restore_unaffected_account(
+            &app,
+            state,
+            previous_client.as_ref(),
+            &account_key,
+            previous_timelines,
+        )
+        .await;
+        return result;
     }
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app.clone(), previous_client);
-        }
         drop(client);
-        discard_cancelled_registration_session(&app, &account_key)?;
+        let result = discard_cancelled_registration_session(&app, &account_key);
+        restore_unaffected_account(
+            &app,
+            state,
+            previous_client.as_ref(),
+            &account_key,
+            previous_timelines,
+        )
+        .await;
+        result?;
         return Err("authentication setup timed out".to_string());
     }
 
@@ -838,20 +1122,26 @@ async fn finish_registration(
     // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
         // See `login`'s identical restore-on-failure step.
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app.clone(), previous_client);
-        }
         // The temp store has already been relocated by this point. The
         // completion lock prevents another interactive login from installing
         // a replacement store concurrently, so leaving this unadopted store
         // behind would strand both the directory and its keychain entry.
         drop(client);
-        persistence::discard_cancelled_account_session(&app, &account_key).map_err(|error| {
-            format!(
+        let result =
+            persistence::discard_cancelled_account_session(&app, &account_key).map_err(|error| {
+                format!(
                 "registration was superseded, but its relocated store could not be removed: {error}"
             )
-        })?;
+            });
+        restore_unaffected_account(
+            &app,
+            state,
+            previous_client.as_ref(),
+            &account_key,
+            previous_timelines,
+        )
+        .await;
+        result?;
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -888,12 +1178,21 @@ async fn finish_registration(
         };
         if !completion_won {
             drop(client_slot);
-            if let Some(previous_client) = previous_client {
-                *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app.clone(), previous_client);
-            }
             drop(client);
-            return clear_cancelled_registration_session(&app, &account_key);
+            // Cleanup can delete the rejected account's durable store. Only
+            // after it finishes may an unrelated prior account and its full
+            // timeline/listener snapshot be resumed; a same-account client
+            // must never be restored onto the store we just removed.
+            let result = clear_cancelled_registration_session(&app, &account_key);
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return result;
         }
         // This is the completion/cancellation linearization point. A cancel
         // that acquired the slot first wins above; after this removal the
@@ -1629,7 +1928,7 @@ pub async fn request_password_reset(
     let deadline = tokio::time::Instant::from_std(started_at + PASSWORD_RESET_ATTEMPT_TTL);
     state.pending_password_reset.lock().await.take();
     let attempt_id = generate_attempt_id();
-    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancellation = PasswordResetCancellation::default();
     let previous_cancellation = state
         .pending_password_reset_cancel
         .lock()
@@ -1853,7 +2152,7 @@ pub async fn resend_password_reset(
 async fn restore_pending_password_reset(
     state: &MatrixState,
     attempt_id: &str,
-    cancellation: &tokio_util::sync::CancellationToken,
+    cancellation: &PasswordResetCancellation,
     pending: PendingPasswordReset,
 ) -> bool {
     let mut guard = state.pending_password_reset.lock().await;
@@ -2016,18 +2315,21 @@ pub async fn confirm_password_reset(
     // not race that irreversible request against cancellation and then
     // report that nothing happened; the frontend operation token will
     // ignore this result if the user has already closed the surface.
-    let result = complete_password_reset(&mut pending, token.as_deref(), new_password).await;
+    let result =
+        complete_password_reset(&mut pending, token.as_deref(), new_password, &cancellation).await;
     if result.is_err() {
         let mut guard = state.pending_password_reset.lock().await;
         if !cancellation.is_cancelled()
+            && !cancellation.was_dispatched()
             && guard.is_none()
             && pending.created_at.elapsed() <= PASSWORD_RESET_ATTEMPT_TTL
         {
             *guard = Some(pending);
         }
-    } else {
-        clear_password_reset_cancellation(&state, &attempt_id);
     }
+    // Retain this one bounded status record after success: a racing cancel
+    // must still observe that dispatch won. It contains no password/client
+    // and is replaced by the next attempt.
     result
 }
 
@@ -2057,8 +2359,11 @@ pub async fn cancel_password_reset(
     {
         guard.take();
     }
-    cancel_password_reset_cancellation(&state, &attempt_id);
-    Ok(())
+    if cancel_password_reset_cancellation(&state, &attempt_id) {
+        Ok(())
+    } else {
+        Err("password change may already be in progress; cancellation cannot undo it".to_string())
+    }
 }
 
 fn sanitize_password_reset_submit_url(
@@ -2131,10 +2436,11 @@ async fn complete_password_reset(
     pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
+    cancellation: &PasswordResetCancellation,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
         if pending.token_submitted {
-            return complete_password_change(pending, new_password).await;
+            return complete_password_change(pending, new_password, cancellation).await;
         }
         let token = token
             .filter(|token| !token.is_empty())
@@ -2152,12 +2458,13 @@ async fn complete_password_reset(
         pending.token_submitted = true;
     }
 
-    complete_password_change(pending, new_password).await
+    complete_password_change(pending, new_password, cancellation).await
 }
 
 async fn complete_password_change(
     pending: &PendingPasswordReset,
     new_password: String,
+    cancellation: &PasswordResetCancellation,
 ) -> Result<(), String> {
     let thirdparty_id_creds =
         ThirdpartyIdCredentials::new(pending.sid.clone(), pending.client_secret.clone());
@@ -2167,13 +2474,16 @@ async fn complete_password_change(
     .map_err(|_| "could not confirm password reset".to_string())?;
     let mut request = change_password::v3::Request::new(new_password);
     request.auth = Some(AuthData::EmailIdentity(email_identity));
+    // Commit atomically before polling the irreversible request. Cancellation
+    // either wins and prevents dispatch, or reports that it cannot undo it.
+    cancellation.commit_dispatch()?;
     pending
         .client
         .send(request)
-        .with_request_config(RequestConfig::new().skip_auth())
+        .with_request_config(RequestConfig::new().skip_auth().retry_limit(0))
         .await
         .map(|_| ())
-        .map_err(|_| "could not confirm password reset".to_string())
+        .map_err(|_| PASSWORD_RESET_UNCERTAIN.to_string())
 }
 
 async fn email_validation_submission_client(
@@ -2248,10 +2558,22 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // IPv4-compatible IPv6 addresses (`::a.b.c.d`) are distinct from
+            // mapped addresses and are not covered by `to_ipv4_mapped`.
+            // Classify their embedded destination with the same deny list.
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let compatible = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(compatible.into());
+            }
             // RFC 6052's well-known NAT64 prefix is public when the embedded
             // IPv4 destination is public. Blocking the whole /96 breaks
-            // IPv6-only clients; the separate 64:ff9b:1::/48 local-use
-            // prefix remains denied below.
+            // IPv6-only clients. Other addresses in this reserved /32 remain
+            // denied, matching the companion's destination policy.
             if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
                 let v4 = std::net::Ipv4Addr::new(
                     (segments[6] >> 8) as u8,
@@ -2267,7 +2589,7 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
                 || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                || (segments[0] == 0x0064 && segments[1] == 0xff9b)
                 || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
                 || segments[0] == 0x2002
@@ -2310,19 +2632,15 @@ fn clear_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
     }
 }
 
-fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
-    let mut guard = state
+fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) -> bool {
+    let guard = state
         .pending_password_reset_cancel
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if guard
+    guard
         .as_ref()
-        .is_some_and(|(current_id, _)| current_id == attempt_id)
-    {
-        if let Some((_, cancellation)) = guard.take() {
-            cancellation.cancel();
-        }
-    }
+        .filter(|(current_id, _)| current_id == attempt_id)
+        .is_some_and(|(_, cancellation)| cancellation.cancel())
 }
 
 #[tauri::command]
@@ -3181,10 +3499,11 @@ mod registration_uia_tests {
     use super::{
         check_auth_mail_quota, complete_password_reset, identity_provider_is_advertised,
         is_public_network_ip, next_registration_stage, refund_auth_mail_quota,
-        registration_auth_data, registration_fallback_url, sanitize_password_reset_submit_url,
-        sanitized_provider_name, sanitized_registration_policies, summarize_login_flows,
-        PasswordResetChallenge, PendingPasswordReset, PendingRegistrationEmail,
-        RegistrationAuthResponse, AUTH_MAILS_PER_ADDRESS,
+        registration_auth_data, registration_fallback_url, revoke_cancelled_sso_device,
+        sanitize_password_reset_submit_url, sanitized_provider_name,
+        sanitized_registration_policies, summarize_login_flows, PasswordResetChallenge,
+        PendingPasswordReset, PendingRegistrationEmail, RegistrationAuthResponse,
+        AUTH_MAILS_PER_ADDRESS,
     };
     use crate::matrix::MatrixState;
 
@@ -3250,6 +3569,53 @@ mod registration_uia_tests {
             auth,
             AuthData::Terms(terms) if terms.session.as_deref() == Some("uia-session")
         ));
+    }
+
+    #[tokio::test]
+    async fn rejected_committed_login_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.matrix_auth().logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(super::revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn rejected_committed_login_does_not_claim_failed_revocation_succeeded() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "errcode": "M_FORBIDDEN",
+                "error": "revocation refused",
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        assert!(!super::revoke_rejected_login_device(&client).await);
+        server.server().verify().await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_sso_revokes_the_authenticated_device() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(client.matrix_auth().logged_in());
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        revoke_cancelled_sso_device(&client).await;
+        server.server().verify().await;
     }
 
     #[tokio::test]
@@ -3506,8 +3872,12 @@ mod registration_uia_tests {
             "fc00::1",
             "fe80::1",
             "64:ff9b:1::1",
+            "64:ff9b:0:1::8.8.8.8",
+            "64:ff9b:2::8.8.8.8",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::10.0.0.1",
         ] {
             assert!(
                 !is_public_network_ip(address.parse().expect("valid IP")),
@@ -3519,6 +3889,9 @@ mod registration_uia_tests {
         ));
         assert!(is_public_network_ip(
             "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
+        assert!(is_public_network_ip(
+            "::8.8.8.8".parse().expect("valid compatible public IP")
         ));
     }
 
@@ -3642,9 +4015,170 @@ mod registration_uia_tests {
             attempt_id: "opaque".to_owned(),
             created_at: std::time::Instant::now(),
         };
-        complete_password_reset(&mut pending, Some("123456"), "new correct horse".to_owned())
-            .await
-            .expect("password reset completes");
+        complete_password_reset(
+            &mut pending,
+            Some("123456"),
+            "new correct horse".to_owned(),
+            &super::PasswordResetCancellation::default(),
+        )
+        .await
+        .expect("password reset completes");
+    }
+
+    #[tokio::test]
+    async fn cancelled_password_reset_stops_before_password_change_dispatch() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: true,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(cancellation.cancel());
+
+        let error = complete_password_reset(
+            &mut pending,
+            None,
+            "new correct horse".to_owned(),
+            &cancellation,
+        )
+        .await
+        .expect_err("cancelled attempt must not dispatch password change");
+
+        assert_eq!(error, "password reset attempt expired or was cancelled");
+    }
+
+    #[test]
+    fn password_reset_cancellation_cannot_claim_success_after_dispatch_commit() {
+        let cancellation = super::PasswordResetCancellation::default();
+        cancellation.commit_dispatch().expect("dispatch committed");
+        // The network future has not even been polled yet. Cancellation must
+        // already report uncertainty, including on repeated cancellation.
+        assert!(!cancellation.cancel());
+        assert!(!cancellation.cancel());
+        assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn password_reset_dispatch_can_only_be_committed_once() {
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(!cancellation.was_dispatched());
+        cancellation.commit_dispatch().unwrap();
+        assert!(cancellation.was_dispatched());
+        assert_eq!(
+            cancellation.commit_dispatch(),
+            Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_password_change_reports_uncertainty_without_retrying() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "errcode": "M_UNKNOWN", "error": "response lost after mutation"
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        let mut pending = PendingPasswordReset {
+            client,
+            client_secret: matrix_sdk::ruma::ClientSecret::new(),
+            sid: serde_json::from_value(json!("email-session")).expect("valid session id"),
+            submit_url: None,
+            synthetic: false,
+            token_submitted: false,
+            delivery_email: "alice@example.org".to_owned(),
+            send_attempt: 1,
+            retry_not_before: std::time::Instant::now(),
+            attempt_id: "opaque".to_owned(),
+            created_at: std::time::Instant::now(),
+        };
+        let cancellation = super::PasswordResetCancellation::default();
+        for _ in 0..2 {
+            assert_eq!(
+                complete_password_reset(
+                    &mut pending,
+                    None,
+                    "new correct horse".to_owned(),
+                    &cancellation
+                )
+                .await,
+                Err(super::PASSWORD_RESET_UNCERTAIN.to_string())
+            );
+        }
+        assert!(cancellation.was_dispatched());
+        assert!(!cancellation.cancel());
+    }
+
+    #[test]
+    fn password_reset_cancellation_wins_before_dispatch_commit() {
+        let cancellation = super::PasswordResetCancellation::default();
+        assert!(cancellation.cancel());
+        assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn completed_or_unknown_reset_cannot_report_prevented_dispatch() {
+        let state = super::MatrixState::default();
+        let cancellation = super::PasswordResetCancellation::default();
+        cancellation.commit_dispatch().unwrap();
+        *state.pending_password_reset_cancel.lock().unwrap() =
+            Some(("completed".to_owned(), cancellation));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state, "unknown"
+        ));
+        super::clear_password_reset_cancellation(&state, "completed");
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+    }
+
+    #[test]
+    fn cancellation_before_dispatch_remains_idempotent() {
+        let state = super::MatrixState::default();
+        *state.pending_password_reset_cancel.lock().unwrap() = Some((
+            "pending".to_owned(),
+            super::PasswordResetCancellation::default(),
+        ));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
+    }
+
+    #[test]
+    fn password_reset_dispatch_and_cancel_have_one_winner() {
+        let cancellation = super::PasswordResetCancellation::default();
+        let worker = cancellation.clone();
+        let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            dispatch_tx.send(worker.commit_dispatch().is_ok()).unwrap();
+        });
+        let prevented_dispatch = cancellation.cancel();
+        let dispatched = dispatch_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("dispatch decision completes within the watchdog");
+        handle.join().expect("dispatch worker completes");
+        assert_ne!(prevented_dispatch, dispatched);
     }
 }
 
@@ -3779,18 +4313,28 @@ pub async fn complete_sso_login(
         },
     };
     if let Err(e) = callback_result {
+        revoke_cancelled_sso_device(&client).await;
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
-        // startup sweep — clean it up now instead, same as a cancelled
-        // attempt.
+        // startup sweep. Drop the Matrix client first so its SQLite handles
+        // cannot make the bounded temp-store deletion fail spuriously.
+        drop(client);
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err(e);
     }
 
-    let session = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
+    let Some(session) = client.matrix_auth().session() else {
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("SSO login succeeded but no session was returned".to_string());
+    };
+
+    if pending.cancellation.is_cancelled() {
+        revoke_cancelled_sso_device(&client).await;
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
@@ -3799,14 +4343,66 @@ pub async fn complete_sso_login(
     // `MatrixState::login_completion_lock`. Safe to acquire here: the
     // `pending_sso` lock taken earlier in this function was already
     // `drop`-ped before this point.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    let _completion_guard = tokio::select! {
+        biased;
+        () = pending.cancellation.cancelled() => {
+            revoke_cancelled_sso_device(&client).await;
+            drop(client);
+            let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+            return Err("single sign-on cancelled".to_string());
+        }
+        guard = state.login_completion_lock.lock() => guard,
+    };
 
     // See `login`'s identical capture-and-restore-on-failure rationale.
     let previous_client = state.client.lock().await.clone();
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app).await;
+    let previous_timelines = sync::abort_current_sync_loop_for_rollback(&app).await;
+    // Cancellation remains authoritative until the irreversible store/session
+    // relocation begins. If it arrived while the completion lock or old sync
+    // loop was draining, restore that loop and leave the prior client current.
+    if pending.cancellation.is_cancelled() {
+        if let Some(previous_client) = previous_client.as_ref() {
+            state
+                .restore_timeline_snapshot(
+                    previous_client,
+                    previous_timelines,
+                    |room_id, timeline| {
+                        super::timeline::spawn_timeline_listener(
+                            app.clone(),
+                            room_id.to_owned(),
+                            std::sync::Arc::downgrade(timeline),
+                            previous_client.clone(),
+                            previous_client.user_id().map(ToOwned::to_owned),
+                        )
+                    },
+                )
+                .await;
+            sync::spawn_sync_task(app.clone(), previous_client.clone());
+        }
+        // The prior session is fully restored and the cancelled client owns
+        // only its unique temporary store. Remote revocation must not keep
+        // unrelated login/logout operations waiting on this homeserver.
+        drop(_completion_guard);
+        revoke_cancelled_sso_device(&client).await;
+        drop(client);
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err("single sign-on cancelled".to_string());
+    }
+    // A same-account snapshot would retain handles into the relocated store.
+    // An unrelated account's handles remain useful if this account is vetoed.
+    let previous_timelines = if is_unaffected_account(
+        previous_client
+            .as_ref()
+            .and_then(|client| client.user_id().map(|id| id.as_str())),
+        &account_key,
+    ) {
+        previous_timelines
+    } else {
+        Vec::new()
+    };
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,
@@ -3814,12 +4410,34 @@ pub async fn complete_sso_login(
         &homeserver_url,
         &session,
     ) {
+        if e.cancelled_cleanup_veto {
+            restore_unaffected_account(
+                &app,
+                &state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            discard_vetoed_login(&app, client, &pending.store_key).await;
+            return Err(e.into());
+        }
         // See `login`'s identical safe_to_resume_previous check.
+        if e.committed_session {
+            let error = reject_committed_login(&app, &client, &account_key).await;
+            restore_unaffected_account(
+                &app,
+                &state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return Err(error);
+        }
         if e.safe_to_resume_previous {
-            if let Some(previous_client) = previous_client {
-                *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app, previous_client);
-            }
+            restore_previous_snapshot(&app, &state, previous_client.as_ref(), previous_timelines)
+                .await;
         }
         return Err(e.into());
     }
@@ -3829,10 +4447,14 @@ pub async fn complete_sso_login(
     // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
         // See `login`'s identical restore-on-failure step.
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
-        }
+        restore_unaffected_account(
+            &app,
+            &state,
+            previous_client.as_ref(),
+            &account_key,
+            previous_timelines,
+        )
+        .await;
         return Err(
             "SSO login succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -3854,6 +4476,53 @@ pub async fn complete_sso_login(
     sync::spawn_sync_loop(app, client);
 
     Ok(response)
+}
+
+/// Final persistence cleanup failed after the new session was committed.
+/// The previous client for this account must not be resumed. Callers can
+/// restore an unrelated account's snapshot after this cleanup completes.
+/// Complete every local protection before the first await, so cancellation
+/// cannot skip it. No local writes follow the await: a later login must not
+/// have its credentials removed by this rejected attempt's network cleanup.
+pub(crate) async fn reject_committed_login(
+    app: &AppHandle,
+    client: &Client,
+    account_key: &str,
+) -> String {
+    let local_cleanup = persistence::invalidate_rejected_session(app, account_key);
+    let revoked = revoke_rejected_login_device(client).await;
+    match (local_cleanup, revoked) {
+        (true, true) => "Login could not be finalized. The new session was signed out; please try again.",
+        (true, false) => "Login could not be finalized. Local sign-in was removed, but server sign-out could not be confirmed. Review this device from another session.",
+        (false, true) => "Login could not be finalized. The new session was signed out on the server, but local credential cleanup is incomplete.",
+        (false, false) => "Login could not be finalized. Local credential cleanup and server sign-out could not be confirmed. Review this device from another session before retrying.",
+    }
+    .to_string()
+}
+
+async fn revoke_rejected_login_device(client: &Client) -> bool {
+    // SDK dispatch handles both Matrix password/SSO and OAuth QR sessions.
+    matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.logout()).await,
+        Ok(Ok(()))
+    )
+}
+
+/// A callback can authenticate a device immediately before cancellation wins.
+/// Revocation is bounded so an offline homeserver cannot prevent local cleanup.
+async fn revoke_cancelled_sso_device(client: &Client) {
+    if !client.matrix_auth().logged_in() {
+        return;
+    }
+    if !matches!(
+        tokio::time::timeout(AUTH_NETWORK_TIMEOUT, client.matrix_auth().logout()).await,
+        Ok(Ok(_))
+    ) {
+        tracing::warn!(
+            command = "cancel_sso_login",
+            status = "device_revocation_failed"
+        );
+    }
 }
 
 /// Exchanges the `loginToken` in `callback_url` for a real session on

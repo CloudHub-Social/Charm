@@ -3,7 +3,6 @@ import parse, {
   attributesToProps,
   domToReact,
   Element,
-  Text,
   type DOMNode,
   type HTMLReactParserOptions,
 } from "html-react-parser";
@@ -291,7 +290,7 @@ export function externalLinkProps(href: string) {
 function textContent(nodes: DOMNode[]): string {
   return nodes
     .map((node) => {
-      if (node instanceof Text) return node.data;
+      if (node.type === "text") return node.data;
       if (node instanceof Element) return textContent(node.children as DOMNode[]);
       return "";
     })
@@ -346,7 +345,7 @@ export function RichMessageContent({
     const options: HTMLReactParserOptions = {
       // oxlint-disable-next-line react/no-unstable-nested-components -- html-react-parser requires a per-render replacement hook so it can close over the current user and pill navigation callbacks.
       replace(domNode) {
-        if (domNode instanceof Text) {
+        if (domNode.type === "text") {
           if (!richMessageRenderingEnabled) return undefined;
           const parentName = domNode.parent instanceof Element ? domNode.parent.name : "";
           if (parentName === "code" || parentName === "pre") return undefined;

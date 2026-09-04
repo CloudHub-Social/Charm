@@ -4,6 +4,7 @@
 
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,7 +12,7 @@ use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
+    ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
     verification, MatrixState,
 };
 
@@ -688,6 +689,19 @@ async fn notify_new_room_invites(
 /// microseconds. `MatrixState::clear_timelines` applies the same rigor to
 /// the timeline listeners.
 pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
+    abort_current_sync_loop_inner(app, false).await;
+}
+
+pub(crate) async fn abort_current_sync_loop_for_rollback(
+    app: &AppHandle,
+) -> Vec<super::TimelineRollbackEntry> {
+    abort_current_sync_loop_inner(app, true).await
+}
+
+async fn abort_current_sync_loop_inner(
+    app: &AppHandle,
+    retain_views: bool,
+) -> Vec<super::TimelineRollbackEntry> {
     let previous_sync = app
         .state::<MatrixState>()
         .sync_loop_handle
@@ -698,7 +712,12 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         previous_sync.abort();
         let _ = previous_sync.await;
     }
-    app.state::<MatrixState>().clear_timelines().await;
+    let snapshot = if retain_views {
+        app.state::<MatrixState>().drain_timelines(true).await
+    } else {
+        app.state::<MatrixState>().clear_timelines().await;
+        Vec::new()
+    };
     // Review fix: see `clear_pinned_event_cache`'s own doc comment — same
     // "nothing from the old session carries over" cleanup as
     // `clear_timelines` above, for pin/unpin's own cache instead of the
@@ -711,6 +730,7 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     // shared supersession boundary, so no queued/deferred task from the old
     // client can borrow the replacement session's generation or index slot.
     super::search::invalidate_for_session_replacement(&state).await;
+    snapshot
 }
 
 /// Decides what the sync loop's next `sync_once` call should report as this
@@ -760,7 +780,173 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
     profiles::register_self_profile_handler(app.clone(), &client);
-    spawn_sync_task(app, client);
+    spawn_sync_task_with_presence(app, client, true);
+}
+
+fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
+    error
+        .client_api_error_kind()
+        .is_some_and(is_terminal_auth_kind)
+}
+
+fn is_terminal_auth_kind(kind: &ErrorKind) -> bool {
+    // Soft logout asks for same-device reauthentication, not destruction of
+    // the retained crypto/session store. Only a hard invalidation may enter
+    // the terminal cleanup path.
+    matches!(kind, ErrorKind::UnknownToken(data) if !data.soft_logout)
+}
+
+async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
+    let (Some(user_id), Some(device_id)) = (client.user_id(), client.device_id()) else {
+        return;
+    };
+    let account_key = persistence::account_key(user_id.as_str());
+    let state = app.state::<MatrixState>();
+    let completion_guard = std::sync::Arc::clone(&state.login_completion_lock)
+        .lock_owned()
+        .await;
+    let is_active = state.client.lock().await.as_ref().is_some_and(|active| {
+        active.user_id() == client.user_id() && active.device_id() == client.device_id()
+    });
+    if !is_active {
+        return;
+    }
+
+    let tombstone = persistence::mark_logout_tombstone(app, &account_key);
+    let matrix = persistence::clear_session(&account_key);
+    let oauth = persistence::clear_oauth_session(&account_key);
+    let durable =
+        super::account::logout_is_durable(tombstone.is_ok(), matrix.is_ok(), oauth.is_ok());
+    let credential_error = super::account::clear_logout_credentials(tombstone, || matrix, || oauth);
+    if !durable {
+        // The caller reports the sync failure and stops syncing. Keep the
+        // shell available for a visible retry instead of claiming sign-out
+        // while the same saved session can still restore on next launch.
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "restore_veto_failed"
+        );
+        return;
+    }
+
+    // Match explicit logout: unregister the OS transport and remove its
+    // persisted endpoint while the active client is still available. A stale
+    // token may prevent deleting the homeserver pusher, but the shared helper
+    // still performs local/platform cleanup after that server error.
+    if crate::push::unregister_push_impl(app, &state)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "push_cleanup_incomplete"
+        );
+    }
+
+    // Revoke access before waiting on disk work. Generation invalidation also
+    // prevents an in-flight backfill from reopening this session's index.
+    *state.client.lock().await = None;
+    search::reset_index_lifecycle(&state);
+    if credential_error.is_some() {
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "credential_cleanup_incomplete"
+        );
+    }
+    // Finish volatile invalidation while the completion guard still excludes
+    // replacement login. Disk cleanup can panic or fail; neither may leave the
+    // renderer displaying an account whose client has already been revoked.
+    state.clear_timelines().await;
+    state.clear_pinned_event_cache().await;
+    *state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    *state
+        .push_status
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = crate::push::PushStatus::default();
+    let _ = shell::apply_native_badge(app, 0);
+    let _ = app.emit("session:invalidated", ());
+
+    let search_index = std::sync::Arc::clone(&state.search_index);
+    let cleanup_account_key = account_key.clone();
+    let cleanup_device_id = device_id.to_string();
+    let app_data_dir = app.path().app_data_dir();
+    let cleanup_result = run_locked_cleanup(completion_guard, move || {
+        // Taking and dropping the slot closes SQLite even if path resolution
+        // failed. Windows cannot reliably unlink an open database. Acquire the
+        // potentially contended index mutex only on a blocking worker.
+        let active = search_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        drop(active);
+        app_data_dir.is_ok_and(|directory| {
+            search::SearchIndex::delete_for_source(
+                &directory,
+                &cleanup_account_key,
+                &cleanup_device_id,
+            )
+            .is_ok()
+        })
+    })
+    .await;
+    let Ok((_completion_guard, index_cleared)) = cleanup_result else {
+        // A panicked worker has released its lock. Do not clear another
+        // session's state after that point; the durable marker owns retries.
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "worker_failed"
+        );
+        return;
+    };
+    if credential_error.is_none() && index_cleared {
+        let _ = persistence::clear_logout_tombstone(app, &account_key);
+    }
+}
+
+/// Keep replacement login excluded until blocking work really finishes, even
+/// when the async caller is aborted. Return the guard so subsequent teardown
+/// remains serialized too, without an unlock/relock window.
+async fn run_locked_cleanup<T, F>(
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    cleanup: F,
+) -> Result<(tokio::sync::OwnedMutexGuard<()>, T), tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let result = cleanup();
+        (guard, result)
+    })
+    .await
+}
+
+#[cfg(test)]
+mod cleanup_cancellation_tests {
+    #[tokio::test]
+    async fn aborted_caller_cannot_release_login_before_cleanup_finishes() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = std::sync::Arc::clone(&lock).lock_owned().await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(super::run_locked_cleanup(guard, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        started_rx.await.unwrap();
+        caller.abort();
+        let caller_result = caller.await;
+        let replacement_blocked = lock.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        assert!(caller_result.unwrap_err().is_cancelled());
+        assert!(replacement_blocked);
+        let _replacement = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock())
+            .await
+            .expect("cleanup must release login after finishing");
+    }
 }
 
 /// The sync-task-spawning half of [`spawn_sync_loop`], without the
@@ -773,6 +959,24 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
 /// duplicate presence/profile updates and verification requests on every
 /// subsequent event.
 pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
+    spawn_sync_task_with_presence(app, client, false);
+}
+
+fn initial_sync_presence(
+    fresh_session: bool,
+    appear_offline: bool,
+    current: PresenceStateDto,
+) -> PresenceStateDto {
+    if appear_offline {
+        PresenceStateDto::Offline
+    } else if fresh_session {
+        PresenceStateDto::Online
+    } else {
+        current
+    }
+}
+
+fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: bool) {
     let app_for_handle = app.clone();
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
@@ -808,15 +1012,18 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         // without reopening the ordering race the two earlier fixes above
         // exist to avoid.
         let privacy = privacy_settings::current_settings(&app, &app.state::<MatrixState>()).await;
-        let initial_presence = if privacy.appear_offline {
-            PresenceStateDto::Offline
-        } else {
-            PresenceStateDto::Online
+        let initial_presence = {
+            let state = app.state::<MatrixState>();
+            let mut current = state
+                .sync_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // A rollback resumes this same session, including its away state.
+            // Read and update under one lock so a concurrent presence change
+            // is not overwritten with a value captured before settings loaded.
+            *current = initial_sync_presence(fresh_session, privacy.appear_offline, *current);
+            *current
         };
-        *app.state::<MatrixState>()
-            .sync_presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = initial_presence;
 
         // Subscribing spawns the task that listens to
         // `client.subscribe_to_all_room_updates()` — the event cache (and
@@ -850,6 +1057,9 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         {
             Ok(response) => response,
             Err(e) => {
+                if is_terminal_auth_error(&e) {
+                    teardown_terminal_auth_session(&app, &client).await;
+                }
                 let _ = app.emit(
                     "sync:state",
                     SyncStateEvent::Error {
@@ -989,6 +1199,21 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                     }
                 }
                 Err(e) => {
+                    if is_terminal_auth_error(&e) {
+                        tracing::error!(
+                            command = "sync_loop",
+                            status = "terminal_authentication_error",
+                            "Sync session was revoked"
+                        );
+                        teardown_terminal_auth_session(&app, &client).await;
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         tracing::error!(
@@ -1053,6 +1278,19 @@ mod invite_notification_tests {
     use super::{build_invite_notification, should_notify_invite};
 
     #[test]
+    fn soft_logout_does_not_authorize_terminal_session_cleanup() {
+        use super::is_terminal_auth_kind;
+        use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
+
+        let mut data = UnknownTokenErrorData::new();
+        assert!(is_terminal_auth_kind(&ErrorKind::UnknownToken(
+            data.clone()
+        )));
+        data.soft_logout = true;
+        assert!(!is_terminal_auth_kind(&ErrorKind::UnknownToken(data)));
+    }
+
+    #[test]
     fn uses_room_and_inviter_display_names() {
         assert_eq!(
             build_invite_notification(
@@ -1087,7 +1325,36 @@ mod invite_notification_tests {
 
 #[cfg(test)]
 mod reconciled_sync_presence_tests {
-    use super::{reconciled_sync_presence, PresenceStateDto};
+    use super::{initial_sync_presence, reconciled_sync_presence, PresenceStateDto};
+
+    #[test]
+    fn resumed_session_preserves_its_presence_choice() {
+        for current in [
+            PresenceStateDto::Online,
+            PresenceStateDto::Unavailable,
+            PresenceStateDto::Offline,
+        ] {
+            assert_eq!(initial_sync_presence(false, false, current), current);
+        }
+    }
+
+    #[test]
+    fn fresh_session_does_not_inherit_the_previous_sessions_away_state() {
+        assert_eq!(
+            initial_sync_presence(true, false, PresenceStateDto::Unavailable),
+            PresenceStateDto::Online
+        );
+    }
+
+    #[test]
+    fn appear_offline_applies_before_both_fresh_and_resumed_initial_sync() {
+        for fresh_session in [true, false] {
+            assert_eq!(
+                initial_sync_presence(fresh_session, true, PresenceStateDto::Unavailable),
+                PresenceStateDto::Offline
+            );
+        }
+    }
 
     #[test]
     fn lifts_a_cached_offline_when_the_flag_is_disabled_regardless_of_appear_offline() {

@@ -187,7 +187,11 @@ workstream in the launch set.
 7. `NotificationTransport` is a single trait with two platform impls selected by `cfg`; adding
    a transport requires no changes outside `push::<platform>`.
 8. `register_push` / `unregister_push` round-trip and `push:status` reflects state; unregister
-   removes the pusher from the homeserver.
+   attempts to remove the pusher from the homeserver with a five-second bound.
+   Server failure or timeout must not skip platform unregistration, persisted
+   endpoint cleanup, or subsequent terminal-session invalidation. Local
+   unregistration status is not proof of remote pusher deletion; an unconfirmed
+   remote cleanup is logged without endpoint or credential details.
 9. `cargo test` and `pnpm build` pass; mobile builds compile for iOS and Android.
 
 ## Testing

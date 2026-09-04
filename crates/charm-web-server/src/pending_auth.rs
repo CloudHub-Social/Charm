@@ -1276,9 +1276,24 @@ impl PendingAuthStore {
             .remove(attempt_id)
             .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
         drop(guard);
-        let phase = self
-            .password_reset_dispatch_phase(owner, attempt_id)
-            .await?;
+        let phase = match self.password_reset_dispatch_phase(owner, attempt_id).await {
+            Ok(phase) => phase,
+            Err(error) => {
+                // Admission can fail before any request is dispatched (for
+                // example, while all receipt slots hold unexpired evidence).
+                // Keep that attempt retryable without resurrecting a cancelled
+                // attempt or an already-dispatched mutation.
+                if error == PASSWORD_RESET_UNCERTAIN
+                    || pending.created_at.elapsed() > ATTEMPT_TTL
+                    || !self
+                        .restore_password_reset(attempt_id.to_owned(), pending)
+                        .await
+                {
+                    self.finish_attempt(attempt_id).await;
+                }
+                return Err(error);
+            }
+        };
         let result = tokio::select! {
             result = complete_password_reset(&mut pending, token.as_deref(), new_password, &phase) => result,
             () = cancellation.cancelled() => {
@@ -1996,48 +2011,8 @@ async fn email_submission_client(
 }
 
 fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 168)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113)
-                || a >= 224)
-        }
-        std::net::IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() {
-                return is_public_network_ip(mapped.into());
-            }
-            let segments = ip.segments();
-            if segments[..6] == [0, 0, 0, 0, 0, 0] {
-                let embedded = std::net::Ipv4Addr::new(
-                    (segments[6] >> 8) as u8,
-                    segments[6] as u8,
-                    (segments[7] >> 8) as u8,
-                    segments[7] as u8,
-                );
-                return is_public_network_ip(embedded.into());
-            }
-            !(ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_multicast()
-                || (segments[0] & 0xfe00) == 0xfc00
-                || (segments[0] & 0xffc0) == 0xfe80
-                || (segments[0] & 0xffc0) == 0xfec0
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
-                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0]))
-        }
-    }
+    // Email submission and homeserver discovery share one special-purpose policy.
+    crate::auth::is_public_network_ip(ip)
 }
 
 async fn complete_password_reset(
@@ -2305,7 +2280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn password_reset_receipts_are_bounded_without_evicting_live_evidence() {
+    async fn password_reset_receipts_are_bounded_without_consuming_retryable_attempts() {
         let store = reset_store_for_resend(false).await;
         {
             let mut receipts = store.password_reset_receipts.lock().await;
@@ -2324,6 +2299,27 @@ mod tests {
             .password_reset_dispatch_phase("browser-a", "reset-attempt")
             .await
             .is_err());
+        for _ in 0..2 {
+            let error = store
+                .confirm_password_reset(
+                    "browser-a",
+                    "reset-attempt",
+                    None,
+                    "replacement-password".to_owned(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error, "too many password reset attempts; try again later");
+            assert!(store
+                .password_resets
+                .lock()
+                .await
+                .contains_key("reset-attempt"));
+            assert!(store
+                .owned_cancellation("browser-a", "reset-attempt")
+                .await
+                .is_ok());
+        }
         {
             let mut receipts = store.password_reset_receipts.lock().await;
             assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);
@@ -3109,5 +3105,28 @@ mod tests {
             "1.1.1.1".parse().expect("valid public IP")
         ));
         assert!(is_public_network_ip("::8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn email_submission_applies_ipv4_policy_to_nat64_destinations() {
+        for address in [
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::192.168.1.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b::100.64.0.1",
+            "64:ff9b::192.0.2.1",
+            "64:ff9b::192.88.99.1",
+            "192.88.99.1",
+            "100::1",
+            "64:ff9b::224.0.0.1",
+            "64:ff9b:1::8.8.8.8",
+            "64:ff9b:0:1::8.8.8.8",
+        ] {
+            assert!(!is_public_network_ip(address.parse().unwrap()), "{address}");
+        }
+        for address in ["64:ff9b::8.8.8.8", "64:ff9b::808:808"] {
+            assert!(is_public_network_ip(address.parse().unwrap()), "{address}");
+        }
     }
 }

@@ -5,6 +5,7 @@ import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getProfile = vi.fn();
 const logout = vi.fn();
+const forgetLocalData = vi.fn();
 const setDisplayName = vi.fn();
 const setAvatar = vi.fn();
 const removeAvatar = vi.fn();
@@ -15,10 +16,12 @@ const getAccountDeactivateUrl = vi.fn();
 const get3pids = vi.fn();
 const getIgnoredUsers = vi.fn();
 const unignoreUser = vi.fn();
+const flags = vi.hoisted(() => ({ forgetLocalData: true, messageSearch: false }));
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
   logout: (...args: unknown[]) => logout(...args),
+  forgetLocalData: (...args: unknown[]) => forgetLocalData(...args),
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
   setAvatar: (...args: unknown[]) => setAvatar(...args),
   removeAvatar: (...args: unknown[]) => removeAvatar(...args),
@@ -29,6 +32,14 @@ vi.mock("@/lib/matrix", () => ({
   get3pids: (...args: unknown[]) => get3pids(...args),
   getIgnoredUsers: (...args: unknown[]) => getIgnoredUsers(...args),
   unignoreUser: (...args: unknown[]) => unignoreUser(...args),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) => {
+    if (key === "forget_local_data") return flags.forgetLocalData;
+    if (key === "encrypted_local_message_search") return flags.messageSearch;
+    return true;
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -51,6 +62,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  flags.forgetLocalData = true;
+  flags.messageSearch = false;
   getProfile.mockReset().mockResolvedValue({
     user_id: "@me:localhost",
     display_name: "Me",
@@ -58,6 +71,7 @@ beforeEach(() => {
     uses_oauth: false,
   });
   logout.mockReset();
+  forgetLocalData.mockReset();
   getAccountDeactivateUrl.mockReset().mockResolvedValue(null);
   deactivateAccount.mockReset();
   get3pids.mockReset().mockResolvedValue([]);
@@ -66,6 +80,13 @@ beforeEach(() => {
 });
 
 describe("AccountPanel", () => {
+  it("does not expose device-data deletion when only unrelated flags are enabled", async () => {
+    flags.forgetLocalData = false;
+    flags.messageSearch = true;
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+    await waitFor(() => expect(getProfile).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Forget local data" })).not.toBeInTheDocument();
+  });
   it("logout confirm dialog invokes logout and the App reset callback", async () => {
     logout.mockResolvedValue(undefined);
     const onLoggedOut = vi.fn();
@@ -93,6 +114,40 @@ describe("AccountPanel", () => {
 
     expect(await screen.findByText("Error: network error")).toBeInTheDocument();
     expect(onLoggedOut).not.toHaveBeenCalled();
+  });
+
+  it("requires typed confirmation before forgetting local account data", async () => {
+    forgetLocalData.mockResolvedValue(undefined);
+    const onLoggedOut = vi.fn();
+    renderWithProviders(<AccountPanel onLoggedOut={onLoggedOut} />);
+
+    const [openButton] = screen.getAllByRole("button", { name: "Forget local data" });
+    fireEvent.click(openButton);
+    const confirmButtons = await screen.findAllByRole("button", { name: "Forget local data" });
+    const confirmButton = confirmButtons[confirmButtons.length - 1];
+    expect(confirmButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type FORGET to confirm"), {
+      target: { value: "FORGET" },
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(forgetLocalData).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(onLoggedOut).toHaveBeenCalled());
+  });
+
+  it("requires fresh wipe confirmation after canceling and reopening", async () => {
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Forget local data" }));
+    fireEvent.change(await screen.findByLabelText("Type FORGET to confirm"), {
+      target: { value: "FORGET" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Forget local data" }));
+    expect(await screen.findByLabelText("Type FORGET to confirm")).toHaveValue("");
+    const buttons = screen.getAllByRole("button", { name: "Forget local data" });
+    expect(buttons[buttons.length - 1]).toBeDisabled();
+    expect(forgetLocalData).not.toHaveBeenCalled();
   });
 
   it("deactivate account requires typing DEACTIVATE before it can be confirmed", async () => {
