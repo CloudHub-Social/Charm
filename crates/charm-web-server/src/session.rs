@@ -1336,6 +1336,11 @@ impl SessionStore {
         let mut inner = self.inner.write().await;
         let mut evicted = Vec::new();
         inner.retain(|token, session| {
+            // Hold admission through revocation. An in-flight recovery must
+            // retain its crypto store and pending credential until it settles.
+            let Ok(_recovery) = session.recovery_setup_lock.try_lock() else {
+                return true;
+            };
             if session.has_open_connection()
                 || session.has_pending_verification_events()
                 || session.has_unpersisted_encrypted_room()
@@ -1653,6 +1658,22 @@ mod tests {
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(store.get(&token).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_sweep_preserves_admitted_recovery() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@recovering:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        let guard = session.recovery_setup_lock.lock().await;
+        assert!(store.sweep_idle(std::time::Duration::ZERO).await.is_empty());
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        drop(guard);
+        assert_eq!(store.sweep_idle(std::time::Duration::ZERO).await.len(), 1);
     }
 
     #[tokio::test]

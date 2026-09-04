@@ -367,6 +367,7 @@ async fn clear_local_session(
 /// drops the client so a relaunch doesn't auto-restore.
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
+    let _lifecycle = state.login_completion_lock.lock().await;
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
