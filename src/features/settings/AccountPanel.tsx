@@ -295,6 +295,11 @@ function ForgetLocalDataDialog({ open, onOpenChange, onForgotten }: ForgetLocalD
     setError(null);
   }
 
+  function handleOpenChange(next: boolean) {
+    if (!next) reset();
+    onOpenChange(next);
+  }
+
   async function handleForget() {
     setSubmitting(true);
     setError(null);
@@ -309,13 +314,7 @@ function ForgetLocalDataDialog({ open, onOpenChange, onForgotten }: ForgetLocalD
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Forget local data?</DialogTitle>
@@ -338,7 +337,11 @@ function ForgetLocalDataDialog({ open, onOpenChange, onForgotten }: ForgetLocalD
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
-            <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={submitting}>
+            <Button
+              variant="secondary"
+              onClick={() => handleOpenChange(false)}
+              disabled={submitting}
+            >
               Cancel
             </Button>
             <Button

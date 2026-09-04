@@ -287,7 +287,9 @@ Surfaces changed:
     passphrase, and every encrypted search index for the account on this device without
     deleting the server-side Matrix account. Confirmation is bound to the account and
     device selected before the native dialog opens; a changed session requires fresh
-    confirmation. Login completion remains serialized through physical deletion.
+    confirmation. Canceling the typed-confirmation dialog clears its input, so
+    reopening always requires typing the confirmation again. Login completion
+    remains serialized through physical deletion.
     Startup retry clears an interrupted-wipe marker only after both session/store
     cleanup and deletion of every device-scoped search index have succeeded.
     A fallback marker outside the Matrix-store directory retains the same full-wipe

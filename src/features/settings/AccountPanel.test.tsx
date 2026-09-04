@@ -136,6 +136,20 @@ describe("AccountPanel", () => {
     await waitFor(() => expect(onLoggedOut).toHaveBeenCalled());
   });
 
+  it("requires fresh wipe confirmation after canceling and reopening", async () => {
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Forget local data" }));
+    fireEvent.change(await screen.findByLabelText("Type FORGET to confirm"), {
+      target: { value: "FORGET" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Forget local data" }));
+    expect(await screen.findByLabelText("Type FORGET to confirm")).toHaveValue("");
+    const buttons = screen.getAllByRole("button", { name: "Forget local data" });
+    expect(buttons[buttons.length - 1]).toBeDisabled();
+    expect(forgetLocalData).not.toHaveBeenCalled();
+  });
+
   it("deactivate account requires typing DEACTIVATE before it can be confirmed", async () => {
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 

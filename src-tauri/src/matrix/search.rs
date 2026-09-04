@@ -1245,6 +1245,25 @@ pub(crate) fn reset_index_lifecycle(state: &super::MatrixState) {
         .clear();
 }
 
+/// Complete only this worker's backfill, after any awaited marker cleanup.
+/// The lifecycle lock makes the generation check and pending-bit write atomic
+/// with respect to renderer reload and account replacement.
+fn finish_backfill_if_current(state: &super::MatrixState, generation: u64) {
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if generation
+        == state
+            .search_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        state
+            .search_backfill_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Marks the active lifecycle incomplete without allowing an old worker to
 /// poison the account that replaced it. Session invalidation advances the
 /// generation while holding the same lifecycle lock, so the check and store
@@ -2190,9 +2209,7 @@ async fn search_work_sender(app: &AppHandle) -> tokio::sync::mpsc::Sender<Queued
                             )
                             .await;
                         }
-                        state
-                            .search_backfill_pending
-                            .store(false, std::sync::atomic::Ordering::Release);
+                        finish_backfill_if_current(&state, generation);
                     }
                     if let Some(completion) = completion {
                         let _ = completion.send(result);
@@ -3975,6 +3992,21 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_backfill_completion_preserves_replacement_pending_state() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        assert!(super::claim_cached_history(&state, 0, false));
+        // An old marker-cleanup await can yield across a renderer reload and
+        // admission of a new scan. Its completion must not clear the new bit.
+        super::reset_index_lifecycle(&state);
+        assert!(super::claim_cached_history(&state, 1, false));
+        super::finish_backfill_if_current(&state, 0);
+        assert!(state.search_backfill_pending.load(Ordering::Acquire));
+        super::finish_backfill_if_current(&state, 1);
+        assert!(!state.search_backfill_pending.load(Ordering::Acquire));
     }
 
     #[test]

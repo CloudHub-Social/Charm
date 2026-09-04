@@ -357,7 +357,10 @@ without the user knowing which is which.
   native reconciliation. Receiver-only startup cannot use or newly purge search
   before that point. Each main-webview page-load start resets native readiness
   and the backfill generation without deleting the retained index; reloads must
-  normalize again, and stale queued work cannot bypass that boundary. An
+  normalize again, and stale queued work cannot bypass that boundary. After
+  awaited reconciliation-marker cleanup, backfill completion revalidates its
+  generation and clears its pending bit under lifecycle exclusion; an old
+  worker cannot clear the replacement scan's pending state. An
   unavailable normalization state is not permission for an in-flight query to
   purge the index. Renderer startup also
   reconciles both disabled-to-disabled and cached-enabled state with the native

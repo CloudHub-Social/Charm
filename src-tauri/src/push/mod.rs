@@ -469,8 +469,16 @@ pub(crate) async fn unregister_push_impl(
         });
 
     if let Some(ids) = endpoint_ids {
-        if let Err(e) = client.pusher().delete(ids).await {
-            eprintln!("failed to delete homeserver pusher during unregister_push: {e}");
+        if !finish_remote_push_cleanup(
+            client.pusher().delete(ids),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        {
+            tracing::warn!(
+                command = "unregister_push",
+                status = "remote_cleanup_unconfirmed"
+            );
         }
     }
 
@@ -490,6 +498,15 @@ pub(crate) async fn unregister_push_impl(
     let status = finalize_and_emit(app, PushStatus::default());
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     Ok(())
+}
+
+/// Remote deletion is best-effort, but must not prevent platform and local
+/// cleanup (including terminal-session invalidation) when the server stalls.
+async fn finish_remote_push_cleanup<E>(
+    operation: impl std::future::Future<Output = Result<(), E>>,
+    limit: std::time::Duration,
+) -> bool {
+    matches!(tokio::time::timeout(limit, operation).await, Ok(Ok(())))
 }
 
 /// Re-registers `endpoint` with the homeserver directly, bypassing
@@ -1201,6 +1218,18 @@ async fn restore_any_client_at(store_root: &std::path::Path) -> Result<Option<Cl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn remote_push_cleanup_is_bounded_and_reports_failure() {
+        let limit = std::time::Duration::from_millis(1);
+        assert!(finish_remote_push_cleanup(async { Ok::<(), ()>(()) }, limit).await);
+        assert!(!finish_remote_push_cleanup(async { Err::<(), ()>(()) }, limit).await);
+        assert!(
+            !finish_remote_push_cleanup(std::future::pending::<Result<(), ()>>(), limit,).await
+        );
+        // The caller can now continue platform and local cleanup rather than
+        // being held indefinitely by the never-completing remote operation.
+    }
 
     fn endpoint(kind: PusherKind) -> PushEndpoint {
         PushEndpoint {
