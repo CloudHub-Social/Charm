@@ -891,10 +891,9 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
         .traces_sample_rate(if cfg!(debug_assertions) { 1.0 } else { 0.5 })
         .auto_session_tracking(true)
         .session_mode(sentry::SessionMode::Application)
-        // Keep Sentry Logs initialized for same-session opt-in; scrub_log
-        // drops every native log unless runtime log consent is enabled.
-        .enable_logs(true)
         .before_send(observability_scrub::scrub_event)
+        // Sentry 0.49 enables logs by default. Keep the consent boundary here:
+        // this filters manually captured logs as well as integration logs.
         .before_send_log(scrub_log);
     let client_options = match environment {
         Some(environment) => client_options.environment(environment),
