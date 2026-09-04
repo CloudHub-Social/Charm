@@ -141,6 +141,9 @@ connection: the SDK owns that schema and migration lifecycle.
   enforces the same boundary when rebuilding visible rows: missing originals
   remain deferred and known mismatched-sender candidates are purged. Regression
   coverage migrates both legitimate and forged edits received before originals;
+  schema version 6 also sanitizes already-installed version-5 databases, retaining
+  their renderer selection ordering while rebuilding visible rows and FTS. A
+  regression seeds forged provenance and an existing forged FTS row in v5.
   GitHub Actions verification remains required. A late
   edit/redaction, backfill, or replay therefore converges without retaining or
   resurrecting stale or redacted text.

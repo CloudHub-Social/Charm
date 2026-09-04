@@ -43,7 +43,7 @@ const SEARCH_DATABASE: &str = "message-search.sqlite3";
 const CLEANUP_MARKER_PREFIX: &str = ".cleanup-";
 const RECONCILIATION_MARKER: &str = ".reconciliation-pending";
 const DISABLED_CLEANUP_MARKER: &str = ".message-search-disabled-cleanup-pending";
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 const KEY_DERIVATION_SALT: &[u8] = b"Charm message search SQLCipher key v1";
 const SNAPSHOT_QUERY_DIGEST_INFO: &[u8] = b"Charm message search snapshot query v1";
 const MAX_QUERY_BYTES: usize = 512;
@@ -3100,6 +3100,19 @@ fn migrate(connection: &Connection) -> Result<(), MigrationError> {
                 )
                 .map_err(MigrationError::from_sqlite)?;
         }
+        (1, Some(5)) => {
+            // Version 5 may contain rows built before sender provenance was
+            // validated during migration. Preserve renderer selection order
+            // while rebuilding both visible tables from verified provenance.
+            create_current_schema(&transaction)?;
+            rebuild_visible_rows(&transaction)?;
+            transaction
+                .execute(
+                    "UPDATE search_metadata SET schema_version = ?1",
+                    [SCHEMA_VERSION],
+                )
+                .map_err(MigrationError::from_sqlite)?;
+        }
         (1, Some(SCHEMA_VERSION)) => {
             create_current_schema(&transaction)?;
         }
@@ -5116,6 +5129,70 @@ mod tests {
                 .as_deref(),
             Some("visible after unignore")
         );
+    }
+
+    #[test]
+    fn version_five_migration_removes_stored_forged_provenance_and_fts_rows() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut index = open_index(directory.path(), "account", "DEVICE");
+        index
+            .apply_document(&document(Some("authentic"), "$original"))
+            .unwrap();
+        // Model a v5 database produced before migration sanitized edit senders.
+        // Ingestion correctly rejects this row today, so seed the old SQL state.
+        index
+            .connection
+            .execute_batch(
+                "UPDATE message_versions SET selection_order = 777;
+             INSERT INTO message_versions (
+                room_id, original_event_id, version_event_id, sender, body,
+                origin_server_ts, selection_order
+             ) SELECT room_id, original_event_id, '$forged', '@mallory:example.org',
+                      'forgedtoken', origin_server_ts + 1, selection_order + 1
+               FROM message_versions WHERE version_event_id = '$original';
+             UPDATE searchable_messages SET body = 'forgedtoken',
+                version_event_id = '$forged', sender = '@mallory:example.org';
+             UPDATE searchable_messages_fts SET body = 'forgedtoken',
+                version_event_id = '$forged', sender = '@mallory:example.org';
+             UPDATE search_metadata SET schema_version = 5;",
+            )
+            .unwrap();
+        migrate(&index.connection).expect("sanitize existing v5 index");
+        assert_eq!(
+            index
+                .visible_body("!room:example.org", "$original")
+                .as_deref(),
+            Some("authentic")
+        );
+        let forged: u32 = index
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_versions WHERE version_event_id = '$forged'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let hits: u32 = index.connection.query_row(
+            "SELECT COUNT(*) FROM searchable_messages_fts WHERE searchable_messages_fts MATCH 'forgedtoken'", [], |row| row.get(0)
+        ).unwrap();
+        let version: u32 = index
+            .connection
+            .query_row("SELECT schema_version FROM search_metadata", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(forged, 0);
+        assert_eq!(hits, 0);
+        assert_eq!(version, SCHEMA_VERSION);
+        let selection: i64 = index
+            .connection
+            .query_row(
+                "SELECT selection_order FROM message_versions WHERE version_event_id = '$original'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(selection, 777, "v5 renderer ordering must be preserved");
     }
 
     #[test]
