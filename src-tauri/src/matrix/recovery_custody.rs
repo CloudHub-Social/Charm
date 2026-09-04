@@ -85,6 +85,11 @@ pub trait RecoveryCustody: Send + Sync {
     async fn save_claimed(&self, pending: &PendingRecoverySetup) -> Result<(), String> {
         self.save(Some(pending)).await
     }
+    /// Clears a definitive no-op result while proving this request still
+    /// owns the distributed mutation slot.
+    async fn clear_claimed(&self) -> Result<(), String> {
+        self.save(None).await
+    }
     /// Claims the empty pending slot and returns the canonical winner. Web
     /// implementations override this with a cross-process conditional write;
     /// native callers are serialized by the account recovery lock.
@@ -213,14 +218,25 @@ pub async fn setup_with_custody(
         pending.server_mutation_started = true;
         custody.save_claimed(&pending).await?;
         if !client.encryption().backups().are_enabled().await {
-            client
-                .encryption()
-                .recovery()
-                .enable_backup()
-                .await
-                .map_err(|_| {
-                    "Could not enable a new backup. Restore an existing backup if one exists."
-                })?;
+            match client.encryption().recovery().enable_backup().await {
+                Ok(()) => {}
+                Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
+                    // The server made no change, so this generated seed owns
+                    // no credential. Remove the marker before releasing the
+                    // claim rather than permanently vetoing logout.
+                    custody.clear_claimed().await?;
+                    return Err(
+                        "A server-side key backup already exists. Restore the existing recovery instead."
+                            .into(),
+                    );
+                }
+                Err(_) => {
+                    return Err(
+                        "Could not enable a new backup. Restore an existing backup if one exists."
+                            .into(),
+                    );
+                }
+            }
         }
         // Preserve the newly generated backup private key before creating SSSS.
         custody.checkpoint().await?;

@@ -565,6 +565,46 @@ impl PersistenceStore {
         Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
+    pub async fn clear_claimed_pending_recovery(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.pending_recovery = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery cleanup.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically clear protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
     /// Atomically transitions `pending_recovery` from empty to populated and
     /// returns whichever seed won. The object-store version precondition is
     /// the cross-instance serialization boundary; a losing process reloads

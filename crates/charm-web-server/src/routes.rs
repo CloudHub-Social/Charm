@@ -5593,6 +5593,14 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             )
             .await
     }
+    async fn clear_claimed(&self) -> Result<(), String> {
+        self.persistence
+            .clear_claimed_pending_recovery(
+                self.token,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
     async fn release(&self) -> Result<(), String> {
         self.persistence
             .release_pending_recovery_claim(
