@@ -5978,7 +5978,7 @@ async fn send_session_message(
 ) -> Result<(), ()> {
     // Every replay/live frame crosses this boundary. An earlier successful
     // upgrade check cannot authorize the remainder of a revoked snapshot.
-    let send_guard = session.socket_send_lock.lock().await;
+    let send_guard = session.socket_send_lock.read().await;
     if session
         .session_closed
         .load(std::sync::atomic::Ordering::Acquire)

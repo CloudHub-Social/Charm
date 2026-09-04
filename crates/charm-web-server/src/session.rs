@@ -206,7 +206,10 @@ pub struct Session {
     /// before writing storage or broadcasting decrypted state.
     pub session_closed: Arc<AtomicBool>,
     /// Serializes permanent revocation with bounded WebSocket payload sends.
-    pub socket_send_lock: tokio::sync::Mutex<()>,
+    /// Shared admission for ordinary socket writes, with permanent session
+    /// revocation taking the exclusive side. A slow browser tab therefore
+    /// cannot serialize or starve writes to every other tab in the session.
+    pub socket_send_lock: tokio::sync::RwLock<()>,
     /// Whether *this* session's live `client` is actually backed by an
     /// opened on-disk crypto store right now — the signal
     /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
@@ -579,7 +582,7 @@ impl Session {
             )),
             message_search_pagination_seed_done: Arc::new(tokio::sync::Notify::new()),
             session_closed: Arc::new(AtomicBool::new(false)),
-            socket_send_lock: tokio::sync::Mutex::new(()),
+            socket_send_lock: tokio::sync::RwLock::new(()),
             crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
@@ -1348,7 +1351,7 @@ impl SessionStore {
             // invalidation event.
             let removed = Arc::clone(removed);
             tokio::spawn(async move {
-                let _send_guard = removed.socket_send_lock.lock().await;
+                let _send_guard = removed.socket_send_lock.write().await;
                 let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
                 delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
             });
@@ -1643,7 +1646,7 @@ mod tests {
             .await;
         let session = store.get(&token).await.expect("live session");
         let mut events = session.events.subscribe();
-        let send_guard = session.socket_send_lock.lock().await;
+        let send_guard = session.socket_send_lock.read().await;
         store.remove(&token).await.expect("removed session");
         assert!(session
             .session_closed
