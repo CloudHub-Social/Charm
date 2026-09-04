@@ -14,6 +14,12 @@ not first-time **setup** or manual key file I/O.
 
 ## Current implementation status
 
+Web setup now requires an actually opened encrypted crypto store and a successful
+durable snapshot before mutating server-side recovery. Legacy or ephemeral sessions
+must sign in again first. UI passphrase bounds match Rust Unicode scalar and UTF-8
+byte counts. Secure recovery-credential custody across panel/app teardown remains
+a merge blocker; a generated key held only in component state is not sufficient.
+
 - **First-time key backup / 4S setup:** implemented behind the default-off
   `crypto_backup_setup` feature flag. The flow requires this session to hold all
   local cross-signing private keys, delegates secret storage and backup creation
