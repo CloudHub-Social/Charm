@@ -254,10 +254,18 @@ pub async fn edit_message_impl(
     if original_message.sender != own_user_id {
         return Err("only the original sender can edit this message".to_string());
     }
+    if !super::timeline::is_text_editable(&original_message.content.msgtype) {
+        return Err("this message type cannot be edited in the text composer".to_string());
+    }
 
     let metadata = ReplacementMetadata::from(original_message);
-    let content = super::send::build_message_content(new_body, formatted_body, mentions)?
-        .make_replacement(metadata);
+    let content = build_text_edit_content(
+        &original_message.content.msgtype,
+        new_body,
+        formatted_body,
+        mentions,
+    )?
+    .make_replacement(metadata);
 
     // Routed through the same capture helper as send_message/send_reply
     // (discarding the transaction id — edits don't need frontend
@@ -274,6 +282,78 @@ pub async fn edit_message_impl(
     .await?;
 
     Ok(())
+}
+
+fn build_text_edit_content(
+    original: &matrix_sdk::ruma::events::room::message::MessageType,
+    body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
+) -> Result<matrix_sdk::ruma::events::room::message::RoomMessageEventContent, String> {
+    use matrix_sdk::ruma::events::room::message::{
+        EmoteMessageEventContent, MessageType, NoticeMessageEventContent,
+    };
+    if !super::timeline::is_text_editable(original) {
+        return Err("this message type cannot be edited in the text composer".to_string());
+    }
+    let mut content = super::send::build_message_content(body, formatted_body, mentions)?;
+    let MessageType::Text(text) = content.msgtype else {
+        return Err("text edit content unavailable".to_string());
+    };
+    content.msgtype = match original {
+        MessageType::Emote(_) => {
+            let mut emote = EmoteMessageEventContent::plain(text.body);
+            emote.formatted = text.formatted;
+            MessageType::Emote(emote)
+        }
+        MessageType::Notice(_) => {
+            let mut notice = NoticeMessageEventContent::plain(text.body);
+            notice.formatted = text.formatted;
+            MessageType::Notice(notice)
+        }
+        _ => MessageType::Text(text),
+    };
+    Ok(content)
+}
+
+#[cfg(test)]
+mod text_edit_content_tests {
+    use super::build_text_edit_content;
+    use matrix_sdk::ruma::events::room::message::MessageType;
+
+    #[test]
+    fn text_edits_preserve_the_original_subtype_formatting_and_mentions() {
+        for msgtype in ["m.text", "m.emote", "m.notice"] {
+            let original: MessageType = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype, "body": "old"
+            }))
+            .unwrap();
+            let edited = build_text_edit_content(
+                &original,
+                "new".into(),
+                Some("<b>new</b>".into()),
+                Some(vec!["@alice:example.org".into()]),
+            )
+            .unwrap();
+            let wire = serde_json::to_value(edited).unwrap();
+            assert_eq!(wire["msgtype"], msgtype);
+            assert_eq!(wire["body"], "new");
+            assert_eq!(wire["formatted_body"], "<b>new</b>");
+            assert_eq!(wire["m.mentions"]["user_ids"][0], "@alice:example.org");
+        }
+    }
+
+    #[test]
+    fn non_text_message_fallback_bodies_are_not_editable() {
+        for raw in [
+            serde_json::json!({"msgtype":"m.location", "body":"location", "geo_uri":"geo:1,2"}),
+            serde_json::json!({"msgtype":"com.example.custom", "body":"fallback"}),
+        ] {
+            let original: MessageType = serde_json::from_value(raw).unwrap();
+            assert!(!super::super::timeline::is_text_editable(&original));
+            assert!(build_text_edit_content(&original, "new".into(), None, None).is_err());
+        }
+    }
 }
 
 /// Redacts (deletes) an event the current user has power to redact — either

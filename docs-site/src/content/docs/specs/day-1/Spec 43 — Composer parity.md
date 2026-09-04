@@ -142,6 +142,10 @@ have regression tests but remain pending CI verification. Bare ArrowUp in an emp
 send-mode paragraph reuses the existing edit action for the latest editable own
 text message in the loaded timeline, behind the same default-off flag. It skips
 local echoes, failed sends, redactions, undecrypted placeholders, and attachments;
+the backend also rejects non-text message subtypes rather than replacing their
+fallback bodies with text. Editing text, emote, or notice preserves that original
+subtype, formatting, and mentions. The timeline now exports explicit text-edit
+eligibility; CI-generated bindings and the ArrowUp consumer update are pending.
 autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
 their existing behavior. It does not fetch additional history to find an edit
 target. Shortcut regression tests are pending CI.
