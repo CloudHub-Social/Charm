@@ -264,6 +264,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   useEffect(() => {
     if (isWebBuild()) return undefined;
+    let disposed = false;
+    const initialOperation = ssoOperationRef.current;
 
     // Shared by both the cold-launch check and the warm onOpenUrl listener
     // below. On a cold launch (app was fully closed during the browser step,
@@ -273,12 +275,20 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     // rather than silently doing nothing, which at least tells the user to
     // retry instead of leaving them stuck on a login screen with no signal.
     function tryCompleteSsoCallback(callbackUrl: string) {
+      const operation = ssoOperationRef.current;
+      const isCurrent = () => !disposed && operation === ssoOperationRef.current;
       ssoInProgressRef.current = false;
       setSsoPending(true);
       completeSsoLogin(callbackUrl)
-        .then(onSignedIn)
-        .catch((err: unknown) => setError(String(err)))
-        .finally(() => setSsoPending(false));
+        .then((session) => {
+          if (isCurrent()) onSignedIn(session);
+        })
+        .catch((err: unknown) => {
+          if (isCurrent()) setError(String(err));
+        })
+        .finally(() => {
+          if (isCurrent()) setSsoPending(false);
+        });
     }
 
     // Cold launch: the deep link that started this process, if any — only
@@ -288,7 +298,9 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     getCurrent()
       .then((urls) => urls?.find((url) => SSO_CALLBACK_URL_PATTERN.test(url)))
       .then((callbackUrl) => {
-        if (callbackUrl) tryCompleteSsoCallback(callbackUrl);
+        if (callbackUrl && !disposed && initialOperation === ssoOperationRef.current) {
+          tryCompleteSsoCallback(callbackUrl);
+        }
       })
       // Deliberately silent (not logAndIgnore): failing here just means "no
       // cold-launch deep link was pending" (e.g. plain cold start with no
@@ -298,11 +310,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
     const unlisten = onOpenUrl((urls) => {
       const callbackUrl = urls.find((url) => SSO_CALLBACK_URL_PATTERN.test(url));
-      if (!callbackUrl || !ssoInProgressRef.current) return;
+      if (disposed || !callbackUrl || !ssoInProgressRef.current) return;
       tryCompleteSsoCallback(callbackUrl);
     });
 
     return () => {
+      disposed = true;
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [onSignedIn]);

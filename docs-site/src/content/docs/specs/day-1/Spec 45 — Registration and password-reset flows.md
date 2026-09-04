@@ -83,6 +83,9 @@ or expiry drops the temporary Matrix client before deleting its encrypted
 temporary store, avoiding open SQLite handles during cleanup. Once durable
 session relocation starts, Charm finishes adoption and reports the real outcome
 rather than claiming the already-dispatched login was cancelled.
+Native callback UI updates are bound to the active SSO operation and mounted
+login screen. A cancelled completion settling after restart cannot clear the
+new attempt's pending state, display its old error, or invoke its sign-in callback.
 
 Desktop password recovery now generates its email-validation client secret in
 Rust, retains the Matrix `sid` and unauthenticated client behind an opaque

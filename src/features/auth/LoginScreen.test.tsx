@@ -226,6 +226,51 @@ describe("LoginScreen SSO callback handling", () => {
     expect(completeSsoLogin).not.toHaveBeenCalled();
     expect(onSignedIn).not.toHaveBeenCalled();
   });
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a cancelled callback that settles with %s after SSO restarts",
+    async (outcome) => {
+      let resolveCompletion!: (session: LoginResponse) => void;
+      let rejectCompletion!: (error: Error) => void;
+      completeSsoLogin.mockImplementationOnce(
+        () =>
+          new Promise<LoginResponse>((resolve, reject) => {
+            resolveCompletion = resolve;
+            rejectCompletion = reject;
+          }),
+      );
+      const onSignedIn = vi.fn();
+      render(<LoginScreen onSignedIn={onSignedIn} />);
+
+      await act(async () => {
+        screen.getByRole("button", { name: "Continue with SSO" }).click();
+      });
+      await act(async () => {
+        openUrlCallback?.(["charm://sso-callback?loginToken=old&state=old"]);
+      });
+      await act(async () => {
+        screen.getByRole("button", { name: "Cancel" }).click();
+      });
+      await act(async () => {
+        screen.getByRole("button", { name: "Continue with SSO" }).click();
+      });
+
+      await act(async () => {
+        if (outcome === "resolve") resolveCompletion(fakeSession());
+        else rejectCompletion(new Error("Old SSO completion cancelled"));
+      });
+
+      expect(onSignedIn).not.toHaveBeenCalled();
+      expect(screen.queryByText("Error: Old SSO completion cancelled")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+
+      completeSsoLogin.mockResolvedValueOnce(fakeSession());
+      await act(async () => {
+        openUrlCallback?.(["charm://sso-callback?loginToken=new&state=new"]);
+      });
+      expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
+    },
+  );
 });
 
 describe("LoginScreen default homeserver URL", () => {
