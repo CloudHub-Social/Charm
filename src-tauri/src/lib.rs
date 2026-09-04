@@ -1246,6 +1246,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(matrix::MatrixState::default())
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                matrix::search::renderer_page_started(&webview.state::<matrix::MatrixState>());
+            }
+        })
         .setup(|app| {
             // Read once and pass to both calls below, rather than letting
             // each independently re-read observability.json from disk: the

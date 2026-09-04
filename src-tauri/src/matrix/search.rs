@@ -1147,6 +1147,15 @@ fn flags_ready(state: &super::MatrixState) -> bool {
         .load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// A replacement renderer must normalize its own cache before native search
+/// trusts it. Page-load start runs natively, before the new page's JavaScript.
+pub(crate) fn renderer_page_started(state: &super::MatrixState) {
+    state
+        .search_flags_ready
+        .store(false, std::sync::atomic::Ordering::Release);
+    reset_index_lifecycle(state);
+}
+
 fn active_identity(client: &Client) -> Option<(String, String)> {
     let user_id = client.user_id()?;
     let device_id = client.device_id()?;
@@ -1762,6 +1771,9 @@ fn apply_work(app: &AppHandle, generation: u64, work: SearchWork) -> Result<(), 
         return Ok(());
     }
     if !feature_enabled(app) {
+        if !flags_ready(&state) {
+            return Ok(());
+        }
         reset_index_lifecycle(&state);
         let app_data_dir = app.path().app_data_dir().ok();
         let mut slot = state
@@ -2682,6 +2694,9 @@ fn reset_and_purge_disabled_search(
     // retaining index: release it, invalidate queued work, then reacquire it
     // for the global kill-switch purge. No query result escapes this path.
     drop(slot);
+    if !flags_ready(state) {
+        return Ok(());
+    }
     reset_index_lifecycle(state);
     let mut slot = state
         .search_index
@@ -3982,6 +3997,9 @@ mod tests {
     #[test]
     fn disabled_search_releases_index_before_waiting_for_lifecycle() {
         let state = std::sync::Arc::new(super::super::MatrixState::default());
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
         let directory = tempfile::tempdir().unwrap();
         let lifecycle = state.search_lifecycle_lock.lock().unwrap();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -4475,6 +4493,54 @@ mod tests {
             reconcile_disabled_cleanup(&absent_app_data).expect("already clean");
         }
         assert!(!absent_app_data.exists());
+    }
+
+    #[test]
+    fn renderer_reload_requires_normalization_again_without_deleting_the_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let index = open_index(directory.path(), "account", "DEVICE");
+        let database_path = index.database_path().to_owned();
+        drop(index);
+        let state = super::super::MatrixState::default();
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .search_backfill_started
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(flags_ready(&state));
+
+        renderer_page_started(&state);
+
+        let slot = state.search_index.lock().unwrap();
+        reset_and_purge_disabled_search(&state, slot, Some(directory.path()))
+            .expect("an in-flight query must not treat normalization as a kill switch");
+
+        assert!(
+            !flags_ready(&state),
+            "the previous page cannot authorize the new lifecycle"
+        );
+        assert!(
+            database_path.exists(),
+            "resetting readiness must not purge retained data"
+        );
+        assert!(!disabled_cleanup_pending(directory.path()).unwrap());
+        assert!(!state
+            .search_backfill_started
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            state
+                .search_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        state
+            .search_flags_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            flags_ready(&state),
+            "normal reconciliation can acknowledge the new page"
+        );
     }
 
     #[test]

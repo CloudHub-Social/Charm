@@ -355,7 +355,11 @@ without the user knowing which is which.
   cached flag. Native search access and new flag-driven purges remain inactive
   until the renderer has awaited cohort/endpoint cache normalization and called
   native reconciliation. Receiver-only startup cannot use or newly purge search
-  before that point. Renderer startup also
+  before that point. Each main-webview page-load start resets native readiness
+  and the backfill generation without deleting the retained index; reloads must
+  normalize again, and stale queued work cannot bypass that boundary. An
+  unavailable normalization state is not permission for an in-flight query to
+  purge the index. Renderer startup also
   reconciles both disabled-to-disabled and cached-enabled state with the native
   backend. Search remains unavailable in the renderer until that reconciliation
   succeeds, without discarding the user's saved override or blocking unrelated

@@ -91,7 +91,8 @@ pub struct MatrixState {
     /// Logout increments this before deleting the index, so the long-lived
     /// worker cannot reopen that index from stale queue entries afterwards.
     pub(crate) search_generation: std::sync::atomic::AtomicU64,
-    /// False until the renderer has normalized the persisted remote flag cache.
+    /// False on each main-renderer page load until its persisted remote flag
+    /// cache has been normalized.
     /// Unknown startup state must not authorize search access or a new purge.
     pub(crate) search_flags_ready: std::sync::atomic::AtomicBool,
     /// Serializes generation resets with sticky-incomplete writes so a stale
