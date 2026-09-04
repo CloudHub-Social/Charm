@@ -231,6 +231,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const registrationEmailOperationRef = useRef(0);
   const passwordResetAttemptRef = useRef<string | null>(null);
   const passwordResetOperationRef = useRef(0);
+  const passwordResetRequestRef = useRef<number | null>(null);
   const passwordResetCancellationRef = useRef<Promise<void> | undefined>(undefined);
   const recoveryPreviouslyEnabledRef = useRef(true);
 
@@ -240,11 +241,14 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       registrationAttemptRef.current = null;
       registrationEmailOperationRef.current += 1;
       if (attemptId) cancelRegistration(attemptId).catch(logAndIgnore);
+      const resetAttemptId = passwordResetAttemptRef.current;
       passwordResetAttemptRef.current = null;
       passwordResetOperationRef.current += 1;
       // `undefined` also cancels a backend request that is still in discovery
       // and has not returned its opaque attempt id to this component yet.
-      cancelPasswordReset(undefined).catch(logAndIgnore);
+      if (resetAttemptId || passwordResetRequestRef.current !== null) {
+        cancelPasswordReset(resetAttemptId ?? undefined).catch(logAndIgnore);
+      }
     },
     [],
   );
@@ -551,6 +555,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setError(null);
     setPasswordResetNotice(null);
     let challenge: PasswordResetChallenge;
+    passwordResetRequestRef.current = operation;
     try {
       challenge = await requestPasswordReset(homeserverUrl, recoveryEmail);
     } catch {
@@ -564,6 +569,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       }
       return;
     } finally {
+      if (passwordResetRequestRef.current === operation) passwordResetRequestRef.current = null;
       if (passwordResetOperationRef.current === operation) setPending(false);
     }
     if (passwordResetOperationRef.current !== operation) {
@@ -645,7 +651,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     passwordResetAttemptRef.current = null;
     let cancellationUncertain = false;
     // Returning from an acknowledged terminal result is not another cancellation.
-    if (!passwordResetComplete && !passwordResetCancellationUncertain) {
+    if (
+      !passwordResetComplete &&
+      !passwordResetCancellationUncertain &&
+      (attemptId !== null || passwordResetRequestRef.current !== null)
+    ) {
       setPending(true);
       const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(() => {
         // Never display or log raw backend errors from this sensitive operation.

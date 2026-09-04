@@ -926,7 +926,35 @@ describe("LoginScreen password recovery", () => {
     });
     expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
     expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
+    // Reopening an empty form must not cancel the acknowledged backend record.
+    cancelPasswordReset.mockRejectedValue(new Error("previous reset already dispatched"));
+    fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+    expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Forgot password?" })).toBeVisible();
   });
+
+  it.each([false, true])(
+    "does not cancel idle recovery on flag disable (form open: %s)",
+    async (openForm) => {
+      const onSignedIn = vi.fn();
+      const { rerender, unmount } = render(<LoginScreen onSignedIn={onSignedIn} />);
+      await discoverLoginChoices();
+      if (openForm) fireEvent.click(screen.getByRole("button", { name: "Forgot password?" }));
+      const cancellationCount = cancelPasswordReset.mock.calls.length;
+      cancelPasswordReset.mockRejectedValue(new Error("recovery disabled"));
+      featureFlags.registrationEnabled = false;
+      rerender(<LoginScreen onSignedIn={onSignedIn} />);
+      expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+      expect(screen.queryByText(/Your password may still change/)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Password")).toBeVisible();
+      unmount();
+      expect(cancelPasswordReset).toHaveBeenCalledTimes(cancellationCount);
+    },
+  );
 
   it("shows the same pre-verification state for an opaque rejected recovery request", async () => {
     requestPasswordReset.mockResolvedValue({

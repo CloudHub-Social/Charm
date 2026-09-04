@@ -325,6 +325,12 @@ baseline authentication. Tauri commands enforce the same flag and fully validate
 attempt and stage inputs when enabled; flags are rollout controls, not
 authorization boundaries.
 
+Password-reset cancellation remains available after the recovery rollout is
+disabled, with the companion still requiring the pre-auth owner cookie. Closing
+an empty recovery form or disabling recovery without an active request must not
+cancel an older, acknowledged reset or display dispatch uncertainty. In-flight
+discovery and issued attempts retain cancellation and late-result cleanup.
+
 ## Testing strategy
 
 - Rust/companion repository tests: flow selection, session threading, terms/dummy/

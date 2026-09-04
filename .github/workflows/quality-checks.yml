@@ -722,6 +722,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
+      - name: Web companion password-reset cancellation contract
+        run: cargo test -p charm-web-server --lib cancel_attempt_request_tests
+
       - name: Web companion live-homeserver API
         env:
           # This test deliberately targets the ephemeral localhost Synapse

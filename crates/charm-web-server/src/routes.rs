@@ -1980,7 +1980,8 @@ async fn cancel_password_reset(
     jar: CookieJar,
     Json(request): Json<CancelAttemptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_registration_and_recovery(&state)?;
+    // The rollout gate prevents new recovery work, not cleanup of an
+    // existing attempt. Ownership remains mandatory after disabling it.
     let owner = require_preauth_owner(&jar)?;
     if let Some(attempt_id) = request.attempt_id {
         state
@@ -2002,6 +2003,8 @@ struct CancelAttemptRequest {
 #[cfg(test)]
 mod cancel_attempt_request_tests {
     use super::CancelAttemptRequest;
+    use axum::{extract::State, response::IntoResponse, Json};
+    use axum_extra::extract::cookie::{Cookie, CookieJar};
 
     #[test]
     fn accepts_owner_only_password_reset_cancellation() {
@@ -2009,6 +2012,31 @@ mod cancel_attempt_request_tests {
             serde_json::from_value(serde_json::json!({ "attempt_id": null }))
                 .expect("a null attempt id should cancel the pre-auth owner");
         assert!(request.attempt_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn password_reset_cleanup_remains_owner_bound_when_rollout_is_disabled() {
+        let state = crate::AppState {
+            registration_and_recovery_enabled: false,
+            ..crate::AppState::default()
+        };
+        let response = super::cancel_password_reset(
+            State(state.clone()),
+            CookieJar::new(),
+            Json(CancelAttemptRequest { attempt_id: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let response = super::cancel_password_reset(
+            State(state),
+            CookieJar::new().add(Cookie::new(super::PREAUTH_COOKIE, "test-owner")),
+            Json(CancelAttemptRequest { attempt_id: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
 }
 
