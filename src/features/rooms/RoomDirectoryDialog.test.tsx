@@ -67,36 +67,39 @@ describe("RoomDirectoryDialog", () => {
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
-  it("debounces server-side search and appends a deduplicated next page", async () => {
-    searchPublicRooms
-      .mockResolvedValueOnce({
-        rooms: [matrixRoom],
-        next_batch: "page-2",
-        total_room_count_estimate: 2,
-      })
-      .mockResolvedValueOnce({
-        rooms: [matrixRoom],
-        next_batch: "page-2",
-        total_room_count_estimate: 2,
-      })
-      .mockResolvedValueOnce({
-        rooms: [matrixRoom, { ...matrixRoom, room_id: "!rust:example.org", name: "Rust" }],
-        next_batch: null,
-        total_room_count_estimate: 2,
+  it.each(["page-2", ""])(
+    "preserves opaque pagination token %j and deduplicates the next page",
+    async (token) => {
+      searchPublicRooms
+        .mockResolvedValueOnce({
+          rooms: [matrixRoom],
+          next_batch: token,
+          total_room_count_estimate: 2,
+        })
+        .mockResolvedValueOnce({
+          rooms: [matrixRoom],
+          next_batch: token,
+          total_room_count_estimate: 2,
+        })
+        .mockResolvedValueOnce({
+          rooms: [matrixRoom, { ...matrixRoom, room_id: "!rust:example.org", name: "Rust" }],
+          next_batch: null,
+          total_room_count_estimate: 2,
+        });
+      renderDialog();
+      expect(await screen.findByText("Matrix HQ")).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText("Search public rooms"), {
+        target: { value: "matrix" },
       });
-    renderDialog();
-    expect(await screen.findByText("Matrix HQ")).toBeInTheDocument();
+      await waitFor(() => expect(searchPublicRooms).toHaveBeenCalledWith("matrix"));
 
-    fireEvent.change(screen.getByLabelText("Search public rooms"), {
-      target: { value: "matrix" },
-    });
-    await waitFor(() => expect(searchPublicRooms).toHaveBeenCalledWith("matrix"));
-
-    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
-    await waitFor(() => expect(searchPublicRooms).toHaveBeenCalledWith("matrix", "page-2"));
-    expect(await screen.findByText("Rust")).toBeInTheDocument();
-    expect(screen.getAllByText("Matrix HQ")).toHaveLength(1);
-  });
+      fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+      await waitFor(() => expect(searchPublicRooms).toHaveBeenCalledWith("matrix", token));
+      expect(await screen.findByText("Rust")).toBeInTheDocument();
+      expect(screen.getAllByText("Matrix HQ")).toHaveLength(1);
+    },
+  );
 
   it("joins by canonical alias, selects the resolved room, and closes", async () => {
     searchPublicRooms.mockResolvedValueOnce({

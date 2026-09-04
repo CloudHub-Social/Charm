@@ -117,7 +117,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
   }, [open, query]);
 
   async function loadMore() {
-    if (!nextBatch || loading || loadingMore) return;
+    if (nextBatch === null || loading || loadingMore) return;
     const requestId = ++searchRequestIdRef.current;
     setLoadingMore(true);
     setError(null);
@@ -261,7 +261,7 @@ export function RoomDirectoryDialog({ open, onOpenChange, onJoined }: RoomDirect
           )}
         </div>
 
-        {nextBatch && !loading && (
+        {nextBatch !== null && !loading && (
           <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
             {loadingMore ? "Loading…" : "Load more"}
           </Button>
