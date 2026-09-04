@@ -57,11 +57,13 @@ describe("matrix web transport", () => {
     vi.useRealTimers();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://api.example");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson({ ok: true })));
     vi.stubGlobal("WebSocket", MockWebSocket);
+    const resetTransport = await listen("test:reset", () => {});
+    resetTransport();
     MockWebSocket.instances = [];
     localStorage.clear();
   });
@@ -1126,6 +1128,58 @@ describe("matrix web transport", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(MockWebSocket.instances).toHaveLength(3);
 
+    unlisten();
+  });
+
+  it("invalidates an authenticated session on 401 and stops reconnecting", async () => {
+    vi.useFakeTimers();
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+    await expect(invoke("list_rooms")).rejects.toThrow("no session");
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    const count = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(MockWebSocket.instances).toHaveLength(count);
+    unlisten();
+  });
+
+  it("checks closed sockets for revoked sessions without logging out on network failure", async () => {
+    vi.useFakeTimers();
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockRejectedValueOnce(new Error("offline"));
+    MockWebSocket.instances.at(-1)!.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(invalidated).not.toHaveBeenCalled();
+    fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+    MockWebSocket.instances.at(-1)!.close();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+
+  it("ignores stale 401 replies after adopting a newer session", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    let finish!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const oldRequest = invoke("list_rooms").catch(() => {});
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    await invoke("login", { request: {} });
+    finish(new Response("no session", { status: 401 }));
+    await oldRequest;
+    expect(invalidated).not.toHaveBeenCalled();
     unlisten();
   });
 

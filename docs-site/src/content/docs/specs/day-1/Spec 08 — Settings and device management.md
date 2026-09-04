@@ -300,8 +300,11 @@ Surfaces changed:
     strand the renderer in the invalidated account's authenticated shell.
     The web companion emits the same `session:invalidated` event atomically with
     permanent session removal, before awaited search-index deletion. Connected
-    tabs use the existing renderer reset listener. Missed-event/reconnection
-    handling remains a separate web readiness requirement.
+    tabs use the existing renderer reset listener. Authenticated HTTP 401s also
+    invalidate the browser session; socket closure probes `/api/auth/me` so a
+    missed removal event can be recovered. Network failures alone do not log out.
+    Invalidation stops reconnect/keepalive until a successful new login or restore;
+    session epochs prevent stale 401s from invalidating a replacement login.
     That worker owns the login-exclusion guard until it
     finishes, even if the awaiting sync task is aborted. Failed cleanup retains
     the durable retry marker when marker persistence succeeds. Both credential

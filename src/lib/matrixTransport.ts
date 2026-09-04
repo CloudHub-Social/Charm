@@ -22,6 +22,9 @@ let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
 let cookieKeepaliveTimer: number | null = null;
 let webSsoAttemptId: string | null = null;
+let webSessionEpoch = 0;
+let webSessionKnown = false;
+let webSessionInvalidated = false;
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -156,6 +159,34 @@ function dispatchWebEvent(event: string, payload: unknown): void {
   }
 }
 
+function invalidateWebSession(epoch: number, requireKnown = true): void {
+  if (epoch !== webSessionEpoch || (requireKnown && !webSessionKnown) || webSessionInvalidated)
+    return;
+  webSessionEpoch += 1;
+  webSessionKnown = false;
+  webSessionInvalidated = true;
+  if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  const socket = webSocket;
+  webSocket = null;
+  socket?.close();
+  stopCookieKeepalive();
+  dispatchWebEvent("session:invalidated", null);
+}
+
+function adoptWebSession(result: unknown): void {
+  if (!isRecord(result) || typeof result.user_id !== "string") return;
+  webSessionEpoch += 1;
+  webSessionKnown = true;
+  webSessionInvalidated = false;
+  reconnectAttempt = 0;
+  const socket = webSocket;
+  webSocket = null;
+  socket?.close();
+  stopCookieKeepalive();
+  if (webEventListeners.size > 0) ensureWebSocket();
+}
+
 function handleWebSocketMessage(socket: WebSocket, raw: MessageEvent<unknown>): void {
   if (webSocket !== socket) return;
   if (typeof raw.data !== "string") return;
@@ -174,6 +205,10 @@ function handleWebSocketMessage(socket: WebSocket, raw: MessageEvent<unknown>): 
   } catch {
     return;
   }
+  if (parsed.event === "session:invalidated") {
+    invalidateWebSession(webSessionEpoch, false);
+    return;
+  }
   dispatchWebEvent(parsed.event, parsed.data);
   if (
     parsed.event === "verification:sas_update" &&
@@ -186,7 +221,7 @@ function handleWebSocketMessage(socket: WebSocket, raw: MessageEvent<unknown>): 
 }
 
 function scheduleWebSocketReconnect(): void {
-  if (reconnectTimer !== null || webEventListeners.size === 0) return;
+  if (webSessionInvalidated || reconnectTimer !== null || webEventListeners.size === 0) return;
   const delay = Math.min(
     INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempt,
     MAX_RECONNECT_DELAY_MS,
@@ -216,6 +251,7 @@ function stopCookieKeepalive(): void {
 }
 
 function ensureWebSocket(): void {
+  if (webSessionInvalidated) return;
   if (
     webSocket &&
     (webSocket.readyState === WebSocket.CONNECTING || webSocket.readyState === WebSocket.OPEN)
@@ -234,6 +270,9 @@ function ensureWebSocket(): void {
     if (webSocket !== socket) return;
     webSocket = null;
     stopCookieKeepalive();
+    // A socket closure alone is not proof of logout. Probe the authenticated
+    // endpoint; only its 401 invalidates, and request epochs reject stale replies.
+    if (webSessionKnown) requestJson<unknown>("GET", "/api/auth/me").catch(() => {});
     scheduleWebSocketReconnect();
   });
   socket.addEventListener("error", () => {
@@ -246,6 +285,7 @@ async function requestJson<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  const epoch = webSessionEpoch;
   const options: RequestInit = {
     method,
     credentials: "include",
@@ -256,6 +296,9 @@ async function requestJson<T>(
     options.body = JSON.stringify(body);
   }
   const response = await fetch(`${apiBase()}${path}`, options);
+  if (response.status === 401 && (!path.startsWith("/api/auth/") || path === "/api/auth/me")) {
+    invalidateWebSession(epoch);
+  }
   if (!response.ok) {
     throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
   }
@@ -287,6 +330,7 @@ async function requestBytes<T>(
   contentType?: string,
   signal?: AbortSignal,
 ): Promise<T> {
+  const epoch = webSessionEpoch;
   const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() };
   if (contentType) headers["content-type"] = contentType;
   const response = await fetch(`${apiBase()}${path}`, {
@@ -296,6 +340,7 @@ async function requestBytes<T>(
     body,
     signal,
   });
+  if (response.status === 401) invalidateWebSession(epoch);
   if (!response.ok) {
     throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
   }
@@ -936,8 +981,22 @@ export async function invoke<T>(
   // onFailureBreadcrumb (e.g. lib/matrix.ts's invokeMatrix) still needs
   // calling on failure, or it silently never fires on the web build.
   const startedAt = performance.now();
+  const epoch = webSessionEpoch;
   try {
-    return await invokeWeb<T>(command, args ?? {});
+    const result = await invokeWeb<T>(command, args ?? {});
+    if (
+      [
+        "login",
+        "register",
+        "continue_registration",
+        "login_with_token",
+        "poll_sso_login",
+        "try_restore_session",
+      ].includes(command)
+    ) {
+      if (command !== "try_restore_session" || epoch === webSessionEpoch) adoptWebSession(result);
+    }
+    return result;
   } catch (error) {
     options?.onFailureBreadcrumb?.(error, Math.round(performance.now() - startedAt));
     throw error;
@@ -954,6 +1013,9 @@ export async function listen<T>(event: string, callback: EventCallback<T>): Prom
     listeners.delete(callback as EventCallback<unknown>);
     if (listeners.size === 0) webEventListeners.delete(event);
     if (webEventListeners.size === 0) {
+      webSessionEpoch += 1;
+      webSessionKnown = false;
+      webSessionInvalidated = false;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       reconnectTimer = null;
       reconnectAttempt = 0;
