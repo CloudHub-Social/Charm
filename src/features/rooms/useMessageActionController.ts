@@ -80,22 +80,26 @@ export function useMessageActionController({
     else actionsRegistryRef.current.handles.delete(key);
   }
 
+  function canEditMessage(message: RoomMessageSummary): boolean {
+    return (
+      !mutationsDisabled &&
+      !!roomId &&
+      message.sender === currentUserId &&
+      message.event_id.startsWith("$") &&
+      message.send_state.state === "sent" &&
+      !message.redacted &&
+      !message.is_undecrypted &&
+      message.text_editable === true &&
+      message.media === null
+    );
+  }
+
   /** The loaded timeline is chronological. Never edit a local echo or a placeholder. */
   function editLastMessage(messages: readonly RoomMessageSummary[]): boolean {
     if (!composerParityEnabled || mutationsDisabled || !roomId) return false;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
-      if (
-        message.sender !== currentUserId ||
-        !message.event_id.startsWith("$") ||
-        message.send_state.state !== "sent" ||
-        message.redacted ||
-        message.is_undecrypted ||
-        message.text_editable !== true ||
-        message.media !== null
-      ) {
-        continue;
-      }
+      if (!canEditMessage(message)) continue;
       actions.handleEdit(message.event_id);
       return true;
     }
@@ -108,7 +112,9 @@ export function useMessageActionController({
       onReact: (emoji: string) => {
         if (!mutationsDisabled) actions.handleToggleReaction(message.event_id, emoji);
       },
-      onEdit: () => actions.handleEdit(message.event_id),
+      onEdit: () => {
+        if (canEditMessage(message)) actions.handleEdit(message.event_id);
+      },
       onDelete: () => {
         if (mutationsDisabled) return;
         if (messageActionParityEnabled) openDialog("delete", message.event_id);

@@ -124,6 +124,33 @@ describe("useMessageActionController", () => {
     },
   );
 
+  it.each([true, false])("guards row editing independently of composer parity (%s)", (flag) => {
+    mocks.useFlag.mockReturnValue(flag);
+    const { result } = renderHook(() =>
+      useMessageActionController({
+        roomId: "!one:example.org",
+        currentUserId: message.sender,
+        setReplyTarget: vi.fn(),
+        setEditingEventId: vi.fn(),
+      }),
+    );
+    for (const invalid of [
+      { ...message, text_editable: false },
+      { ...message, text_editable: undefined },
+      { ...message, sender: "@other:example.org" },
+      { ...message, event_id: "local-echo" },
+      { ...message, redacted: true },
+      { ...message, is_undecrypted: true },
+      { ...message, send_state: { state: "pending" as const } },
+      { ...message, send_state: { state: "error" as const, message: "failed" } },
+    ]) {
+      act(() => result.current.rowActions(invalid).onEdit());
+    }
+    expect(mocks.handleEdit).not.toHaveBeenCalled();
+    act(() => result.current.rowActions(message).onEdit());
+    expect(mocks.handleEdit).toHaveBeenCalledExactlyOnceWith(message.event_id);
+  });
+
   it("leaves the composer alone when there is no own editable message", () => {
     const { result } = renderHook(() =>
       useMessageActionController({

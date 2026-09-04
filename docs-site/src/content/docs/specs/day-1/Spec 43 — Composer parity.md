@@ -144,7 +144,9 @@ local echoes, failed sends, redactions, undecrypted placeholders, and attachment
 the backend also rejects non-text message subtypes rather than replacing their
 fallback bodies with text. Editing text, emote, or notice preserves that original
 subtype, formatting, and mentions. The timeline now exports explicit text-edit
-eligibility, and ArrowUp requires an explicit positive value, skipping unknown
+eligibility. The Edit menu in every message layout and the row action handler also
+require explicit text-edit eligibility, independently of the composer parity flag.
+Non-text and unknown events cannot open the text editor. ArrowUp requires an explicit positive value, skipping unknown
 legacy values and non-text fallback bodies. The binding was imported from CI run
 33845346784, where all 521 native tests passed, including subtype preservation
 and non-text rejection; the consumer regressions await current-head CI.
