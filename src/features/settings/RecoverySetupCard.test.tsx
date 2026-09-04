@@ -24,6 +24,27 @@ beforeEach(() => {
 });
 
 describe("RecoverySetupCard", () => {
+  it.each([
+    [
+      "Sign in again with durable encrypted storage before setting up recovery.",
+      "Sign in again with durable encrypted storage before setting up recovery.",
+    ],
+    [
+      "recovery setup is not enabled",
+      "Recovery setup is not enabled for this app or server. Contact your administrator.",
+    ],
+    [
+      "Could not atomically persist protected recovery.",
+      "Protected recovery storage is unavailable. Check device access or ask your server administrator to configure durable encrypted storage before retrying.",
+    ],
+  ])("gives actionable guidance for %s", async (error, expected) => {
+    setupRecovery.mockRejectedValue(new Error(error));
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
   it("reopens protected pending recovery after remount even with rollout disabled", async () => {
     const summary = { recovery_key: "protected pending key", room_keys_backed_up: true };
     setupRecovery.mockImplementation(async () => {

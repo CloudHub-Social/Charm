@@ -16,6 +16,22 @@ import { acknowledgeRecoverySetup, getPendingRecoverySetup, setupRecovery } from
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
+function setupFailureGuidance(error: unknown): string {
+  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  // Only map known conditions to static copy; never render an arbitrary native,
+  // server, keychain, or credential-bearing diagnostic.
+  if (message.includes("Sign in again") || message.includes("persisted session is no longer")) {
+    return "Sign in again with durable encrypted storage before setting up recovery.";
+  }
+  if (message.includes("not enabled")) {
+    return "Recovery setup is not enabled for this app or server. Contact your administrator.";
+  }
+  if (/protected|Protected|storage|snapshot|crypto store/.test(message)) {
+    return "Protected recovery storage is unavailable. Check device access or ask your server administrator to configure durable encrypted storage before retrying.";
+  }
+  return "Could not set up recovery. Check your connection and cross-signing, then try again.";
+}
+
 export function RecoverySetupCard({
   enabled,
   crossSigningReady,
@@ -79,8 +95,8 @@ export function RecoverySetupCard({
       setSetupOpen(false);
       setRoomKeysBackedUp(summary.room_keys_backed_up);
       setRecoveryKey(summary.recovery_key);
-    } catch {
-      setSetupError("Could not set up recovery. Please try again.");
+    } catch (error) {
+      setSetupError(setupFailureGuidance(error));
     } finally {
       setPassphrase("");
       setConfirmation("");
