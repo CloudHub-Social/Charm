@@ -163,6 +163,10 @@ fallback still contains the text. Edit and reply submissions now carry the
 serialized formatted body and mentions through both native IPC and companion
 HTTP routes, reusing the normal message-content builder before applying Matrix
 replacement/reply relations. Previously those two paths discarded all formatting.
+This is a content-preservation bug fix, not a rollout-gated authoring feature:
+disabling parity hides the new controls but must not strip existing formatting,
+spoiler markup, or explicit mentions from submitted edits and replies. Regression
+cases cover both flag states.
 Hook/transport regressions and the message-actions integration scenario cover
 spoiler retention at these boundaries, pending CI verification.
 The default-off composer flag also enables `/plain`, `/shrug`, and `/tableflip`

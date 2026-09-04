@@ -194,7 +194,13 @@ describe("formatted composer submission", () => {
     expect(result.current.commandFeedback).toBe("Usage: /plain <message>");
   });
 
-  it.each(["edit", "reply"] as const)("preserves spoilers and mentions on %s", async (mode) => {
+  it.each([
+    ["edit", false],
+    ["reply", false],
+    ["edit", true],
+    ["reply", true],
+  ] as const)("preserves spoilers and mentions on %s with parity %s", async (mode, enabled) => {
+    mocks.useFlag.mockReturnValue(enabled);
     const room = makeRoomSummary();
     const content = {
       body: "secret",
