@@ -26,6 +26,15 @@ not first-time **setup** or manual key file I/O.
   with a separate default-off server gate (`CHARM_WEB_CRYPTO_BACKUP_SETUP=1`).
   Route authorization, rollout, and transport regressions await CI; live creation
   and cross-session restore remain release gates.
+  **Readiness blocker:** the issued credential is still held by the settings
+  component, so closing/reloading that surface before acknowledgement can lose
+  the key. The rollout-lifetime regression does not prove teardown safety.
+  Completion requires account-bound encrypted pending-credential custody before
+  an irreversible setup operation, recovery after interruption, retrieval after
+  remount/restart, and acknowledgement-driven removal. Browser local storage and
+  the SDK state store's raw custom values are not suitable secret stores. Tests
+  must cover custody-write failure, interruption during setup, account switching,
+  remount/restart, and acknowledgement without resurrecting a removed credential.
 - **Manual encrypted room-key import/export:** remains to be implemented.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
   be implemented.
