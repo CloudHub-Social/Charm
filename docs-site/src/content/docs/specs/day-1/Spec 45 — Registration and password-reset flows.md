@@ -330,6 +330,8 @@ dropped, including when a newer attempt replaces an already waiting replacement.
 An eligible replacement retains that ownership witness through acquisition and
 publication; bounded failure or cancellation releases it automatically. This
 closes the cross-thread handoff gap without admitting cancellation-only owners.
+Teardown releases the semaphore slot before dropping its ownership witness, so
+a replacement cannot mistake a still-held slot for an unrelated owner's capacity.
 A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity

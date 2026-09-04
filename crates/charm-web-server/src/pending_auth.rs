@@ -73,8 +73,10 @@ struct MailQuota {
 /// A weak lifetime witness distinguishes an actual capacity owner from a
 /// cancellation-only record left behind by an early setup/quota failure.
 pub struct AuthCapacity {
-    lifetime: Arc<()>,
+    // Rust drops fields in declaration order. Release capacity before its
+    // ownership witness disappears, so a racing replacement can reuse or wait.
     _permit: OwnedSemaphorePermit,
+    lifetime: Arc<()>,
 }
 
 impl AuthCapacity {
