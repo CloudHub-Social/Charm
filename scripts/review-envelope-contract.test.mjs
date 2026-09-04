@@ -2,12 +2,20 @@
 // The pinned Apache-2.0 fork changes only the exact disclosure allowlist.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
-import {
+// This checkout is supplied by the contract workflow, not a repository module.
+// Fail rather than skipping tests if the runtime dependency is unavailable.
+assert.ok(
+  process.env.REVIEW_GATE_ROOT,
+  "REVIEW_GATE_ROOT must identify the pinned action checkout",
+);
+const {
   codexInlineParentReviewBodyHasClosedGrammar,
   collectCodexThreadEvidence,
   parseCodexReviewArtifact,
-} from "../.review-gate-contract/src/core.mjs";
+} = await import(pathToFileURL(resolve(process.env.REVIEW_GATE_ROOT, "src/core.mjs")).href);
 
 const sha = "941a6bb7db01484f8df66a683b78f510d8f74861";
 const user = { login: "chatgpt-codex-connector[bot]", type: "Bot" };
