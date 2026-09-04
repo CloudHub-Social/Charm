@@ -135,7 +135,23 @@ describe("DevicesPanel", () => {
       </RoomKeyFilesSessionProvider>,
     );
 
-    expect(await screen.findByRole("button", { name: "Export keys" })).toBeInTheDocument();
+    expect(await screen.findByText("This laptop")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
+  });
+
+  it("hides Android key-file actions until content-URI transfers are supported", async () => {
+    featureFlagTestHooks.setCache({ crypto_key_files: true });
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "desktop");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
+    renderWithProviders(
+      <RoomKeyFilesSessionProvider resolvePlatform={() => Promise.resolve("android")}>
+        <DevicesPanel />
+      </RoomKeyFilesSessionProvider>,
+    );
+
+    expect(await screen.findByText("This laptop")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export keys" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
   });
 
