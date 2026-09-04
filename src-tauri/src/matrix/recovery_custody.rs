@@ -38,10 +38,7 @@ pub trait RecoveryCustody: Send + Sync {
     /// Claims the empty pending slot and returns the canonical winner. Web
     /// implementations override this with a cross-process conditional write;
     /// native callers are serialized by the account recovery lock.
-    async fn claim(
-        &self,
-        pending: &PendingRecoverySetup,
-    ) -> Result<PendingRecoverySetup, String> {
+    async fn claim(&self, pending: &PendingRecoverySetup) -> Result<PendingRecoverySetup, String> {
         self.save(Some(pending)).await?;
         Ok(pending.clone())
     }
@@ -56,13 +53,25 @@ pub async fn pending_summary(
     let Some(pending) = custody.load().await? else {
         return Ok(None);
     };
+    let storage = client.encryption().secret_storage();
     if let Some(recovery_key) = &pending.recovery_key {
+        // A different Matrix client can replace the account's default secret
+        // storage after this device generated its key. Reopen the *current*
+        // default store before displaying or acknowledging the cached value;
+        // `open_secret_store` validates the key against the current key event,
+        // so stale custody can never be mistaken for a usable credential.
+        storage
+            .open_secret_store(recovery_key)
+            .await
+            .map_err(|_| {
+                "Pending recovery no longer matches the account's current secret storage. Restart recovery setup."
+                    .to_string()
+            })?;
         return Ok(Some(RecoverySetupSummary {
             recovery_key: recovery_key.clone(),
             room_keys_backed_up: pending.room_keys_backed_up,
         }));
     }
-    let storage = client.encryption().secret_storage();
     if !storage
         .is_enabled()
         .await
@@ -271,7 +280,19 @@ pub async fn acknowledge_recovery_setup(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use matrix_sdk::{
+        ruma::{
+            events::secret_storage::key::{
+                SecretStorageEncryptionAlgorithm, SecretStorageKeyEventContent,
+                SecretStorageV1AesHmacSha2Properties,
+            },
+            serde::Base64,
+        },
+        test_utils::mocks::MatrixMockServer,
+    };
     use std::sync::Mutex;
+
+    const ISSUED_KEY: &str = "EsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd";
 
     struct MemoryCustody {
         pending: Mutex<Option<PendingRecoverySetup>>,
@@ -298,18 +319,44 @@ mod tests {
     fn pending() -> PendingRecoverySetup {
         PendingRecoverySetup {
             passphrase: "private seed".into(),
-            recovery_key: Some("issued key".into()),
+            recovery_key: Some(ISSUED_KEY.into()),
             room_keys_backed_up: true,
         }
     }
 
+    async fn client_with_current_recovery_key() -> (MatrixMockServer, Client) {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server
+            .mock_get_default_secret_storage_key()
+            .ok(client.user_id().unwrap(), "current")
+            .mount()
+            .await;
+        server
+            .mock_get_secret_storage_key()
+            .ok(
+                client.user_id().unwrap(),
+                &SecretStorageKeyEventContent::new(
+                    "current".into(),
+                    SecretStorageEncryptionAlgorithm::V1AesHmacSha2(
+                        SecretStorageV1AesHmacSha2Properties::new(
+                            Some(Base64::parse("xv5b6/p3ExEw++wTyfSHEg==").unwrap()),
+                            Some(
+                                Base64::parse("ujBBbXahnTAMkmPUX2/0+VTfUh63pGyVRuBcDMgmJC8=")
+                                    .unwrap(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .mount()
+            .await;
+        (server, client)
+    }
+
     #[tokio::test]
-    async fn issued_key_reopens_offline_and_only_matching_acknowledgement_removes_it() {
-        let client = Client::builder()
-            .homeserver_url("http://127.0.0.1:9")
-            .build()
-            .await
-            .unwrap();
+    async fn issued_key_is_revalidated_and_only_matching_acknowledgement_removes_it() {
+        let (_server, client) = client_with_current_recovery_key().await;
         let custody = MemoryCustody {
             pending: Mutex::new(Some(pending())),
             fail_save: false,
@@ -320,17 +367,17 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .recovery_key,
-            "issued key"
+            ISSUED_KEY
         );
         assert!(acknowledge(&client, &custody, "other key".into())
             .await
             .is_err());
         assert!(custody.load().await.unwrap().is_some());
-        acknowledge(&client, &custody, "issued key".into())
+        acknowledge(&client, &custody, ISSUED_KEY.into())
             .await
             .unwrap();
         assert!(pending_summary(&client, &custody).await.unwrap().is_none());
-        acknowledge(&client, &custody, "issued key".into())
+        acknowledge(&client, &custody, ISSUED_KEY.into())
             .await
             .unwrap();
         assert!(custody.load().await.unwrap().is_none());
@@ -338,11 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn retry_rejects_a_different_passphrase_without_changing_custody() {
-        let client = Client::builder()
-            .homeserver_url("http://127.0.0.1:9")
-            .build()
-            .await
-            .unwrap();
+        let (_server, client) = client_with_current_recovery_key().await;
         let custody = MemoryCustody {
             pending: Mutex::new(Some(pending())),
             fail_save: false,
@@ -361,22 +404,18 @@ mod tests {
                 .await
                 .unwrap()
                 .recovery_key,
-            "issued key"
+            ISSUED_KEY
         );
     }
 
     #[tokio::test]
     async fn failed_acknowledgement_preserves_the_pending_key() {
-        let client = Client::builder()
-            .homeserver_url("http://127.0.0.1:9")
-            .build()
-            .await
-            .unwrap();
+        let (_server, client) = client_with_current_recovery_key().await;
         let custody = MemoryCustody {
             pending: Mutex::new(Some(pending())),
             fail_save: true,
         };
-        assert!(acknowledge(&client, &custody, "issued key".into())
+        assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
             .await
             .is_err());
         assert_eq!(
@@ -385,8 +424,26 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .recovery_key,
-            "issued key"
+            ISSUED_KEY
         );
+    }
+
+    #[tokio::test]
+    async fn replaced_secret_storage_rejects_the_cached_recovery_key() {
+        let (_server, client) = client_with_current_recovery_key().await;
+        let mut stale = pending();
+        stale.recovery_key =
+            Some("DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd".into());
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(stale)),
+            fail_save: false,
+        };
+
+        assert!(pending_summary(&client, &custody).await.is_err());
+        assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
+            .await
+            .is_err());
+        assert!(custody.load().await.unwrap().is_some());
     }
 
     #[test]

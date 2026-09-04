@@ -103,6 +103,11 @@ const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::fro
 struct PersistedSession {
     #[serde(default)]
     pending_recovery: Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    /// Cross-process admission bit for destructive session teardown. Recovery
+    /// setup claims and updates fail once this is set; teardown refuses to set
+    /// it while a recovery credential is pending.
+    #[serde(default)]
+    recovery_teardown_started: bool,
     token: String,
     homeserver_url: String,
     session: MatrixSession,
@@ -461,6 +466,9 @@ impl PersistenceStore {
                 .read_one_with_version_result(token)
                 .await?
                 .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started && pending.is_some() {
+                return Err("Session teardown has already started.".into());
+            }
             entry.pending_recovery = pending.cloned();
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
@@ -499,14 +507,17 @@ impl PersistenceStore {
                 .read_one_with_version_result(token)
                 .await?
                 .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started {
+                return Err("Session teardown has already started.".into());
+            }
             if let Some(existing) = entry.pending_recovery {
                 return Ok(existing);
             }
             entry.pending_recovery = Some(candidate.clone());
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
-            let json = serde_json::to_vec(&blob)
-                .map_err(|_| "Could not encode protected recovery.")?;
+            let json =
+                serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
             let options = object_store::PutOptions {
                 mode: object_store::PutMode::Update(version),
                 ..Default::default()
@@ -522,6 +533,46 @@ impl PersistenceStore {
             }
         }
         Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    /// Atomically admits session teardown only when no recovery credential is
+    /// pending. The bit lives in the same versioned object as the seed, so a
+    /// setup claim and logout on different web instances have one CAS winner.
+    pub async fn begin_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if entry.pending_recovery.is_some() {
+                return Err(
+                    "Save and acknowledge the pending recovery key before signing out.".into(),
+                );
+            }
+            if entry.recovery_teardown_started {
+                return Ok(());
+            }
+            entry.recovery_teardown_started = true;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode the session teardown marker.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not safely begin session teardown.".into()),
+            }
+        }
+        Err("Session recovery state changed concurrently; retry sign out.".into())
     }
 
     pub async fn require_active_crypto_writer(&self) -> Result<(), String> {
@@ -1051,6 +1102,7 @@ impl PersistenceStore {
             let blob = self.encrypt(
                 &PersistedSession {
                     pending_recovery: None,
+                    recovery_teardown_started: false,
                     token: token.to_string(),
                     homeserver_url: homeserver_url.to_string(),
                     session: session.clone(),
@@ -1146,6 +1198,9 @@ impl PersistenceStore {
                     pending_recovery: existing
                         .as_ref()
                         .and_then(|(entry, _)| entry.pending_recovery.clone()),
+                    recovery_teardown_started: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_teardown_started),
                 },
                 &path,
             )?;
@@ -2085,6 +2140,7 @@ pub(crate) async fn save_with_last_seen_for_test(
 ) {
     let entry = PersistedSession {
         pending_recovery: None,
+        recovery_teardown_started: false,
         token: token.to_string(),
         homeserver_url: "https://example.invalid".to_string(),
         session: MatrixSession {
@@ -2269,7 +2325,10 @@ mod tests {
         );
         let winner_a = serde_json::to_value(winner_a.unwrap()).unwrap();
         let winner_b = serde_json::to_value(winner_b.unwrap()).unwrap();
-        assert_eq!(winner_a, winner_b, "both instances must adopt the CAS winner");
+        assert_eq!(
+            winner_a, winner_b,
+            "both instances must adopt the CAS winner"
+        );
         assert_eq!(
             winner_a,
             serde_json::to_value(
@@ -2281,6 +2340,59 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn cross_instance_teardown_and_recovery_claim_have_one_winner() {
+        let key_bytes = [75u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let setup_process = new_process();
+        let logout_process = new_process();
+        setup_process
+            .save(
+                "teardown-race-token",
+                "https://example.invalid",
+                &dummy_session("@teardown-race:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let candidate = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+
+        let (claim, teardown) = tokio::join!(
+            setup_process.claim_pending_recovery("teardown-race-token", &candidate),
+            logout_process.begin_recovery_safe_teardown("teardown-race-token"),
+        );
+        assert_ne!(
+            claim.is_ok(),
+            teardown.is_ok(),
+            "exactly one admission must win"
+        );
+
+        let durable = setup_process.read_one("teardown-race-token").await.unwrap();
+        if claim.is_ok() {
+            assert!(durable.pending_recovery.is_some());
+            assert!(!durable.recovery_teardown_started);
+        } else {
+            assert!(durable.pending_recovery.is_none());
+            assert!(durable.recovery_teardown_started);
+            assert!(setup_process
+                .save_pending_recovery("teardown-race-token", Some(&candidate))
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
@@ -3130,6 +3242,7 @@ mod tests {
     fn persisted_crypto_from_entry_is_populated_regardless_of_whether_it_was_opened() {
         let entry = PersistedSession {
             pending_recovery: None,
+            recovery_teardown_started: false,
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@laura:example.invalid"),
@@ -3150,6 +3263,7 @@ mod tests {
     fn persisted_crypto_from_entry_is_none_when_the_entry_never_had_a_store() {
         let entry = PersistedSession {
             pending_recovery: None,
+            recovery_teardown_started: false,
             token: "tok-legacy".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@mallory:example.invalid"),
@@ -3168,6 +3282,7 @@ mod tests {
     async fn save_with_last_seen(store: &PersistenceStore, token: &str, last_seen_unix: u64) {
         let entry = PersistedSession {
             pending_recovery: None,
+            recovery_teardown_started: false,
             token: token.to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@sweep-target:example.invalid"),
@@ -4059,6 +4174,7 @@ mod tests {
         let store = PersistenceStore::new_for_test(&dir, [44u8; 32]);
         let entry = PersistedSession {
             pending_recovery: None,
+            recovery_teardown_started: false,
             token: "tok-legacy-no-timestamp".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@legacy:example.invalid"),

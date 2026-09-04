@@ -1333,15 +1333,10 @@ impl SessionStore {
         let _recovery_guard = admitted.recovery_setup_lock.lock().await;
         let session = {
             let mut sessions = self.inner.write().await;
-            if !sessions
-                .get(token)
-                .is_some_and(|current| {
-                    Arc::ptr_eq(current, &admitted)
-                        && expected.is_none_or(|closed| {
-                            Arc::ptr_eq(&current.session_closed, closed)
-                        })
-                })
-            {
+            if !sessions.get(token).is_some_and(|current| {
+                Arc::ptr_eq(current, &admitted)
+                    && expected.is_none_or(|closed| Arc::ptr_eq(&current.session_closed, closed))
+            }) {
                 return None;
             }
             let session = sessions.remove(token);
