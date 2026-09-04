@@ -97,6 +97,12 @@ to validate signing before a release cut without creating a version tag.
 Manifest signing supports unencrypted GPG keys; protected keys require their
 matching `GPG_PASSPHRASE`, and signing failures block publication.
 
+The one-time signing-secret migration uses an operator-held encryption key that
+expires on October 4, 2026, plus a one-day encrypted artifact. Regenerate that
+recipient if the migration misses this bounded window. Required platform and GPG
+key material must migrate as a complete set; `GPG_PASSPHRASE` migrates when the
+private key is protected and may be absent only for an unencrypted key.
+
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same
 integrity chain and retained alongside the binaries. SBOM generation scans a
