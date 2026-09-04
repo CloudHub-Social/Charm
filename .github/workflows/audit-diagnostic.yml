@@ -33,7 +33,13 @@ jobs:
           sha256sum pnpm-lock.yaml
       - name: Audit committed lockfile against current advisories
         env:
-          npm_config_fetch_timeout: ${{ matrix.request_timeout_ms }}
+          pnpm_config_fetch_timeout: ${{ matrix.request_timeout_ms }}
+          EXPECTED_FETCH_TIMEOUT: ${{ matrix.request_timeout_ms }}
         run: |
-          pnpm config get fetch-timeout
+          effective_timeout=$(pnpm config get fetchTimeout)
+          echo "Effective fetchTimeout: $effective_timeout"
+          if [ "$effective_timeout" != "$EXPECTED_FETCH_TIMEOUT" ]; then
+            echo "::error::Requested audit timeout was not applied"
+            exit 1
+          fi
           pnpm audit --audit-level=high
