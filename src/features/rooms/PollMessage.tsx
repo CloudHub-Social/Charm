@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { LoaderCircle } from "lucide-react";
+import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { endPoll, voteOnPoll } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
+import { SeenByChips } from "./SeenByChips";
 import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
 
 interface PollMessageProps {
@@ -22,6 +24,7 @@ export function PollMessage({
   mutationsDisabled = false,
   rowActions,
 }: PollMessageProps) {
+  const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
@@ -98,7 +101,7 @@ export function PollMessage({
               <h3 className="mt-1 text-base font-semibold text-foreground">{poll.question}</h3>
             </div>
             <div className="shrink-0 text-right text-[11px] text-muted-foreground">
-              <time>{formatTime(message.timestamp_ms)}</time>
+              <time>{formatTime(message.timestamp_ms, clockFormat)}</time>
               {poll.edited && <span className="ml-1">(edited)</span>}
             </div>
           </div>
@@ -187,6 +190,13 @@ export function PollMessage({
             </p>
           )}
         </article>
+        {rowActions && (
+          <SeenByChips
+            readers={rowActions.readers}
+            senderNameByUserId={rowActions.senderNameByUserId}
+            className={cn("mt-0.5", own ? "justify-end" : "justify-start")}
+          />
+        )}
         {rowActions && (
           <ReactionBar
             accountId={rowActions.currentUserId ?? ""}

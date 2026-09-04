@@ -7,6 +7,11 @@ import type { MessageRowLayoutProps } from "./messageRowShared";
 
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
+const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
+
+vi.mock("@/features/appearance/useDisplayFormats", () => ({
+  useDisplayFormats: () => displayFormats,
+}));
 
 vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
 
@@ -84,6 +89,38 @@ beforeEach(() => {
 });
 
 describe("PollMessage", () => {
+  it("renders forwarded read receipts", () => {
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own={false}
+        rowActions={rowActions({
+          readers: ["@bob:example.org"],
+          senderNameByUserId: new Map([["@bob:example.org", "Bob"]]),
+        })}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Seen by 1 people. Show full list." }),
+    ).toBeInTheDocument();
+  });
+
+  it.each(["12h", "24h"] as const)("uses the selected %s clock", (clockFormat) => {
+    displayFormats.clockFormat = clockFormat;
+    const message = { ...pollMessage(), timestamp_ms: new Date(2026, 8, 4, 15, 5).getTime() };
+    const { container } = render(
+      <PollMessage message={message} roomId="!room:example.org" own={false} />,
+    );
+    expect(container.querySelector("time")).toHaveTextContent(
+      new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: clockFormat === "12h",
+      }).format(message.timestamp_ms),
+    );
+  });
+
   it("does not replace multi-select votes with single answers", () => {
     render(
       <PollMessage
