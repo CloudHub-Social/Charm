@@ -2,7 +2,7 @@ import { useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { endPoll, voteOnPoll } from "@/lib/matrix";
+import { endPoll, resendMessage, voteOnPoll } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
@@ -28,6 +28,8 @@ export function PollMessage({
   const poll = message.poll;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [endRequestPending, setEndRequestPending] = useState(false);
+  const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!poll) return null;
   const currentPoll = poll;
@@ -71,18 +73,24 @@ export function PollMessage({
       ended ||
       mutationsDisabled ||
       !hasRealEventId ||
-      ending ||
+      endRequestPending ||
       pendingAnswerId !== null
     )
       return;
     setEnding(true);
+    setEndRequestPending(true);
     setError(null);
     try {
-      await endPoll(roomId, message.event_id);
+      if (endTransactionId) {
+        await resendMessage(roomId, endTransactionId);
+      } else {
+        setEndTransactionId(await endPoll(roomId, message.event_id));
+      }
     } catch {
       setError("The poll could not be ended.");
+      if (!endTransactionId) setEnding(false);
     } finally {
-      setEnding(false);
+      setEndRequestPending(false);
     }
   }
 
@@ -204,14 +212,26 @@ export function PollMessage({
                 type="button"
                 onClick={() => void end()}
                 disabled={
-                  mutationsDisabled || !hasRealEventId || ending || pendingAnswerId !== null
+                  mutationsDisabled ||
+                  !hasRealEventId ||
+                  endRequestPending ||
+                  pendingAnswerId !== null
                 }
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {ending ? "Ending…" : "End poll"}
+                {endRequestPending
+                  ? "Ending…"
+                  : endTransactionId
+                    ? "Retry closing poll"
+                    : "End poll"}
               </button>
             )}
           </div>
+          {ending && !ended && !endRequestPending && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Close queued. Waiting for the timeline to confirm; retry uses the same queued event.
+            </p>
+          )}
           {unsupportedSelectionCount && !poll.ended && (
             <p className="mt-2 text-xs text-muted-foreground">
               Voting on multi-select polls is not supported yet. Use another Matrix client to vote.

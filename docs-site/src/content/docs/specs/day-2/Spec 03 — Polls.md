@@ -83,6 +83,11 @@ send queue and transaction-ID capture path as ordinary messages. The web routes
 call those same Rust implementation functions, so desktop and web do not maintain
 parallel protocol logic.
 
+A queued close keeps voting disabled until the timeline confirms closure. Retry
+uses the existing transaction rather than creating a second end event. The
+backend also consults the SDK's persistent local echoes to reject votes and
+deduplicate close requests while an end is queued, including after a UI remount.
+
 ## API/contract changes
 
 - Additive `poll: PollSummary | null` on `RoomMessageSummary`.

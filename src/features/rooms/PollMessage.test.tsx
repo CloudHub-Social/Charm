@@ -7,6 +7,7 @@ import type { MessageRowLayoutProps } from "./messageRowShared";
 
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
+const resendMessage = vi.fn();
 const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
 
 vi.mock("@/features/appearance/useDisplayFormats", () => ({
@@ -21,6 +22,7 @@ vi.mock("@/lib/matrix", async () => {
     ...actual,
     voteOnPoll: (...args: unknown[]) => voteOnPoll(...args),
     endPoll: (...args: unknown[]) => endPoll(...args),
+    resendMessage: (...args: unknown[]) => resendMessage(...args),
   };
 });
 
@@ -86,6 +88,7 @@ function rowActions(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowL
 beforeEach(() => {
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
+  resendMessage.mockReset().mockResolvedValue(undefined);
 });
 
 describe("PollMessage", () => {
@@ -147,23 +150,31 @@ describe("PollMessage", () => {
   });
 
   it("excludes voting during end admission without treating queue acceptance as closure", async () => {
-    let finish!: () => void;
+    let finish!: (transactionId: string) => void;
     endPoll.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<string>((resolve) => {
           finish = resolve;
         }),
     );
-    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
     fireEvent.click(screen.getByRole("button", { name: "End poll" }));
     const answer = screen.getByRole("button", { name: /Pizza/ });
     expect(answer).toBeDisabled();
     fireEvent.click(answer);
     expect(voteOnPoll).not.toHaveBeenCalled();
-    await act(async () => finish());
-    expect(answer).toBeEnabled();
+    await act(async () => finish("txn-end"));
+    expect(answer).toBeDisabled();
     expect(screen.queryByText(/Poll closed/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry closing poll" }));
+    await waitFor(() => expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-end"));
+    expect(endPoll).toHaveBeenCalledOnce();
+    expect(answer).toBeDisabled();
+    view.rerender(
+      <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />,
+    );
+    expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
   });
 
   it("does not end a poll while a vote is pending", async () => {

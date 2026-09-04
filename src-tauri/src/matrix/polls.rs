@@ -15,7 +15,9 @@ use matrix_sdk::ruma::events::poll::{
 };
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::{EventId, RoomId};
+use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
+use std::sync::LazyLock;
 use tauri::{Manager, State};
 
 use super::send::send_and_capture_transaction_id;
@@ -23,6 +25,34 @@ use super::MatrixState;
 
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 20;
+static POLL_MUTATION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+async fn pending_poll_end(
+    room: &matrix_sdk::Room,
+    poll_id: &EventId,
+) -> Result<Option<String>, String> {
+    let (echoes, _) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(echoes.into_iter().find_map(|echo| {
+        let LocalEchoContent::Event {
+            serialized_event, ..
+        } = echo.content
+        else {
+            return None;
+        };
+        let Ok(AnyMessageLikeEventContent::UnstablePollEnd(content)) =
+            serialized_event.deserialize()
+        else {
+            return None;
+        };
+        (content.relates_to.event_id.as_str() == poll_id.as_str())
+            .then(|| echo.transaction_id.to_string())
+    }))
+}
 
 pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
     app.path().app_data_dir().is_ok_and(|directory| {
@@ -117,11 +147,15 @@ pub async fn vote_on_poll_impl(
     poll_event_id: &str,
     answer_id: String,
 ) -> Result<String, String> {
+    let _guard = POLL_MUTATION_LOCK.lock().await;
     if answer_id.is_empty() || answer_id.len() > 4096 {
         return Err("Poll answer id is empty or too long".to_string());
     }
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    if pending_poll_end(&room, &poll_event_id).await?.is_some() {
+        return Err("This poll has a queued close. Wait for it to settle before voting.".into());
+    }
     let content = UnstablePollResponseEventContent::new(vec![answer_id], poll_event_id);
     send_and_capture_transaction_id(
         client,
@@ -136,8 +170,12 @@ pub async fn end_poll_impl(
     room_id: &str,
     poll_event_id: &str,
 ) -> Result<String, String> {
+    let _guard = POLL_MUTATION_LOCK.lock().await;
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    if let Some(transaction_id) = pending_poll_end(&room, &poll_event_id).await? {
+        return Ok(transaction_id);
+    }
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
     send_and_capture_transaction_id(
         client,
@@ -183,6 +221,31 @@ pub async fn end_poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn offline_close_is_deduplicated_and_blocks_later_votes() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!poll:example.org");
+        let poll_id = event_id!("$poll:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+        let (first, second) = tokio::join!(
+            end_poll_impl(&client, room_id.as_str(), poll_id.as_str()),
+            end_poll_impl(&client, room_id.as_str(), poll_id.as_str()),
+        );
+        assert_eq!(first.unwrap(), second.unwrap());
+        assert!(
+            vote_on_poll_impl(&client, room_id.as_str(), poll_id.as_str(), "0".into())
+                .await
+                .is_err()
+        );
+        let (echoes, _) = room.send_queue().subscribe().await.unwrap();
+        assert_eq!(echoes.len(), 1);
+    }
 
     #[test]
     fn validates_and_builds_single_select_poll() {
