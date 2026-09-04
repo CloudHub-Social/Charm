@@ -351,6 +351,36 @@ fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
     })
 }
 
+fn require_finished_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    require_finished_account_cleanup_at(&app_data_dir, account_key)
+}
+
+fn require_finished_account_cleanup_at(
+    app_data_dir: &Path,
+    account_key: &str,
+) -> Result<(), String> {
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    for marker in [
+        app_data_dir.join("matrix_store").join(&name),
+        app_data_dir.join(&name),
+    ] {
+        // Even a malformed/dangling marker must block adoption: startup still
+        // treats its name as account-wide deletion intent. Never clear it here.
+        match std::fs::symlink_metadata(marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(
+                "Account cleanup is incomplete. Restart Charm to retry cleanup before signing in."
+                    .to_string(),
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn sweep_cancelled_account_cleanups_at(
     root: &Path,
     app_data_dir: &Path,
@@ -1045,6 +1075,7 @@ pub fn relocate_store_and_save_session(
     session: &MatrixSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    require_finished_account_cleanup(app, account_key).map_err(RelocationFailure::safe)?;
     let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
@@ -1091,6 +1122,7 @@ pub fn relocate_store_and_save_oauth_session(
     session: &OAuthSession,
 ) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    require_finished_account_cleanup(app, account_key).map_err(RelocationFailure::safe)?;
     let outcome = relocate_store_at_locked_with(
         &matrix_store_root(app).map_err(RelocationFailure::safe)?,
         temp_key,
@@ -1871,6 +1903,42 @@ mod tests {
         sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| Ok(())).unwrap();
         assert!(!database.exists());
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn fresh_login_waits_for_primary_or_fallback_wipe_cleanup() {
+        for fallback in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("matrix_store");
+            std::fs::create_dir(&root).unwrap();
+            let marker_root = if fallback { directory.path() } else { &root };
+            let marker = marker_root.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+            std::fs::write(&marker, []).unwrap();
+
+            assert!(require_finished_account_cleanup_at(directory.path(), "account").is_err());
+            assert!(marker.exists(), "admission must not erase cleanup intent");
+            assert!(require_finished_account_cleanup_at(directory.path(), "other-account").is_ok());
+
+            sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| Ok(())).unwrap();
+            assert!(require_finished_account_cleanup_at(directory.path(), "account").is_ok());
+        }
+    }
+
+    #[test]
+    fn fresh_login_fails_closed_when_cleanup_marker_cannot_be_inspected() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("matrix_store"), "not a directory").unwrap();
+        assert!(require_finished_account_cleanup_at(directory.path(), "account").is_err());
+    }
+
+    #[test]
+    fn malformed_cleanup_marker_still_blocks_fresh_login() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory
+            .path()
+            .join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account"));
+        std::fs::create_dir(&marker).unwrap();
+        assert!(require_finished_account_cleanup_at(directory.path(), "account").is_err());
     }
 
     #[test]

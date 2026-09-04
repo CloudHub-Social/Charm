@@ -303,6 +303,10 @@ Surfaces changed:
     A fallback marker outside the Matrix-store directory retains the same full-wipe
     semantics if the primary marker cannot be written, including after remote
     deactivation. Neither marker permits session restoration while cleanup is pending.
+    Replacement password/SSO and OAuth/QR login adoption also rejects either
+    marker before relocating a store or saving credentials. An unreadable or
+    malformed marker fails closed. The user must finish the pending cleanup
+    (including its startup retry) before signing back into that account.
 16. Hard terminal authentication failure revokes the in-memory client and invalidates
     its push registration first, using the same transport and persisted-endpoint
     cleanup as explicit logout. A rejected homeserver pusher deletion does not
