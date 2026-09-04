@@ -314,6 +314,21 @@ fn mark_cancelled_account_cleanup_at(app_data_dir: &Path, account_key: &str) -> 
 
 /// Durably suppresses restoration before logout starts mutating credentials.
 /// The app-data sibling is a fallback when `matrix_store` is unwritable.
+fn create_logout_tombstone_at(path: &Path) -> Result<(), std::io::Error> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Presence already vetoes restore. Do not follow or truncate it.
+            std::fs::symlink_metadata(path).map(|_| ())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let app_data_dir = app
         .path()
@@ -321,17 +336,13 @@ pub fn mark_logout_tombstone(app: &AppHandle, account_key: &str) -> Result<(), S
         .map_err(|_| "application data directory unavailable".to_string())?;
     let root = app_data_dir.join("matrix_store");
     let _ = std::fs::create_dir_all(&root);
-    if std::fs::write(
-        root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
-        [],
-    )
-    .is_ok()
+    if create_logout_tombstone_at(&root.join(format!("{LOGOUT_TOMBSTONE_PREFIX}{account_key}")))
+        .is_ok()
     {
         return Ok(());
     }
-    std::fs::write(
-        app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
-        [],
+    create_logout_tombstone_at(
+        &app_data_dir.join(format!("{FALLBACK_LOGOUT_TOMBSTONE_PREFIX}{account_key}")),
     )
     .map_err(|_| "failed to persist local sign-out intent".to_string())
 }
@@ -2060,6 +2071,22 @@ fn write_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn logout_marker_does_not_follow_existing_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("valuable");
+        let marker = root.path().join("marker");
+        std::fs::write(&target, b"preserve").unwrap();
+        std::os::unix::fs::symlink(&target, &marker).unwrap();
+        create_logout_tombstone_at(&marker).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"preserve");
+        assert!(std::fs::symlink_metadata(&marker)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
