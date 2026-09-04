@@ -277,7 +277,7 @@ export function DevicesPanel() {
         </SettingsCard>
       )}
 
-      {keyFilesEnabled && keyFilesSettled && !isWebBuild() && <RoomKeyFilesCard />}
+      {!isWebBuild() && <RoomKeyFilesCard enabled={keyFilesEnabled && keyFilesSettled} />}
 
       {verify.isError && (
         <p className="text-sm text-destructive">

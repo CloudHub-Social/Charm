@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
 
 const exportRoomKeys = vi.fn();
@@ -70,13 +70,17 @@ describe("RoomKeyFilesCard", () => {
         finish = resolve;
       }),
     );
-    renderWithProviders(<RoomKeyFilesCard />);
+    const { client, rerender } = renderWithProviders(<RoomKeyFilesCard />);
     fireEvent.click(screen.getByRole("button", { name: "Import keys" }));
     fireEvent.change(screen.getByLabelText("Passphrase"), {
       target: { value: "long-enough-passphrase" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Importing…" })).toBeDisabled());
+
+    rerender(wrapWithProviders(<RoomKeyFilesCard enabled={false} />, client));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import keys" })).not.toBeInTheDocument();
 
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();

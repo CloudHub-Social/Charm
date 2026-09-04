@@ -16,7 +16,7 @@ import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 type TransferMode = "export" | "import";
 
-export function RoomKeyFilesCard() {
+export function RoomKeyFilesCard({ enabled = true }: { enabled?: boolean }) {
   const [mode, setMode] = useState<TransferMode | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -24,6 +24,7 @@ export function RoomKeyFilesCard() {
 
   const transfer = useMutation({
     mutationFn: async () => {
+      if (!enabled) throw new Error("Room key transfers are not enabled.");
       if (mode === "export") return exportRoomKeys(passphrase);
       if (mode === "import") return importRoomKeys(passphrase);
       throw new Error("Choose an import or export operation.");
@@ -45,6 +46,7 @@ export function RoomKeyFilesCard() {
   });
 
   function openDialog(nextMode: TransferMode) {
+    if (!enabled || transfer.isPending) return;
     transfer.reset();
     setResult(null);
     setMode(nextMode);
@@ -65,23 +67,27 @@ export function RoomKeyFilesCard() {
 
   return (
     <>
-      <SettingsCard heading="Room key files">
-        <SettingTile>
-          <p className="mb-3 text-sm text-muted-foreground">
-            Import or export encrypted Matrix room keys for manual backup or migration. These files
-            do not replace account recovery or device verification.
-          </p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
-              Import keys
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
-              Export keys
-            </Button>
-          </div>
-          {result && <output className="mt-3 block text-sm text-muted-foreground">{result}</output>}
-        </SettingTile>
-      </SettingsCard>
+      {enabled && (
+        <SettingsCard heading="Room key files">
+          <SettingTile>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Import or export encrypted Matrix room keys for manual backup or migration. These
+              files do not replace account recovery or device verification.
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => openDialog("import")}>
+                Import keys
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => openDialog("export")}>
+                Export keys
+              </Button>
+            </div>
+            {result && (
+              <output className="mt-3 block text-sm text-muted-foreground">{result}</output>
+            )}
+          </SettingTile>
+        </SettingsCard>
+      )}
 
       <Dialog
         open={mode !== null}
@@ -137,7 +143,10 @@ export function RoomKeyFilesCard() {
             <Button variant="secondary" onClick={closeDialog} disabled={transfer.isPending}>
               Cancel
             </Button>
-            <Button onClick={() => transfer.mutate()} disabled={!canSubmit || transfer.isPending}>
+            <Button
+              onClick={() => transfer.mutate()}
+              disabled={!enabled || !canSubmit || transfer.isPending}
+            >
               {transfer.isPending
                 ? mode === "export"
                   ? "Exporting…"
