@@ -37,7 +37,9 @@ export function RecoverySetupCard({
   const hasPassphrase = passphrase.length > 0;
   const passphraseValid =
     (!hasPassphrase && confirmation.length === 0) ||
-    (passphrase.length >= 8 && confirmation === passphrase);
+    (Array.from(passphrase).length >= 8 &&
+      new TextEncoder().encode(passphrase).length <= 1024 &&
+      confirmation === passphrase);
 
   async function startSetup() {
     if (!enabled || setup.isPending || !passphraseValid || !crossSigningReady) return;

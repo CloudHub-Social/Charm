@@ -5471,6 +5471,35 @@ async fn setup_recovery(
     if !state.crypto_backup_setup_enabled {
         return Err(ApiError::not_found("recovery setup is not enabled"));
     }
+    // Never mutate server-side recovery from a legacy in-memory-only session.
+    // Verify persistence before enabling anything, not only after issuing a key.
+    let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
+        &state.persistence,
+        session.client.matrix_auth().session(),
+        session.persisted_crypto.as_ref(),
+        jar.get(SESSION_COOKIE),
+    ) else {
+        return Err(ApiError::bad_request(
+            "Sign in again with durable encrypted storage before setting up recovery.",
+        ));
+    };
+    if !session.crypto_store_open {
+        return Err(ApiError::bad_request(
+            "Encrypted storage is unavailable; recovery setup was not started.",
+        ));
+    }
+    persistence
+        .snapshot_crypto_store(
+            cookie.value(),
+            &matrix_session,
+            Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
+        )
+        .await
+        .map_err(|_| {
+            ApiError::bad_request(
+                "Could not persist encrypted storage; recovery setup was not started.",
+            )
+        })?;
     let summary = setup_recovery_with_passphrase_impl(&session.client, request.passphrase)
         .await
         .map_err(ApiError::bad_request)?;

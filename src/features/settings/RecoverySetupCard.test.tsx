@@ -58,6 +58,20 @@ describe("RecoverySetupCard", () => {
     await waitFor(() => expect(setupRecovery).toHaveBeenCalledWith(undefined));
   });
 
+  it("counts Unicode scalars and enforces the backend UTF-8 byte limit", () => {
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    for (const value of ["😀".repeat(4), "😀".repeat(257)]) {
+      fireEvent.change(screen.getByLabelText("Optional passphrase"), { target: { value } });
+      fireEvent.change(screen.getByLabelText("Confirm passphrase"), { target: { value } });
+      expect(screen.getByRole("button", { name: "Create backup" })).toBeDisabled();
+    }
+    const value = "😀".repeat(8);
+    fireEvent.change(screen.getByLabelText("Optional passphrase"), { target: { value } });
+    fireEvent.change(screen.getByLabelText("Confirm passphrase"), { target: { value } });
+    expect(screen.getByRole("button", { name: "Create backup" })).toBeEnabled();
+  });
+
   it.each(["pending", "issued"] as const)(
     "retains the recovery key when disabled while %s",
     async (phase) => {
