@@ -5,6 +5,7 @@ import type { ReactElement } from "react";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 import type {
   ReactionToggleResult,
   ReceiptUpdate,
@@ -917,6 +918,32 @@ describe("ChatShell", () => {
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("does not mark new messages read while retained chat content is hidden", async () => {
+    const store = createStore();
+    const view = (visible: boolean) => (
+      <JotaiProvider store={store}>
+        <ChatVisibilityContext.Provider value={visible}>
+          <ChatShell room={room} currentUserId="@me:localhost" />
+        </ChatVisibilityContext.Provider>
+      </JotaiProvider>
+    );
+    const { rerender } = render(view(true));
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalled());
+    rerender(view(false));
+    markRoomRead.mockClear();
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [summary({ event_id: "$hidden", body: "unseen arrival" })],
+      });
+    });
+    await screen.findByText("unseen arrival");
+    fireAtBottomStateChange(true);
+    expect(markRoomRead).not.toHaveBeenCalled();
+    rerender(view(true));
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
   // Real bottom-anchoring / sticky-bottom-on-arrival behavior is now

@@ -1,4 +1,12 @@
-import { createElement, useEffect, useState, type PropsWithChildren, type ReactNode } from "react";
+import {
+  createElement,
+  useContext,
+  useEffect,
+  useState,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
+import { ChatVisibilityContext } from "./chatVisibility";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +48,10 @@ function Harness({
       rightPanel={rightPanel}
     />
   );
+}
+
+function VisibilityProbe() {
+  return <output>{useContext(ChatVisibilityContext) ? "chat-visible" : "chat-hidden"}</output>;
 }
 
 function renderShell(
@@ -173,6 +185,24 @@ describe("AppShell", () => {
       "page",
     );
     expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
+  });
+
+  it("reports the chat hidden while Settings covers mobile detail", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const props = {
+      activeRoomId: "!room:example.org",
+      selectionRequestId: 0,
+      mobileView: "detail" as const,
+      onMobileViewChange: vi.fn(),
+      spaceRail: null,
+      roomList: null,
+      rightPanel: null,
+      content: <VisibilityProbe />,
+    };
+    const { rerender } = render(<AppShell {...props} />);
+    expect(screen.getByText("chat-visible")).toBeInTheDocument();
+    rerender(<AppShell {...props} isSettingsActive />);
+    expect(screen.getByText("chat-hidden")).toBeInTheDocument();
   });
 
   it("reopens the detail view when selectionRequestId bumps for the already-active room", () => {

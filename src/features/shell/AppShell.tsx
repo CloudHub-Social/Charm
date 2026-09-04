@@ -83,7 +83,9 @@ export function AppShell({
           className="[&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
         >
           <ChatVisibilityContext.Provider
-            value={mobileView === "detail" && !!activeRoomId && rightPanel === null}
+            value={
+              mobileView === "detail" && !!activeRoomId && rightPanel === null && !isSettingsActive
+            }
           >
             {content}
           </ChatVisibilityContext.Provider>
