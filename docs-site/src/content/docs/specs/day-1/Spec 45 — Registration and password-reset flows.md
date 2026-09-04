@@ -322,7 +322,12 @@ while waiting for capacity cancels and removes that exact attempt entry without
 depending on the later expiry task; it does not release another flow's permit.
 Regression coverage drops a saturated-capacity waiter and checks bounded cleanup,
 pending GitHub Actions verification.
-Fresh owners still fail immediately at capacity. A regression test exercises
+Fresh owners still fail immediately at capacity. Capacity ownership is tracked
+by weak permit-lifetime witnesses, not by cancellation entries: post-admission
+quota/setup failures cannot leave a cancellation-only owner eligible to wait.
+Actual cancelled in-flight permits remain attributable to their browser until
+dropped, including when a newer attempt replaces an already waiting replacement.
+A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity
 before remote cleanup; unrelated browsers remain subject to the same limit.

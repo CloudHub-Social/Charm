@@ -70,8 +70,24 @@ struct MailQuota {
     by_address: HashMap<String, Vec<Instant>>,
 }
 
+/// A weak lifetime witness distinguishes an actual capacity owner from a
+/// cancellation-only record left behind by an early setup/quota failure.
+pub struct AuthCapacity {
+    lifetime: Arc<()>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AuthCapacity {
+    fn new(permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            _permit: permit,
+            lifetime: Arc::new(()),
+        }
+    }
+}
+
 struct PendingRegistration {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     crypto: Option<CryptoStoreHandle>,
@@ -83,7 +99,7 @@ struct PendingRegistration {
 }
 
 struct PendingPasswordReset {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
@@ -98,7 +114,7 @@ struct PendingPasswordReset {
 }
 
 struct PendingSso {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     crypto: Option<CryptoStoreHandle>,
@@ -113,7 +129,7 @@ enum SsoCompletionResult {
 }
 
 struct CompletedSso {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     result: SsoCompletionResult,
     created_at: Instant,
@@ -148,6 +164,7 @@ pub struct PendingAuthStore {
     sso_attempts: Arc<Mutex<HashMap<String, PendingSso>>>,
     completed_sso: Arc<Mutex<HashMap<String, CompletedSso>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
+    capacity_owners: Arc<std::sync::Mutex<HashMap<String, (String, std::sync::Weak<()>)>>>,
     mail_quota: Arc<Mutex<MailQuota>>,
     mail_quota_salt: Arc<String>,
     capacity: Arc<Semaphore>,
@@ -201,6 +218,7 @@ impl Default for PendingAuthStore {
             sso_attempts: Arc::default(),
             completed_sso: Arc::default(),
             cancellations: Arc::default(),
+            capacity_owners: Arc::default(),
             mail_quota: Arc::default(),
             mail_quota_salt: Arc::new(opaque_id()),
             capacity: Arc::new(Semaphore::new(MAX_PENDING_AUTH_ATTEMPTS)),
@@ -214,7 +232,7 @@ impl PendingAuthStore {
         owner: impl Into<AuthOwner>,
         attempt_id: String,
         cancellation: CancellationToken,
-    ) -> Result<OwnedSemaphorePermit, String> {
+    ) -> Result<AuthCapacity, String> {
         let mut cleanup = AdmissionCleanup {
             store: self.clone(),
             attempt_id: attempt_id.clone(),
@@ -222,23 +240,39 @@ impl PendingAuthStore {
             armed: true,
         };
         let owner = owner.into();
+        let capacity_owner = owner.id.clone();
         let (completed, capacity, replacing_in_flight) = {
             let _transition = self.transitions.lock().await;
             let mut owners = owner.superseded;
             owners.push(owner.id.clone());
             owners.sort_unstable();
             owners.dedup();
-            let replacing_in_flight = self
-                .cancellations
+            self.capacity_owners
                 .lock()
-                .await
+                .unwrap_or_else(|error| error.into_inner())
+                .retain(|_, (_, lifetime)| lifetime.strong_count() > 0);
+            let replacing_in_flight = self
+                .capacity_owners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .values()
-                .any(|(previous, _)| owners.contains(previous));
+                .any(|(previous, lifetime)| {
+                    owners.contains(previous) && lifetime.strong_count() > 0
+                });
             let mut completed = Vec::new();
             for previous in owners {
                 completed.extend(self.clear_owner_attempts(&previous).await);
             }
-            let capacity = self.reserve_capacity();
+            let capacity = self.reserve_capacity().map(AuthCapacity::new);
+            if let Ok(capacity) = &capacity {
+                self.capacity_owners
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(
+                        attempt_id.clone(),
+                        (capacity_owner.clone(), Arc::downgrade(&capacity.lifetime)),
+                    );
+            }
             if capacity.is_ok() || replacing_in_flight {
                 self.cancellations
                     .lock()
@@ -259,13 +293,22 @@ impl PendingAuthStore {
                     biased;
                     _ = cancellation.cancelled() => Err("authentication attempt was superseded".to_string()),
                     released = tokio::time::timeout(SUPERSEDED_CAPACITY_WAIT, self.capacity.clone().acquire_owned()) => {
-                        released.ok().and_then(Result::ok).ok_or_else(||
+                        released.ok().and_then(Result::ok).map(AuthCapacity::new).ok_or_else(||
                             "too many authentication attempts are in progress; try again later".to_string())
                     }
                 }
             }
             result => result,
         };
+        if let Ok(capacity) = &capacity {
+            self.capacity_owners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    attempt_id.clone(),
+                    (capacity_owner, Arc::downgrade(&capacity.lifetime)),
+                );
+        }
         if capacity.is_err() || cancellation.is_cancelled() {
             self.cancel_token(&attempt_id).await;
         }
@@ -1410,7 +1453,7 @@ pub enum PollSsoResult {
     Pending,
     Complete {
         completed: Box<AuthenticatedClient>,
-        _capacity: OwnedSemaphorePermit,
+        _capacity: AuthCapacity,
     },
     Failed(String),
     Expired,
@@ -1950,8 +1993,8 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 mod tests {
     use super::{
         is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
-        summarize_login_flows, PendingAuthStore, PendingPasswordReset, PendingSso, PollSsoResult,
-        MAX_PENDING_AUTH_ATTEMPTS,
+        summarize_login_flows, AuthCapacity, PendingAuthStore, PendingPasswordReset, PendingSso,
+        PollSsoResult, MAX_PENDING_AUTH_ATTEMPTS,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -1991,7 +2034,7 @@ mod tests {
         store.password_resets.lock().await.insert(
             attempt_id,
             PendingPasswordReset {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner,
                 client,
                 client_secret: matrix_sdk::ruma::ClientSecret::new(),
@@ -2057,7 +2100,7 @@ mod tests {
         store.sso_attempts.lock().await.insert(
             "sso-state".to_owned(),
             PendingSso {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner: "browser-a".to_owned(),
                 client,
                 crypto: None,
@@ -2124,7 +2167,7 @@ mod tests {
         store.sso_attempts.lock().await.insert(
             "old-sso".to_owned(),
             PendingSso {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner: "browser-a".to_owned(),
                 client,
                 crypto: None,
@@ -2242,6 +2285,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_only_owner_does_not_wait_for_unrelated_capacity() {
+        let store = PendingAuthStore::default();
+        let old = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        // Model a post-admission quota/setup error: the permit is dropped,
+        // but cancellation metadata remains until normal expiry/cleanup.
+        drop(old);
+        assert!(store.cancellations.lock().await.contains_key("old"));
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            store.admit_owner_attempt(
+                "browser".to_owned(),
+                "new".to_owned(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("non-owning attempt must not enter the five-second capacity wait");
+        assert!(result.is_err());
+        assert!(!store.cancellations.lock().await.contains_key("new"));
+    }
+
+    #[tokio::test]
     async fn dropped_capacity_wait_removes_its_admission_entry() {
         let store = PendingAuthStore::default();
         let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
@@ -2349,7 +2424,7 @@ mod tests {
         store.completed_sso.lock().await.insert(
             "old".to_owned(),
             CompletedSso {
-                _capacity: store.reserve_capacity().expect("owner capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("owner capacity")),
                 owner: "browser".to_owned(),
                 result: SsoCompletionResult::Failed("cancelled".to_owned()),
                 created_at: Instant::now(),
