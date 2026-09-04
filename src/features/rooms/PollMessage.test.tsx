@@ -92,6 +92,19 @@ beforeEach(() => {
 });
 
 describe("PollMessage", () => {
+  it("shows a failed local echo directly on the poll card", () => {
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own
+        rowActions={rowActions({ isError: true })}
+      />,
+    );
+
+    expect(screen.getByText("(failed to send)")).toBeInTheDocument();
+  });
+
   it("does not label multi-select answer totals as voters or percentages", () => {
     render(
       <PollMessage

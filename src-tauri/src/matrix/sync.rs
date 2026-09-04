@@ -586,23 +586,10 @@ fn unopened_notification_content(
                 mentions: None,
             })
         }
-        AnySyncMessageLikeEvent::PollStart(event) if polls_enabled => {
-            let original = event.as_original()?;
-            if matches!(original.content.relates_to, Some(Relation::Replacement(_))) {
-                return None;
-            }
-            Some(UnopenedNotificationContent {
-                event_id: original.event_id.clone(),
-                sender: original.sender.clone(),
-                body: original
-                    .content
-                    .text
-                    .find_plain()
-                    .unwrap_or("Poll")
-                    .to_owned(),
-                mentions: None,
-            })
-        }
+        // matrix-sdk-ui 0.18 does not yet aggregate stable m.poll.start into a
+        // renderable timeline item. Do not notify for an event the user cannot
+        // see after opening the room; enable this arm with stable rendering.
+        AnySyncMessageLikeEvent::PollStart(_) => None,
         _ => None,
     }
 }
@@ -650,6 +637,33 @@ mod unopened_poll_notification_tests {
             super::unopened_notification_content(serde_json::from_value(event).unwrap(), true)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn stable_poll_start_does_not_notify_until_the_timeline_can_render_it() {
+        let event = serde_json::json!({
+            "type": "m.poll.start",
+            "event_id": "$stable-poll",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1,
+            "content": {
+                "m.text": [{"body": "Lunch?", "mimetype": "text/plain"}],
+                "m.poll": {
+                    "question": {"m.text": [{"body": "Lunch?", "mimetype": "text/plain"}]},
+                    "kind": "m.poll.disclosed",
+                    "max_selections": 1,
+                    "answers": [
+                        {"id": "a", "m.text": [{"body": "Pizza", "mimetype": "text/plain"}]},
+                        {"id": "b", "m.text": [{"body": "Tacos", "mimetype": "text/plain"}]}
+                    ]
+                }
+            }
+        });
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event).unwrap(),
+            true,
+        )
+        .is_none());
     }
 }
 

@@ -140,6 +140,9 @@ export function PollMessage({
             <div className="shrink-0 text-right text-[11px] text-muted-foreground">
               <time>{formatTime(message.timestamp_ms, clockFormat)}</time>
               {poll.edited && <span className="ml-1">(edited)</span>}
+              {rowActions?.isError && (
+                <span className="ml-1 text-destructive">(failed to send)</span>
+              )}
             </div>
           </div>
 
