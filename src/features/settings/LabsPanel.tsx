@@ -1,4 +1,5 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -25,6 +26,22 @@ function humanizeKey(key: string): string {
  */
 export function LabsPanel() {
   const overrides = useFeatureFlagOverrides();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function applyChange(change: () => Promise<void>) {
+    setPending(true);
+    setError(null);
+    try {
+      await change();
+    } catch {
+      setError(
+        "Could not finish applying the flag change. Required local cleanup may still be pending. Try again.",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <div className="max-w-lg space-y-6">
@@ -36,6 +53,11 @@ export function LabsPanel() {
         </p>
       </div>
 
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
       <SettingsCard heading="Feature flags">
         {FEATURE_FLAG_KEYS.map((key: FeatureFlagKey) => {
           const definition = FEATURE_FLAG_CATALOG[key];
@@ -56,7 +78,8 @@ export function LabsPanel() {
                         variant="link"
                         size="sm"
                         className="h-auto p-0 text-xs"
-                        onClick={() => void clearFeatureFlagOverride(key)}
+                        disabled={pending}
+                        onClick={() => void applyChange(() => clearFeatureFlagOverride(key))}
                       >
                         Reset to default
                       </Button>
@@ -67,8 +90,11 @@ export function LabsPanel() {
               control={
                 <Switch
                   checked={enabled}
+                  disabled={pending}
                   aria-label={`Toggle ${humanizeKey(key)}`}
-                  onCheckedChange={(checked) => void setFeatureFlagOverride(key, checked)}
+                  onCheckedChange={(checked) =>
+                    void applyChange(() => setFeatureFlagOverride(key, checked))
+                  }
                 />
               }
             />

@@ -32,11 +32,11 @@ and its results so the input never describes an empty result pane. Repository
 evidence includes SQLCipher marker scans, no-follow filesystem tests, edit/redaction/
 cursor/query tests, component coverage, workspace compilation, and a Playwright
 search-navigation journey. Real-homeserver verification remains operational
-evidence rather than a repository correctness gate. Filesystem/backup hardening,
-durable overflow recovery, and kill-switch restart reconciliation remain tracked in
+evidence rather than a repository correctness gate. Filesystem/backup hardening and
+durable overflow recovery remain tracked in
 [#415](https://github.com/CloudHub-Social/Charm/issues/415),
-[#419](https://github.com/CloudHub-Social/Charm/issues/419), and
-[#417](https://github.com/CloudHub-Social/Charm/issues/417).
+and [#419](https://github.com/CloudHub-Social/Charm/issues/419). Kill-switch
+reconciliation now survives renderer and process restarts.
 
 **Workstream:** shipped daily-driver parity; bounded resilience follow-ups remain.
 
@@ -130,13 +130,36 @@ connection: the SDK owns that schema and migration lifecycle.
   contains multiple edits at the same timestamp and no authoritative collapsed
   projection is available, defer that original event until timeline
   reconciliation resolves it rather than choosing by local arrival or event ID.
+  Renderer selection mutations contain event IDs only and use reliable FIFO
+  reservations when the plaintext queue is full. Cached-history retries replay
+  current open timeline selections before their completion marker, rather than
+  assuming raw events can reconstruct equal-timestamp renderer choices. Native
+  metadata-retention and companion FIFO-order regressions require CI execution.
   Redacting the original writes a persistent
   tombstone, deletes the visible row, and purges every original/edit decrypted body
   in provenance; later edits and replay must remain suppressed by that tombstone.
   Redacting an edit removes that candidate and atomically recomputes the row from
   the preceding valid edit or original content only when the original is not
-  tombstoned. A late edit/redaction, backfill, or replay therefore converges without
-  retaining or resurrecting stale or redacted text.
+  tombstoned. An edit that arrives before its original remains encrypted,
+  non-visible provenance until the original establishes the sender; forged-sender
+  candidates are then removed before any row becomes visible. Schema migration
+  enforces the same boundary when rebuilding visible rows: missing originals
+  remain deferred and known mismatched-sender candidates are purged. Regression
+  coverage migrates both legitimate and forged edits received before originals;
+  schema version 6 also sanitizes already-installed version-5 databases, retaining
+  their renderer selection ordering and saved equal-order edit choice while
+  rebuilding visible rows and FTS, even with no open room listener. Saved choices
+  cannot override a newer edit or restore a forged-sender candidate. Regressions
+  cover tied choices, stale choices, and forged provenance with a saved choice
+  and an existing forged FTS row in v5.
+  GitHub Actions verification remains required. A late
+  edit/redaction, backfill, or replay therefore converges without retaining or
+  resurrecting stale or redacted text.
+  Filtering an ignored original also queues plaintext-free cleanup of every
+  candidate linked to that original, including unverified edits from another
+  sender. This is reliable removal work, not a permanent redaction tombstone;
+  unignore and replay remain possible. An ignored edit cannot authorize purging
+  the original it claims to replace. Regression coverage remains CI-gated.
 - Backfill: on first login, and on the first index open after the feature flag
   becomes enabled for an already-active account/session, index whatever history
   is already locally available in the SDK's store;
@@ -220,8 +243,19 @@ connection: the SDK owns that schema and migration lifecycle.
   threads. Sync/timeline delivery must not wait on SQLite I/O. Feed the worker
   through a bounded per-session queue. Overflow never retains unbounded decrypted
   text: it drops the batch, marks the index incomplete, and discloses that state on
-  every result page. Durable non-content checkpoints and automatic overflow
-  reconciliation are tracked in [#419](https://github.com/CloudHub-Social/Charm/issues/419).
+  every result page. Desktop/mobile also writes an empty per-device directory
+  checkpoint when work is dropped or fails. The checkpoint contains no message
+  plaintext, survives restart, and clears only after a complete local event-cache
+  scan and its FIFO completion marker both succeed. A later search claims one
+  bounded retry while results remain incomplete. Native retry admission clears
+  the previous failure under the lifecycle lock before detaching the scan;
+  subsequent live failures remain sticky and cannot be erased by task startup.
+  Web retry admission likewise clears the prior failure under the same mutex
+  used by live sync, timeline-selection, pagination, and purge failure writers;
+  detached scan startup never clears failures. Web indexes are session-ephemeral,
+  so a later search similarly coalesces one local-cache rebuild after failure and a
+  process restart creates a fresh incomplete index; neither transport invokes
+  homeserver search or forces history pagination for reconciliation.
 - Live indexing is sourced before room UI/timeline selection: the shared Rust sync
   pipeline decrypts joined-room timeline events from every sync response and submits
   eligible events to the indexer even when that room has never been opened. The
@@ -311,11 +345,37 @@ without the user knowing which is which.
   catalogs. Opening, backfilling, writing, and querying the index are all disabled
   when the flag is off. An enabled-to-disabled transition first closes the active
   handle, securely removes every retained Charm-owned account/device encrypted
-  database and its database sidecars on the next desktop sync, and records no
-  reusable quarantine. Filesystem cleanup failures retain an opaque durable retry marker and
-  block that path from reopening. Persisting kill-switch transition intent before
-  renderer invocation and pre-session disabled-startup reconciliation remain in
-  [#417](https://github.com/CloudHub-Social/Charm/issues/417).
+  database and its database sidecars immediately, and records no reusable
+  quarantine. A marker outside the bounded search root durably records destructive
+  cleanup intent before deletion begins. Repeated disabled syncs skip marker
+  writes only when both the search root and cleanup marker are definitely absent;
+  metadata errors, symlinks, and pending markers still take the recovery path.
+  Native startup recovers already-recorded cleanup intent before session
+  restoration, but does not create new destructive intent from an unvalidated
+  cached flag. Native search access and new flag-driven purges remain inactive
+  until the renderer has awaited cohort/endpoint cache normalization and called
+  native reconciliation. Receiver-only startup cannot use or newly purge search
+  before that point. Each main-webview page-load start resets native readiness
+  and the backfill generation without deleting the retained index; reloads must
+  normalize again, and stale queued work cannot bypass that boundary. After
+  awaited reconciliation-marker cleanup, backfill completion revalidates its
+  generation and clears its pending bit under lifecycle exclusion; an old
+  worker cannot clear the replacement scan's pending state. Detached scan
+  startup consumes the lifecycle-locked admission reservation rather than
+  setting pending again; all early exits use the same generation-checked
+  completion boundary. A scan first polled after reload cannot recreate a
+  stale reservation or block replacement scans indefinitely. An
+  unavailable normalization state is not permission for an in-flight query to
+  purge the index. Renderer startup also
+  reconciles both disabled-to-disabled and cached-enabled state with the native
+  backend. Search remains unavailable in the renderer until that reconciliation
+  succeeds, without discarding the user's saved override or blocking unrelated
+  flag values. Labs and OFREP writes are serialized so a
+  re-enable cannot overtake cleanup. Persistent cleanup failure pins the remote
+  search value off without blocking durable updates to unrelated remote flags.
+  Every open, write, and query fails closed
+  while the marker remains. The marker contains no account, room, event, or message
+  identifier.
 - Because this flag controls a sensitive derived-content index, a trusted remote
   `false` is a hard veto over any persisted Labs/local override. The desktop veto
   prevents queries immediately and triggers the cleanup path above.

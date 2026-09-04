@@ -226,6 +226,95 @@ describe("LoginScreen SSO callback handling", () => {
     expect(completeSsoLogin).not.toHaveBeenCalled();
     expect(onSignedIn).not.toHaveBeenCalled();
   });
+
+  it.each(["resolve", "cancelled", "cleanup-error"] as const)(
+    "waits for a cancelled callback to settle with %s before allowing restart",
+    async (outcome) => {
+      let resolveCompletion!: (session: LoginResponse) => void;
+      let rejectCompletion!: (error: Error) => void;
+      completeSsoLogin.mockImplementationOnce(
+        () =>
+          new Promise<LoginResponse>((resolve, reject) => {
+            resolveCompletion = resolve;
+            rejectCompletion = reject;
+          }),
+      );
+      const onSignedIn = vi.fn();
+      render(<LoginScreen onSignedIn={onSignedIn} />);
+
+      await act(async () => {
+        screen.getByRole("button", { name: "Continue with SSO" }).click();
+      });
+      await act(async () => {
+        openUrlCallback?.(["charm://sso-callback?loginToken=old&state=old"]);
+      });
+      await act(async () => {
+        screen.getByRole("button", { name: "Cancel" }).click();
+      });
+      expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
+      await act(async () => {
+        if (outcome === "resolve") resolveCompletion(fakeSession());
+        else if (outcome === "cancelled") rejectCompletion(new Error("single sign-on cancelled"));
+        else rejectCompletion(new Error("Could not confirm device revocation"));
+      });
+
+      expect(screen.queryByText("Error: single sign-on cancelled")).not.toBeInTheDocument();
+      if (outcome === "cleanup-error") {
+        expect(screen.getByText("Error: Could not confirm device revocation")).toBeInTheDocument();
+      }
+      if (outcome === "resolve") {
+        expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
+        return;
+      }
+      expect(onSignedIn).not.toHaveBeenCalled();
+      await act(async () => {
+        screen.getByRole("button", { name: "Continue with SSO" }).click();
+      });
+
+      completeSsoLogin.mockResolvedValueOnce(fakeSession());
+      await act(async () => {
+        openUrlCallback?.(["charm://sso-callback?loginToken=new&state=new"]);
+      });
+      expect(onSignedIn).toHaveBeenCalledExactlyOnceWith(fakeSession());
+    },
+  );
+
+  it("keeps restart disabled until cancellation settles even when completion fails first", async () => {
+    let rejectCompletion!: (error: Error) => void;
+    let resolveCancellation!: () => void;
+    completeSsoLogin.mockImplementationOnce(
+      () =>
+        new Promise<LoginResponse>((_resolve, reject) => {
+          rejectCompletion = reject;
+        }),
+    );
+    cancelSsoLogin.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCancellation = resolve;
+        }),
+    );
+    const onSignedIn = vi.fn();
+    render(<LoginScreen onSignedIn={onSignedIn} />);
+    await act(async () => {
+      screen.getByRole("button", { name: "Continue with SSO" }).click();
+    });
+    await act(async () => {
+      openUrlCallback?.(["charm://sso-callback?loginToken=old&state=old"]);
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Cancel" }).click();
+    });
+    await act(async () => {
+      rejectCompletion(new Error("Cancelled"));
+    });
+    expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
+    await act(async () => {
+      resolveCancellation();
+    });
+    expect(screen.getByRole("button", { name: "Continue with SSO" })).toBeInTheDocument();
+    expect(onSignedIn).not.toHaveBeenCalled();
+  });
 });
 
 describe("LoginScreen default homeserver URL", () => {
