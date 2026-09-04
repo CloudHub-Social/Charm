@@ -33,7 +33,7 @@ for (const enabled of [false, true]) {
       for (const name of ["Spoiler", "Strikethrough", "Code block"]) {
         await expect(page.getByRole("button", { name, exact: true })).toHaveCount(enabled ? 1 : 0);
       }
-      await expect(composer).toHaveAttribute("spellcheck", "true");
+      await expect(composer).toHaveAttribute("spellcheck", String(enabled));
       await captureSnapshot(page, `composer-parity-controls-${enabled ? "on" : "off"}`);
       await composer.fill("original composer message");
       await composer.press("Enter");

@@ -674,6 +674,7 @@ export function installMockTauri(seed: {
         transaction_id: txnId,
         send_state: { state: "sent" },
         media,
+        text_editable: false,
       };
       messagesByRoom.get(roomId)?.push(sent);
       emit("upload:progress", { txn_id: txnId, room_id: roomId, sent: 100, total: 100 });
@@ -1093,6 +1094,7 @@ export function installMockTauri(seed: {
         body: args.body,
         formatted_body: args.formattedBody ?? null,
         media: null,
+        text_editable: true,
         timestamp_ms: Date.now(),
         edited: false,
         redacted: false,
@@ -1139,6 +1141,8 @@ export function installMockTauri(seed: {
         redacted: false,
         reactions: [],
         in_reply_to: inReplyTo,
+        media: null,
+        text_editable: true,
         transaction_id: transactionId,
         send_state: { state: "pending" },
       };
