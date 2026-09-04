@@ -995,6 +995,34 @@ export async function invoke<T>(
   options?: InvokeOptions,
 ): Promise<T> {
   if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args, options);
+  const changesSession =
+    command === "logout" ||
+    [
+      "login",
+      "register",
+      "begin_registration",
+      "continue_registration",
+      "login_with_token",
+      "poll_sso_login",
+      "try_restore_session",
+    ].includes(command);
+  // The cookie is shared by every tab, so its destructive and adopting
+  // transitions must be shared too. The Web Locks API provides an
+  // origin-scoped mutex: a replacement login in another tab cannot complete
+  // before an older logout response has applied its Set-Cookie deletion.
+  if (changesSession && navigator.locks) {
+    return navigator.locks.request("charm:web-session-transition", () =>
+      invokeWebTransport<T>(command, args, options),
+    );
+  }
+  return invokeWebTransport<T>(command, args, options);
+}
+
+async function invokeWebTransport<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: InvokeOptions,
+): Promise<T> {
   const adoptsSession = [
     "login",
     "register",
