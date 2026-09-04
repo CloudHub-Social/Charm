@@ -32,6 +32,8 @@ pub struct AppState {
     pub registration_and_recovery_enabled: bool,
     /// Server-side half of Spec 28's encrypted local-message-search flag.
     pub encrypted_local_message_search_enabled: bool,
+    /// Companion-side half of the default-off recovery setup rollout.
+    pub crypto_backup_setup_enabled: bool,
 }
 
 /// Test-only, crate-wide lock for tests that read/write process env vars

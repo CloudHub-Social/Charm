@@ -67,7 +67,7 @@ use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
-    recovery_status_impl,
+    recovery_status_impl, setup_recovery_with_passphrase_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
@@ -382,6 +382,7 @@ pub fn router(state: AppState) -> Router {
             "/api/verification/recovery",
             get(get_recovery_status).post(recover_from_key),
         )
+        .route("/api/verification/recovery/setup", post(setup_recovery))
         .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
             post(accept_verification),
@@ -5433,6 +5434,98 @@ async fn get_recovery_status(
 #[derive(Debug, Deserialize)]
 struct RecoverFromKeyRequest {
     recovery_key: String,
+}
+
+#[derive(Deserialize)]
+struct SetupRecoveryRequest {
+    passphrase: Option<String>,
+}
+
+async fn setup_recovery(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<SetupRecoveryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    if !state.crypto_backup_setup_enabled {
+        return Err(ApiError::not_found("recovery setup is not enabled"));
+    }
+    let summary = setup_recovery_with_passphrase_impl(&session.client, request.passphrase)
+        .await
+        .map_err(ApiError::bad_request)?;
+    if let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
+        &state.persistence,
+        session.client.matrix_auth().session(),
+        session.persisted_crypto.as_ref(),
+        jar.get(SESSION_COOKIE),
+    ) {
+        if persistence
+            .snapshot_crypto_store(
+                cookie.value(),
+                &matrix_session,
+                Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
+            )
+            .await
+            .is_err()
+        {
+            // Never replace an issued recovery credential with a later error.
+            tracing::error!("recovery setup succeeded but durable crypto snapshot failed");
+        }
+    }
+    Ok(([("cache-control", "no-store")], Json(summary)))
+}
+
+#[cfg(test)]
+mod recovery_setup_route_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn recovery_setup_requires_authentication_and_server_rollout() {
+        for (authenticated, enabled, expected) in [
+            (false, false, StatusCode::UNAUTHORIZED),
+            (false, true, StatusCode::UNAUTHORIZED),
+            (true, false, StatusCode::NOT_FOUND),
+            (true, true, StatusCode::BAD_REQUEST),
+        ] {
+            let state = AppState {
+                crypto_backup_setup_enabled: enabled,
+                ..AppState::default()
+            };
+            if authenticated {
+                let client = matrix_sdk::Client::builder()
+                    .homeserver_url("http://localhost:1")
+                    .build()
+                    .await
+                    .unwrap();
+                state
+                    .sessions
+                    .insert(
+                        "test-session".into(),
+                        crate::session::Session::new(client, "@test:localhost".into(), None, false),
+                    )
+                    .await;
+            }
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/verification/recovery/setup")
+                .header("content-type", "application/json")
+                .header("x-charm-operation-id", "test-recovery-setup");
+            if authenticated {
+                request = request.header("cookie", format!("{SESSION_COOKIE}=test-session"));
+            }
+            // Enabled+authenticated reaches shared validation, not network I/O.
+            let response = router(state)
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(r#"{"passphrase":"short"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
 }
 
 async fn recover_from_key(

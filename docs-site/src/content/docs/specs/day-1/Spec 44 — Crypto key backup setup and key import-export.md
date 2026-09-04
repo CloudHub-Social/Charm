@@ -21,8 +21,11 @@ not first-time **setup** or manual key file I/O.
   generated recovery key visible until the user confirms it is saved.
   Disabling the rollout hides the entry point and prevents new submissions, but
   does not unmount an in-flight setup or discard an issued recovery key. Both
-  flag-transition cases have regressions pending CI. Web companion setup still
-  requires an authenticated transport route before this slice is complete.
+  flag-transition cases have regressions pending CI. Web companion setup uses an
+  authenticated POST route and the shared native validation/zeroization boundary,
+  with a separate default-off server gate (`CHARM_WEB_CRYPTO_BACKUP_SETUP=1`).
+  Route authorization, rollout, and transport regressions await CI; live creation
+  and cross-session restore remain release gates.
 - **Manual encrypted room-key import/export:** remains to be implemented.
 - **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
   be implemented.

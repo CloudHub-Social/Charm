@@ -269,11 +269,18 @@ pub async fn setup_recovery(
         return Err("Recovery setup is not enabled.".to_string());
     }
 
+    let client = state.require_client().await?;
+    setup_recovery_with_passphrase_impl(&client, passphrase).await
+}
+
+/// Shared native/HTTP boundary: validate and zeroize the owned passphrase.
+pub async fn setup_recovery_with_passphrase_impl(
+    client: &Client,
+    passphrase: Option<String>,
+) -> Result<RecoverySetupSummary, String> {
     let passphrase = passphrase.map(zeroize::Zeroizing::new);
     validate_recovery_passphrase(passphrase.as_ref().map(|value| value.as_str()))?;
-
-    let client = state.require_client().await?;
-    setup_recovery_impl(&client, passphrase.as_ref().map(|value| value.as_str())).await
+    setup_recovery_impl(client, passphrase.as_ref().map(|value| value.as_str())).await
 }
 
 pub async fn setup_recovery_impl(

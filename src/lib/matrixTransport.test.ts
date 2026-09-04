@@ -67,6 +67,14 @@ describe("matrix web transport", () => {
   });
 
   it.each([
+    [
+      "setup_recovery",
+      { passphrase: "test-passphrase" },
+      "POST",
+      "/api/verification/recovery/setup",
+      { passphrase: "test-passphrase" },
+    ],
+    ["setup_recovery", {}, "POST", "/api/verification/recovery/setup", { passphrase: null }],
     ["discover_homeserver", { input: "matrix.org" }, "POST", "/api/auth/discover", "matrix.org"],
     [
       "login",

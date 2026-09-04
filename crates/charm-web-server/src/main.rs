@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let state = AppState {
+        crypto_backup_setup_enabled: std::env::var("CHARM_WEB_CRYPTO_BACKUP_SETUP").as_deref()
+            == Ok("1"),
         persistence: persistence.clone(),
         space_hierarchy_reorganization: std::env::var(SPACE_HIERARCHY_REORGANIZATION_ENV)
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
