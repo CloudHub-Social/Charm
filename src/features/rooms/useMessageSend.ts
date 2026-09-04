@@ -49,6 +49,7 @@ export function useMessageSend({
   // user switched rooms mid-command, so a stale room's feedback isn't
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
+  const nicknameInFlight = useRef(false);
   currentRoomIdRef.current = roomId;
 
   // Room-scoped, not persistent: a bad-args/permission-denied banner from
@@ -168,7 +169,18 @@ export function useMessageSend({
               );
               break;
             case "nick":
-              await setDisplayName(args.join(" "));
+              if (nicknameInFlight.current) {
+                setCommandFeedback(
+                  "A nickname update is already in progress. Try again after it finishes.",
+                );
+                return false;
+              }
+              nicknameInFlight.current = true;
+              try {
+                await setDisplayName(args.join(" "));
+              } finally {
+                nicknameInFlight.current = false;
+              }
               void queryClient.invalidateQueries({ queryKey: ["profile"] });
               void queryClient.invalidateQueries({ queryKey: ["own-profile"] });
               break;

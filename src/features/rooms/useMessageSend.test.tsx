@@ -27,6 +27,45 @@ describe("formatted composer submission", () => {
     mocks.useFlag.mockReturnValue(true);
   });
 
+  it("rejects overlapping nickname submissions until the admitted update settles", async () => {
+    let complete!: () => void;
+    mocks.setDisplayName.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useMessageSend({
+        room: makeRoomSummary(),
+        editingEventId: null,
+        replyTarget: null,
+        setEditingEventId: vi.fn(),
+        setReplyTarget: vi.fn(),
+        stopTyping: vi.fn(),
+      }),
+    );
+    let first!: Promise<boolean>;
+    act(() => {
+      first = result.current.handleSlashCommand(parseSlashCommand("/nick Older", true)!);
+    });
+    await act(async () => {
+      expect(await result.current.handleSlashCommand(parseSlashCommand("/nick Newer", true)!)).toBe(
+        false,
+      );
+    });
+    expect(mocks.setDisplayName).toHaveBeenCalledExactlyOnceWith("Older");
+    expect(result.current.commandFeedback).toContain("already in progress");
+    await act(async () => {
+      complete();
+      await first;
+    });
+    await act(async () => {
+      await result.current.handleSlashCommand(parseSlashCommand("/nick Newer", true)!);
+    });
+    expect(mocks.setDisplayName.mock.calls).toEqual([["Older"], ["Newer"]]);
+  });
+
   it("gates /notice submission and preserves backend failure feedback", async () => {
     const room = makeRoomSummary();
     const { result, rerender } = renderHook(() =>
