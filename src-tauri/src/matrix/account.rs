@@ -939,8 +939,8 @@ pub async fn deactivate_account(
 
     // The remote account is gone, so unlike ordinary logout there is no
     // reason to retain the SDK store. Attempt physical removal now; either
-    // the cancelled-account marker or clear_local_session's logout marker
-    // keeps startup fail-closed and owns retry after a partial failure.
+    // the primary or fallback cancelled-account marker keeps startup
+    // fail-closed and owns full-store retry after a partial failure.
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
     let cleanup_result = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
@@ -955,7 +955,8 @@ pub async fn deactivate_account(
         // `clear_local_session` may have completed its own logout marker.
         // Re-establish durable account-wide retry intent before surfacing
         // the original marker failure from this already-deactivated account.
-        persistence::mark_logout_tombstone(&app, &account_key).map_err(UiaCommandError::from)?;
+        persistence::mark_cancelled_account_cleanup(&app, &account_key)
+            .map_err(UiaCommandError::from)?;
         let _ = app.emit("session:invalidated", ());
         return Err(UiaCommandError::from(error));
     }

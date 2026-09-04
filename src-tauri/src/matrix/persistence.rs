@@ -145,7 +145,10 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if let Some(account_key) = name.strip_prefix(LOGOUT_TOMBSTONE_PREFIX) {
+        if let Some(account_key) = name
+            .strip_prefix(LOGOUT_TOMBSTONE_PREFIX)
+            .or_else(|| name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX))
+        {
             logout_tombstones.insert(account_key.to_string());
             continue;
         }
@@ -164,7 +167,10 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if let Some(account_key) = name.strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX) {
+        if let Some(account_key) = name
+            .strip_prefix(FALLBACK_LOGOUT_TOMBSTONE_PREFIX)
+            .or_else(|| name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX))
+        {
             logout_tombstones.insert(account_key.to_string());
         }
     }
@@ -193,9 +199,24 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn mark_cancelled_account_cleanup(app: &AppHandle, account_key: &str) -> Result<(), String> {
-    let marker =
-        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    std::fs::write(marker, []).map_err(|error| error.to_string())
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    mark_cancelled_account_cleanup_at(&app_data_dir, account_key)
+}
+
+fn mark_cancelled_account_cleanup_at(app_data_dir: &Path, account_key: &str) -> Result<(), String> {
+    let root = app_data_dir.join("matrix_store");
+    let _ = std::fs::create_dir_all(&root);
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    if std::fs::write(root.join(&name), []).is_ok() {
+        return Ok(());
+    }
+    // Keep the same account-wide semantics when the store directory cannot
+    // hold the marker; an ordinary logout marker intentionally retains keys.
+    std::fs::write(app_data_dir.join(name), [])
+        .map_err(|_| "failed to persist account cleanup intent".to_string())
 }
 
 /// Durably suppresses restoration before logout starts mutating credentials.
@@ -284,13 +305,22 @@ pub fn clear_cancelled_account_cleanup_marker(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<(), String> {
-    let marker =
-        matrix_store_root(app)?.join(format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}"));
-    match std::fs::remove_file(marker) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "application data directory unavailable".to_string())?;
+    let name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}{account_key}");
+    for marker in [
+        app_data_dir.join("matrix_store").join(&name),
+        app_data_dir.join(&name),
+    ] {
+        match std::fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("failed to clear account cleanup intent".to_string()),
+        }
     }
+    Ok(())
 }
 
 fn sweep_cancelled_account_cleanups(app: &AppHandle) -> Result<(), String> {
@@ -309,26 +339,35 @@ fn sweep_cancelled_account_cleanups_at(
     app_data_dir: &Path,
     mut discard_session: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
+    for marker_root in [root, app_data_dir] {
+        let entries = match std::fs::read_dir(marker_root) {
+            Ok(entries) => entries,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue
+            }
+            Err(error) => return Err(error.to_string()),
         };
-        let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
-            continue;
-        };
-        // A wipe marker covers derived search data as well as the SDK store.
-        // Retain it after either failure so the next startup retries both.
-        let cleanup = discard_session(account_key).and_then(|()| {
-            super::search::SearchIndex::delete_for_account(app_data_dir, account_key)
-        });
-        if cleanup.is_ok() {
-            let _ = std::fs::remove_file(entry.path());
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(account_key) = name.strip_prefix(CANCELLED_ACCOUNT_CLEANUP_PREFIX) else {
+                continue;
+            };
+            // A wipe marker covers derived search data as well as the SDK store.
+            // Retain it after either failure so the next startup retries both.
+            let cleanup = discard_session(account_key).and_then(|()| {
+                super::search::SearchIndex::delete_for_account(app_data_dir, account_key)
+            });
+            if cleanup.is_ok() {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
     Ok(())
@@ -1773,6 +1812,38 @@ mod tests {
         std::fs::write(&invalid_app_data, []).unwrap();
         sweep_cancelled_account_cleanups_at(&root, &invalid_app_data, |_| Ok(())).unwrap();
         assert!(marker.exists());
+    }
+
+    #[test]
+    fn account_cleanup_fallback_keeps_full_wipe_intent_until_retry_succeeds() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("matrix_store");
+        std::fs::create_dir_all(root.join("account")).unwrap();
+        let marker_name = format!("{CANCELLED_ACCOUNT_CLEANUP_PREFIX}account");
+        // A directory at the primary marker path injects a write failure.
+        let blocked_primary = root.join(&marker_name);
+        std::fs::create_dir(&blocked_primary).unwrap();
+        mark_cancelled_account_cleanup_at(directory.path(), "account").unwrap();
+        let fallback = directory.path().join(&marker_name);
+        assert!(fallback.is_file());
+        assert!(!known_account_keys_at(&root)
+            .unwrap()
+            .contains(&"account".to_owned()));
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |_| {
+            Err("injected full-store cleanup failure".to_owned())
+        })
+        .unwrap();
+        assert!(fallback.is_file());
+        std::fs::remove_dir(blocked_primary).unwrap();
+        let mut retried = false;
+        sweep_cancelled_account_cleanups_at(&root, directory.path(), |key| {
+            assert_eq!(key, "account");
+            retried = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(retried);
+        assert!(!fallback.exists());
     }
 
     #[test]

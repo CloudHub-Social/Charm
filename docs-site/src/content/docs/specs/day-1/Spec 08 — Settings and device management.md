@@ -286,6 +286,9 @@ Surfaces changed:
     confirmation. Login completion remains serialized through physical deletion.
     Startup retry clears an interrupted-wipe marker only after both session/store
     cleanup and deletion of every device-scoped search index have succeeded.
+    A fallback marker outside the Matrix-store directory retains the same full-wipe
+    semantics if the primary marker cannot be written, including after remote
+    deactivation. Neither marker permits session restoration while cleanup is pending.
 16. Hard terminal authentication failure revokes the in-memory client and invalidates
     its push registration first, using the same transport and persisted-endpoint
     cleanup as explicit logout. A rejected homeserver pusher deletion does not
