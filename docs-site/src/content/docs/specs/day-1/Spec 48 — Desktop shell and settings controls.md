@@ -34,11 +34,11 @@ autostart all present). But the parity audit (2026-07-13) found several missing
    ("Clear Cache & Reload") + `developer-tools/DevelopTools.tsx` (clear media/blob/
    URL caches). Charm 2.0 has no user-facing clear-cache control (the `App.tsx:85`
    ref is internal React-Query eviction on logout, not user-invokable).
-6. **Settings export/import + cross-device settings sync** (lower priority). Charm
+6. **Settings export/import + cross-device settings sync** (owned by Spec 50). Charm
    1.0 General "Settings Sync & Backup" (`exportSettingsAsJson`/`importSettingsFromJson`
    + a sync toggle, `General.tsx:1609-1660`). Charm 2.0 has none. This is a
-   Cinny-specific account-data settings-sync feature — lowest priority in this
-   spec; include export/import if cheap, treat full cross-device sync as optional.
+   account-data settings-sync feature. The owner subsequently promoted it to
+   required scope in Spec 50, which owns both export/import and full sync.
 
 ## Non-goals
 
@@ -66,9 +66,9 @@ autostart all present). But the parity audit (2026-07-13) found several missing
 - **Clear cache:** a user-facing "Clear cache" action (Settings → About or Storage)
   that clears the media cache (Spec 02's cache dir) + in-memory query caches and
   reloads. New IPC `clear_media_cache()`.
-- **Settings export/import (optional):** export local settings to a JSON file and
-  import them back, via Tauri file dialog. Cross-device account-data sync is
-  explicitly deferred unless trivial.
+- **Settings export/import and sync:** implement under Spec 50 rather than a
+  second settings schema here. Desktop close behavior, tray visibility, and other
+  hardware-specific preferences remain device-local; they must not be synced.
 
 ## Data flow
 
@@ -98,13 +98,13 @@ close time). ts-rs bindings. No changes to existing shell commands.
   close-to-tray could strand the app with no visible surface — the implementation
   must prevent that (e.g. force-show the window if the tray is being turned off
   while hidden), or the "feature" becomes a lockout bug.
-- **Bundle shell + settings controls vs split**: bundled because they're all small
-  "control over existing shell/settings" items in adjacent surfaces; settings
-  export/import is the only piece safe to drop if the PR grows.
+- **Bundle shell + settings controls vs split**: keep shell controls together.
+  Settings export/import and sync are a separate required Spec 50 workstream,
+  not scope that can be dropped from the overall readiness effort.
 
 ## What I'd revisit as this grows
 
-- Cross-device settings sync via account data (the deferred part of #6) if users
-  want their preferences to follow them — needs a sync schema, its own design.
+- [Spec 50 — Cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/)
+  governs the required sync schema and portable/device-local boundary.
 - Global/per-app-tier keyboard-shortcut customization (shortcuts panel exists per
   the audit; customization of it is a possible follow-up, not a confirmed 1.0 gap).
