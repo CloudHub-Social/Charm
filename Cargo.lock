@@ -1235,6 +1235,7 @@ dependencies = [
  "aes-gcm 0.11.0",
  "async-trait",
  "base64 0.23.1",
+ "cc",
  "eyeball",
  "fs4",
  "futures-util",
