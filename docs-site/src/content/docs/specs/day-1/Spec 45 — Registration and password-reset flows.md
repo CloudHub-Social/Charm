@@ -192,6 +192,12 @@ homeservers. The parity audit (2026-07-13) found:
   scheme/host/DNS/address policy to every `.well-known` or HTTP redirect. Tests
   cover redirect-to-private and DNS-rebinding attempts. An explicit deployment
   allowlist may narrow this policy further.
+  For the [RFC 6052 well-known NAT64 prefix](https://www.rfc-editor.org/rfc/rfc6052),
+  `64:ff9b::/96`, apply the same IPv4 destination policy to the final 32 bits,
+  allowing public destinations without permitting private or special-purpose
+  addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
+  `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
+  do not infer its destination from the final 32 bits.
 
 ### Password reset
 

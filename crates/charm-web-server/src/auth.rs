@@ -230,6 +230,15 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            // RFC 6052's well-known /96 embeds the destination in its final
+            // 32 bits. Apply the same IPv4 policy instead of rejecting public
+            // NAT64 destinations. Other translation prefixes remain denied.
+            if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+                let octets = ip.octets();
+                let embedded =
+                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                return is_public_network_ip(embedded.into());
+            }
             if segments[..6] == [0, 0, 0, 0, 0, 0] {
                 let embedded = std::net::Ipv4Addr::new(
                     (segments[6] >> 8) as u8,
@@ -370,6 +379,26 @@ pub async fn register(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nat64_uses_embedded_ipv4_policy_without_allowing_local_translation() {
+        for address in ["64:ff9b::8.8.8.8", "64:ff9b::808:808"] {
+            assert!(super::is_public_network_ip(address.parse().unwrap()));
+        }
+        for address in [
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::192.168.1.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b::100.64.0.1",
+            "64:ff9b::192.0.2.1",
+            "64:ff9b::224.0.0.1",
+            "64:ff9b:1::8.8.8.8",
+            "64:ff9b:0:1::8.8.8.8",
+        ] {
+            assert!(!super::is_public_network_ip(address.parse().unwrap()));
+        }
+    }
+
     #[test]
     fn compatible_ipv6_uses_embedded_ipv4_policy() {
         for address in [
