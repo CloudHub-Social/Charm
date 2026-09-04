@@ -1,0 +1,29 @@
+name: Review envelope contract
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/codex-review-gate.yml
+      - .github/workflows/review-envelope-contract.yml
+      - scripts/review-envelope-contract.test.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: BTCMedia/codex-review-gate-action
+          ref: 3b7ee46126a75b05eaf537247254eea682ce5787
+          path: .review-gate-contract
+          persist-credentials: false
+      - name: Check closed grammar and evidence boundaries
+        run: node --test scripts/review-envelope-contract.test.mjs

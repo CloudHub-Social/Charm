@@ -212,9 +212,11 @@ jobs:
           github.event_name != 'merge_group'
           && env.IS_BOT_PR != 'true'
           && (github.event_name != 'workflow_dispatch' || steps.resolve-dispatch.outputs.is_bot != 'true')
-        # v1.3.5 — see the header
-        # comment for why this is pinned to a SHA rather than the mutable tag.
-        uses: JoeyTeng/codex-review-gate-action@2a7f9d8cd98f90cb56dc1540bf54d9dc7484afc6
+        # v1.3.5 + exact disclosure compatibility fix, upstream PR #6.
+        # Apache-2.0; only src/core.mjs's disclosure allowlist differs from
+        # 2a7f9d8cd98f90cb56dc1540bf54d9dc7484afc6. No permission/policy change.
+        # Return to the canonical publisher once this fix is released there.
+        uses: BTCMedia/codex-review-gate-action@3b7ee46126a75b05eaf537247254eea682ce5787
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
