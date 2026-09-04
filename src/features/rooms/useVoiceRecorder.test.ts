@@ -320,7 +320,7 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("uses the exact duration deadline when the timeout callback is delivered late", async () => {
+  it("rejects automatic capture that materially overruns a delayed timeout", async () => {
     const { result } = renderHook(() => useVoiceRecorder());
     const clock = vi.spyOn(performance, "now");
     clock.mockReturnValue(0);
@@ -330,8 +330,9 @@ describe("useVoiceRecorder", () => {
     clock.mockReturnValue(600_050);
     await act(async () => vi.advanceTimersByTime(600_000));
 
-    expect(result.current.phase).toBe("preview");
-    expect(result.current.preview?.metadata.duration_ms).toBe(600_000);
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toContain("duration limit");
+    expect(result.current.preview).toBeNull();
     clock.mockRestore();
   });
 

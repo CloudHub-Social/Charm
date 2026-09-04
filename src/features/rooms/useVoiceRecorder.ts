@@ -207,10 +207,7 @@ export function useVoiceRecorder() {
       }, 100);
       preparing.current = null;
       startedAt = performance.now();
-      const durationTimer = setTimeout(
-        () => requestStop(startedAt + MAX_DURATION_MS),
-        MAX_DURATION_MS,
-      );
+      const durationTimer = setTimeout(() => requestStop(), MAX_DURATION_MS);
       active.current = { recorder, stream, context, timer, durationTimer, requestStop };
       recorder.start(250);
       setPhase("recording");
