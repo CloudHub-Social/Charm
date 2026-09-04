@@ -248,7 +248,11 @@ async fn clear_local_session(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
-    super::recovery_custody::clear_native_pending(&account_key)?;
+    // A recovery credential is not a login credential. Failure to remove it
+    // must not prevent revocation of the stored Matrix/OAuth session below.
+    if super::recovery_custody::clear_native_pending(&account_key).is_err() {
+        tracing::warn!("Could not remove protected pending recovery during local session cleanup");
+    }
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
 
