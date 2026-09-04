@@ -171,6 +171,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 43 extended composer formatting and command controls.
         ComposerParity,
+        /// Spec 47 appearance customization and display preferences.
+        AppearanceParity,
     }
 );
 
@@ -207,6 +209,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::ComposerParity => false,
+            FeatureFlagKey::AppearanceParity => false,
         }
     }
 
@@ -296,6 +299,9 @@ impl FeatureFlagKey {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
             FeatureFlagKey::ComposerParity => "Use extended composer formatting and command controls.",
+            FeatureFlagKey::AppearanceParity => {
+                "Customize appearance and display preferences, including clock and date formats."
+            }
         }
     }
 
@@ -341,6 +347,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::ComposerParity => "Spec 43 (composer parity)",
+            FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
 
@@ -376,6 +383,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::ComposerParity => "composer_parity",
+            FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
 }

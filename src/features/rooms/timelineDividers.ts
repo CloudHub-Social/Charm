@@ -1,3 +1,5 @@
+import { formatDisplayDate, type DateFormat } from "@/features/appearance/dateTime";
+
 function isSameDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&
@@ -27,12 +29,14 @@ export function formatDateDividerLabel(
   timestampMs: number,
   now = new Date(),
   locale?: string,
+  dateFormat: DateFormat = "locale",
 ): string {
   const date = new Date(timestampMs);
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (isSameDay(date, now)) return "Today";
   if (isSameDay(date, yesterday)) return "Yesterday";
+  if (dateFormat !== "locale") return formatDisplayDate(timestampMs, dateFormat, { locale });
   return new Intl.DateTimeFormat(locale, {
     month: "long",
     day: "numeric",
