@@ -2061,9 +2061,10 @@ pub async fn confirm_password_reset(
         {
             *guard = Some(pending);
         }
-    } else {
-        clear_password_reset_cancellation(&state, &attempt_id);
     }
+    // Retain this one bounded status record after success: a racing cancel
+    // must still observe that dispatch won. It contains no password/client
+    // and is replaced by the next attempt.
     result
 }
 
@@ -2367,22 +2368,14 @@ fn clear_password_reset_cancellation(state: &MatrixState, attempt_id: &str) {
 }
 
 fn cancel_password_reset_cancellation(state: &MatrixState, attempt_id: &str) -> bool {
-    let mut guard = state
+    let guard = state
         .pending_password_reset_cancel
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if guard
+    guard
         .as_ref()
-        .is_some_and(|(current_id, _)| current_id == attempt_id)
-    {
-        if let Some((_, cancellation)) = guard.as_ref() {
-            if !cancellation.cancel() {
-                return false;
-            }
-        }
-        guard.take();
-    }
-    true
+        .filter(|(current_id, _)| current_id == attempt_id)
+        .is_some_and(|(_, cancellation)| cancellation.cancel())
 }
 
 #[tauri::command]
@@ -3765,6 +3758,42 @@ mod registration_uia_tests {
         let cancellation = super::PasswordResetCancellation::default();
         assert!(cancellation.cancel());
         assert!(cancellation.commit_dispatch().is_err());
+    }
+
+    #[test]
+    fn completed_or_unknown_reset_cannot_report_prevented_dispatch() {
+        let state = super::MatrixState::default();
+        let cancellation = super::PasswordResetCancellation::default();
+        cancellation.commit_dispatch().unwrap();
+        *state.pending_password_reset_cancel.lock().unwrap() =
+            Some(("completed".to_owned(), cancellation));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+        assert!(!super::cancel_password_reset_cancellation(
+            &state, "unknown"
+        ));
+        super::clear_password_reset_cancellation(&state, "completed");
+        assert!(!super::cancel_password_reset_cancellation(
+            &state,
+            "completed"
+        ));
+    }
+
+    #[test]
+    fn cancellation_before_dispatch_remains_idempotent() {
+        let state = super::MatrixState::default();
+        *state.pending_password_reset_cancel.lock().unwrap() = Some((
+            "pending".to_owned(),
+            super::PasswordResetCancellation::default(),
+        ));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
+        assert!(super::cancel_password_reset_cancellation(&state, "pending"));
     }
 
     #[test]

@@ -209,6 +209,9 @@ homeservers. The parity audit (2026-07-13) found:
   share an atomic state transition. If cancellation wins, no request is dispatched;
   if dispatch wins, cancellation reports that it cannot undo the request, even
   before the network future is first polled. Charm awaits the request's result.
+  A bounded attempt-status record remains after completion until the next attempt;
+  a late cancellation cannot claim it prevented a completed password change.
+  Unknown or superseded attempt IDs likewise cannot claim prevention.
   Unauthenticated recovery networking classifies both IPv4-mapped and legacy
   IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
