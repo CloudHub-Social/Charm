@@ -105,7 +105,11 @@ export function FormattingToolbar({ accountId = "anonymous", editor }: Formattin
   const buttons = composerParityEnabled ? [...BUTTONS, ...EXTENDED_BUTTONS] : BUTTONS;
 
   return (
-    <div className="flex items-center gap-0.5" role="toolbar" aria-label="Formatting">
+    <div
+      className="flex min-w-0 flex-wrap items-center gap-0.5"
+      role="toolbar"
+      aria-label="Formatting"
+    >
       {buttons.map(({ key, label, icon: Icon, isActive, run }) => (
         <button
           key={key}

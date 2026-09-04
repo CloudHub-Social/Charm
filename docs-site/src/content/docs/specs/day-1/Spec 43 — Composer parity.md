@@ -200,6 +200,10 @@ does not update feedback after a room switch. Parsing and dispatch regressions
 are included, pending CI. These commands do not send chat messages or trigger
 message-send scrolling. `/nick` changes the global profile, not the per-room nick.
 
+The link dialog contains Escape so dismissal does not cancel an unsaved message
+edit. Formatting controls wrap within the composer at narrow mobile widths;
+regressions cover 320px and 375px layouts with the parity flag on and off.
+
 ## What I'd revisit as this grows
 
 - Custom/user-defined command aliases — not in Charm 1.0, not built now.

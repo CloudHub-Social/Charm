@@ -529,7 +529,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [onEscape]);
 
   return (
-    <div className="flex flex-1 flex-col gap-1">
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
       {showFormattingToolbar && (
         <FormattingToolbar key={`${accountId}:${roomId}`} accountId={accountId} editor={editor} />
       )}

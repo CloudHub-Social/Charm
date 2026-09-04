@@ -50,7 +50,12 @@ export function ComposerLinkButton({ editor }: { editor: Editor | null }) {
       >
         <Link size={16} />
       </button>
-      <DialogContent>
+      <DialogContent
+        onKeyDown={(event) => {
+          // Dismiss only this nested dialog, not the composer's unsaved edit.
+          if (event.key === "Escape") event.stopPropagation();
+        }}
+      >
         <DialogTitle>Insert link</DialogTitle>
         <DialogDescription>
           Link the selected text, or insert the address at the cursor.

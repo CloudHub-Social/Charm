@@ -76,5 +76,34 @@ for (const enabled of [false, true]) {
       ).toBeVisible();
       await expect(page.getByText(/sending…/)).toHaveCount(0);
     });
+
+    for (const width of [320, 375]) {
+      test(`keeps formatting controls inside the composer at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 740 });
+        await page.getByRole("button", { name: "Show formatting", exact: true }).click();
+        const toolbar = page.getByRole("toolbar", { name: "Formatting" });
+        await expect(toolbar).toBeVisible();
+        await expect
+          .poll(async () =>
+            toolbar.evaluate((element) => {
+              const bounds = element.getBoundingClientRect();
+              return (
+                bounds.left >= 0 &&
+                bounds.right <= window.innerWidth &&
+                [...element.querySelectorAll("button")].every((button) => {
+                  const rect = button.getBoundingClientRect();
+                  return (
+                    rect.left >= bounds.left &&
+                    rect.right <= bounds.right + 1 &&
+                    rect.top >= bounds.top &&
+                    rect.bottom <= bounds.bottom + 1
+                  );
+                })
+              );
+            }),
+          )
+          .toBe(true);
+      });
+    }
   });
 }

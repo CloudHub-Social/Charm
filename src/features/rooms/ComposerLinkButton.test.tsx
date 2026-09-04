@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { ComposerLinkButton, composerLinkUrl } from "./ComposerLinkButton";
@@ -55,5 +55,23 @@ describe("composer links", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply link" }));
     expect(screen.getByRole("alert")).toHaveTextContent("The message changed");
     expect(editor.getHTML()).not.toContain("<a");
+  });
+
+  it("closes on Escape without cancelling the surrounding composer edit", async () => {
+    const cancelEdit = vi.fn();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancelEdit();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    try {
+      const editor = setup();
+      fireEvent.keyDown(screen.getByLabelText("Link address"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(cancelEdit).not.toHaveBeenCalled();
+      expect(editor.getText()).toBe("hello");
+      expect(editor.getHTML()).not.toContain("<a");
+    } finally {
+      document.removeEventListener("keydown", onKeyDown);
+    }
   });
 });
