@@ -7,12 +7,15 @@
 //! "Dependencies & sequencing"). Align the two into one shared model once
 //! Spec 01 lands; until then this module doesn't depend on it.
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+
 use matrix_sdk::ruma::api::client::account::change_password;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
-use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+use matrix_sdk::ruma::events::ignored_user_list::{IgnoredUser, IgnoredUserListEventContent};
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,26 @@ use super::MatrixState;
 /// Square thumbnail size (px) requested when resolving a profile avatar's
 /// `mxc://` URI to a local file for [`resolve_avatar`].
 const AVATAR_THUMBNAIL_SIZE: u32 = 96;
+
+type IgnoreListLocks = HashMap<(String, OwnedUserId), Weak<tokio::sync::Mutex<()>>>;
+static IGNORE_LIST_LOCKS: LazyLock<Mutex<IgnoreListLocks>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn ignore_list_lock(client: &Client) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let own_user = client.user_id().ok_or("Not logged in")?;
+    let key = (client.homeserver().to_string(), own_user.to_owned());
+    let mut locks = IGNORE_LIST_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    if locks.len() >= 4096 {
+        return Err("Too many pending ignore-list updates; try again shortly".into());
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    Ok(lock)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -111,12 +134,7 @@ pub async fn ignore_user(state: State<'_, MatrixState>, user_id: String) -> Resu
 }
 
 pub async fn ignore_user_impl(client: &Client, user_id: &str) -> Result<(), String> {
-    let user_id = <&UserId>::try_from(user_id).map_err(|e| e.to_string())?;
-    client
-        .account()
-        .ignore_user(user_id)
-        .await
-        .map_err(|e| e.to_string())
+    update_ignored_user(client, user_id, true).await
 }
 
 #[tauri::command]
@@ -126,12 +144,46 @@ pub async fn unignore_user(state: State<'_, MatrixState>, user_id: String) -> Re
 }
 
 pub async fn unignore_user_impl(client: &Client, user_id: &str) -> Result<(), String> {
+    update_ignored_user(client, user_id, false).await
+}
+
+async fn update_ignored_user(client: &Client, user_id: &str, ignored: bool) -> Result<(), String> {
     let user_id = <&UserId>::try_from(user_id).map_err(|e| e.to_string())?;
-    client
-        .account()
-        .unignore_user(user_id)
+    if ignored && client.user_id() == Some(user_id) {
+        return Err("Cannot ignore the logged-in user".into());
+    }
+    // Settings, slash commands, and companion browser sessions must share the
+    // whole read/modify/write boundary. Other processes/devices remain subject
+    // to Matrix account data's last-write-wins semantics.
+    let lock = ignore_list_lock(client)?;
+    let _guard = lock.lock().await;
+    let account = client.account();
+    // The SDK convenience methods read sync-local storage, which may still be
+    // stale even after a successful PUT. Fetch under the lock instead.
+    let mut content = account
+        .fetch_account_data_static::<IgnoredUserListEventContent>()
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|raw| raw.deserialize())
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let changed = if ignored {
+        content
+            .ignored_users
+            .insert(user_id.to_owned(), IgnoredUser::new())
+            .is_none()
+    } else {
+        content.ignored_users.remove(user_id).is_some()
+    };
+    if !changed {
+        return Ok(());
+    }
+    account
+        .set_account_data(content)
         .await
         .map_err(|e| e.to_string())
+        .map(|_| ())
 }
 
 /// Structured error for the four UIA-gated settings commands
@@ -731,6 +783,136 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    async fn mock_ignore_list(
+        server: &MatrixMockServer,
+        initial: serde_json::Value,
+    ) -> Arc<Mutex<serde_json::Value>> {
+        let content = Arc::new(Mutex::new(initial));
+        let get_content = Arc::clone(&content);
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path_regex(
+                "/account_data/m.ignored_user_list$",
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                ResponseTemplate::new(200)
+                    .set_body_json(get_content.lock().unwrap().clone())
+                    .set_delay(std::time::Duration::from_millis(30))
+            })
+            .mount(server.server())
+            .await;
+        let put_content = Arc::clone(&content);
+        Mock::given(method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                "/account_data/m.ignored_user_list$",
+            ))
+            .respond_with(move |request: &wiremock::Request| {
+                *put_content.lock().unwrap() = request.body_json().unwrap();
+                ResponseTemplate::new(200).set_body_json(json!({}))
+            })
+            .mount(server.server())
+            .await;
+        content
+    }
+
+    #[tokio::test]
+    async fn concurrent_ignore_updates_preserve_both_users_without_sync() {
+        let server = MatrixMockServer::new().await;
+        // Separate SDK clients model two companion sessions for one account.
+        let first = server.client_builder().build().await;
+        let second = server.client_builder().build().await;
+        assert_eq!(first.user_id(), second.user_id());
+        let content = mock_ignore_list(&server, json!({"ignored_users": {}})).await;
+
+        let (a, b) = tokio::join!(
+            ignore_user_impl(&first, "@alice:example.org"),
+            ignore_user_impl(&second, "@bob:example.org"),
+        );
+        a.unwrap();
+        b.unwrap();
+        assert_eq!(
+            *content.lock().unwrap(),
+            json!({"ignored_users": {"@alice:example.org": {}, "@bob:example.org": {}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_ignore_and_unignore_preserve_unrelated_blocks() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let content = mock_ignore_list(
+            &server,
+            json!({"ignored_users": {"@alice:example.org": {}, "@keep:example.org": {}}}),
+        )
+        .await;
+        let (a, b) = tokio::join!(
+            ignore_user_impl(&client, "@bob:example.org"),
+            unignore_user_impl(&client, "@alice:example.org"),
+        );
+        a.unwrap();
+        b.unwrap();
+        assert_eq!(
+            *content.lock().unwrap(),
+            json!({"ignored_users": {"@bob:example.org": {}, "@keep:example.org": {}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_ignore_list_is_not_overwritten() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let malformed = json!({"ignored_users": "invalid"});
+        let content = mock_ignore_list(&server, malformed.clone()).await;
+        assert!(ignore_user_impl(&client, "@alice:example.org")
+            .await
+            .is_err());
+        assert_eq!(*content.lock().unwrap(), malformed);
+    }
+
+    #[tokio::test]
+    async fn ignore_list_locks_do_not_cross_homeservers() {
+        let first_server = MatrixMockServer::new().await;
+        let second_server = MatrixMockServer::new().await;
+        let first = first_server.client_builder().build().await;
+        let second = second_server.client_builder().build().await;
+        let first_lock = ignore_list_lock(&first).unwrap();
+        let second_lock = ignore_list_lock(&second).unwrap();
+        assert!(!Arc::ptr_eq(&first_lock, &second_lock));
+    }
+
+    #[tokio::test]
+    async fn ignore_list_locks_do_not_cross_accounts() {
+        let server = MatrixMockServer::new().await;
+        let first = server.client_builder().build().await;
+        let second = server
+            .client_builder()
+            .logged_in_with_token(
+                "other-test-token".into(),
+                "@other:example.org".parse().unwrap(),
+                "OTHERDEVICE".into(),
+            )
+            .build()
+            .await;
+        let first_lock = ignore_list_lock(&first).unwrap();
+        let second_lock = ignore_list_lock(&second).unwrap();
+        assert!(!Arc::ptr_eq(&first_lock, &second_lock));
+    }
+
+    #[tokio::test]
+    async fn ignoring_self_is_rejected_before_network_access() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert_eq!(
+            ignore_user_impl(&client, client.user_id().unwrap().as_str()).await,
+            Err("Cannot ignore the logged-in user".into())
+        );
+        assert!(server
+            .server()
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn validate_avatar_path_accepts_a_real_image() {

@@ -185,6 +185,14 @@ are carried in JSON bodies, not URL paths. Transport mappings and unauthenticate
 route rejection have regression coverage, pending CI and live end-to-end verification.
 Missing arguments show usage; ignore/unignore require exactly
 one user identifier. Backend validation and authorization remain authoritative.
+Ignore-list mutations serialize the complete server-read/modify/write sequence
+per homeserver and account across native callers and companion sessions in one
+process. They fetch current account data rather than the SDK's potentially stale
+sync cache; malformed or failed reads never fall back to overwriting an empty list.
+This does not provide distributed locking against other clients or companion
+processes: Matrix account data remains last-write-wins across those writers.
+Concurrent block/block and block/unblock regressions cover preservation of existing
+entries without waiting for sync, plus malformed-data and homeserver isolation.
 Failures show inline feedback without logging action arguments, and completion
 does not update feedback after a room switch. Parsing and dispatch regressions
 are included, pending CI. These commands do not send chat messages or trigger
