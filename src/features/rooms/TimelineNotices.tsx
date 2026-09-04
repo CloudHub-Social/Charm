@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from "react";
+import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { TimelineItemSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { formatDateDividerLabel, isDateDividerBetween } from "./timelineDividers";
@@ -273,6 +274,7 @@ export function TimelineNoticeList({
   previousTimestampMs?: number | null;
 }) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const { dateFormat } = useDisplayFormats();
   const groups: TimelineNotice[][] = [];
   for (const notice of notices) {
     const previous = groups.at(-1);
@@ -302,7 +304,7 @@ export function TimelineNoticeList({
             <div key={first.event_id}>
               {showDateDivider && (
                 <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-                  {formatDateDividerLabel(first.timestamp_ms)}
+                  {formatDateDividerLabel(first.timestamp_ms, undefined, undefined, dateFormat)}
                 </div>
               )}
               <button
@@ -326,7 +328,7 @@ export function TimelineNoticeList({
           <div key={first.event_id}>
             {showDateDivider && (
               <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-                {formatDateDividerLabel(first.timestamp_ms)}
+                {formatDateDividerLabel(first.timestamp_ms, undefined, undefined, dateFormat)}
               </div>
             )}
             {group.map((notice) => (
