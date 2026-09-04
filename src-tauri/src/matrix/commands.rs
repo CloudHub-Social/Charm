@@ -100,9 +100,17 @@ pub async fn run_command(
     room_id: String,
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<String>,
 ) -> Result<CommandResult, String> {
     let client = state.require_client().await?;
-    run_command_impl(&client, &room_id, command, args).await
+    run_command_impl(
+        &client,
+        &room_id,
+        command,
+        args,
+        in_reply_to_event_id.as_deref(),
+    )
+    .await
 }
 
 /// Core logic behind [`run_command`], taking a plain `&Client` so it's
@@ -112,6 +120,7 @@ pub async fn run_command_impl(
     room_id: &str,
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<&str>,
 ) -> Result<CommandResult, String> {
     let room = get_room(client, room_id)?;
     // `/me` already goes through the serialized send helper below. Every
@@ -130,12 +139,17 @@ pub async fn run_command_impl(
                 Ok(content) => content,
                 Err(result) => return Ok(result),
             };
-            super::send::send_and_capture_transaction_id(
-                client,
-                &room,
-                AnyMessageLikeEventContent::RoomMessage(content),
-            )
-            .await?;
+            if let Some(event_id) = in_reply_to_event_id {
+                super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
+                    .await?;
+            } else {
+                super::send::send_and_capture_transaction_id(
+                    client,
+                    &room,
+                    AnyMessageLikeEventContent::RoomMessage(content),
+                )
+                .await?;
+            }
             Ok(CommandResult::Success)
         }
         SlashCommand::Me => {
@@ -144,12 +158,17 @@ pub async fn run_command_impl(
                 Err(result) => return Ok(result),
             };
             let content = RoomMessageEventContent::emote_plain(text);
-            super::send::send_and_capture_transaction_id(
-                client,
-                &room,
-                AnyMessageLikeEventContent::RoomMessage(content),
-            )
-            .await?;
+            if let Some(event_id) = in_reply_to_event_id {
+                super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
+                    .await?;
+            } else {
+                super::send::send_and_capture_transaction_id(
+                    client,
+                    &room,
+                    AnyMessageLikeEventContent::RoomMessage(content),
+                )
+                .await?;
+            }
             Ok(CommandResult::Success)
         }
         SlashCommand::Topic => {
@@ -206,6 +225,8 @@ pub async fn run_command_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use matrix_sdk::ruma::events::room::message::{AddMentions, ForwardThread, ReplyMetadata};
+    use matrix_sdk::ruma::{event_id, user_id};
 
     #[test]
     fn notice_is_a_literal_matrix_notice_not_a_text_message() {
@@ -220,6 +241,31 @@ mod tests {
     fn notice_rejects_missing_or_blank_text() {
         assert!(notice_content_from_args(&[]).is_err());
         assert!(notice_content_from_args(&["  ".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn reply_relations_preserve_message_command_subtypes() {
+        let metadata = ReplyMetadata::new(
+            event_id!("$original:example.org"),
+            user_id!("@alice:example.org"),
+            None,
+        );
+        for (content, expected_type) in [
+            (RoomMessageEventContent::emote_plain("waves"), "m.emote"),
+            (
+                RoomMessageEventContent::notice_plain("heads up"),
+                "m.notice",
+            ),
+        ] {
+            let reply =
+                content.make_reply_to(metadata.clone(), ForwardThread::No, AddMentions::Yes);
+            let json = serde_json::to_value(reply).unwrap();
+            assert_eq!(json["msgtype"], expected_type);
+            assert_eq!(
+                json["m.relates_to"]["m.in_reply_to"]["event_id"],
+                "$original:example.org"
+            );
+        }
     }
 
     #[test]

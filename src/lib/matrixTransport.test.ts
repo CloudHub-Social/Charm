@@ -349,7 +349,7 @@ describe("matrix web transport", () => {
       { roomId: "!r:example.org", command: "join", args: ["#room:example.org"] },
       "POST",
       "/api/rooms/!r%3Aexample.org/command",
-      { command: "join", args: ["#room:example.org"] },
+      { command: "join", args: ["#room:example.org"], in_reply_to_event_id: null },
     ],
     [
       "send_read_receipt",

@@ -534,8 +534,14 @@ export function runCommand(
   roomId: string,
   command: SlashCommand,
   args: string[],
+  inReplyToEventId?: string | null,
 ): Promise<CommandResult> {
-  return invoke("run_command", { roomId, command, args });
+  return invoke("run_command", {
+    roomId,
+    command,
+    args,
+    inReplyToEventId: inReplyToEventId ?? null,
+  });
 }
 
 export function onTimelineUpdate(

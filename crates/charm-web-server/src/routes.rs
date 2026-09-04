@@ -2438,111 +2438,111 @@ async fn logout(
         // by a detached task, while still awaiting it during the normal path.
         let state = state.clone();
         let cleanup = tokio::spawn(async move {
-        // Captured before the live-session branch below moves `session`
-        // into a spawned task — this is the fallback `persistence.remove`
-        // needs at the very end to still clean up this session's crypto
-        // store even when no persisted blob exists to read it from (e.g.
-        // `finish_login`'s own initial `persistence.save` failed, which it
-        // explicitly tolerates — the live session still has an on-disk
-        // crypto store in that case, just never a matching blob for
-        // `PersistenceStore::remove`'s own `read_one` to find it through).
-        let mut live_crypto = None;
-        // Stop the live sync loop *before* removing the persisted entry
-        // below, not after. Its `repersist_if_token_changed` can re-save a
-        // refreshed token at any sync iteration — removing the persisted
-        // entry first would leave a window where an in-flight sync
-        // iteration resurrects it with a freshly "current" token right
-        // before this handler gets to abort the loop that raced it.
-        // Aborting first narrows that window (not eliminates it —
-        // `abort()` cancels at the task's next await point, not
-        // synchronously mid-poll — but from "the rest of this handler's
-        // lifetime" down to "whatever's already in flight at this instant").
-        if let Some(session) = state.sessions.remove(&token).await {
-            live_crypto = session.persisted_crypto.clone();
-            if let Some(handle) = session
-                .sync_handle
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-            {
-                handle.abort();
-            }
-            // Revoke the access token on the homeserver too — otherwise it
-            // stays valid indefinitely after "logout" only clears local
-            // server-side state, unlike the desktop app (which calls the
-            // same `matrix_auth().logout()`). Spawned rather than awaited
-            // inline so a slow/unreachable homeserver doesn't block the
-            // response to the browser; best-effort, same as desktop's other
-            // fire-and-forget homeserver calls (e.g. `set_presence_online`).
-            tokio::spawn(async move {
-                let _ = session.client.matrix_auth().logout().await;
-            });
-            // See the matching call in the `else` branch below — harmless
-            // even in the (normal) case where this token was never
-            // idle-evicted and so never had an entry to begin with.
-            state.sessions.forget_evicted_presence(&token);
-        } else if let Some(persistence) = &state.persistence {
-            // No live in-memory `Session` for this token — either it was
-            // never loaded (a startup `restore_all` failure/timeout) or it
-            // was idle-evicted (see `session::SessionStore::sweep_idle`).
-            // Either way there's still a persisted access/refresh token that
-            // would otherwise stay valid at the homeserver forever, since
-            // nothing below this rebuilds a `Client` to revoke it — only
-            // deletes the local persisted copy. Restore just far enough to
-            // call `logout()` on the homeserver before that persisted copy
-            // is gone. `restore_client_for_revocation`, not the full
-            // `restore_by_token` — revoking a token needs no crypto identity
-            // at all, and `restore_by_token` now deliberately fails closed
-            // when a session's crypto store is missing/unopenable (to stop a
-            // *live* session from silently continuing under a fresh, empty
-            // crypto identity — see `build_client_for_restore`'s doc
-            // comment), which would otherwise skip this homeserver
-            // revocation entirely for exactly that session and leave its
-            // token valid forever even though the browser's logout
-            // succeeded. The restore itself is awaited (not spawned) and
-            // *before* the unconditional `remove` below — it reads the same
-            // persisted object `remove` is about to delete, so this has to
-            // run first, not race it — and it's already bounded by
-            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
-            // on *that* part. The actual `logout()` call is spawned rather
-            // than awaited, same as the live-session branch above and for
-            // the same reason: it's a second, independent network call with
-            // no timeout of its own, so awaiting it inline here would let a
-            // slow/unreachable homeserver hang this response even after the
-            // bounded restore already succeeded. No presence to carry
-            // forward here — this session is being logged out, not restored
-            // for continued use.
-            if let Some(client) = persistence.restore_client_for_revocation(&token).await {
+            // Captured before the live-session branch below moves `session`
+            // into a spawned task — this is the fallback `persistence.remove`
+            // needs at the very end to still clean up this session's crypto
+            // store even when no persisted blob exists to read it from (e.g.
+            // `finish_login`'s own initial `persistence.save` failed, which it
+            // explicitly tolerates — the live session still has an on-disk
+            // crypto store in that case, just never a matching blob for
+            // `PersistenceStore::remove`'s own `read_one` to find it through).
+            let mut live_crypto = None;
+            // Stop the live sync loop *before* removing the persisted entry
+            // below, not after. Its `repersist_if_token_changed` can re-save a
+            // refreshed token at any sync iteration — removing the persisted
+            // entry first would leave a window where an in-flight sync
+            // iteration resurrects it with a freshly "current" token right
+            // before this handler gets to abort the loop that raced it.
+            // Aborting first narrows that window (not eliminates it —
+            // `abort()` cancels at the task's next await point, not
+            // synchronously mid-poll — but from "the rest of this handler's
+            // lifetime" down to "whatever's already in flight at this instant").
+            if let Some(session) = state.sessions.remove(&token).await {
+                live_crypto = session.persisted_crypto.clone();
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+                // Revoke the access token on the homeserver too — otherwise it
+                // stays valid indefinitely after "logout" only clears local
+                // server-side state, unlike the desktop app (which calls the
+                // same `matrix_auth().logout()`). Spawned rather than awaited
+                // inline so a slow/unreachable homeserver doesn't block the
+                // response to the browser; best-effort, same as desktop's other
+                // fire-and-forget homeserver calls (e.g. `set_presence_online`).
                 tokio::spawn(async move {
-                    let _ = client.matrix_auth().logout().await;
+                    let _ = session.client.matrix_auth().logout().await;
                 });
+                // See the matching call in the `else` branch below — harmless
+                // even in the (normal) case where this token was never
+                // idle-evicted and so never had an entry to begin with.
+                state.sessions.forget_evicted_presence(&token);
+            } else if let Some(persistence) = &state.persistence {
+                // No live in-memory `Session` for this token — either it was
+                // never loaded (a startup `restore_all` failure/timeout) or it
+                // was idle-evicted (see `session::SessionStore::sweep_idle`).
+                // Either way there's still a persisted access/refresh token that
+                // would otherwise stay valid at the homeserver forever, since
+                // nothing below this rebuilds a `Client` to revoke it — only
+                // deletes the local persisted copy. Restore just far enough to
+                // call `logout()` on the homeserver before that persisted copy
+                // is gone. `restore_client_for_revocation`, not the full
+                // `restore_by_token` — revoking a token needs no crypto identity
+                // at all, and `restore_by_token` now deliberately fails closed
+                // when a session's crypto store is missing/unopenable (to stop a
+                // *live* session from silently continuing under a fresh, empty
+                // crypto identity — see `build_client_for_restore`'s doc
+                // comment), which would otherwise skip this homeserver
+                // revocation entirely for exactly that session and leave its
+                // token valid forever even though the browser's logout
+                // succeeded. The restore itself is awaited (not spawned) and
+                // *before* the unconditional `remove` below — it reads the same
+                // persisted object `remove` is about to delete, so this has to
+                // run first, not race it — and it's already bounded by
+                // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
+                // on *that* part. The actual `logout()` call is spawned rather
+                // than awaited, same as the live-session branch above and for
+                // the same reason: it's a second, independent network call with
+                // no timeout of its own, so awaiting it inline here would let a
+                // slow/unreachable homeserver hang this response even after the
+                // bounded restore already succeeded. No presence to carry
+                // forward here — this session is being logged out, not restored
+                // for continued use.
+                if let Some(client) = persistence.restore_client_for_revocation(&token).await {
+                    tokio::spawn(async move {
+                        let _ = client.matrix_auth().logout().await;
+                    });
+                }
+                // This token's cached presence (if any — see
+                // `SessionStore::evicted_presence`) is now meaningless: the
+                // persisted session it would have restored into is about to be
+                // deleted below. Drop it immediately instead of leaving it to
+                // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
+                state.sessions.forget_evicted_presence(&token);
             }
-            // This token's cached presence (if any — see
-            // `SessionStore::evicted_presence`) is now meaningless: the
-            // persisted session it would have restored into is about to be
-            // deleted below. Drop it immediately instead of leaving it to
-            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
-            state.sessions.forget_evicted_presence(&token);
-        }
-        // Removed unconditionally, whether or not a live in-memory session
-        // was found above — not nested inside that `if let Some(session)`.
-        // A persisted entry can outlive its `SessionStore` entry (e.g.
-        // `restore_all` timed out or failed on it at startup — see
-        // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
-        // can still hold a cookie for a token this process never actually
-        // loaded a `Session` for. Skipping this removal in that case would
-        // leave the cookie's session persisted indefinitely: a later restart
-        // (once the homeserver/network issue that caused the earlier
-        // restore failure has cleared) would restore and start syncing an
-        // account the user believes they already logged out of.
-        if let Some(persistence) = &state.persistence {
-            let live_crypto = live_crypto
-                .as_ref()
-                .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
-            if let Err(e) = persistence.remove(&token, live_crypto).await {
-                tracing::warn!("failed to remove persisted session on logout: {e}");
+            // Removed unconditionally, whether or not a live in-memory session
+            // was found above — not nested inside that `if let Some(session)`.
+            // A persisted entry can outlive its `SessionStore` entry (e.g.
+            // `restore_all` timed out or failed on it at startup — see
+            // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
+            // can still hold a cookie for a token this process never actually
+            // loaded a `Session` for. Skipping this removal in that case would
+            // leave the cookie's session persisted indefinitely: a later restart
+            // (once the homeserver/network issue that caused the earlier
+            // restore failure has cleared) would restore and start syncing an
+            // account the user believes they already logged out of.
+            if let Some(persistence) = &state.persistence {
+                let live_crypto = live_crypto
+                    .as_ref()
+                    .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                if let Err(e) = persistence.remove(&token, live_crypto).await {
+                    tracing::warn!("failed to remove persisted session on logout: {e}");
+                }
             }
-        }
         });
         if let Err(error) = cleanup.await {
             tracing::warn!("logout cleanup task failed: {error}");
@@ -3862,6 +3862,7 @@ async fn discard_failed_message(
 struct RunCommandRequest {
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<String>,
 }
 
 async fn run_command(
@@ -3871,21 +3872,27 @@ async fn run_command(
     Json(request): Json<RunCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let result = run_command_impl(&session.client, &room_id, request.command, request.args)
-        .await
-        .map_err(|e| {
-            // `run_command_impl`'s `get_room` helper fails with exactly this
-            // message shape for a missing room (see `commands.rs`) — map
-            // that case to 404, consistent with every other room-scoped
-            // route (`get_timeline_page`, `send_message`, etc.), rather than
-            // lumping it in with genuine bad-request failures (bad args,
-            // permission errors, send-queue failures).
-            if e == format!("room {room_id} not found") {
-                ApiError::not_found(e)
-            } else {
-                ApiError::bad_request(e)
-            }
-        })?;
+    let result = run_command_impl(
+        &session.client,
+        &room_id,
+        request.command,
+        request.args,
+        request.in_reply_to_event_id.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        // `run_command_impl`'s `get_room` helper fails with exactly this
+        // message shape for a missing room (see `commands.rs`) — map
+        // that case to 404, consistent with every other room-scoped
+        // route (`get_timeline_page`, `send_message`, etc.), rather than
+        // lumping it in with genuine bad-request failures (bad args,
+        // permission errors, send-queue failures).
+        if e == format!("room {room_id} not found") {
+            ApiError::not_found(e)
+        } else {
+            ApiError::bad_request(e)
+        }
+    })?;
     Ok(Json(result))
 }
 

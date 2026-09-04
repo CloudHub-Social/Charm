@@ -623,6 +623,19 @@ pub async fn send_reply_impl(
     formatted_body: Option<String>,
     mentions: Option<Vec<String>>,
 ) -> Result<String, String> {
+    let content = super::send::build_message_content(body, formatted_body, mentions)?;
+    send_room_message_reply_impl(client, room_id, in_reply_to_event_id, content).await
+}
+
+/// Queues an arbitrary room-message subtype as a reply. Slash commands use
+/// this to retain `m.emote` / `m.notice` while sharing the same target
+/// validation, rich-reply fallback, and mention behavior as normal replies.
+pub(crate) async fn send_room_message_reply_impl(
+    client: &Client,
+    room_id: &str,
+    in_reply_to_event_id: &str,
+    content: matrix_sdk::ruma::events::room::message::RoomMessageEventContent,
+) -> Result<String, String> {
     let room = get_room(client, room_id)?;
 
     let parsed_target = EventId::parse(in_reply_to_event_id).map_err(|e| e.to_string())?;
@@ -652,8 +665,7 @@ pub async fn send_reply_impl(
         .as_original()
         .ok_or_else(|| "target event has already been redacted".to_string())?;
 
-    let content = super::send::build_message_content(body, formatted_body, mentions)?
-        .make_reply_to(original_message, ForwardThread::No, AddMentions::Yes);
+    let content = content.make_reply_to(original_message, ForwardThread::No, AddMentions::Yes);
 
     super::send::send_and_capture_transaction_id(
         client,

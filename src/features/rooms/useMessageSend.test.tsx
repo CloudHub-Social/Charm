@@ -95,7 +95,12 @@ describe("formatted composer submission", () => {
         false,
       );
     });
-    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(room.room_id, "notice", ["hello"]);
+    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(
+      room.room_id,
+      "notice",
+      ["hello"],
+      null,
+    );
     expect(result.current.commandFeedback).toBe("Cannot send notice");
     expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
@@ -130,7 +135,12 @@ describe("formatted composer submission", () => {
       expect(await submission).toBe(false);
     });
     expect(result.current.commandFeedback).toBeNull();
-    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(room.room_id, "notice", ["hello"]);
+    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(
+      room.room_id,
+      "notice",
+      ["hello"],
+      null,
+    );
   });
 
   it.each(["unban", "nick", "ignore", "unignore"] as const)(
@@ -273,6 +283,74 @@ describe("formatted composer submission", () => {
       expect(mocks.sendMessage).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["plain", "hello", "hello"],
+    ["shrug", "", "¯\\_(ツ)_/¯"],
+    ["tableflip", "hello", "hello (╯°□°）╯︵ ┻━┻"],
+  ] as const)("keeps a reply relation for /%s", async (command, text, expected) => {
+    const room = makeRoomSummary();
+    const replyTarget = {
+      event_id: "$target",
+      sender: "@alice:example.org",
+      sender_display_name: "Alice",
+      preview: "original",
+    };
+    const { result } = renderHook(() =>
+      useMessageSend({
+        room,
+        editingEventId: null,
+        replyTarget,
+        setEditingEventId: vi.fn(),
+        setReplyTarget: vi.fn(),
+        stopTyping: vi.fn(),
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleSlashCommand({ command, args: [], text });
+    });
+
+    expect(mocks.sendReply).toHaveBeenCalledExactlyOnceWith(
+      room.room_id,
+      "$target",
+      expected,
+      null,
+      null,
+    );
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["me", "notice"] as const)("passes the reply target through /%s", async (command) => {
+    const room = makeRoomSummary();
+    mocks.runCommand.mockResolvedValueOnce({ status: "success" });
+    const { result } = renderHook(() =>
+      useMessageSend({
+        room,
+        editingEventId: null,
+        replyTarget: {
+          event_id: "$target",
+          sender: "@alice:example.org",
+          sender_display_name: "Alice",
+          preview: "original",
+        },
+        setEditingEventId: vi.fn(),
+        setReplyTarget: vi.fn(),
+        stopTyping: vi.fn(),
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleSlashCommand({ command, args: ["hello"] });
+    });
+
+    expect(mocks.runCommand).toHaveBeenCalledExactlyOnceWith(
+      room.room_id,
+      command,
+      ["hello"],
+      "$target",
+    );
+  });
 
   it.each([
     ["/plain hello", true],

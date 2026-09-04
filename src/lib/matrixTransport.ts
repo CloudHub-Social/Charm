@@ -676,6 +676,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/command`, {
         command: args.command,
         args: args.args,
+        in_reply_to_event_id: args.inReplyToEventId ?? null,
       });
     case "send_read_receipt":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/receipt`, {

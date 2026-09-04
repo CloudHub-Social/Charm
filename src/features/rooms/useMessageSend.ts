@@ -216,20 +216,37 @@ export function useMessageSend({
             : `${parsed.text}${parsed.text ? " " : ""}${suffix}`;
         // Like normal submission, consume the reply context at dispatch, not
         // after the await where a newly selected reply could be cleared.
+        const replyingTo = replyTarget;
         setReplyTarget(null);
-        await sendMessage(
-          targetRoomId,
-          body,
-          null,
-          parsed.mentionIds?.length ? parsed.mentionIds : null,
-        );
+        if (replyingTo) {
+          await sendReply(
+            targetRoomId,
+            replyingTo.event_id,
+            body,
+            null,
+            parsed.mentionIds?.length ? parsed.mentionIds : null,
+          );
+        } else {
+          await sendMessage(
+            targetRoomId,
+            body,
+            null,
+            parsed.mentionIds?.length ? parsed.mentionIds : null,
+          );
+        }
         if (currentRoomIdRef.current !== targetRoomId) return false;
         setCommandFeedback(null);
         return true;
       }
       if (parsed.command === "notice" && !composerParityEnabled) return false;
-      if (isMessageSendingCommand(parsed)) setReplyTarget(null);
-      const result = await runCommand(targetRoomId, parsed.command, parsed.args);
+      const replyingTo = isMessageSendingCommand(parsed) ? replyTarget : null;
+      if (replyingTo) setReplyTarget(null);
+      const result = await runCommand(
+        targetRoomId,
+        parsed.command,
+        parsed.args,
+        replyingTo?.event_id ?? null,
+      );
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale
       // failure banner up once a later command (in the still-active room)

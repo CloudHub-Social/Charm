@@ -638,10 +638,9 @@ pub async fn forward_message_impl(
 
 /// Builds a `RoomMessageEventContent` from a plain body, an optional
 /// sanitized HTML body, and optional mention user ids. Used by
-/// `send_message`. `commands::run_command`'s `/me` arm does NOT go through
-/// this — slash commands are typed as plain text in the composer (no
-/// formatted body to carry), so it calls `RoomMessageEventContent::emote_plain`
-/// directly instead.
+/// `send_message`. `commands::run_command`'s `/me` arm builds its distinct
+/// `m.emote` content directly; when replying it routes that content through
+/// `actions::send_room_message_reply_impl` so the subtype is retained.
 pub fn build_message_content(
     body: String,
     formatted_body: Option<String>,
