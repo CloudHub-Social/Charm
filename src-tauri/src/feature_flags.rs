@@ -171,6 +171,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 44 encrypted manual megolm key-file import and export.
         CryptoKeyFiles,
+        /// Spec 47 appearance customization and display preferences.
+        AppearanceParity,
     }
 );
 
@@ -207,6 +209,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::CryptoKeyFiles => false,
+            FeatureFlagKey::AppearanceParity => false,
         }
     }
 
@@ -298,6 +301,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoKeyFiles => {
                 "Import or export standard passphrase-encrypted Matrix room-key files."
             }
+            FeatureFlagKey::AppearanceParity => {
+                "Customize appearance and display preferences, including clock and date formats."
+            }
         }
     }
 
@@ -343,6 +349,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
+            FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
 
@@ -378,6 +385,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
+            FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
 }
@@ -672,13 +680,25 @@ mod tests {
 
     #[test]
     fn generated_frontend_catalog_matches_rust_catalog() {
+        let expected =
+            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize");
+        // Export before asserting parity so CI-only contributors can import
+        // the authoritative catalog even when the committed version is stale.
+        let output =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".artifacts/generated-bindings");
+        std::fs::create_dir_all(&output).expect("create generated catalog directory");
+        std::fs::write(
+            output.join("featureFlagCatalog.json"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&expected).expect("serialize catalog")
+            ),
+        )
+        .expect("export generated catalog");
         let generated: Value =
             serde_json::from_str(include_str!("bindings/featureFlagCatalog.json"))
                 .expect("generated frontend feature flag catalog must be valid JSON");
-        assert_eq!(
-            generated,
-            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize")
-        );
+        assert_eq!(generated, expected);
     }
 
     #[test]
