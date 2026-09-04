@@ -1088,7 +1088,7 @@ impl PersistenceStore {
                     }
                     continue;
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     // The read above already confirmed the object exists,
                     // so an unconditional overwrite here is a same-object
                     // update, not a resurrection — safe even without
@@ -1324,7 +1324,7 @@ impl PersistenceStore {
                             .to_string(),
                     );
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     return self
                         .store
                         .put(&path, PutPayload::from(json))
