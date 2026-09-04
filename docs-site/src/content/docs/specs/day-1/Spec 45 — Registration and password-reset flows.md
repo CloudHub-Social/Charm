@@ -187,7 +187,8 @@ homeservers. The parity audit (2026-07-13) found:
 - Before the web companion allocates a client or sends any unauthenticated auth
   request, validate the caller-supplied homeserver as an HTTPS public-network
   target. Resolve once and pin all addresses, reject loopback/link-local/private
-  and special-purpose ranges, disable implicit proxying, and reapply the same
+  and special-purpose ranges (including IPv4 embedded in mapped or compatible
+  IPv6 addresses), disable implicit proxying, and reapply the same
   scheme/host/DNS/address policy to every `.well-known` or HTTP redirect. Tests
   cover redirect-to-private and DNS-rebinding attempts. An explicit deployment
   allowlist may narrow this policy further.

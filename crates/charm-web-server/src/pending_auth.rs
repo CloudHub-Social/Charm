@@ -1834,6 +1834,15 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(embedded.into());
+            }
             !(ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
@@ -2553,6 +2562,10 @@ mod tests {
             "64:ff9b:1::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::192.168.1.1",
+            "::169.254.169.254",
         ] {
             assert!(
                 !is_public_network_ip(address.parse().expect("valid IP")),
@@ -2562,5 +2575,6 @@ mod tests {
         assert!(is_public_network_ip(
             "1.1.1.1".parse().expect("valid public IP")
         ));
+        assert!(is_public_network_ip("::8.8.8.8".parse().unwrap()));
     }
 }

@@ -230,6 +230,15 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(embedded.into());
+            }
             !(ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
@@ -361,6 +370,19 @@ pub async fn register(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compatible_ipv6_uses_embedded_ipv4_policy() {
+        for address in [
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::192.168.1.1",
+            "::169.254.169.254",
+        ] {
+            assert!(!super::is_public_network_ip(address.parse().unwrap()));
+        }
+        assert!(super::is_public_network_ip("::8.8.8.8".parse().unwrap()));
+    }
+
     #[test]
     fn discovery_body_limit_is_enforced_while_streaming() {
         let mut body = vec![0; 4];
