@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ios-push-events",
+  "description": "Subscribe to native APNs token rotation; registration remains behind Charm's Rust commands",
+  "windows": ["main"],
+  "platforms": ["iOS"],
+  "permissions": ["notifications:allow-register-listener", "notifications:allow-remove-listener"]
+}

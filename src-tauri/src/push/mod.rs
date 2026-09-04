@@ -290,6 +290,14 @@ struct PersistedPushEndpoint {
     url_or_token: String,
     app_id: String,
     kind: PusherKind,
+    #[serde(default)]
+    retired: Vec<RetiredPusher>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetiredPusher {
+    token: String,
+    app_id: String,
 }
 
 impl From<&PushEndpoint> for PersistedPushEndpoint {
@@ -298,6 +306,7 @@ impl From<&PushEndpoint> for PersistedPushEndpoint {
             url_or_token: endpoint.url_or_token.clone(),
             app_id: endpoint.app_id.clone(),
             kind: endpoint.kind,
+            retired: Vec::new(),
         }
     }
 }
@@ -322,6 +331,27 @@ fn save_persisted_endpoint(app: &AppHandle, account_key: &str, endpoint: &PushEn
     if let Ok(json) = serde_json::to_string(&PersistedPushEndpoint::from(endpoint)) {
         let _ = std::fs::write(path, json);
     }
+}
+
+#[cfg(any(target_os = "ios", test))]
+fn save_endpoint_record(
+    path: &std::path::Path,
+    record: &PersistedPushEndpoint,
+) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path.parent().ok_or("Push storage directory unavailable")?;
+    let mut file =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| "Push storage unavailable")?;
+    serde_json::to_writer(file.as_file_mut(), record)
+        .map_err(|_| "Could not encode push registration")?;
+    file.flush()
+        .map_err(|_| "Could not save push registration")?;
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "Could not save push registration")?;
+    file.persist(path)
+        .map_err(|_| "Could not commit push registration")?;
+    Ok(())
 }
 
 fn load_persisted_endpoint(app: &AppHandle, account_key: &str) -> Option<PersistedPushEndpoint> {
@@ -364,6 +394,8 @@ pub async fn register_push(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<PushRegistration, PushError> {
+    let _session_guard = state.login_completion_lock.lock().await;
+    let _push_guard = state.push_lifecycle_lock.lock().await;
     let client = state.require_client().await?;
     let account_key = client
         .user_id()
@@ -431,6 +463,132 @@ pub async fn register_push(
     Ok((&status).into())
 }
 
+/// Refresh only an already-admitted iOS installation. Token payloads never
+/// cross our IPC: the native transport obtains the current OS token itself.
+#[tauri::command]
+#[allow(unused_variables)]
+pub async fn refresh_push_registration(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    expected_user_id: String,
+    expected_device_id: String,
+) -> Result<(), PushError> {
+    #[cfg(target_os = "ios")]
+    {
+        let _session_guard = state.login_completion_lock.lock().await;
+        let _push_guard = state.push_lifecycle_lock.lock().await;
+        let client = state.require_client().await?;
+        if client.user_id().map(|id| id.as_str()) != Some(expected_user_id.as_str())
+            || client.device_id().map(|id| id.as_str()) != Some(expected_device_id.as_str())
+        {
+            return Err("Session changed; push refresh ignored".into());
+        }
+        let account_key = persistence::account_key(&expected_user_id);
+        let Some(previous) = load_persisted_endpoint(&app, &account_key) else {
+            return Ok(());
+        };
+        if previous.kind != PusherKind::Apns {
+            return Ok(());
+        }
+        let Some(transport) = active_transport(&app) else {
+            return Ok(());
+        };
+        let path = persisted_endpoint_path(&app, &account_key)?;
+        match refresh_existing_endpoint(&client, transport.as_ref(), previous, |record| {
+            save_endpoint_record(&path, record)
+        })
+        .await
+        {
+            Ok(endpoint) => {
+                *state
+                    .push_transport
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(transport);
+                let status = finalize_and_emit(
+                    &app,
+                    PushStatus {
+                        transport: endpoint.kind,
+                        registered: true,
+                        endpoint_present: true,
+                        last_error: None,
+                        available: false,
+                    },
+                );
+                *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+            }
+            Err(_) => {
+                // Keep the previous registration and opt-out controls alive.
+                let status = finalize_and_emit(&app, PushStatus { transport: PusherKind::Apns, registered: true, endpoint_present: true, last_error: Some("Push refresh failed; the previous registration is retained. Retry when online.".into()), available: false });
+                *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+                return Err("Push refresh failed; previous registration retained".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "ios", test))]
+async fn refresh_existing_endpoint(
+    client: &Client,
+    transport: &dyn NotificationTransport,
+    previous: PersistedPushEndpoint,
+    mut persist: impl FnMut(&PersistedPushEndpoint) -> Result<(), String>,
+) -> Result<PushEndpoint, PushError> {
+    let endpoint = transport.register().await?;
+    let changed =
+        previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id;
+    let name = client.device_id().map(|id| id.as_str()).unwrap_or("Charm");
+    client
+        .pusher()
+        .set(build_pusher_init(&endpoint, name).into(), false)
+        .await
+        .map_err(|_| "Homeserver rejected push refresh")?;
+    let mut record = PersistedPushEndpoint::from(&endpoint);
+    record.retired = previous.retired;
+    // A token can rotate back to a formerly-retired value. Never delete the
+    // endpoint we just installed while retrying earlier cleanup.
+    record
+        .retired
+        .retain(|old| old.token != endpoint.url_or_token || old.app_id != endpoint.app_id);
+    if changed {
+        record.retired.push(RetiredPusher {
+            token: previous.url_or_token,
+            app_id: previous.app_id,
+        });
+    }
+    if let Err(error) = persist(&record) {
+        if changed {
+            let _ = client
+                .pusher()
+                .delete(PusherIds::new(
+                    endpoint.url_or_token.clone(),
+                    endpoint.app_id.clone(),
+                ))
+                .await;
+        }
+        return Err(error);
+    }
+    let mut remaining = Vec::new();
+    for retired in &record.retired {
+        if client
+            .pusher()
+            .delete(PusherIds::new(
+                retired.token.clone(),
+                retired.app_id.clone(),
+            ))
+            .await
+            .is_err()
+        {
+            remaining.push(retired.clone());
+        }
+    }
+    record.retired = remaining;
+    // The first durable record still contains all cleanup targets if this
+    // compaction write fails. A later refresh or opt-out retries them.
+    let _ = persist(&record);
+    Ok(endpoint)
+}
+
 /// Unregisters this device from remote push: tells the transport to drop its
 /// endpoint/token and removes the corresponding pusher from the homeserver
 /// (`pushkey`/`app_id` — a delete is a no-op if the homeserver already has no
@@ -453,6 +611,7 @@ pub async fn unregister_push(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<(), PushError> {
+    let _session_guard = state.login_completion_lock.lock().await;
     unregister_push_impl(&app, &state).await
 }
 
@@ -460,6 +619,7 @@ pub(crate) async fn unregister_push_impl(
     app: &AppHandle,
     state: &MatrixState,
 ) -> Result<(), PushError> {
+    let _push_guard = state.push_lifecycle_lock.lock().await;
     let client = state.require_client().await?;
     let account_key = client
         .user_id()
@@ -485,6 +645,18 @@ pub(crate) async fn unregister_push_impl(
     if let Some(ids) = endpoint_ids {
         if let Err(e) = client.pusher().delete(ids).await {
             eprintln!("failed to delete homeserver pusher during unregister_push: {e}");
+        }
+    }
+
+    if let Some(record) = account_key
+        .as_ref()
+        .and_then(|key| load_persisted_endpoint(app, key))
+    {
+        for retired in record.retired {
+            let _ = client
+                .pusher()
+                .delete(PusherIds::new(retired.token, retired.app_id))
+                .await;
         }
     }
 
@@ -516,6 +688,8 @@ pub(crate) async fn unregister_push_impl(
 #[cfg(target_os = "android")]
 pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint) {
     let state = app.state::<MatrixState>();
+    let _session_guard = state.login_completion_lock.lock().await;
+    let _push_guard = state.push_lifecycle_lock.lock().await;
     let client = match state.require_client().await {
         Ok(client) => client,
         Err(e) => {
@@ -1211,6 +1385,137 @@ async fn restore_any_client_at(store_root: &std::path::Path) -> Result<Option<Cl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RefreshTransport {
+        fail: bool,
+        unregistered: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl NotificationTransport for RefreshTransport {
+        async fn register(&self) -> Result<PushEndpoint, PushError> {
+            if self.fail {
+                return Err("OS unavailable".into());
+            }
+            Ok(PushEndpoint {
+                url_or_token: "new-token".into(),
+                app_id: IOS_APP_ID.into(),
+                kind: PusherKind::Apns,
+            })
+        }
+        async fn unregister(&self) -> Result<(), PushError> {
+            self.unregistered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn endpoint(&self) -> Option<PushEndpoint> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn apns_refresh_preserves_old_registration_on_os_or_server_failure() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        for os_failure in [false, true] {
+            let server = MatrixMockServer::new().await;
+            let client = server.client_builder().build().await;
+            Mock::given(method("POST"))
+                .and(path("/_matrix/client/v3/pushers/set"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(
+                    serde_json::json!({"errcode":"M_UNKNOWN","error":"unavailable"}),
+                ))
+                .mount(server.server())
+                .await;
+            let transport = RefreshTransport {
+                fail: os_failure,
+                unregistered: false.into(),
+            };
+            let old = PersistedPushEndpoint::from(&PushEndpoint {
+                url_or_token: "old-token".into(),
+                app_id: IOS_APP_ID.into(),
+                kind: PusherKind::Apns,
+            });
+            let mut writes = 0;
+            assert!(refresh_existing_endpoint(&client, &transport, old, |_| {
+                writes += 1;
+                Ok(())
+            })
+            .await
+            .is_err());
+            assert_eq!(writes, 0);
+            assert!(!transport
+                .unregistered
+                .load(std::sync::atomic::Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn apns_rotation_persists_cleanup_targets_and_retries_failed_deletion() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, Request, ResponseTemplate};
+        for fail_delete in [false, true] {
+            let server = MatrixMockServer::new().await;
+            let client = server.client_builder().build().await;
+            Mock::given(method("POST"))
+                .and(path("/_matrix/client/v3/pushers/set"))
+                .respond_with(move |request: &Request| {
+                    let body: serde_json::Value = request.body_json().unwrap();
+                    if fail_delete && body["kind"].is_null() {
+                        ResponseTemplate::new(400).set_body_json(
+                            serde_json::json!({"errcode":"M_UNKNOWN","error":"delete unavailable"}),
+                        )
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+                    }
+                })
+                .mount(server.server())
+                .await;
+            let transport = RefreshTransport {
+                fail: false,
+                unregistered: false.into(),
+            };
+            let old = PersistedPushEndpoint::from(&PushEndpoint {
+                url_or_token: "old-token".into(),
+                app_id: IOS_APP_ID.into(),
+                kind: PusherKind::Apns,
+            });
+            let mut writes = Vec::new();
+            let endpoint = refresh_existing_endpoint(&client, &transport, old, |record| {
+                writes.push(record.clone());
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(endpoint.url_or_token, "new-token");
+            assert_eq!(writes[0].retired[0].token, "old-token");
+            assert_eq!(
+                writes.last().unwrap().retired.len(),
+                usize::from(fail_delete)
+            );
+            let requests = server.server().received_requests().await.unwrap();
+            assert!(requests.iter().any(|request| request
+                .body_json::<serde_json::Value>()
+                .is_ok_and(|body| body["pushkey"] == "old-token" && body["kind"].is_null())));
+        }
+    }
+
+    #[test]
+    fn rotated_push_record_is_atomic_and_preserves_retry_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("push.json");
+        let mut record = PersistedPushEndpoint::from(&endpoint(PusherKind::Apns));
+        record.retired.push(RetiredPusher {
+            token: "old-token".into(),
+            app_id: IOS_APP_ID.into(),
+        });
+        save_endpoint_record(&path, &record).unwrap();
+        let restored: PersistedPushEndpoint =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(restored.retired[0].token, "old-token");
+    }
 
     fn endpoint(kind: PusherKind) -> PushEndpoint {
         PushEndpoint {

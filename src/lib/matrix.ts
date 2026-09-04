@@ -1300,6 +1300,17 @@ export function onSpaceChildrenUpdate(callback: (spaceId: string) => void): Prom
  * it obtains a UnifiedPush/FCM/APNs endpoint and registers it as a pusher
  * with the homeserver.
  */
+export function refreshPushRegistration(
+  expectedUserId: string,
+  expectedDeviceId: string,
+): Promise<void> {
+  return invoke(
+    "refresh_push_registration",
+    { expectedUserId, expectedDeviceId },
+    { captureOnError: false },
+  );
+}
+
 export function registerPush(): Promise<PushRegistration> {
   return invoke("register_push");
 }

@@ -12,6 +12,7 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
 import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents";
 import { resetRoomSendQueueBarrier } from "@/features/rooms/useRoomSendQueueBarrier";
+import { useApnsRefresh } from "@/features/push/useApnsRefresh";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -31,6 +32,7 @@ interface AppProps {
  */
 function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
+  useApnsRefresh(session?.user_id, session?.device_id);
   const [restoring, setRestoring] = useState(true);
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
   const [crashRecoveryPromptOpen, setCrashRecoveryPromptOpen] = useState(showCrashRecoveryPrompt);

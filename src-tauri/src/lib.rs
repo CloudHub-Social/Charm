@@ -1597,6 +1597,7 @@ pub fn run() {
             matrix::bookmarks::list_bookmarks,
             matrix::link_preview::get_url_preview,
             push::register_push,
+            push::refresh_push_registration,
             push::unregister_push,
             push::get_push_status
         ])

@@ -82,7 +82,10 @@ the unread counts the Rust sync loop already computes.
   `tauri-plugin-notifications` bridge. The frontend does not depend on
   `@tauri-apps/plugin-notification` or call `sendNotification()`. It requests and checks
   OS permission through Charm's `request_notification_permission` and
-  `is_notification_permission_granted` Tauri commands. Local notifications are triggered
+  `is_notification_permission_granted` Tauri commands. The sole iOS plugin-event
+  subscription observes token rotation and asks Rust to refresh an already-enabled
+  registration; listener-only permissions do not expose direct notification or
+  registration commands. Local notifications are triggered
   from Rust through the shared shell wrapper while the application process is running,
   avoiding dependence on webview timers. This does not establish suspended/killed iOS
   delivery: APNs signing, gateway, token lifecycle and notification-extension readiness

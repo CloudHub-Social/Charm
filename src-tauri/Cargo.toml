@@ -85,6 +85,7 @@ exif = { version = "0.6", package = "kamadak-exif" }
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+tempfile = "3"
 # SableClient's MIT-licensed Tauri notification plugin supplies the supported
 # Swift mobile-plugin bridge for APNs registration. Pin the audited revision so
 # an upstream force-push or API change cannot silently alter release builds.
