@@ -284,7 +284,7 @@ Surfaces changed:
     confirmation. Login completion remains serialized through physical deletion.
     Startup retry clears an interrupted-wipe marker only after both session/store
     cleanup and deletion of every device-scoped search index have succeeded.
-16. Terminal authentication failure revokes the in-memory client and invalidates
+16. Hard terminal authentication failure revokes the in-memory client and invalidates
     its push registration first, using the same transport and persisted-endpoint
     cleanup as explicit logout. A rejected homeserver pusher deletion does not
     skip local/platform cleanup. Failures use identifier-free diagnostics.
@@ -300,6 +300,10 @@ Surfaces changed:
     deletions are attempted independently even if the marker write fails,
     matching ordinary logout; incomplete cleanup is reported without logging
     keychain errors or treating the missing marker as successful cleanup.
+    `M_UNKNOWN_TOKEN` with `soft_logout: true` never enters this destructive path;
+    its existing device and persisted crypto state are retained. The dedicated
+    same-device reauthentication UI/flow remains an outstanding readiness item,
+    not a completed feature merely because destructive cleanup is excluded.
     Logout, local-data removal, and deactivation workers likewise retain shared
     ownership of login exclusion through blocking cleanup, even if their caller
     is cancelled. The caller retains exclusion after a worker panic so recovery

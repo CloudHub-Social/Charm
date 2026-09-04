@@ -786,10 +786,16 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
 }
 
 fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
-    matches!(
-        error.client_api_error_kind(),
-        Some(ErrorKind::UnknownToken(_))
-    )
+    error
+        .client_api_error_kind()
+        .is_some_and(is_terminal_auth_kind)
+}
+
+fn is_terminal_auth_kind(kind: &ErrorKind) -> bool {
+    // Soft logout asks for same-device reauthentication, not destruction of
+    // the retained crypto/session store. Only a hard invalidation may enter
+    // the terminal cleanup path.
+    matches!(kind, ErrorKind::UnknownToken(data) if !data.soft_logout)
 }
 
 async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
@@ -1257,6 +1263,18 @@ mod invite_notification_tests {
     use matrix_sdk::notification_settings::RoomNotificationMode;
 
     use super::{build_invite_notification, should_notify_invite};
+
+    #[test]
+    fn soft_logout_does_not_authorize_terminal_session_cleanup() {
+        use matrix_sdk::ruma::api::error::UnknownTokenErrorData;
+
+        let mut data = UnknownTokenErrorData::new();
+        assert!(is_terminal_auth_kind(&ErrorKind::UnknownToken(
+            data.clone()
+        )));
+        data.soft_logout = true;
+        assert!(!is_terminal_auth_kind(&ErrorKind::UnknownToken(data)));
+    }
 
     #[test]
     fn uses_room_and_inviter_display_names() {
