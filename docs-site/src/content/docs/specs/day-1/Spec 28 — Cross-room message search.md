@@ -319,7 +319,9 @@ without the user knowing which is which.
   Native startup reconciles disabled and
   previously failed cleanup before session restoration; renderer startup also
   reconciles disabled-to-disabled state. Labs and OFREP writes are serialized so a
-  re-enable cannot overtake cleanup, and every open, write, and query fails closed
+  re-enable cannot overtake cleanup. Persistent cleanup failure pins the remote
+  search value off without blocking durable updates to unrelated remote flags.
+  Every open, write, and query fails closed
   while the marker remains. The marker contains no account, room, event, or message
   identifier.
 - Because this flag controls a sensitive derived-content index, a trusted remote
