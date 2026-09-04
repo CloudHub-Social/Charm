@@ -176,6 +176,13 @@ function invalidateWebSession(epoch: number, requireKnown = true): void {
     webLogoutPending.invalidated = true;
     return;
   }
+  suspendWebSession(epoch);
+  dispatchWebEvent("session:invalidated", null);
+}
+
+function suspendWebSession(epoch: number): void {
+  if (epoch !== webSessionEpoch || webSessionInvalidated || webLogoutPending?.epoch === epoch)
+    return;
   webSessionEpoch += 1;
   webSessionKnown = false;
   webSessionInvalidated = true;
@@ -185,7 +192,6 @@ function invalidateWebSession(epoch: number, requireKnown = true): void {
   webSocket = null;
   socket?.close();
   stopCookieKeepalive();
-  dispatchWebEvent("session:invalidated", null);
 }
 
 function adoptWebSession(result: unknown): void {
@@ -1020,7 +1026,14 @@ export async function invoke<T>(
     const result = await invokeWeb<T>(command, args ?? {});
     if (logoutState) logoutState.invalidated = true;
     if (adoptsSession) {
-      if (command !== "try_restore_session" || epoch === webSessionEpoch) adoptWebSession(result);
+      if (command === "try_restore_session" && result === null) {
+        // An initial empty restore is not a revoked session notification, but
+        // must stop the socket opened by pre-authentication event listeners.
+        // A later login increments the epoch, protecting it from this reply.
+        suspendWebSession(epoch);
+      } else if (command !== "try_restore_session" || epoch === webSessionEpoch) {
+        adoptWebSession(result);
+      }
     }
     return result;
   } catch (error) {

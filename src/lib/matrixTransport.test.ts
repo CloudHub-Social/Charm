@@ -1131,6 +1131,43 @@ describe("matrix web transport", () => {
     unlisten();
   });
 
+  it.each([400, 401])(
+    "suspends sockets after an empty restore (%s), then resumes on login",
+    async (status) => {
+      vi.useFakeTimers();
+      const invalidated = vi.fn();
+      const unlisten = await listen("session:invalidated", invalidated);
+      MockWebSocket.instances[0].close();
+      fetchMock().mockResolvedValueOnce(new Response("no session", { status }));
+      await expect(invoke("try_restore_session")).resolves.toBeNull();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(invalidated).not.toHaveBeenCalled();
+      fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+      await invoke("login", { request: {} });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      unlisten();
+    },
+  );
+
+  it("does not suspend a new login when an older empty restore finishes", async () => {
+    const unlisten = await listen("room_list:update", vi.fn());
+    let finish!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const restore = invoke("try_restore_session");
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("login", { request: {} });
+    const activeSocket = MockWebSocket.instances.at(-1)!;
+    finish(new Response("no session", { status: 401 }));
+    await expect(restore).resolves.toBeNull();
+    expect(activeSocket.readyState).not.toBe(MockWebSocket.CLOSED);
+    unlisten();
+  });
+
   it("invalidates an authenticated session on 401 and stops reconnecting", async () => {
     vi.useFakeTimers();
     const invalidated = vi.fn();

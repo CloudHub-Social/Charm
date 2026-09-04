@@ -292,6 +292,10 @@ Surfaces changed:
     remains serialized through physical deletion.
     Startup retry clears an interrupted-wipe marker only after both session/store
     cleanup and deletion of every device-scoped search index have succeeded.
+    Once account-wide cleanup intent is durable, an ordinary sign-out marker or
+    credential-deletion error must not skip the physical wipe attempt. The
+    command reports failure from either teardown or physical cleanup instead of
+    returning success for incomplete deletion; login exclusion spans both stages.
     A fallback marker outside the Matrix-store directory retains the same full-wipe
     semantics if the primary marker cannot be written, including after remote
     deactivation. Neither marker permits session restoration while cleanup is pending.

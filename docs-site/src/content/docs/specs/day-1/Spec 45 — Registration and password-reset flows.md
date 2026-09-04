@@ -34,6 +34,11 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+An empty web session restore suspends the socket and reconnect timer opened by
+pre-authentication listeners, without announcing that an initial anonymous session
+was revoked. A successful login resumes transport; a stale empty restore cannot
+suspend a newer login or overtake an in-flight logout's cookie cleanup.
+
 WebSocket upgrades recheck permanent session revocation immediately after
 subscribing to session events, before replaying retained snapshots. This closes
 the lookup-to-upgrade gap where logout's invalidation broadcast had no receiver;

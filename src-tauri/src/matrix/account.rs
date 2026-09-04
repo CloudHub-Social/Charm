@@ -540,38 +540,48 @@ pub async fn forget_local_data(
     // deletion (particularly problematic on Windows). This bounded attempt
     // owns and drops our last client handle before filesystem cleanup starts.
     revoke_before_local_wipe(client, std::time::Duration::from_secs(5)).await;
-    teardown_result?;
 
     let cleanup_app = app.clone();
     let cleanup_account_key = account_key.clone();
-    let cleanup = run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
-        let mut first_error = None;
-        if let Err(error) =
-            persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
-        {
-            first_error = Some(error);
-        }
-        if let Err(error) =
-            super::search::SearchIndex::delete_for_account(&app_data_dir, &cleanup_account_key)
-        {
-            first_error.get_or_insert(error);
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => persistence::clear_cancelled_account_cleanup_marker(
-                &cleanup_app,
-                &cleanup_account_key,
-            ),
-        }
-    })
-    .await;
-    if !matches!(cleanup, Ok(Ok(()))) {
-        // The session is already closed and the durable marker owns retries;
-        // do not strand the UI in an authenticated shell that no longer has
-        // a client merely because physical deletion needs another attempt.
+    let cleanup = async {
+        run_account_cleanup(std::sync::Arc::clone(&completion_guard), move || {
+            let mut first_error = None;
+            if let Err(error) =
+                persistence::discard_cancelled_account_session(&cleanup_app, &cleanup_account_key)
+            {
+                first_error = Some(error);
+            }
+            if let Err(error) =
+                super::search::SearchIndex::delete_for_account(&app_data_dir, &cleanup_account_key)
+            {
+                first_error.get_or_insert(error);
+            }
+            match first_error {
+                Some(error) => Err(error),
+                None => persistence::clear_cancelled_account_cleanup_marker(
+                    &cleanup_app,
+                    &cleanup_account_key,
+                ),
+            }
+        })
+        .await
+        .map_err(|_| "local account cleanup task failed".to_string())
+        .and_then(|result| result)
+    };
+    finish_local_wipe_cleanup(teardown_result, cleanup).await
+}
+
+async fn finish_local_wipe_cleanup(
+    teardown: Result<(), String>,
+    cleanup: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    // Teardown already closed the session. Its error must not prevent the
+    // account-wide physical wipe from making progress under login exclusion.
+    let cleanup = cleanup.await;
+    if teardown.is_err() || cleanup.is_err() {
         tracing::warn!(command = "forget_local_data", status = "cleanup_pending");
     }
-    Ok(())
+    teardown.and(cleanup)
 }
 
 async fn revoke_before_local_wipe(client: Client, timeout: std::time::Duration) {
@@ -988,6 +998,31 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn physical_wipe_runs_after_teardown_failure_and_reports_both_outcomes() {
+        for teardown_fails in [false, true] {
+            for cleanup_fails in [false, true] {
+                let ran = std::cell::Cell::new(false);
+                let teardown = if teardown_fails {
+                    Err("teardown failed".to_string())
+                } else {
+                    Ok(())
+                };
+                let result = finish_local_wipe_cleanup(teardown, async {
+                    ran.set(true);
+                    if cleanup_fails {
+                        Err("cleanup failed".to_string())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await;
+                assert!(ran.get());
+                assert_eq!(result.is_err(), teardown_fails || cleanup_fails);
+            }
+        }
+    }
 
     #[test]
     fn failed_logout_marker_still_attempts_both_credential_deletions() {
