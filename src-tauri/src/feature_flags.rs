@@ -173,6 +173,8 @@ define_feature_flag_keys!(
         /// Runtime delivery also requires a paid Apple Developer team and a
         /// matching gateway credential, so this remains dark by default.
         IosPushNotifications,
+        /// Spec 47 appearance customization and display preferences.
+        AppearanceParity,
     }
 );
 
@@ -209,6 +211,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::IosPushNotifications => false,
+            FeatureFlagKey::AppearanceParity => false,
         }
     }
 
@@ -300,6 +303,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::IosPushNotifications => {
                 "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider."
             }
+            FeatureFlagKey::AppearanceParity => {
+                "Customize appearance and display preferences, including clock and date formats."
+            }
         }
     }
 
@@ -345,6 +351,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::IosPushNotifications => "Spec 11 (push notifications)",
+            FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
 
@@ -380,6 +387,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::IosPushNotifications => "ios_push_notifications",
+            FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
 }
@@ -674,13 +682,25 @@ mod tests {
 
     #[test]
     fn generated_frontend_catalog_matches_rust_catalog() {
+        let expected =
+            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize");
+        // Export before asserting parity so CI-only contributors can import
+        // the authoritative catalog even when the committed version is stale.
+        let output =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".artifacts/generated-bindings");
+        std::fs::create_dir_all(&output).expect("create generated catalog directory");
+        std::fs::write(
+            output.join("featureFlagCatalog.json"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&expected).expect("serialize catalog")
+            ),
+        )
+        .expect("export generated catalog");
         let generated: Value =
             serde_json::from_str(include_str!("bindings/featureFlagCatalog.json"))
                 .expect("generated frontend feature flag catalog must be valid JSON");
-        assert_eq!(
-            generated,
-            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize")
-        );
+        assert_eq!(generated, expected);
     }
 
     #[test]
