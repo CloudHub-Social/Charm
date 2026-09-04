@@ -102,7 +102,7 @@
     "jsdom": "^30.0.1",
     "knip": "^6.34.0",
     "oxfmt": "^0.66.0",
-    "oxlint": "^1.81.0",
+    "oxlint": "1.77.0",
     "oxlint-tsgolint": "^7.0.2001",
     "playwright": "1.62.1",
     "postcss": "^8.5.26",
