@@ -44,13 +44,19 @@ function render(ui: ReactElement) {
 }
 
 const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
-const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+const mockUseFlag = vi.hoisted(() => vi.fn((_key: string) => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 vi.mock("@/featureFlags", () => ({
-  useFlag: () => mockUseFlag(),
+  useFlag: (key: string) => mockUseFlag(key),
   useFeatureFlagPersistenceVersion: () => 0,
+}));
+
+vi.mock("./VoiceRecorder", () => ({
+  VoiceRecorder: ({ mobile }: { mobile: boolean }) => (
+    <div data-testid="voice-gesture-mode">{mobile ? "mobile" : "desktop"}</div>
+  ),
 }));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -444,6 +450,13 @@ describe("ChatShell", () => {
     virtuosoStartReached = undefined;
     virtuosoAtBottomStateChange = undefined;
     virtuosoScrollToIndexMock.mockReset();
+  });
+
+  it("uses mobile voice gestures without enabling the mobile chat redesign", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockImplementation((key) => key !== "mobile_chat_redesign");
+    renderChatShell();
+    expect(await screen.findByTestId("voice-gesture-mode")).toHaveTextContent("mobile");
   });
 
   it("marks the exhausted start of history as all caught up", async () => {

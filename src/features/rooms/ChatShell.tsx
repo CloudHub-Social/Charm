@@ -1150,7 +1150,7 @@ export function ChatShell({
           {voiceRecordingEnabled && !roomMutationsBlocked && (
             <VoiceRecorder
               key={`${currentUserId}:${room.room_id}`}
-              mobile={mobile}
+              mobile={layout === "mobile"}
               onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
             />
           )}

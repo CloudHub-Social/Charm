@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Instant;
 
+use base64::Engine;
 use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
@@ -30,10 +31,24 @@ pub struct VoiceMessageMetadata {
 #[serde(deny_unknown_fields)]
 pub struct RecordedAudioUpload {
     pub mime_type: String,
-    pub bytes: Vec<u8>,
+    pub bytes_base64: String,
 }
 
 pub const MAX_VOICE_RECORDING_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
+fn decode_recording(encoded: &str) -> Result<Vec<u8>, String> {
+    let encoded_limit = MAX_VOICE_RECORDING_UPLOAD_BYTES.div_ceil(3) * 4;
+    if encoded.len() as u64 > encoded_limit {
+        return Err("voice recording exceeds the in-memory upload limit".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "invalid recording encoding".to_string())?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_VOICE_RECORDING_UPLOAD_BYTES {
+        return Err("voice recording exceeds the in-memory upload limit".to_string());
+    }
+    Ok(bytes)
+}
 
 /// Validate recorder metadata before the existing encrypted upload. Errors
 /// deliberately omit microphone samples and other caller-provided values.
@@ -850,7 +865,8 @@ pub async fn send_attachment(
                 .mime_type
                 .parse()
                 .map_err(|_| "invalid recording media type".to_string())?;
-            voice_attachment_info(&mime, recording.bytes.len() as u64, metadata)?;
+            let bytes = decode_recording(&recording.bytes_base64)?;
+            voice_attachment_info(&mime, bytes.len() as u64, metadata)?;
             let extension = match mime.subtype().as_str() {
                 "ogg" => "ogg",
                 "webm" => "webm",
@@ -858,7 +874,7 @@ pub async fn send_attachment(
                 "wav" | "wave" | "x-wav" => "wav",
                 _ => return Err("unsupported recording audio format".to_string()),
             };
-            (format!("Voice message.{extension}"), mime, recording.bytes)
+            (format!("Voice message.{extension}"), mime, bytes)
         } else {
             let path = Path::new(&file_path);
             let filename = path
@@ -1198,6 +1214,15 @@ mod tests {
     use matrix_sdk::ruma::room_id;
 
     use super::*;
+
+    #[test]
+    fn recording_base64_is_bounded_and_validated() {
+        assert_eq!(decode_recording("AQID").unwrap(), vec![1, 2, 3]);
+        assert!(decode_recording("").is_err());
+        assert!(decode_recording("not base64!").is_err());
+        let too_large = "A".repeat((MAX_VOICE_RECORDING_UPLOAD_BYTES.div_ceil(3) * 4 + 1) as usize);
+        assert!(decode_recording(&too_large).is_err());
+    }
 
     #[test]
     fn voice_metadata_preserves_duration_and_normalized_waveform() {

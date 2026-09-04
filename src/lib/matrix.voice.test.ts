@@ -12,11 +12,7 @@ describe("native recorded audio handoff", () => {
   });
 
   function recording() {
-    const file = new File(["audio"], "Voice message.webm", { type: "audio/webm" });
-    Object.defineProperty(file, "arrayBuffer", {
-      value: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer),
-    });
-    return file;
+    return new File([new Uint8Array([1, 2, 3])], "Voice message.webm", { type: "audio/webm" });
   }
 
   it("passes bytes and voice metadata without a filesystem path", async () => {
@@ -38,7 +34,7 @@ describe("native recorded audio handoff", () => {
         caption: undefined,
         stripExifEnabled: false,
         voice,
-        recording: { mime_type: "audio/webm", bytes: [1, 2, 3] },
+        recording: { mime_type: "audio/webm", bytes_base64: "AQID" },
       },
       expect.objectContaining({ captureOnError: expect.any(Function) }),
     );
@@ -70,7 +66,7 @@ describe("native recorded audio handoff", () => {
 
   it("does not read an already-cancelled recording into memory", async () => {
     const file = recording();
-    const readRecording = vi.spyOn(file, "arrayBuffer");
+    const readRecording = vi.spyOn(FileReader.prototype, "readAsDataURL");
     const controller = new AbortController();
     controller.abort();
     await expect(
@@ -85,6 +81,7 @@ describe("native recorded audio handoff", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(readRecording).not.toHaveBeenCalled();
+    readRecording.mockRestore();
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 

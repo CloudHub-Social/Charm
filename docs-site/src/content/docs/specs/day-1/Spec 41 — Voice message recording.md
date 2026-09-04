@@ -52,6 +52,12 @@ spike), so the platform groundwork exists.
 
 ## Data flow
 
+Native recordings cross JSON IPC as bounded base64, not a JSON integer array;
+Rust rejects oversized encoded input before decoding and validates decoded size
+before upload. Mobile hold/slide gestures follow the viewport independently of
+the mobile-chat redesign flag. The elapsed clock starts immediately before
+MediaRecorder starts. Regression verification runs in GitHub Actions.
+
 Recording/encoding happens in the webview (frontend); the resulting blob is handed
 to Spec 02's existing attachment-send command with the voice-message content
 markers and waveform data attached. No new media-cache or fetch work — playback of

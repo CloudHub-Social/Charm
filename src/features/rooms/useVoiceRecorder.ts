@@ -97,7 +97,7 @@ export function useVoiceRecorder() {
       const chunks: Blob[] = [];
       const amplitudes: number[] = [];
       const samples = new Float32Array(analyser.fftSize);
-      const startedAt = performance.now();
+      let startedAt = 0;
       let bytes = 0;
       recorder.ondataavailable = (event) => {
         if (epoch.current !== attempt || !event.data.size) return;
@@ -162,6 +162,7 @@ export function useVoiceRecorder() {
       }, 100);
       active.current = { recorder, stream, context, timer };
       preparing.current = null;
+      startedAt = performance.now();
       recorder.start(250);
       setPhase("recording");
     } catch (cause) {
