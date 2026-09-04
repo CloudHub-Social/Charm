@@ -271,6 +271,18 @@ async fn clear_local_session_locked(
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+    // Keep this authenticated session available until its pusher has been
+    // removed. Otherwise a failed deletion cannot be retried after local
+    // credentials are discarded, and a later reuse of the device token can
+    // revive delivery for the signed-out account.
+    crate::push::unregister_push_impl(app, state)
+        .await
+        .map_err(|_| {
+            "Could not disable notifications before sign-out; retry when online.".to_string()
+        })?;
+    if crate::push::persisted_push_cleanup_pending(app, &state.require_client().await?) {
+        return Err("Notifications are still being disabled; reconnect and retry sign-out.".into());
+    }
     let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
@@ -293,12 +305,6 @@ async fn clear_local_session_locked(
         return Err(
             "Could not persist sign-out. Your session remains open; retry signing out.".into(),
         );
-    }
-
-    // Do not remove notifications while a failed durable sign-out retains
-    // the live account. After admission, clean push before clearing client.
-    if let Err(e) = crate::push::unregister_push_impl(app, state).await {
-        eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`

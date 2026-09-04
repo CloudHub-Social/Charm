@@ -10,7 +10,7 @@ let tokenEvent: (payload: { token: string }) => void;
 vi.mock("@/lib/matrix", () => ({
   refreshPushRegistration: (...args: unknown[]) => refresh(...args),
 }));
-vi.mock("@/lib/platform", () => ({ platformTag: () => platform() }));
+vi.mock("@/lib/platform", () => ({ preloadPlatformTag: () => Promise.resolve(platform()) }));
 vi.mock("@tauri-apps/api/core", () => ({
   addPluginListener: (...args: unknown[]) => subscribe(...args),
 }));

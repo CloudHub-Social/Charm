@@ -597,21 +597,7 @@ async fn refresh_existing_endpoint(
         }
         return Err(error);
     }
-    let mut remaining = Vec::new();
-    for retired in &record.retired {
-        if client
-            .pusher()
-            .delete(PusherIds::new(
-                retired.token.clone(),
-                retired.app_id.clone(),
-            ))
-            .await
-            .is_err()
-        {
-            remaining.push(retired.clone());
-        }
-    }
-    record.retired = remaining;
+    retry_retired_push_cleanup(client, &mut record, std::time::Duration::from_secs(5)).await;
     // The first durable record still contains all cleanup targets if this
     // compaction write fails. A later refresh or opt-out retries them.
     let _ = persist(&record);
@@ -686,16 +672,19 @@ pub(crate) async fn unregister_push_impl(
             persistence_error = Some(error);
         }
     }
+    // Remove the platform endpoint before spending any of the bounded
+    // homeserver cleanup budget. Mobile suspension must not leave local
+    // delivery active merely because a remote pusher deletion stalled.
+    let transport = existing_transport.or_else(|| platform_transport(app));
+    if let Some(transport) = transport {
+        let _ = transport.unregister().await;
+    }
+
     let remote_cleanup_complete = if let Some(record) = pending_cleanup.as_mut() {
         retry_persisted_push_cleanup(&client, record).await
     } else {
         true
     };
-
-    let transport = existing_transport.or_else(|| platform_transport(app));
-    if let Some(transport) = transport {
-        let _ = transport.unregister().await;
-    }
 
     if let Some(account_key) = &account_key {
         if remote_cleanup_complete {
@@ -734,23 +723,57 @@ async fn finish_remote_push_cleanup<E>(
     matches!(tokio::time::timeout(limit, operation).await, Ok(Ok(())))
 }
 
-async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPushEndpoint) -> bool {
-    let current_removed = finish_remote_push_cleanup(
-        client.pusher().delete(PusherIds::new(
-            record.url_or_token.clone(),
-            record.app_id.clone(),
-        )),
-        std::time::Duration::from_secs(5),
-    )
-    .await;
+async fn finish_remote_push_cleanup_before<E>(
+    operation: impl std::future::Future<Output = Result<(), E>>,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+        return false;
+    };
+    finish_remote_push_cleanup(operation, remaining).await
+}
+
+async fn retry_retired_push_cleanup(
+    client: &Client,
+    record: &mut PersistedPushEndpoint,
+    budget: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + budget;
     let mut remaining = Vec::new();
     for retired in &record.retired {
-        if !finish_remote_push_cleanup(
+        if !finish_remote_push_cleanup_before(
             client.pusher().delete(PusherIds::new(
                 retired.token.clone(),
                 retired.app_id.clone(),
             )),
-            std::time::Duration::from_secs(5),
+            deadline,
+        )
+        .await
+        {
+            remaining.push(retired.clone());
+        }
+    }
+    record.retired = remaining;
+}
+
+async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPushEndpoint) -> bool {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let current_removed = finish_remote_push_cleanup_before(
+        client.pusher().delete(PusherIds::new(
+            record.url_or_token.clone(),
+            record.app_id.clone(),
+        )),
+        deadline,
+    )
+    .await;
+    let mut remaining = Vec::new();
+    for retired in &record.retired {
+        if !finish_remote_push_cleanup_before(
+            client.pusher().delete(PusherIds::new(
+                retired.token.clone(),
+                retired.app_id.clone(),
+            )),
+            deadline,
         )
         .await
         {
@@ -759,6 +782,14 @@ async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPus
     }
     record.retired = remaining;
     current_removed && record.retired.is_empty()
+}
+
+pub(crate) fn persisted_push_cleanup_pending(app: &AppHandle, client: &Client) -> bool {
+    client
+        .user_id()
+        .map(|id| persistence::account_key(id.as_str()))
+        .and_then(|key| load_persisted_endpoint(app, &key))
+        .is_some_and(|record| record.disabled)
 }
 
 /// Re-registers `endpoint` with the homeserver directly, bypassing
@@ -935,18 +966,14 @@ pub async fn get_push_status(
                 .user_id()
                 .map(|id| persistence::account_key(id.as_str()));
             if let Some(account_key) = account_key {
-                if let Some(mut persisted) = load_persisted_endpoint(&app, &account_key) {
+                if let Some(persisted) = load_persisted_endpoint(&app, &account_key) {
                     if persisted.disabled {
-                        if retry_persisted_push_cleanup(&client, &mut persisted).await {
-                            clear_persisted_endpoint(&app, &account_key);
-                        } else {
-                            let path = persisted_endpoint_path(&app, &account_key)?;
-                            save_endpoint_record(&path, &persisted)?;
-                            status.last_error = Some(
-                                "Push is off locally; homeserver cleanup will retry when online."
-                                    .into(),
-                            );
-                        }
+                        // Status reads stay local and responsive. Registration,
+                        // explicit opt-out, and logout own bounded retry attempts.
+                        status.last_error = Some(
+                            "Push is off locally; homeserver cleanup will retry when online."
+                                .into(),
+                        );
                     } else {
                         status = PushStatus {
                             transport: persisted.kind,
