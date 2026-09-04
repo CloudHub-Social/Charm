@@ -5242,7 +5242,7 @@ async fn get_ignored_users(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let users = charm_lib::matrix::account::ignored_user_ids(&session.client)
+    let users = charm_lib::matrix::account::fetch_ignored_user_ids(&session.client)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(users))

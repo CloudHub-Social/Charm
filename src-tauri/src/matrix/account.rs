@@ -100,10 +100,7 @@ pub async fn get_3pids(state: State<'_, MatrixState>) -> Result<Vec<ThirdPartyId
         .collect())
 }
 
-/// Reads the account's `m.ignored_user_list` account data event directly
-/// (rather than `Client::subscribe_to_ignore_user_list_changes`, which only
-/// yields a value on the next change, not the current one) — same pattern
-/// as `matrix_sdk::Account::ignore_user`'s own internal lookup.
+/// Reads sync-local ignored-user data for timeline and search filtering.
 pub async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
     let content = client
         .account()
@@ -117,10 +114,25 @@ pub async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, Strin
     Ok(content.ignored_users.into_keys().collect())
 }
 
+/// Explicit settings reads must observe recent writes even before sync arrives.
+/// Keep this separate from filtering, which must work without a network request.
+pub async fn fetch_ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
+    let content = client
+        .account()
+        .fetch_account_data_static::<IgnoredUserListEventContent>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = content else {
+        return Ok(Vec::new());
+    };
+    let content = raw.deserialize().map_err(|e| e.to_string())?;
+    Ok(content.ignored_users.into_keys().collect())
+}
+
 #[tauri::command]
 pub async fn get_ignored_users(state: State<'_, MatrixState>) -> Result<Vec<String>, String> {
     let client = state.require_client().await?;
-    Ok(ignored_user_ids(&client)
+    Ok(fetch_ignored_user_ids(&client)
         .await?
         .into_iter()
         .map(|id| id.to_string())
@@ -867,6 +879,33 @@ mod tests {
             .await
             .is_err());
         assert_eq!(*content.lock().unwrap(), malformed);
+    }
+
+    #[tokio::test]
+    async fn settings_reads_observe_ignore_changes_before_sync() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        mock_ignore_list(&server, json!({"ignored_users": {}})).await;
+        ignore_user_impl(&client, "@alice:example.org")
+            .await
+            .unwrap();
+        assert!(ignored_user_ids(&client).await.unwrap().is_empty());
+        assert_eq!(
+            fetch_ignored_user_ids(&client).await.unwrap(),
+            vec![matrix_sdk::ruma::user_id!("@alice:example.org").to_owned()]
+        );
+        unignore_user_impl(&client, "@alice:example.org")
+            .await
+            .unwrap();
+        assert!(fetch_ignored_user_ids(&client).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn settings_reads_fail_closed_on_malformed_ignore_data() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        mock_ignore_list(&server, json!({"ignored_users": "invalid"})).await;
+        assert!(fetch_ignored_user_ids(&client).await.is_err());
     }
 
     #[tokio::test]
