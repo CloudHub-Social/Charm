@@ -3381,7 +3381,7 @@ async fn search_public_rooms(
     let page =
         search_public_rooms_impl(&session.client, request.query, request.since, request.limit)
             .await
-            .map_err(ApiError::bad_request)?;
+            .map_err(ApiError::bad_gateway)?;
     Ok(Json(page))
 }
 
@@ -6467,6 +6467,13 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: None,
+        }
+    }
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: message.into(),
             kind: None,
         }

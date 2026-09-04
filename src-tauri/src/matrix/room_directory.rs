@@ -143,6 +143,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn missing_join_rule_defaults_to_public() {
+        let room = serde_json::from_value(serde_json::json!({
+            "room_id": "!room:example.org",
+            "num_joined_members": 1,
+            "world_readable": false,
+            "guest_can_join": false
+        }))
+        .unwrap();
+
+        assert!(super::is_supported_directory_room(&room));
+    }
+
     #[tokio::test]
     async fn search_maps_results_and_round_trips_pagination() {
         let server = MatrixMockServer::new().await;
