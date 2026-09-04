@@ -18,6 +18,12 @@ pub struct PendingRecoverySetup {
     room_keys_backed_up: bool,
 }
 
+impl PendingRecoverySetup {
+    pub fn has_issued_key(&self) -> bool {
+        self.recovery_key.is_some()
+    }
+}
+
 impl std::fmt::Debug for PendingRecoverySetup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PendingRecoverySetup([REDACTED])")
@@ -177,7 +183,10 @@ pub async fn setup_with_custody(
     match (result, release) {
         (Ok(summary), Ok(())) => Ok(summary),
         (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Ok(summary), Err(error)) => {
+            tracing::warn!("Recovery setup admission release failed: {error}");
+            Ok(summary)
+        }
     }
 }
 

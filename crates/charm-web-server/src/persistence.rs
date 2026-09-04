@@ -473,6 +473,12 @@ impl PersistenceStore {
                 return Err("Session teardown has already started.".into());
             }
             entry.pending_recovery = pending.cloned();
+            if pending.is_none() {
+                // Acknowledgement is also a definitive release if the earlier
+                // best-effort admission cleanup encountered transient storage
+                // failure after returning the issued key.
+                entry.recovery_setup_active = false;
+            }
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json =
@@ -584,7 +590,12 @@ impl PersistenceStore {
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
                 return Ok(());
             };
-            if entry.recovery_setup_active {
+            if entry.recovery_setup_active
+                && !entry
+                    .pending_recovery
+                    .as_ref()
+                    .is_some_and(|pending| pending.has_issued_key())
+            {
                 return Err("Recovery setup is completing; retry sign out.".into());
             }
             if entry.recovery_teardown_started {
@@ -2487,6 +2498,52 @@ mod tests {
             .unwrap();
         store
             .begin_recovery_safe_teardown("failed-setup-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn issued_key_does_not_trap_logout_when_admission_release_failed() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[77u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "issued-key-token",
+                "https://example.invalid",
+                &dummy_session("@issued-key:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let seed = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("issued-key-token", &seed)
+            .await
+            .unwrap();
+        store
+            .save_pending_recovery("issued-key-token", Some(&issued))
+            .await
+            .unwrap();
+
+        store
+            .begin_recovery_safe_teardown("issued-key-token")
             .await
             .unwrap();
     }
