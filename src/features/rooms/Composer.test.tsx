@@ -121,7 +121,7 @@ describe("Composer", () => {
       };
       const view = render(<Composer {...props} />);
       const editable = await screen.findByLabelText("Message");
-      fireEvent.click(screen.getByRole("button", { name: label, exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: label }));
       pasteText(editable, "authored");
       expect(editable.querySelector(selector)).toHaveTextContent("authored");
       flags.composerParity = false;

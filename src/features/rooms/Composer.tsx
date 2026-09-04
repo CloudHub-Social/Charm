@@ -472,7 +472,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const { state } = editor;
     // Change future typing marks only; unsetMark would strip a selected draft.
     const marks = (state.storedMarks ?? state.selection.$from.marks()).filter(
-      (mark) => mark.type.name !== "matrixSpoiler" && mark.type.name !== "strike",
+      (mark) => !["matrixSpoiler", "strike", "link"].includes(mark.type.name),
     );
     editor.view.dispatch(state.tr.setStoredMarks(marks));
   }, [editor, composerParityEnabled]);
