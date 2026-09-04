@@ -4,8 +4,8 @@ description: How Charm splits CI into fast PR gating, nightly platform builds, a
 ---
 
 :::note
-This page mirrors [`docs/ci-tiers.md`](https://github.com/CloudHub-Social/Charm/blob/main/docs/ci-tiers.md)
-in the repository, which is the canonical, most up-to-date copy.
+This is the canonical release-tier guide. Additional CI cost and caching
+background is retained in [`docs/ci-tiers.md`](https://github.com/CloudHub-Social/Charm/blob/main/docs/ci-tiers.md).
 :::
 
 Charm 2.0's CI is split into tiers, each with a different job: fast feedback
@@ -77,9 +77,12 @@ steps. Missing credentials or failed signature verification blocks publication.
 No new signing identities are generated. Actual signed platform builds remain
 required evidence; PR workflow checks alone do not establish signing readiness.
 The manual `verify_platform_signing` input builds and verifies only Android and
-Windows with these same gates. It uploads CI artifacts but cannot publish a
-GitHub release, even when dispatched against a tag. Use it to validate signing
-before a release cut without creating a version tag.
+Windows with these same gates, and is restricted to reviewed `main`. Other refs
+fail the prerequisite policy job before signing jobs start. It uploads CI
+artifacts but cannot publish a GitHub release. Run it after merging the workflow
+to validate signing before a release cut without creating a version tag.
+Manifest signing supports unencrypted GPG keys; protected keys require their
+matching `GPG_PASSPHRASE`, and signing failures block publication.
 
 Nightly publication uses the same four SBOM names. Because the SBOMs are present
 before checksum and detached-signature generation, they are covered by the same

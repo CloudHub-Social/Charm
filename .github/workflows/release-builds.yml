@@ -16,7 +16,7 @@ on:
         default: production
         type: string
       verify_platform_signing:
-        description: "Build and verify signed Android/Windows artifacts only; never publish a release."
+        description: "On main only: verify signed Android/Windows artifacts; never publish a release."
         required: false
         default: false
         type: boolean
@@ -25,6 +25,19 @@ permissions:
   contents: read
 
 jobs:
+  signing-policy:
+    name: Validate signing verification ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restrict manual signing verification to main
+        env:
+          VERIFY_SIGNING: ${{ inputs.verify_platform_signing }}
+        run: |
+          if [ "$VERIFY_SIGNING" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Signing verification must run from reviewed main, not a feature branch or tag."
+            exit 1
+          fi
+
   frontend-sourcemaps:
     if: ${{ !inputs.verify_platform_signing }}
     name: Frontend sourcemaps
@@ -449,6 +462,7 @@ jobs:
           include-hidden-files: true
 
   windows-debug-files:
+    needs: signing-policy
     name: Windows debug files
     runs-on: windows-latest
     steps:
@@ -629,6 +643,7 @@ jobs:
           include-hidden-files: true
 
   android-debug-files:
+    needs: signing-policy
     name: Android mapping and native symbols
     runs-on: ubuntu-latest
     # Allows every bounded build/upload attempt to report its own failure
@@ -922,7 +937,14 @@ jobs:
 
   publish-release-artifacts:
     name: Publish signed release artifacts
-    needs: [rust-linux-debug-files, apple-debug-files, windows-debug-files, android-debug-files]
+    needs:
+      [
+        frontend-sourcemaps,
+        rust-linux-debug-files,
+        apple-debug-files,
+        windows-debug-files,
+        android-debug-files,
+      ]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.verify_platform_signing
     runs-on: ubuntu-latest
     permissions:
@@ -975,8 +997,13 @@ jobs:
           chmod 700 "$GNUPGHOME"
           printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
           key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-            --local-user "$key_id" --detach-sign --armor SHA256SUMS.txt
+          # Empty passphrases deliberately support an unencrypted release key.
+          # A protected key still fails closed, with an actionable error.
+          if ! gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            --local-user "$key_id" --detach-sign --armor SHA256SUMS.txt; then
+            echo "::error::Release signing failed. If the key is protected, configure its matching GPG_PASSPHRASE."
+            exit 1
+          fi
           gpg --batch --armor --export "$key_id" > charm-release-signing-key.asc
 
       - name: Attach assets to the GitHub release

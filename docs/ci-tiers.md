@@ -68,17 +68,20 @@ Tier 1/2 already catch plain compile errors — this only needs to catch
 native-bundler and release-mode-specific breakage, and there's no strong
 reason that needs to be fast.
 
-## Tier 4 — Production release _(partially implemented)_
+## Tier 4 — Production release _(signing-dependent)_
 
-Triggered by pushing a version tag (`v*`). `release-builds.yml`
-already does part of this today: uploads debug symbols and frontend source
-maps to Sentry for the tagged commit, with size analysis for those builds.
-The remaining piece — producing real
-**signed and notarized** shipping bundles (macOS notarization, code-signing
-certs, Windows Authenticode, etc.) and publishing them (GitHub Release
-assets, the auto-updater feed) — is designed but not built. It needs signing
-credentials that don't exist in CI yet; that's a distinct follow-up task,
-not something to wire up silently.
+Triggered by pushing a version tag (`v*`). `release-builds.yml` requires
+frontend sourcemaps and platform builds before publishing complete bundles,
+platform SPDX SBOMs, and a GPG-signed checksum manifest. Android and Windows
+use existing signing secrets and must verify the resulting native signatures.
+The non-publishing `verify_platform_signing` dispatch is restricted to reviewed
+`main`; it provides actual signing evidence after the workflow merges.
+Apple production certificate import and notarization submission remain
+outstanding, and macOS verification intentionally blocks stable publication
+until those requirements are met. Updater readiness and actual signed-artifact
+validation remain separate gates; workflow implementation is not release proof.
+The canonical operational requirements, secret names, and evidence boundaries
+are in [the release-tier guide](../docs-site/src/content/docs/contributing/ci-tiers.md).
 
 ## Supporting infrastructure
 
