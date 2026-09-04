@@ -1247,6 +1247,30 @@ fn mark_incomplete_if_current(state: &super::MatrixState, generation: u64) -> bo
     true
 }
 
+fn claim_cached_history(state: &super::MatrixState, generation: u64, retry: bool) -> bool {
+    use std::sync::atomic::Ordering;
+    let _lifecycle = state
+        .search_lifecycle_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if generation != state.search_generation.load(Ordering::Acquire)
+        || state.search_backfill_pending.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    if state.search_backfill_started.load(Ordering::Acquire)
+        && !(retry && state.search_incomplete.load(Ordering::Acquire))
+    {
+        return false;
+    }
+    state.search_backfill_started.store(true, Ordering::Release);
+    state.search_backfill_pending.store(true, Ordering::Release);
+    // Clear the old failure while admitting the scan, under the same lock
+    // used by live failure writers. Detached startup must never clear it.
+    state.search_incomplete.store(false, Ordering::Release);
+    true
+}
+
 async fn persist_reconciliation_pending_if_current(
     app: &AppHandle,
     expected_identity: &(String, String),
@@ -1882,21 +1906,7 @@ pub(crate) async fn submit_sync_response(
             .search_generation
             .load(std::sync::atomic::Ordering::Acquire)
     };
-    if state
-        .search_backfill_started
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // Publish the disclosure before detaching so a search racing this
-        // spawn cannot briefly present the not-yet-seeded index as complete.
-        state
-            .search_backfill_pending
-            .store(true, std::sync::atomic::Ordering::Release);
+    if claim_cached_history(&state, generation, false) {
         let seed_app = app.clone();
         let seed_client = client.clone();
         tauri::async_runtime::spawn(async move {
@@ -2026,6 +2036,7 @@ async fn enqueue_reliable_search_work(
     sender: tokio::sync::mpsc::Sender<QueuedSearchWork>,
     queued: QueuedSearchWork,
 ) -> bool {
+    let generation = queued.generation;
     let mut reservation = Box::pin(sender.reserve_owned());
     let immediate = std::future::poll_fn(|context| {
         Poll::Ready(match reservation.as_mut().poll(context) {
@@ -2048,9 +2059,7 @@ async fn enqueue_reliable_search_work(
                         permit.send(queued);
                     }
                     Err(_) => {
-                        app.state::<super::MatrixState>()
-                            .search_incomplete
-                            .store(true, std::sync::atomic::Ordering::Release);
+                        mark_incomplete_if_current(&app.state::<super::MatrixState>(), generation);
                         tracing::warn!(
                             command = "message_search_index",
                             status = "worker_unavailable"
@@ -2194,25 +2203,6 @@ pub(crate) async fn submit_cached_history(app: &AppHandle, client: &Client, gene
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
         return;
     }
-    {
-        let _lifecycle = state
-            .search_lifecycle_lock
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if generation
-            != state
-                .search_generation
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return;
-        }
-        // The pending bit already makes every result explicitly incomplete.
-        // Clear only the prior sticky bit so any failure during this complete
-        // cache scan can set it again and veto the FIFO completion marker.
-        state
-            .search_incomplete
-            .store(false, std::sync::atomic::Ordering::Release);
-    };
     let ignored_senders = super::account::ignored_user_ids(client).await;
     if !search_lifecycle_is_current(&state, &expected_identity, generation).await {
         return;
@@ -2509,46 +2499,8 @@ pub async fn search_messages(
     let (account_store_key, device_id) =
         active_identity(&client).ok_or_else(SearchCommandError::unavailable)?;
     let expected_identity = (account_store_key.clone(), device_id.clone());
-    let should_start_backfill = {
-        let _lifecycle = state
-            .search_lifecycle_lock
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if generation
-            == state
-                .search_generation
-                .load(std::sync::atomic::Ordering::Acquire)
-            && state
-                .search_incomplete
-                .load(std::sync::atomic::Ordering::Acquire)
-            && !state
-                .search_backfill_pending
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            // A previous full seed or live batch failed. Permit exactly one
-            // caller to start another complete local-only pass; the CAS below
-            // immediately closes this retry gate for concurrent searches.
-            state
-                .search_backfill_started
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
-        state
-            .search_backfill_started
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-    };
+    let should_start_backfill = claim_cached_history(&state, generation, true);
     if should_start_backfill {
-        // Publish the disclosure before detaching so the first request can
-        // return promptly while still reporting that cached-history coverage
-        // is incomplete until the worker's FIFO completion marker drains.
-        state
-            .search_backfill_pending
-            .store(true, std::sync::atomic::Ordering::Release);
         let seed_app = app.clone();
         let seed_client = client.clone();
         tauri::async_runtime::spawn(async move {
@@ -3917,6 +3869,23 @@ mod tests {
             .search_incomplete
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.search_pending_seed_rooms.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retry_admission_preserves_failures_recorded_before_detached_startup() {
+        use std::sync::atomic::Ordering;
+        let state = super::super::MatrixState::default();
+        state.search_backfill_started.store(true, Ordering::Release);
+        assert!(super::mark_incomplete_if_current(&state, 0));
+        assert!(super::claim_cached_history(&state, 0, true));
+        assert!(!state.search_incomplete.load(Ordering::Acquire));
+        assert!(state.search_backfill_pending.load(Ordering::Acquire));
+        // Model a live failure after admission but before the spawned scan
+        // receives its first poll. Another query cannot clear that failure.
+        assert!(super::mark_incomplete_if_current(&state, 0));
+        assert!(!super::claim_cached_history(&state, 0, true));
+        assert!(state.search_incomplete.load(Ordering::Acquire));
+        assert!(!super::claim_cached_history(&state, 1, true));
     }
 
     #[test]

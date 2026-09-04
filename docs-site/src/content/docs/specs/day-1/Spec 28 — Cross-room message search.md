@@ -236,7 +236,10 @@ connection: the SDK owns that schema and migration lifecycle.
   checkpoint when work is dropped or fails. The checkpoint contains no message
   plaintext, survives restart, and clears only after a complete local event-cache
   scan and its FIFO completion marker both succeed. A later search claims one
-  bounded retry while results remain incomplete. Web indexes are session-ephemeral,
+  bounded retry while results remain incomplete. Native retry admission clears
+  the previous failure under the lifecycle lock before detaching the scan;
+  subsequent live failures remain sticky and cannot be erased by task startup.
+  Web indexes are session-ephemeral,
   so a later search similarly coalesces one local-cache rebuild after failure and a
   process restart creates a fresh incomplete index; neither transport invokes
   homeserver search or forces history pagination for reconciliation.
