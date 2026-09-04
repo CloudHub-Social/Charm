@@ -2681,6 +2681,13 @@ fn purge_disabled_search_indices_from_slot(
 /// renderer reload, or failed filesystem operation cannot erase the intent.
 pub(crate) fn reconcile_disabled_cleanup(app_data_dir: &Path) -> Result<(), String> {
     let marker = disabled_cleanup_marker(app_data_dir);
+    // The default-disabled sync path is read-only once cleanup has completed.
+    // Only definite absence is clean: symlinks and metadata errors still take
+    // the fail-closed reconciliation path, including dangling symlinks.
+    let absent = |path: &Path| matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    if absent(&app_data_dir.join(SEARCH_ROOT)) && absent(&marker) {
+        return Ok(());
+    }
     create_private_directory(&marker)?;
     SearchIndex::delete_all(app_data_dir)?;
     match std::fs::remove_dir(&marker) {
@@ -4374,6 +4381,36 @@ mod tests {
         assert!(slot.is_none());
         assert!(!active_path.exists());
         assert!(retained_path.exists());
+    }
+
+    #[test]
+    fn clean_disabled_search_does_not_create_filesystem_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let absent_app_data = directory.path().join("not-created");
+        for _ in 0..3 {
+            reconcile_disabled_cleanup(&absent_app_data).expect("already clean");
+        }
+        assert!(!absent_app_data.exists());
+    }
+
+    #[test]
+    fn disabled_search_retries_a_marker_without_an_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let marker = disabled_cleanup_marker(directory.path());
+        create_private_directory(&marker).expect("pending marker");
+        reconcile_disabled_cleanup(directory.path()).expect("finish pending cleanup");
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disabled_search_does_not_treat_a_dangling_index_symlink_as_clean() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let outside = directory.path().join("missing-target");
+        std::os::unix::fs::symlink(&outside, directory.path().join(SEARCH_ROOT)).unwrap();
+        assert!(reconcile_disabled_cleanup(directory.path()).is_err());
+        assert!(disabled_cleanup_pending(directory.path()).unwrap());
+        assert!(!outside.exists());
     }
 
     #[test]

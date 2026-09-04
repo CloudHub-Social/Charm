@@ -25,9 +25,8 @@ vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
 
-// Exercise the real transport routing, but stop at its native IPC boundary.
-// In particular, overlapping reconciliation imports must never call Tauri
-// or Sentry's metrics wrapper from this flag-cache unit test.
+// Keep transport routing real; isolate the native IPC boundary so lazy
+// reconciliation never enters Tauri or its telemetry wrapper in this test.
 vi.mock("@/observability/ipc", () => ({
   IPC_OPERATION_ID_HEADER: "x-charm-operation-id",
   invoke: (...args: unknown[]) => mocks.invoke(...args),

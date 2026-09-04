@@ -33,15 +33,24 @@ let messageSearchMutationQueue: Promise<void> = Promise.resolve();
 const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
 
-function serializeMessageSearchMutation(mutation: () => Promise<void>): Promise<void> {
+function serializeMessageSearchMutation(
+  mutation: () => Promise<void>,
+  allowUnrelatedRemoteUpdates = false,
+): Promise<void> {
   const run = async (): Promise<void> => {
     // Never let a re-enable overtake an earlier failed destructive cleanup.
     // Rust's durable marker survives renderer reloads; this in-process bit
     // also prevents overlapping Labs and OFREP mutations from reordering.
     if (messageSearchReconciliationPending) {
       const { invoke } = await import("@/lib/matrixTransport");
-      await invoke("reconcile_message_search_flag");
-      messageSearchReconciliationPending = false;
+      try {
+        await invoke("reconcile_message_search_flag");
+        messageSearchReconciliationPending = false;
+      } catch (error) {
+        if (!allowUnrelatedRemoteUpdates) throw error;
+        // The remote mutation below pins search off while still publishing
+        // unrelated keys. Never let one cleanup failure freeze all kill switches.
+      }
     }
     await mutation();
   };
@@ -318,15 +327,18 @@ export async function refreshRemoteFlags(): Promise<void> {
     const result = await fetchRemoteFlags(getInstallId());
     if (result) {
       await serializeMessageSearchMutation(async () => {
+        const nextRemote = messageSearchReconciliationPending
+          ? { ...result, encrypted_local_message_search: false }
+          : result;
         const changedKeys = FEATURE_FLAG_KEYS.filter(
           (key) =>
             resolveFlag(key, overridesCache, remoteCache) !==
-            resolveFlag(key, overridesCache, result),
+            resolveFlag(key, overridesCache, nextRemote),
         );
         // Persist before publishing to the UI so Rust and the renderer share
         // one authoritative state. The queue prevents a re-enable overtaking
         // a failed destructive transition.
-        if (await persistRemoteFlags(result, getInstallId())) {
+        if (await persistRemoteFlags(nextRemote, getInstallId())) {
           const searchWasEnabled = resolveFlag(
             "encrypted_local_message_search",
             overridesCache,
@@ -335,18 +347,24 @@ export async function refreshRemoteFlags(): Promise<void> {
           const searchIsEnabled = resolveFlag(
             "encrypted_local_message_search",
             overridesCache,
-            result,
+            nextRemote,
           );
-          remoteCache = result;
+          remoteCache = nextRemote;
           for (const key of changedKeys) {
             persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
           }
           emit();
           if (searchWasEnabled !== searchIsEnabled || messageSearchReconciliationPending) {
-            await reconcileMessageSearchState(searchWasEnabled, searchIsEnabled);
+            try {
+              await reconcileMessageSearchState(searchWasEnabled, searchIsEnabled);
+            } catch {
+              // Keep pending intent for the next attempt without turning the
+              // successfully persisted unrelated rollout into an unhandled rejection.
+              console.error("Message search remote reconciliation failed");
+            }
           }
         }
-      });
+      }, true);
     }
   } finally {
     refreshInFlight = false;

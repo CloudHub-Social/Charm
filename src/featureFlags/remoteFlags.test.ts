@@ -149,6 +149,38 @@ describe("message search reconciliation", () => {
     mocks.invoke.mockResolvedValue(undefined);
   });
 
+  it("keeps unrelated remote flags updating when cleanup repeatedly fails", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    let searchEnabled = false;
+    let canaryEnabled = true;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "fetch_remote_flags") {
+        return Promise.resolve({
+          flags: [
+            { key: "encrypted_local_message_search", value: searchEnabled },
+            { key: "canary", value: canaryEnabled },
+          ],
+        });
+      }
+      return Promise.reject(new Error("cleanup unavailable"));
+    });
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ encrypted_local_message_search: true });
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(true);
+
+    searchEnabled = true;
+    canaryEnabled = false;
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("encrypted_local_message_search")).toBe(false);
+    expect(mod.getFlag("canary")).toBe(false);
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toContain('"canary":false');
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toContain(
+      '"encrypted_local_message_search":false',
+    );
+  });
+
   it("reconciles a disabled-to-disabled renderer startup", async () => {
     vi.stubEnv("VITE_CHARM_OFREP_URL", "");
     const mod = await import("./index");
