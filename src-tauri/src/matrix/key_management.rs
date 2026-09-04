@@ -165,12 +165,11 @@ where
         let _completion_guard = state.login_completion_lock.lock().await;
         let active = state.client.lock().await;
         let client = require_transfer_identity(active.as_ref(), &expected)?.clone();
+        drop(active);
         if !feature_enabled(&app) {
             return Err("Room-key file import and export are not enabled.".to_string());
         }
-        let result = transfer(client).await;
-        drop(active);
-        result
+        transfer(client).await
     })
     .await
     .map_err(|_| "The room-key transfer could not finish.".to_string())?
@@ -196,13 +195,26 @@ async fn receive_selected_path(
 }
 
 async fn pick_import_path(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        return Err(
+            "Room-key file import is unavailable on Android until bounded content-URI streaming is supported."
+                .to_string(),
+        );
+    }
+    #[cfg(not(target_os = "android"))]
     let picker = app
         .dialog()
         .file()
         .set_title("Import encrypted Matrix room keys")
         .add_filter("Matrix room keys", &["txt"])
         .set_picker_mode(PickerMode::Document)
-        .set_file_access_mode(FileAccessMode::Copy);
+        // iOS UIDocumentPicker can keep security-scoped, in-place access to
+        // the selected document. Avoid the plugin's eager sandbox copy so our
+        // descriptor-bounded snapshot is the first and only copy.
+        .set_file_access_mode(FileAccessMode::Scoped);
+    #[cfg(not(target_os = "android"))]
     receive_selected_path(|callback| picker.pick_file(callback)).await
 }
 

@@ -23,12 +23,15 @@ not first-time **setup** or manual key file I/O.
   a session-scoped provider also keeps progress and completion visible across
   Settings closure, tab changes, and browser Back/hash navigation. Credentials
   stay in that owner's local state, not query/mutation caches, and are cleared on
-  completion or session teardown. These lifecycle regressions await CI.
-  dismissal becomes available again after the native command settles.
+  completion or session teardown. Dismissal becomes available again after the
+  native command settles. These lifecycle regressions await CI.
   After the picker and before SDK key access, the native command revalidates the
-  active user/device and the feature flag. It uses the current client and holds
-  the client lock until SDK file work finishes, including when the invoking
-  future is dropped. Passphrases enter zeroizing storage before validation or
+  active user/device and the feature flag. It clones the current client, releases
+  the global client mutex, and retains only session-transition exclusion until
+  SDK file work finishes, including when the invoking future is dropped.
+  iOS imports use security-scoped in-place document access before Charm's bounded
+  snapshot; Android import remains unavailable until bounded content-URI streaming
+  is implemented. Passphrases enter zeroizing storage before validation or
   any early return. New exports require at least eight Unicode code points;
   imports accept existing short or empty passphrases without imposing a new
   strength policy. Both paths enforce the same 1024-byte UTF-8 limit in the UI
@@ -47,7 +50,9 @@ Native key imports read from one opened file into a private, size-bounded
 encrypted snapshot before acquiring account-transfer exclusion. The SDK imports
 that snapshot rather than reopening the user-selected pathname. Temporary
 ciphertext is removed when the owned transfer completes or fails; plaintext keys
-are not written to the staging file. Regression execution remains in CI.
+are not written to the staging file. iOS opens the selected document in place;
+Android does not expose import until Charm can bound reads from provider URIs.
+Regression execution remains in CI.
 
 Charm 2.0's crypto is strong on verification and restore: SAS verification,
 cross-signing bootstrap, recovery-key restore, and reset are all present
