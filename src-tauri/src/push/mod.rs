@@ -329,13 +329,13 @@ fn persisted_endpoint_path(
     Ok(dir.join(format!("{account_key}.json")))
 }
 
-fn save_persisted_endpoint(app: &AppHandle, account_key: &str, endpoint: &PushEndpoint) {
-    let Ok(path) = persisted_endpoint_path(app, account_key) else {
-        return;
-    };
-    if let Ok(json) = serde_json::to_string(&PersistedPushEndpoint::from(endpoint)) {
-        let _ = std::fs::write(path, json);
-    }
+fn save_persisted_endpoint(
+    app: &AppHandle,
+    account_key: &str,
+    endpoint: &PushEndpoint,
+) -> Result<(), String> {
+    let path = persisted_endpoint_path(app, account_key)?;
+    save_endpoint_record(&path, &PersistedPushEndpoint::from(endpoint))
 }
 
 fn save_endpoint_record(
@@ -434,19 +434,41 @@ pub async fn register_push(
             let pusher: Pusher = build_pusher_init(&endpoint, &device_display_name).into();
             match client.pusher().set(pusher, false).await {
                 Ok(()) => {
-                    *state
-                        .push_transport
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport));
-                    if let Some(account_key) = &account_key {
-                        save_persisted_endpoint(&app, account_key, &endpoint);
-                    }
-                    PushStatus {
-                        transport: endpoint.kind,
-                        registered: true,
-                        endpoint_present: true,
-                        last_error: None,
-                        available: false, // set fresh by finalize_and_emit
+                    let persisted = account_key
+                        .as_ref()
+                        .ok_or_else(|| "Push registration has no authenticated account".into())
+                        .and_then(|account_key| {
+                            save_persisted_endpoint(&app, account_key, &endpoint)
+                        });
+                    if let Err(error) = persisted {
+                        let _ = finish_remote_push_cleanup(
+                            client.pusher().delete(PusherIds::new(
+                                endpoint.url_or_token.clone(),
+                                endpoint.app_id.clone(),
+                            )),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                        let _ = transport.unregister().await;
+                        PushStatus {
+                            transport: endpoint.kind,
+                            registered: false,
+                            endpoint_present: false,
+                            last_error: Some(error),
+                            available: false,
+                        }
+                    } else {
+                        *state
+                            .push_transport
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport));
+                        PushStatus {
+                            transport: endpoint.kind,
+                            registered: true,
+                            endpoint_present: true,
+                            last_error: None,
+                            available: false, // set fresh by finalize_and_emit
+                        }
                     }
                 }
                 Err(e) => {
@@ -842,7 +864,9 @@ pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint)
 
     let status = match client.pusher().set(pusher, false).await {
         Ok(()) => {
-            save_persisted_endpoint(app, &account_key, &endpoint);
+            if let Err(error) = save_persisted_endpoint(app, &account_key, &endpoint) {
+                tracing::error!(command = "reregister_endpoint", %error);
+            }
             // Matrix pushers are keyed by (pushkey, app_id) — `set_pusher`
             // above upserts the *new* one but never removes whatever the
             // stale pushkey was registered under, so without this the
