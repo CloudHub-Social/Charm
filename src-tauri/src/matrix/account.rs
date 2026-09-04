@@ -1265,6 +1265,8 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
     #[test]
     fn logout_needs_a_durable_restore_veto_or_all_credentials_removed() {
         for matrix_cleared in [false, true] {

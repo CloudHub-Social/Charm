@@ -36,6 +36,9 @@ function parseMentionAnchor(idPrefix: string) {
 
 export const UserMention = Mention.extend({
   name: "userMention",
+  // StarterKit's generic Link mark parses anchors at priority 1000. Matrix
+  // pills are a more specific node shape and must win before that fallback.
+  priority: 1100,
   parseHTML() {
     return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("@") }];
   },
@@ -64,6 +67,7 @@ export const UserMention = Mention.extend({
 /** `#` room mentions — same matrix.to-anchor rendering as {@link UserMention}. */
 export const RoomMention = Mention.extend({
   name: "roomMention",
+  priority: 1100,
   parseHTML() {
     return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("!") }];
   },

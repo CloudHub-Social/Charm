@@ -4,8 +4,8 @@ import { guardedStarterKit } from "./guardedStarterKit";
 
 describe("staged formatting rules", () => {
   it.each([
-    ["strike", "Mod-Shift-x"],
-    ["codeBlock", "Mod-Alt-c"],
+    ["strike", { key: "s", ctrlKey: true, shiftKey: true }],
+    ["codeBlock", { key: "c", ctrlKey: true, altKey: true }],
   ])("checks the current flag for every %s shortcut", (format, shortcut) => {
     let enabled = false;
     const editor = new Editor({
@@ -14,15 +14,21 @@ describe("staged formatting rules", () => {
     });
     try {
       editor.commands.selectAll();
-      editor.commands.keyboardShortcut(shortcut);
+      editor.view.dom.dispatchEvent(
+        new KeyboardEvent("keydown", { ...shortcut, bubbles: true, cancelable: true }),
+      );
       expect(editor.isActive(format)).toBe(false);
       enabled = true;
-      editor.commands.keyboardShortcut(shortcut);
+      editor.view.dom.dispatchEvent(
+        new KeyboardEvent("keydown", { ...shortcut, bubbles: true, cancelable: true }),
+      );
       expect(editor.isActive(format)).toBe(true);
       editor.commands.clearNodes();
       editor.commands.unsetAllMarks();
       enabled = false;
-      editor.commands.keyboardShortcut(shortcut);
+      editor.view.dom.dispatchEvent(
+        new KeyboardEvent("keydown", { ...shortcut, bubbles: true, cancelable: true }),
+      );
       expect(editor.isActive(format)).toBe(false);
     } finally {
       editor.destroy();

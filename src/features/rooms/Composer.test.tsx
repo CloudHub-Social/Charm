@@ -38,6 +38,7 @@ function pasteText(editable: Element, text: string, matchFormatting = false) {
   // paste instead takes marks from the surrounding document, not storedMarks.
   if (matchFormatting) fireEvent.keyDown(editable, { key: "Shift", shiftKey: true });
   fireEvent.paste(editable, {
+    shiftKey: matchFormatting,
     clipboardData: {
       getData: (type: string) => (type === "text/plain" ? text : ""),
       types: ["text/plain"],
