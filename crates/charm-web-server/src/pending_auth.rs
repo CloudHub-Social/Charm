@@ -227,6 +227,20 @@ impl Default for PendingAuthStore {
 }
 
 impl PendingAuthStore {
+    fn capacity_handoff(&self, owners: &[String]) -> Option<Arc<()>> {
+        let mut active = self
+            .capacity_owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        active.retain(|_, (_, lifetime)| lifetime.strong_count() > 0);
+        active.values().find_map(|(previous, lifetime)| {
+            owners
+                .contains(previous)
+                .then(|| lifetime.upgrade())
+                .flatten()
+        })
+    }
+
     async fn admit_owner_attempt(
         &self,
         owner: impl Into<AuthOwner>,
@@ -241,24 +255,16 @@ impl PendingAuthStore {
         };
         let owner = owner.into();
         let capacity_owner = owner.id.clone();
-        let (completed, capacity, replacing_in_flight) = {
+        let (completed, capacity, handoff) = {
             let _transition = self.transitions.lock().await;
             let mut owners = owner.superseded;
             owners.push(owner.id.clone());
             owners.sort_unstable();
             owners.dedup();
-            self.capacity_owners
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .retain(|_, (_, lifetime)| lifetime.strong_count() > 0);
-            let replacing_in_flight = self
-                .capacity_owners
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .values()
-                .any(|(previous, lifetime)| {
-                    owners.contains(previous) && lifetime.strong_count() > 0
-                });
+            // Retain the existing ownership witness before cancellation.
+            // It spans permit release/acquisition and publication so another
+            // admission cannot observe a false no-owner handoff gap.
+            let handoff = self.capacity_handoff(&owners);
             let mut completed = Vec::new();
             for previous in owners {
                 completed.extend(self.clear_owner_attempts(&previous).await);
@@ -273,13 +279,13 @@ impl PendingAuthStore {
                         (capacity_owner.clone(), Arc::downgrade(&capacity.lifetime)),
                     );
             }
-            if capacity.is_ok() || replacing_in_flight {
+            if capacity.is_ok() || handoff.is_some() {
                 self.cancellations
                     .lock()
                     .await
                     .insert(attempt_id.clone(), (owner.id, cancellation.clone()));
             }
-            (completed, capacity, replacing_in_flight)
+            (completed, capacity, handoff)
         };
         for completion in completed {
             discard_sso_result(completion).await;
@@ -288,7 +294,7 @@ impl PendingAuthStore {
         // stack. That task may need `transitions` to observe cancellation,
         // so never hold the transition lock while awaiting its released slot.
         let capacity = match capacity {
-            Err(_) if replacing_in_flight => {
+            Err(_) if handoff.is_some() => {
                 tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => Err("authentication attempt was superseded".to_string()),
@@ -309,6 +315,9 @@ impl PendingAuthStore {
                     (capacity_owner, Arc::downgrade(&capacity.lifetime)),
                 );
         }
+        // The new witness is now visible, or this bounded wait has failed.
+        // A dropped future releases the handoff automatically too.
+        drop(handoff);
         if capacity.is_err() || cancellation.is_cancelled() {
             self.cancel_token(&attempt_id).await;
         }
@@ -2314,6 +2323,38 @@ mod tests {
         .expect("non-owning attempt must not enter the five-second capacity wait");
         assert!(result.is_err());
         assert!(!store.cancellations.lock().await.contains_key("new"));
+    }
+
+    #[tokio::test]
+    async fn capacity_owner_remains_visible_during_waiter_publication_gap() {
+        let store = PendingAuthStore::default();
+        let owner = "browser".to_owned();
+        let old = store
+            .admit_owner_attempt(owner.clone(), "old".to_owned(), CancellationToken::new())
+            .await
+            .unwrap();
+        let handoff = store
+            .capacity_handoff(std::slice::from_ref(&owner))
+            .unwrap();
+        drop(old);
+        // Model a waiter that acquired capacity but has not published its
+        // new witness yet. The retained handoff must remain discoverable.
+        let _occupied = (0..MAX_PENDING_AUTH_ATTEMPTS)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let cancellation = CancellationToken::new();
+        let admission = store.admit_owner_attempt(owner, "new".to_owned(), cancellation.clone());
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            _ = &mut admission => panic!("handoff was misclassified as a fresh owner"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.contains_key("new"));
+        cancellation.cancel();
+        assert!(admission.await.is_err());
+        drop(handoff);
+        assert!(store.capacity_handoff(&["browser".to_owned()]).is_none());
     }
 
     #[tokio::test]

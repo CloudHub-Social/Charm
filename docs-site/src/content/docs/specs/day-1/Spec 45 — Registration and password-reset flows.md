@@ -327,6 +327,9 @@ by weak permit-lifetime witnesses, not by cancellation entries: post-admission
 quota/setup failures cannot leave a cancellation-only owner eligible to wait.
 Actual cancelled in-flight permits remain attributable to their browser until
 dropped, including when a newer attempt replaces an already waiting replacement.
+An eligible replacement retains that ownership witness through acquisition and
+publication; bounded failure or cancellation releases it automatically. This
+closes the cross-thread handoff gap without admitting cancellation-only owners.
 A regression test exercises
 release by an old task that itself needs the transition lock; CI is pending.
 Completed SSO results release capacity
