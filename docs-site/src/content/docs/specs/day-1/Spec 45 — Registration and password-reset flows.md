@@ -34,6 +34,23 @@ provide login-flow discovery and advertised one-time token login. The browser
 never receives a Matrix access token, email `sid`, client secret, or crypto-store
 credential.
 
+Web password-change dispatch and cancellation share an atomic boundary. A
+cancellation acknowledged before dispatch prevents the mutation; after dispatch,
+the server reports that the outcome may be uncertain, disables automatic HTTP
+retries, and does not restore the attempt for another submission. Secret-free,
+browser-owner-bound receipts retain that distinction for twenty minutes, including
+after completion or request disconnection. Receipt capacity is bounded and new
+dispatches fail closed instead of evicting unexpired evidence. This does not
+prove whether a homeserver applied an already-dispatched password change.
+
+Homeserver `.well-known` discovery is read as a bounded stream: an oversized
+declared length is rejected up front, and chunked responses are stopped before
+more than 64 KiB enters memory. Starting a replacement browser auth flow clears
+attempts owned by both the discovery and active pre-auth cookies under one store
+transition, preventing a new attempt from entering between those two cleanup
+operations. The separate password-mutation cancellation boundary is tracked in
+[#386](https://github.com/CloudHub-Social/Charm/issues/386).
+
 The implementation slices have merged in
 [#330](https://github.com/CloudHub-Social/Charm/pull/330),
 [#331](https://github.com/CloudHub-Social/Charm/pull/331),
@@ -179,10 +196,17 @@ homeservers. The parity audit (2026-07-13) found:
 - Before the web companion allocates a client or sends any unauthenticated auth
   request, validate the caller-supplied homeserver as an HTTPS public-network
   target. Resolve once and pin all addresses, reject loopback/link-local/private
-  and special-purpose ranges, disable implicit proxying, and reapply the same
+  and special-purpose ranges (including IPv4 embedded in mapped or compatible
+  IPv6 addresses), disable implicit proxying, and reapply the same
   scheme/host/DNS/address policy to every `.well-known` or HTTP redirect. Tests
   cover redirect-to-private and DNS-rebinding attempts. An explicit deployment
   allowlist may narrow this policy further.
+  For the [RFC 6052 well-known NAT64 prefix](https://www.rfc-editor.org/rfc/rfc6052),
+  `64:ff9b::/96`, apply the same IPv4 destination policy to the final 32 bits,
+  allowing public destinations without permitting private or special-purpose
+  addresses through translation. The [RFC 8215 local-use prefix](https://www.rfc-editor.org/rfc/rfc8215)
+  `64:ff9b:1::/48` remains denied by the companion's public-destination policy;
+  do not infer its destination from the final 32 bits.
 
 ### Password reset
 
@@ -316,6 +340,49 @@ temporary crypto store; allow only one active attempt per browser flow; consume
 completion exactly once; and cancel, expire, or supersede abandoned attempts
 with their temporary stores removed. Companion tests cover both abandoned SSO
 starts and floods that rotate pre-auth sessions.
+
+Companion registration, password-reset, token-login, and SSO admission cancels
+both server-derived browser cookie owners and inserts the replacement attempt
+under one transition lock. Capacity reservation happens after superseded payloads
+release their permits inside that transition, so a browser can replace its own
+stored attempt even at the global limit. If the cancelled attempt still holds
+its permit in an in-flight task, its replacement waits up to five seconds for
+capacity outside the transition lock, and remains cancellable by a newer flow.
+Admission owns a cancellation-on-drop guard before its first await. Disconnecting
+while waiting for capacity cancels and removes that exact attempt entry without
+depending on the later expiry task; it does not release another flow's permit.
+Regression coverage drops a saturated-capacity waiter and checks bounded cleanup.
+GitHub Actions explicitly selects both `charm` and `charm-web-server` for library
+tests; native-only Rust job success does not verify companion authentication
+regressions. Verification of this expanded CI scope is pending.
+Fresh owners still fail immediately at capacity. Capacity ownership is tracked
+by weak permit-lifetime witnesses, not by cancellation entries: post-admission
+quota/setup failures cannot leave a cancellation-only owner eligible to wait.
+Actual cancelled in-flight permits remain attributable to their browser until
+dropped, including when a newer attempt replaces an already waiting replacement.
+An eligible replacement retains that ownership witness through acquisition and
+publication; bounded failure or cancellation releases it automatically. This
+closes the cross-thread handoff gap without admitting cancellation-only owners.
+Teardown releases the semaphore slot before dropping its ownership witness, so
+a replacement cannot mistake a still-held slot for an unrelated owner's capacity.
+A regression test exercises
+release by an old task that itself needs the transition lock; CI is pending.
+Completed SSO results release capacity
+before remote cleanup; unrelated browsers remain subject to the same limit.
+In-flight SSO callbacks also observe cancellation during token exchange and
+initial sync. Cancellation stops local authentication work and releases its
+admission slot before bounded best-effort logout of any session already known
+to the SDK. No completion is published for the cancelled callback. A stalled
+HTTP callback regression checks capacity handoff; execution in CI is pending.
+Cancellation cannot prove that an unacknowledged remote token exchange did not
+create a device; remote revocation remains best-effort rather than guaranteed.
+Discarding a completed SSO session attempts remote logout for at most five
+seconds, then releases its SDK client and removes temporary crypto storage.
+This bounds supersession latency without claiming remote revocation succeeded
+when the homeserver was unreachable; live timeout verification remains pending.
+Routes do not split cancellation from admission for
+these flows; the replacement remains addressable for cancellation throughout
+network setup and finalization.
 
 New UIA stages, recovery, provider selection, and standalone token-login entry
 points use a matching Rust and TypeScript `registration_and_recovery` feature flag

@@ -1737,11 +1737,26 @@ fn require_preauth_owner(jar: &CookieJar) -> Result<String, ApiError> {
 }
 
 async fn cancel_browser_preauth(state: &AppState, jar: &CookieJar) {
-    if let Some(previous) = jar.get(PREAUTH_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
+    let owners = [
+        jar.get(PREAUTH_COOKIE).map(|cookie| cookie.value()),
+        jar.get(DISCOVERY_COOKIE).map(|cookie| cookie.value()),
+    ];
+    match owners {
+        [Some(first), Some(second)] => state.pending_auth.cancel_owners(&[first, second]).await,
+        [Some(owner), None] | [None, Some(owner)] => {
+            state.pending_auth.cancel_owner(owner).await;
+        }
+        [None, None] => {}
     }
-    if let Some(previous) = jar.get(DISCOVERY_COOKIE) {
-        state.pending_auth.cancel_owner(previous.value()).await;
+}
+
+fn browser_auth_owner(jar: &CookieJar, id: String) -> crate::pending_auth::AuthOwner {
+    crate::pending_auth::AuthOwner {
+        id,
+        superseded: [PREAUTH_COOKIE, DISCOVERY_COOKIE]
+            .into_iter()
+            .filter_map(|name| jar.get(name).map(|cookie| cookie.value().to_owned()))
+            .collect(),
     }
 }
 
@@ -1753,14 +1768,17 @@ async fn begin_registration(
     require_registration_and_recovery(&state)?;
     let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
         owner
     } else {
         new_preauth_owner()
     };
     match state
         .pending_auth
-        .begin_registration(owner.clone(), request, state.persistence.is_some())
+        .begin_registration(
+            browser_auth_owner(&jar, owner.clone()),
+            request,
+            state.persistence.is_some(),
+        )
         .await
         .map_err(ApiError::bad_request)?
     {
@@ -1885,7 +1903,6 @@ async fn request_password_reset(
     require_registration_and_recovery(&state)?;
     let owner = if let Some(previous) = jar.get(PREAUTH_COOKIE) {
         let owner = previous.value().to_owned();
-        state.pending_auth.cancel_owner(&owner).await;
         owner
     } else {
         new_preauth_owner()
@@ -1894,7 +1911,7 @@ async fn request_password_reset(
         .pending_auth
         .request_password_reset(
             trusted_client_source(source, &headers),
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.email,
         )
@@ -1990,7 +2007,11 @@ async fn cancel_password_reset(
             .await
             .map_err(ApiError::bad_request)?;
     } else {
-        state.pending_auth.cancel_owner(&owner).await;
+        state
+            .pending_auth
+            .cancel_password_resets_for_owner(&owner)
+            .await
+            .map_err(ApiError::bad_request)?;
     }
     Ok((jar.remove(clear_preauth_cookie()), Json(())))
 }
@@ -2056,6 +2077,7 @@ async fn get_login_flows(
     } else {
         new_preauth_owner()
     };
+    cancel_browser_preauth(&state, &jar).await;
     crate::pending_auth::get_login_flows(&request.homeserver_url)
         .await
         .map(|flows| (jar.add(discovery_cookie(owner)), Json(flows)))
@@ -2081,7 +2103,7 @@ async fn login_with_token(
     let (completed, attempt_id) = state
         .pending_auth
         .login_with_token(
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.token,
             state.persistence.is_some(),
@@ -2142,11 +2164,10 @@ async fn start_browser_sso(
     let callback_url = public_url
         .join("/api/auth/sso/callback")
         .map_err(|_| ApiError::not_found("browser single sign-on is not configured"))?;
-    state.pending_auth.cancel_owner(&owner).await;
     let (attempt_id, redirect_url) = state
         .pending_auth
         .start_sso(
-            owner.clone(),
+            browser_auth_owner(&jar, owner.clone()),
             request.homeserver_url,
             request.idp_id,
             callback_url.to_string(),
