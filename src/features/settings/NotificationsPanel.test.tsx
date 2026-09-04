@@ -208,6 +208,25 @@ describe("NotificationsPanel", () => {
     expect(screen.queryByText(/requires a UnifiedPush distributor/)).not.toBeInTheDocument();
   });
 
+  it("can unregister a persisted APNs registration while new registrations are disabled", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: false,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off push notifications" }));
+
+    await waitFor(() => expect(unregisterPush).toHaveBeenCalledTimes(1));
+    expect(registerPush).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Turn on push notifications" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("suggests installing a UnifiedPush distributor when Android push registration fails", async () => {
     getPushStatus.mockResolvedValue({
       transport: "none",

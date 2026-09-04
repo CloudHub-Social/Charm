@@ -259,6 +259,12 @@ default-off `ios_push_notifications` flag, but enabling that flag does not
 remove either the paid signing/provider requirement or the still-missing
 Notification Service Extension background-decrypt path.
 
+The settings turn-off control remains available for persisted registrations
+even when the registration feature flag is off. This UI safeguard alone does
+not complete the native lifecycle: cleanup after process restart with the flag
+disabled, and APNs token refresh after session restoration, still require
+implementation and remote verification before this slice is merge-ready.
+
 **Testable on Personal Team signing regardless:** app launch, WebView
 rendering, Matrix login, normal foreground sync, local storage/Keychain
 behavior, local file/media flows, and most local UI flows. Spec 10's desktop

@@ -55,7 +55,9 @@ function PushTransportTile() {
     <SettingTile
       title="Push notifications"
       description={
-        !status?.available ? (
+        !status?.available && status?.registered ? (
+          "New push registrations are disabled. You can still turn off this device's existing registration."
+        ) : !status?.available ? (
           "Not available on this platform — desktop relies on the always-on sync loop instead."
         ) : (
           <>
@@ -74,7 +76,7 @@ function PushTransportTile() {
         )
       }
       control={
-        status?.available ? (
+        status?.available || status?.registered ? (
           status?.registered ? (
             <Button
               variant="outline"
