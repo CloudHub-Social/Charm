@@ -232,7 +232,12 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // before relocating its store — same rationale as the
                 // identical step in auth.rs's login/register/
                 // complete_sso_login.
-                super::sync::abort_current_sync_loop(&app).await;
+                let previous_timelines = super::auth::drain_for_account_replacement(
+                    &app,
+                    previous_client.as_ref(),
+                    &account_key,
+                )
+                .await;
                 if let Err(e) = persistence::relocate_store_and_save_oauth_session(
                     &app,
                     &temp_key,
@@ -241,6 +246,14 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     &session,
                 ) {
                     if e.cancelled_cleanup_veto {
+                        super::auth::restore_unaffected_account(
+                            &app,
+                            &state,
+                            previous_client.as_ref(),
+                            &account_key,
+                            previous_timelines,
+                        )
+                        .await;
                         super::auth::discard_vetoed_login(&app, client, &temp_key).await;
                         {
                             let mut pending_key = state

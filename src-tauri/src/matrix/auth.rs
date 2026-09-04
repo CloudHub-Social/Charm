@@ -95,7 +95,53 @@ const AUTH_MAILS_PER_ADDRESS: usize = 3;
 const AUTH_MAILS_PER_PROCESS: usize = 12;
 const AUTH_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Retire an authenticated attempt rejected before its store was relocated.
+/// A cleanup veto must not restore its own account, but can preserve another.
+fn is_unaffected_account(previous_user_id: Option<&str>, rejected_account_key: &str) -> bool {
+    previous_user_id
+        .is_some_and(|user_id| persistence::account_key(user_id) != rejected_account_key)
+}
+
+pub(super) async fn drain_for_account_replacement(
+    app: &AppHandle,
+    previous: Option<&Client>,
+    account_key: &str,
+) -> Vec<super::TimelineRollbackEntry> {
+    if is_unaffected_account(
+        previous.and_then(|client| client.user_id().map(|id| id.as_str())),
+        account_key,
+    ) {
+        sync::abort_current_sync_loop_for_rollback(app).await
+    } else {
+        sync::abort_current_sync_loop(app).await;
+        Vec::new()
+    }
+}
+
+pub(super) async fn restore_unaffected_account(
+    app: &AppHandle,
+    state: &MatrixState,
+    previous: Option<&Client>,
+    account_key: &str,
+    snapshot: Vec<super::TimelineRollbackEntry>,
+) {
+    let Some(previous) = previous else { return };
+    if !is_unaffected_account(previous.user_id().map(|id| id.as_str()), account_key) {
+        return;
+    }
+    state
+        .restore_timeline_snapshot(previous, snapshot, |room_id, timeline| {
+            super::timeline::spawn_timeline_listener(
+                app.clone(),
+                room_id.to_owned(),
+                std::sync::Arc::downgrade(timeline),
+                previous.clone(),
+                previous.user_id().map(ToOwned::to_owned),
+            )
+        })
+        .await;
+    sync::spawn_sync_task(app.clone(), previous.clone());
+}
+
 pub(super) async fn discard_vetoed_login(app: &AppHandle, client: Client, temp_key: &str) {
     let revoke = async move {
         if client.oauth().full_session().is_some() {
@@ -139,6 +185,20 @@ async fn finish_vetoed_login(
 mod vetoed_login_tests {
     use super::finish_vetoed_login;
     use std::{cell::Cell, time::Duration};
+
+    #[test]
+    fn cleanup_veto_only_allows_an_unaffected_account_to_resume() {
+        let rejected = super::persistence::account_key("@rejected:example.org");
+        assert!(!super::is_unaffected_account(None, &rejected));
+        assert!(!super::is_unaffected_account(
+            Some("@rejected:example.org"),
+            &rejected
+        ));
+        assert!(super::is_unaffected_account(
+            Some("@retained:example.org"),
+            &rejected
+        ));
+    }
 
     #[tokio::test]
     async fn cleanup_runs_after_revocation_error() {
@@ -415,7 +475,8 @@ pub async fn login(
         // relocating its store — otherwise a live client from an earlier login
         // (e.g. a double-submitted login button) could still be mid-`/sync` and
         // writing to the directory this is about to rename out from under it.
-        sync::abort_current_sync_loop(&app).await;
+        let previous_timelines =
+            drain_for_account_replacement(&app, previous_client.as_ref(), &account_key).await;
         if let Err(e) = persistence::relocate_store_and_save_session(
             &app,
             &temp_key,
@@ -424,6 +485,14 @@ pub async fn login(
             &session,
         ) {
             if e.cancelled_cleanup_veto {
+                restore_unaffected_account(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
                 discard_vetoed_login(&app, client, &temp_key).await;
                 return Err(e.into());
             }
@@ -893,7 +962,8 @@ async fn finish_registration(
 
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app).await;
+    let previous_timelines =
+        drain_for_account_replacement(&app, previous_client.as_ref(), &account_key).await;
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
@@ -913,6 +983,14 @@ async fn finish_registration(
         &session,
     ) {
         if e.cancelled_cleanup_veto {
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
             discard_vetoed_login(&app, client, &temp_key).await;
             return Err(e.into());
         }
@@ -4023,8 +4101,18 @@ pub async fn complete_sso_login(
         let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
         return Err("single sign-on cancelled".to_string());
     }
-    // No rollback snapshots may retain SQLite handles during relocation.
-    drop(previous_timelines);
+    // A same-account snapshot would retain handles into the relocated store.
+    // An unrelated account's handles remain useful if this account is vetoed.
+    let previous_timelines = if is_unaffected_account(
+        previous_client
+            .as_ref()
+            .and_then(|client| client.user_id().map(|id| id.as_str())),
+        &account_key,
+    ) {
+        previous_timelines
+    } else {
+        Vec::new()
+    };
     if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,
@@ -4033,6 +4121,14 @@ pub async fn complete_sso_login(
         &session,
     ) {
         if e.cancelled_cleanup_veto {
+            restore_unaffected_account(
+                &app,
+                &state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
             discard_vetoed_login(&app, client, &pending.store_key).await;
             return Err(e.into());
         }
