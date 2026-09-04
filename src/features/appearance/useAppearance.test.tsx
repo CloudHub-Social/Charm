@@ -31,6 +31,49 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("useAppearance", () => {
+  it("preserves font and spacing when another appearance field changes in the same update", async () => {
+    const { result } = renderHook(() => useAppearance(), { wrapper });
+    act(() => {
+      result.current.setFontFamily("mono");
+      result.current.setMessageSpacing("12");
+      result.current.setTheme("light");
+    });
+    expect(result.current.fontFamily).toBe("mono");
+    expect(result.current.messageSpacing).toBe("12");
+    await vi.waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({
+          state: expect.objectContaining({
+            fontFamily: "mono",
+            messageSpacing: "12",
+            theme: "light",
+          }),
+        }),
+      ),
+    );
+  });
+  it("persists clock and date preferences without losing a same-turn update", async () => {
+    const { result } = renderHook(() => useAppearance(), { wrapper });
+    act(() => {
+      result.current.setClockFormat("24h");
+      result.current.setDateFormat("year-first");
+    });
+    expect(result.current.clockFormat).toBe("24h");
+    expect(result.current.dateFormat).toBe("year-first");
+    expect(JSON.parse(localStorage.getItem("charm:appearance")!).state).toEqual(
+      expect.objectContaining({ clockFormat: "24h", dateFormat: "year-first" }),
+    );
+    await vi.waitFor(() =>
+      expect(storeSet).toHaveBeenLastCalledWith(
+        "appearance",
+        expect.objectContaining({
+          state: expect.objectContaining({ clockFormat: "24h", dateFormat: "year-first" }),
+        }),
+      ),
+    );
+  });
+
   it("setTheme mutates document.documentElement.dataset.theme", async () => {
     const { result } = renderHook(() => useAppearance(), { wrapper });
     act(() => {
