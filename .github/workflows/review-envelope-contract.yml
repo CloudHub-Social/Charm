@@ -26,4 +26,6 @@ jobs:
           path: .review-gate-contract
           persist-credentials: false
       - name: Check closed grammar and evidence boundaries
+        env:
+          REVIEW_GATE_ROOT: ${{ github.workspace }}/.review-gate-contract
         run: node --test scripts/review-envelope-contract.test.mjs
