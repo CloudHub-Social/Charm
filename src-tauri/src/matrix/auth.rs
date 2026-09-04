@@ -1178,12 +1178,21 @@ async fn finish_registration(
         };
         if !completion_won {
             drop(client_slot);
-            if let Some(previous_client) = previous_client {
-                *state.client.lock().await = Some(previous_client.clone());
-                sync::spawn_sync_task(app.clone(), previous_client);
-            }
             drop(client);
-            return clear_cancelled_registration_session(&app, &account_key);
+            // Cleanup can delete the rejected account's durable store. Only
+            // after it finishes may an unrelated prior account and its full
+            // timeline/listener snapshot be resumed; a same-account client
+            // must never be restored onto the store we just removed.
+            let result = clear_cancelled_registration_session(&app, &account_key);
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return result;
         }
         // This is the completion/cancellation linearization point. A cancel
         // that acquired the slot first wins above; after this removal the
