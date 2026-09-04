@@ -168,12 +168,13 @@ describe("RoomDirectoryDialog", () => {
     });
     joinRoom.mockResolvedValueOnce({ room_id: matrixRoom.room_id, is_space: false });
     let finish!: () => void;
-    const onJoined = vi.fn(
-      (_id: string, _signal?: AbortSignal) =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
+    const onJoined = vi.fn((id: string, signal?: AbortSignal) => {
+      void id;
+      void signal;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
     const onOpenChange = vi.fn();
     const { rerender } = render(
       <RoomDirectoryDialog open onJoined={onJoined} onOpenChange={onOpenChange} />,
