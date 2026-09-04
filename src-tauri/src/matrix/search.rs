@@ -4141,6 +4141,19 @@ mod tests {
     }
 
     #[test]
+    fn ios_backup_bridge_is_linked_into_the_rust_library() {
+        let build_script = include_str!("../../build.rs");
+        let bridge = include_str!("ios_backup.mm");
+        let apple_launcher = include_str!("../../gen/apple/Sources/charm/main.mm");
+
+        assert!(build_script.contains("src/matrix/ios_backup.mm"));
+        assert!(build_script.contains("cargo:rustc-link-lib=framework=Foundation"));
+        assert!(bridge.contains("charm_exclude_search_root_from_backup"));
+        assert!(bridge.contains("NSURLIsExcludedFromBackupKey"));
+        assert!(!apple_launcher.contains("charm_exclude_search_root_from_backup"));
+    }
+
+    #[test]
     fn leave_purge_failure_marks_search_incomplete_without_propagating_content() {
         let incomplete = std::sync::atomic::AtomicBool::new(false);
 
