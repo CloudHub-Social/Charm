@@ -293,6 +293,20 @@ describe("useVoiceRecorder", () => {
     expect(FakeRecorder.instances).toHaveLength(0);
   });
 
+  it("preserves a permission denial when a mobile hold is released", async () => {
+    getUserMedia.mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"));
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => {
+      await result.current.start();
+    });
+    const denial = result.current.error;
+
+    act(() => result.current.stop());
+
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toBe(denial);
+  });
+
   it("stops at the duration limit and bounds waveform metadata", async () => {
     const { result } = renderHook(() => useVoiceRecorder());
     await act(async () => {

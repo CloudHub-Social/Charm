@@ -96,7 +96,9 @@ export function useVoiceRecorder() {
   function stop() {
     if (active.current) {
       active.current.requestStop();
-    } else discard(); // Pointer released before permission was granted.
+    } else if (phase === "requesting") {
+      discard(); // Pointer released before permission was granted.
+    }
   }
 
   async function start() {
