@@ -1,5 +1,5 @@
 import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
@@ -53,6 +53,18 @@ export function AppShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const { openSettings } = useSettingsNavigation();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const chatVisible =
+    !isSettingsActive &&
+    (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
+
+  useEffect(() => {
+    if (chatVisible) return;
+    // Upload ownership survives navigation, but hidden playback must not.
+    contentRef.current?.querySelectorAll<HTMLMediaElement>("audio, video").forEach((media) => {
+      media.pause();
+    });
+  }, [chatVisible]);
 
   useEffect(() => {
     onMobileViewChange(activeRoomId ? "detail" : "list");
@@ -68,7 +80,11 @@ export function AppShell({
       <div className="flex h-[100dvh]">
         {spaceRail}
         {roomList}
-        {content}
+        <div ref={contentRef} className="contents">
+          <ChatVisibilityContext.Provider value={chatVisible}>
+            {content}
+          </ChatVisibilityContext.Provider>
+        </div>
         {rightPanel}
       </div>
     );
@@ -79,14 +95,11 @@ export function AppShell({
       <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
         {/* Keep admitted uploads owned across list/detail navigation. */}
         <div
+          ref={contentRef}
           hidden={mobileView !== "detail" || !activeRoomId || rightPanel !== null}
           className="[&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
         >
-          <ChatVisibilityContext.Provider
-            value={
-              mobileView === "detail" && !!activeRoomId && rightPanel === null && !isSettingsActive
-            }
-          >
+          <ChatVisibilityContext.Provider value={chatVisible}>
             {content}
           </ChatVisibilityContext.Provider>
         </div>

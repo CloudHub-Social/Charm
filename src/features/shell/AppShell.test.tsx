@@ -76,6 +76,58 @@ function renderShell(
 }
 
 describe("AppShell", () => {
+  it.each(["desktop", "mobile"])(
+    "hides capture and pauses media under Settings on %s",
+    (layout) => {
+      mockUseAdaptiveLayout.mockReturnValue(layout);
+      const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+      const props = {
+        spaceRail: null,
+        roomList: null,
+        content: (
+          <>
+            <VisibilityProbe />
+            <audio />
+            <video />
+          </>
+        ),
+        rightPanel: null,
+        activeRoomId: "!room:example.org",
+        selectionRequestId: 0,
+        mobileView: "detail" as const,
+        onMobileViewChange: vi.fn(),
+      };
+      const view = render(<AppShell {...props} />);
+      expect(screen.getByText("chat-visible")).toBeInTheDocument();
+      expect(pause).not.toHaveBeenCalled();
+      view.rerender(<AppShell {...props} isSettingsActive />);
+      expect(screen.getByText("chat-hidden")).toBeInTheDocument();
+      expect(pause).toHaveBeenCalledTimes(2);
+      pause.mockRestore();
+    },
+  );
+
+  it("pauses retained media on mobile list and right-panel navigation", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const props = {
+      spaceRail: null,
+      roomList: null,
+      content: <audio />,
+      rightPanel: null,
+      activeRoomId: "!room:example.org",
+      selectionRequestId: 0,
+      onMobileViewChange: vi.fn(),
+    };
+    const view = render(<AppShell {...props} mobileView="detail" />);
+    view.rerender(<AppShell {...props} mobileView="list" />);
+    expect(pause).toHaveBeenCalledOnce();
+    view.rerender(<AppShell {...props} mobileView="detail" />);
+    view.rerender(<AppShell {...props} mobileView="detail" rightPanel={<div>info</div>} />);
+    expect(pause).toHaveBeenCalledTimes(2);
+    pause.mockRestore();
+  });
+
   it("retains the upload owner through mobile navigation and disposes it on teardown", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const disposed = vi.fn();
