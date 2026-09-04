@@ -5896,6 +5896,16 @@ impl Drop for WsConnectionGuard {
     }
 }
 
+async fn close_invalidated_socket(socket: &mut WebSocket) {
+    // This terminal frame contains no account data and must precede Close:
+    // otherwise another tab may interpret the close as a transient outage and
+    // attempt restoration while persisted logout cleanup is still in flight.
+    if let Ok(json) = serde_json::to_string(&crate::events::ServerEvent::SessionInvalidated(())) {
+        let _ = socket.send(Message::Text(json.into())).await;
+    }
+    let _ = socket.send(Message::Close(None)).await;
+}
+
 async fn send_session_message(
     socket: &mut WebSocket,
     session: &Session,
@@ -5907,7 +5917,7 @@ async fn send_session_message(
         .session_closed
         .load(std::sync::atomic::Ordering::Acquire)
     {
-        let _ = socket.send(Message::Close(None)).await;
+        close_invalidated_socket(socket).await;
         return Err(());
     }
     socket.send(message).await.map_err(|_| ())
@@ -5922,7 +5932,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .session_closed
         .load(std::sync::atomic::Ordering::Acquire)
     {
-        let _ = socket.send(Message::Close(None)).await;
+        close_invalidated_socket(&mut socket).await;
         return;
     }
     // Drain (not just peek) any verification requests that arrived before a
@@ -6259,17 +6269,28 @@ mod websocket_revocation_tests {
             let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
                 .await
                 .unwrap();
-            (socket.next().await, socket.next().await)
+            (
+                socket.next().await,
+                socket.next().await,
+                socket.next().await,
+            )
         })
         .await;
         server.abort();
         let _ = server.await;
-        let (first, second) = result.expect("bounded replay");
+        let (first, second, third) = result.expect("bounded replay");
         assert!(
             matches!(first, Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) if text == "before")
         );
+        let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(terminal))) = second else {
+            panic!("revocation must deliver invalidation before closing");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&terminal).unwrap(),
+            serde_json::json!({"event": "session:invalidated", "data": null})
+        );
         assert!(matches!(
-            second,
+            third,
             Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
         ));
     }

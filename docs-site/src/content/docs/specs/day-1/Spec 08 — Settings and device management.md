@@ -284,6 +284,9 @@ Surfaces changed:
     settles, and replacement authentication waits for that response's cookie deletion.
     Invalidation in other tabs is immediate; an offline logout failure alone is not
     treated as proof that the session was revoked.
+    A revoked WebSocket sends the payload-free terminal invalidation event before
+    closing, including revocation during replay or between lookup and subscription.
+    It does not send further retained account payloads.
 15. The default-off **Forget local data** action uses its own `forget_local_data`
     flag in both the renderer and native command, independently of message search.
     It requires typed and native-system
