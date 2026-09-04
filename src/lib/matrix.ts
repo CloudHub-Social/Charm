@@ -385,6 +385,11 @@ export function onSyncState(callback: (event: SyncStateEvent) => void): Promise<
   return listen<SyncStateEvent>("sync:state", (e) => callback(e.payload));
 }
 
+/** The backend has made the active session unauthenticated and torn down its client. */
+export function onSessionInvalidated(callback: () => void): Promise<UnlistenFn> {
+  return listen("session:invalidated", () => callback());
+}
+
 /** Tells the Rust side which room (if any) currently has focus, so the timeline listener can suppress a local notification for whatever room the user is already looking at (Spec 10). Pass `null` when no room is focused (e.g. the room list or settings has focus). */
 export function setFocusedRoom(roomId: string | null): Promise<void> {
   return invoke("set_focused_room", { roomId });
@@ -1011,6 +1016,11 @@ export function setSpaceParent(spaceId: string, parentSpaceId?: string): Promise
 
 export function logout(): Promise<void> {
   return invoke("logout");
+}
+
+/** Confirmed device wipe: removes the retained Matrix store and encrypted search indexes. */
+export function forgetLocalData(confirmed: boolean): Promise<void> {
+  return invoke("forget_local_data", { confirmed });
 }
 
 export function getProfile(): Promise<ProfileSummary> {

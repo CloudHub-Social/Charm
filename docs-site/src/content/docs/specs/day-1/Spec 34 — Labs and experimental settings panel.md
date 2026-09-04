@@ -13,6 +13,11 @@ non-production Settings → Labs panel lists the typed flag catalog, applies loc
 overrides immediately, persists them per installation, and supports resetting each
 flag to its resolved default.
 
+Toggle and reset submissions disable the controls until persistence and required
+cleanup settle. A rejected change displays a generic error without raw backend
+details; failed search cleanup continues to block re-enabling rather than being
+silently bypassed. These recovery controls remain per-install only.
+
 :::note[Historical baseline]
 The proposal below predates the shared flag resolver and Labs panel. It is retained
 as design history; Spec 35 now owns the underlying local and remote flag layers.

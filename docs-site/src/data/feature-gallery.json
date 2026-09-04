@@ -8,6 +8,26 @@
   ],
   "features": [
     {
+      "slug": "forget-local-data",
+      "title": "Forget local data",
+      "summary": "Preview an explicitly confirmed, account-scoped removal of retained Matrix data and cached encryption keys from this device, without deleting the Matrix account or server-side messages.",
+      "status": "preview",
+      "spec": "Spec 08",
+      "specLinks": [
+        {
+          "label": "Spec 08",
+          "href": "/specs/day-1/spec-08--settings-and-device-management/"
+        }
+      ],
+      "flag": "forget_local_data",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-forget-local-data-confirm",
+        "alt": "Charm settings showing the Forget local data confirmation and its disabled destructive button",
+        "caption": "Playwright opens the native-client preview confirmation, checks that typing FORGET is required, and cancels without deleting data. This mocked journey does not prove native storage deletion or remote token revocation."
+      }
+    },
+    {
       "slug": "appearance-display",
       "title": "Appearance and display preferences",
       "summary": "Choose message spacing, font family, and clock and date formats in Appearance settings.",

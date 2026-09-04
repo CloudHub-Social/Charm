@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
+import { isTauri } from "@/lib/platform";
 import { getInstallId } from "./installId";
 import { fetchRemoteFlags, isRemoteConfigured } from "./ofrep";
 import { resolveFlag, type FeatureFlagOverrides, type FeatureFlagRemote } from "./resolve";
@@ -27,8 +28,37 @@ let persistedOverridesCache: FeatureFlagOverrides = {};
 let remoteCache: FeatureFlagRemote = {};
 let initialized = false;
 let cacheMutationId = 0;
+let messageSearchReconciliationPending = false;
+let messageSearchMutationQueue: Promise<void> = Promise.resolve();
 const persistedFlagVersions: Partial<Record<FeatureFlagKey, number>> = {};
 const listeners = new Set<() => void>();
+
+function serializeMessageSearchMutation(
+  mutation: () => Promise<void>,
+  allowUnrelatedRemoteUpdates = false,
+): Promise<void> {
+  const run = async (): Promise<void> => {
+    // Never let a re-enable overtake an earlier failed destructive cleanup.
+    // Rust's durable marker survives renderer reloads; this in-process bit
+    // also prevents overlapping Labs and OFREP mutations from reordering.
+    if (messageSearchReconciliationPending) {
+      const { invoke } = await import("@/lib/matrixTransport");
+      try {
+        await invoke("reconcile_message_search_flag");
+        messageSearchReconciliationPending = false;
+        emit();
+      } catch (error) {
+        if (!allowUnrelatedRemoteUpdates) throw error;
+        // The remote mutation below pins search off while still publishing
+        // unrelated keys. Never let one cleanup failure freeze all kill switches.
+      }
+    }
+    await mutation();
+  };
+  const pending = messageSearchMutationQueue.then(run, run);
+  messageSearchMutationQueue = pending.catch(() => undefined);
+  return pending;
+}
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -54,12 +84,38 @@ function recordPersistedOverrides(next: FeatureFlagOverrides): void {
   persistedOverridesCache = next;
 }
 
+async function reconcileMessageSearchState(
+  wasEnabled: boolean,
+  isEnabled: boolean,
+  forceDisabled = false,
+): Promise<void> {
+  if (isEnabled && !forceDisabled && !messageSearchReconciliationPending) return;
+  if (!forceDisabled && !wasEnabled && !messageSearchReconciliationPending) return;
+  if (!isTauri()) {
+    messageSearchReconciliationPending = false;
+    return;
+  }
+
+  messageSearchReconciliationPending = true;
+  emit();
+  const { invoke } = await import("@/lib/matrixTransport");
+  await invoke("reconcile_message_search_flag");
+  messageSearchReconciliationPending = false;
+  emit();
+}
+
 /**
  * Loads persisted overrides + the last-known-good remote cache, then starts the
  * OFREP refresh loop. Call once, early (main.tsx).
  */
-export async function initializeFeatureFlags(): Promise<void> {
+export function initializeFeatureFlags(): Promise<void> {
+  // Queue synchronously so a Labs or OFREP mutation cannot overtake startup's
+  // disabled-to-disabled reconciliation after a renderer reload.
   const mutationId = cacheMutationId;
+  return serializeMessageSearchMutation(() => initializeFeatureFlagsInner(mutationId));
+}
+
+async function initializeFeatureFlagsInner(mutationId: number): Promise<void> {
   const [persistedOverrides, cachedRemote] = await Promise.all([
     readOverrides(),
     readRemoteFlags(),
@@ -101,7 +157,21 @@ export async function initializeFeatureFlags(): Promise<void> {
     overridesCache = persistedOverrides;
     persistedOverridesCache = persistedOverrides;
   }
+  // Even an enabled cache must reconcile an earlier native cleanup marker.
+  // Do not briefly publish search as available before that IPC completes.
+  if (isTauri()) messageSearchReconciliationPending = true;
   emit();
+  try {
+    await reconcileMessageSearchState(
+      true,
+      resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+      true,
+    );
+  } catch {
+    // Retain the retry bit and complete general flag initialization. Rust has
+    // already recorded durable intent when filesystem cleanup itself failed.
+    console.error("Message search initialization reconciliation failed");
+  }
   startRemoteRefresh();
   initialized = true;
   emit();
@@ -111,15 +181,20 @@ export async function initializeFeatureFlags(): Promise<void> {
  * Resolves a flag outside React (event handlers, non-component logic) and
  * reports the evaluation to Sentry. React components use {@link useFlag}.
  */
+function resolvedAvailableFlag(key: FeatureFlagKey): boolean {
+  if (key === "encrypted_local_message_search" && messageSearchReconciliationPending) return false;
+  return resolveFlag(key, overridesCache, remoteCache);
+}
+
 export function getFlag(key: FeatureFlagKey): boolean {
-  const value = resolveFlag(key, overridesCache, remoteCache);
+  const value = resolvedAvailableFlag(key);
   reportFlagEvaluation(key, value);
   return value;
 }
 
 /** React hook: resolves a flag and re-renders when its override/remote changes. */
 export function useFlag(key: FeatureFlagKey): boolean {
-  const snapshot = () => resolveFlag(key, overridesCache, remoteCache);
+  const snapshot = () => resolvedAvailableFlag(key);
   const value = useSyncExternalStore(subscribe, snapshot, snapshot);
   // Report from an effect, not during render, so evaluation tracking has no
   // render-time side effect and fires once per resolved value.
@@ -154,8 +229,20 @@ export function useFeatureFlagsInitialized(): boolean {
 }
 
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
-export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
+export function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
+  if (key === "encrypted_local_message_search") {
+    return serializeMessageSearchMutation(() => setFeatureFlagOverrideInner(key, value));
+  }
+  return setFeatureFlagOverrideInner(key, value);
+}
+
+async function setFeatureFlagOverrideInner(key: FeatureFlagKey, value: boolean): Promise<void> {
   const mutationId = ++cacheMutationId;
+  const searchWasEnabled = resolveFlag(
+    "encrypted_local_message_search",
+    persistedOverridesCache,
+    remoteCache,
+  );
   const next = { ...overridesCache, [key]: value };
   overridesCache = next;
   emit();
@@ -163,6 +250,10 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
     if (await persistOverrides(next)) {
       recordPersistedOverrides(next);
       emit();
+      await reconcileMessageSearchState(
+        searchWasEnabled,
+        resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+      );
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -174,8 +265,20 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
 }
 
 /** Clears a local override, reverting the flag to remote/default resolution. */
-export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
+export function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
+  if (key === "encrypted_local_message_search") {
+    return serializeMessageSearchMutation(() => clearFeatureFlagOverrideInner(key));
+  }
+  return clearFeatureFlagOverrideInner(key);
+}
+
+async function clearFeatureFlagOverrideInner(key: FeatureFlagKey): Promise<void> {
   const mutationId = ++cacheMutationId;
+  const searchWasEnabled = resolveFlag(
+    "encrypted_local_message_search",
+    persistedOverridesCache,
+    remoteCache,
+  );
   const next = { ...overridesCache };
   delete next[key];
   overridesCache = next;
@@ -184,6 +287,10 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
     if (await persistOverrides(next)) {
       recordPersistedOverrides(next);
       emit();
+      await reconcileMessageSearchState(
+        searchWasEnabled,
+        resolveFlag("encrypted_local_message_search", persistedOverridesCache, remoteCache),
+      );
     }
   } catch (error) {
     if (mutationId === cacheMutationId) {
@@ -227,22 +334,45 @@ export async function refreshRemoteFlags(): Promise<void> {
   try {
     const result = await fetchRemoteFlags(getInstallId());
     if (result) {
-      const changedKeys = FEATURE_FLAG_KEYS.filter(
-        (key) =>
-          resolveFlag(key, overridesCache, remoteCache) !==
-          resolveFlag(key, overridesCache, result),
-      );
-      // Persist to the shared durable file first, then apply to the UI — so the
-      // frontend never enables a rolled-out feature that the Rust core (which
-      // reads only that file) hasn't seen yet. If the durable write fails, keep
-      // the previous cache; the next tick retries.
-      if (await persistRemoteFlags(result, getInstallId())) {
-        remoteCache = result;
-        for (const key of changedKeys) {
-          persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+      await serializeMessageSearchMutation(async () => {
+        const nextRemote = messageSearchReconciliationPending
+          ? { ...result, encrypted_local_message_search: false }
+          : result;
+        const changedKeys = FEATURE_FLAG_KEYS.filter(
+          (key) =>
+            resolveFlag(key, overridesCache, remoteCache) !==
+            resolveFlag(key, overridesCache, nextRemote),
+        );
+        // Persist before publishing to the UI so Rust and the renderer share
+        // one authoritative state. The queue prevents a re-enable overtaking
+        // a failed destructive transition.
+        if (await persistRemoteFlags(nextRemote, getInstallId())) {
+          const searchWasEnabled = resolveFlag(
+            "encrypted_local_message_search",
+            overridesCache,
+            remoteCache,
+          );
+          const searchIsEnabled = resolveFlag(
+            "encrypted_local_message_search",
+            overridesCache,
+            nextRemote,
+          );
+          remoteCache = nextRemote;
+          for (const key of changedKeys) {
+            persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+          }
+          emit();
+          if (searchWasEnabled !== searchIsEnabled || messageSearchReconciliationPending) {
+            try {
+              await reconcileMessageSearchState(searchWasEnabled, searchIsEnabled);
+            } catch {
+              // Keep pending intent for the next attempt without turning the
+              // successfully persisted unrelated rollout into an unhandled rejection.
+              console.error("Message search remote reconciliation failed");
+            }
+          }
         }
-        emit();
-      }
+      }, true);
     }
   } finally {
     refreshInFlight = false;
@@ -275,6 +405,8 @@ export const featureFlagTestHooks = {
     remoteCache = {};
     initialized = false;
     cacheMutationId = 0;
+    messageSearchReconciliationPending = false;
+    messageSearchMutationQueue = Promise.resolve();
     refreshStarted = false;
     refreshInFlight = false;
     listeners.clear();
