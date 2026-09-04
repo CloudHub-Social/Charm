@@ -3,6 +3,7 @@ import { useEffect, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
+import { ChatVisibilityContext } from "./chatVisibility";
 
 export type MobileView = "list" | "detail";
 
@@ -81,7 +82,11 @@ export function AppShell({
           hidden={mobileView !== "detail" || !activeRoomId || rightPanel !== null}
           className="[&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
         >
-          {content}
+          <ChatVisibilityContext.Provider
+            value={mobileView === "detail" && !!activeRoomId && rightPanel === null}
+          >
+            {content}
+          </ChatVisibilityContext.Provider>
         </div>
         {mobileView === "detail" && activeRoomId ? (
           rightPanel

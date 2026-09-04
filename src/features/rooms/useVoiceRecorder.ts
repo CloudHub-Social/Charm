@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -6,6 +7,7 @@ const MAX_DURATION_MS = 600_000;
 const MIME_TYPES = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"];
 
 export function useVoiceRecorder() {
+  const chatVisible = useContext(ChatVisibilityContext);
   const [phase, setPhase] = useState<"idle" | "requesting" | "recording" | "preview">("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0);
@@ -56,6 +58,16 @@ export function useVoiceRecorder() {
   }
 
   useEffect(() => () => clearResources(), [clearResources]);
+
+  useEffect(() => {
+    if (chatVisible || (phase !== "requesting" && phase !== "recording")) return;
+    clearResources();
+    setPreview(null);
+    setPhase("idle");
+    setElapsedMs(0);
+    setLevel(0);
+    setError("Recording was discarded when the chat was hidden.");
+  }, [chatVisible, phase, clearResources]);
 
   useEffect(() => {
     function abandonBackgroundCapture() {

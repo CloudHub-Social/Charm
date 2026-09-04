@@ -1,6 +1,8 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useVoiceRecorder } from "./useVoiceRecorder";
+import { createElement, type PropsWithChildren } from "react";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 
 class FakeRecorder {
   static instances: FakeRecorder[] = [];
@@ -34,6 +36,21 @@ describe("useVoiceRecorder", () => {
   const createObjectURL = vi.fn(() => "blob:private-preview");
   const revokeObjectURL = vi.fn();
   const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream;
+
+  it("discards active capture when retained mobile chat becomes hidden", async () => {
+    let visible = true;
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(ChatVisibilityContext.Provider, { value: visible }, children);
+    const { result, rerender } = renderHook(() => useVoiceRecorder(), { wrapper });
+    await act(async () => result.current.start());
+    expect(result.current.phase).toBe("recording");
+    visible = false;
+    await act(async () => rerender());
+    expect(stopTrack).toHaveBeenCalled();
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.preview).toBeNull();
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
