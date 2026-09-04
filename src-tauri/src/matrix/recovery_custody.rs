@@ -41,6 +41,11 @@ impl Drop for PendingRecoverySetup {
 pub trait RecoveryCustody: Send + Sync {
     async fn load(&self) -> Result<Option<PendingRecoverySetup>, String>;
     async fn save(&self, pending: Option<&PendingRecoverySetup>) -> Result<(), String>;
+    /// Persists a setup result while proving this request still owns the
+    /// distributed mutation slot. Native custody is process-serialized.
+    async fn save_claimed(&self, pending: &PendingRecoverySetup) -> Result<(), String> {
+        self.save(Some(pending)).await
+    }
     /// Claims the empty pending slot and returns the canonical winner. Web
     /// implementations override this with a cross-process conditional write;
     /// native callers are serialized by the account recovery lock.
@@ -50,6 +55,11 @@ pub trait RecoveryCustody: Send + Sync {
     }
     /// Releases cross-process setup admission after success or failure.
     async fn release(&self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Renews cross-process admission while a potentially long SDK mutation
+    /// is still running. Native custody is process-serialized and needs no-op.
+    async fn renew(&self) -> Result<(), String> {
         Ok(())
     }
     /// Web persists its encrypted crypto database before enabling secret storage.
@@ -154,7 +164,7 @@ pub async fn setup_with_custody(
         }
     };
     let mut pending = custody.claim(&pending).await?;
-    let result = async {
+    let operation = async {
         custody.checkpoint().await?;
         if !client.encryption().backups().are_enabled().await {
             client
@@ -173,12 +183,22 @@ pub async fn setup_with_custody(
         pending.room_keys_backed_up = summary.room_keys_backed_up;
         // If this final write fails, the already-durable seed can reopen SSSS.
         // Do not hide a credential that the SDK has already issued.
-        if custody.save(Some(&pending)).await.is_err() {
+        if custody.save_claimed(&pending).await.is_err() {
             tracing::warn!("Pending recovery result save failed; protected seed remains available");
         }
         Ok(summary)
-    }
-    .await;
+    };
+    tokio::pin!(operation);
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                if let Err(error) = custody.renew().await {
+                    break Err(error);
+                }
+            }
+        }
+    };
     let release = custody.release().await;
     match (result, release) {
         (Ok(summary), Ok(())) => Ok(summary),

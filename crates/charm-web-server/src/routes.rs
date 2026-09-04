@@ -5525,6 +5525,7 @@ struct WebRecoveryCustody<'a> {
     persistence: &'a crate::persistence::PersistenceStore,
     token: &'a str,
     session: &'a Session,
+    owner: Option<&'a str>,
 }
 
 #[charm_lib::matrix::recovery_custody::async_trait]
@@ -5547,12 +5548,39 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
         pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
     ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
         self.persistence
-            .claim_pending_recovery(self.token, pending)
+            .claim_pending_recovery(
+                self.token,
+                pending,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
+    async fn save_claimed(
+        &self,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<(), String> {
+        self.persistence
+            .save_claimed_pending_recovery(
+                self.token,
+                pending,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
             .await
     }
     async fn release(&self) -> Result<(), String> {
         self.persistence
-            .release_pending_recovery_claim(self.token)
+            .release_pending_recovery_claim(
+                self.token,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
+    async fn renew(&self) -> Result<(), String> {
+        self.persistence
+            .renew_pending_recovery_claim(
+                self.token,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
             .await
     }
     async fn checkpoint(&self) -> Result<(), String> {
@@ -5609,6 +5637,7 @@ async fn get_pending_recovery_setup(
                     persistence,
                     token: cookie.value(),
                     session: &session,
+                    owner: None,
                 },
             )
             .await
@@ -5645,6 +5674,7 @@ async fn acknowledge_recovery_setup(
             persistence,
             token: cookie.value(),
             session: &session,
+            owner: None,
         },
         request.recovery_key,
     )
@@ -5717,6 +5747,7 @@ async fn setup_recovery(
     let setup_persistence = Arc::clone(persistence);
     let setup_session = Arc::clone(&session);
     let setup_token = cookie.value().to_string();
+    let setup_owner = format!("{:032x}", rand::random::<u128>());
     let setup_passphrase = request.passphrase;
     drop(_guard);
     let summary = tokio::spawn(async move {
@@ -5733,6 +5764,7 @@ async fn setup_recovery(
                 persistence: &setup_persistence,
                 token: &setup_token,
                 session: &setup_session,
+                owner: Some(&setup_owner),
             },
             setup_passphrase,
         )

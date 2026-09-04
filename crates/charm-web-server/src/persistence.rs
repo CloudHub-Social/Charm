@@ -126,6 +126,10 @@ struct PersistedSession {
     /// until the client explicitly acknowledges custody.
     #[serde(default)]
     recovery_setup_claimed_at_ms: Option<u64>,
+    /// Random request identity used to fence renew/release writes from a
+    /// worker whose expired lease was replaced by another process.
+    #[serde(default)]
+    recovery_setup_owner: Option<String>,
     token: String,
     homeserver_url: String,
     session: MatrixSession,
@@ -494,11 +498,56 @@ impl PersistenceStore {
                 // failure after returning the issued key.
                 entry.recovery_setup_active = false;
                 entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
             }
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json =
                 serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically persist protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    /// Persists an issued credential only while `owner` still holds the
+    /// setup lease. This fences a stalled worker after another process has
+    /// taken over its expired claim.
+    pub async fn save_claimed_pending_recovery(
+        &self,
+        token: &str,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.pending_recovery = Some(pending.clone());
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery result.")?;
             let options = object_store::PutOptions {
                 mode: object_store::PutMode::Update(version),
                 ..Default::default()
@@ -524,8 +573,9 @@ impl PersistenceStore {
         &self,
         token: &str,
         candidate: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
     ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
-        self.claim_pending_recovery_at(token, candidate, unix_time_ms())
+        self.claim_pending_recovery_at(token, candidate, owner, unix_time_ms())
             .await
     }
 
@@ -533,6 +583,7 @@ impl PersistenceStore {
         &self,
         token: &str,
         candidate: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
         now_ms: u64,
     ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
         let lock = self.token_write_lock(token);
@@ -550,9 +601,9 @@ impl PersistenceStore {
                     .pending_recovery
                     .as_ref()
                     .is_some_and(|pending| pending.has_issued_key());
-                let lease_live = entry
-                    .recovery_setup_claimed_at_ms
-                    .is_some_and(|claimed| now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS);
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
                 if issued || lease_live {
                     return Err("Recovery setup is already in progress.".into());
                 }
@@ -561,6 +612,7 @@ impl PersistenceStore {
             entry.pending_recovery = Some(selected.clone());
             entry.recovery_setup_active = true;
             entry.recovery_setup_claimed_at_ms = Some(now_ms);
+            entry.recovery_setup_owner = Some(owner.to_string());
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json =
@@ -582,18 +634,74 @@ impl PersistenceStore {
         Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
-    pub async fn release_pending_recovery_claim(&self, token: &str) -> Result<(), String> {
+    pub async fn renew_pending_recovery_claim(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        self.renew_pending_recovery_claim_at(token, owner, unix_time_ms())
+            .await
+    }
+
+    async fn renew_pending_recovery_claim_at(
+        &self,
+        token: &str,
+        owner: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.recovery_setup_claimed_at_ms = Some(now_ms);
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery renewal.")?;
+            let options = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json), options)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not renew recovery setup admission.".into()),
+            }
+        }
+        Err("Recovery setup renewal changed concurrently; retry.".into())
+    }
+
+    pub async fn release_pending_recovery_claim(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         for _ in 0..5 {
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
                 return Ok(());
             };
-            if !entry.recovery_setup_active {
+            if !entry.recovery_setup_active || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
                 return Ok(());
             }
             entry.recovery_setup_active = false;
             entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
@@ -636,19 +744,23 @@ impl PersistenceStore {
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
                 return Ok(());
             };
+            let issued = entry
+                .pending_recovery
+                .as_ref()
+                .is_some_and(|pending| pending.has_issued_key());
+            if issued {
+                return Err("Recovery setup is completing; retry sign out.".into());
+            }
             if entry.recovery_setup_active {
-                let issued = entry
-                    .pending_recovery
-                    .as_ref()
-                    .is_some_and(|pending| pending.has_issued_key());
-                let lease_live = entry
-                    .recovery_setup_claimed_at_ms
-                    .is_some_and(|claimed| now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS);
-                if issued || lease_live {
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+                if lease_live {
                     return Err("Recovery setup is completing; retry sign out.".into());
                 }
                 entry.recovery_setup_active = false;
                 entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
             }
             if entry.recovery_teardown_started {
                 return Ok(());
@@ -1205,6 +1317,7 @@ impl PersistenceStore {
                     recovery_teardown_started: false,
                     recovery_setup_active: false,
                     recovery_setup_claimed_at_ms: None,
+                    recovery_setup_owner: None,
                     token: token.to_string(),
                     homeserver_url: homeserver_url.to_string(),
                     session: session.clone(),
@@ -1309,6 +1422,9 @@ impl PersistenceStore {
                     recovery_setup_claimed_at_ms: existing
                         .as_ref()
                         .and_then(|(entry, _)| entry.recovery_setup_claimed_at_ms),
+                    recovery_setup_owner: existing
+                        .as_ref()
+                        .and_then(|(entry, _)| entry.recovery_setup_owner.clone()),
                 },
                 &path,
             )?;
@@ -2251,6 +2367,7 @@ pub(crate) async fn save_with_last_seen_for_test(
         recovery_teardown_started: false,
         recovery_setup_active: false,
         recovery_setup_claimed_at_ms: None,
+        recovery_setup_owner: None,
         token: token.to_string(),
         homeserver_url: "https://example.invalid".to_string(),
         session: MatrixSession {
@@ -2430,10 +2547,15 @@ mod tests {
         .unwrap();
 
         let (claim_a, claim_b) = tokio::join!(
-            process_a.claim_pending_recovery("pending-claim-token", &candidate_a),
-            process_b.claim_pending_recovery("pending-claim-token", &candidate_b),
+            process_a.claim_pending_recovery("pending-claim-token", &candidate_a, "owner-a"),
+            process_b.claim_pending_recovery("pending-claim-token", &candidate_b, "owner-b"),
         );
         assert_ne!(claim_a.is_ok(), claim_b.is_ok(), "only one setup may run");
+        let winning_owner = if claim_a.is_ok() {
+            "owner-a"
+        } else {
+            "owner-b"
+        };
         let winner = claim_a.or(claim_b).unwrap();
         assert_eq!(
             serde_json::to_value(&winner).unwrap(),
@@ -2447,11 +2569,11 @@ mod tests {
             .unwrap()
         );
         process_a
-            .release_pending_recovery_claim("pending-claim-token")
+            .release_pending_recovery_claim("pending-claim-token", winning_owner)
             .await
             .unwrap();
         let retry = process_b
-            .claim_pending_recovery("pending-claim-token", &candidate_b)
+            .claim_pending_recovery("pending-claim-token", &candidate_b, "owner-retry")
             .await
             .unwrap();
         assert_eq!(
@@ -2491,7 +2613,7 @@ mod tests {
         .unwrap();
 
         let (claim, teardown) = tokio::join!(
-            setup_process.claim_pending_recovery("teardown-race-token", &candidate),
+            setup_process.claim_pending_recovery("teardown-race-token", &candidate, "setup-owner",),
             logout_process.begin_recovery_safe_teardown("teardown-race-token"),
         );
         assert_ne!(
@@ -2542,7 +2664,7 @@ mod tests {
         }))
         .unwrap();
         store
-            .claim_pending_recovery("failed-setup-token", &pending)
+            .claim_pending_recovery("failed-setup-token", &pending, "setup-owner")
             .await
             .unwrap();
         assert!(store
@@ -2550,7 +2672,7 @@ mod tests {
             .await
             .is_err());
         store
-            .release_pending_recovery_claim("failed-setup-token")
+            .release_pending_recovery_claim("failed-setup-token", "setup-owner")
             .await
             .unwrap();
         store
@@ -2560,7 +2682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn crashed_preissuance_claim_expires_without_trapping_retry_or_logout() {
+    async fn recovery_claim_renewal_and_owner_fencing_survive_takeover() {
         let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let store = PersistenceStore {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[78u8; 32])),
@@ -2585,14 +2707,23 @@ mod tests {
         }))
         .unwrap();
         store
-            .claim_pending_recovery_at("expired-claim-token", &pending, 1_000)
+            .claim_pending_recovery_at("expired-claim-token", &pending, "owner-a", 1_000)
+            .await
+            .unwrap();
+        store
+            .renew_pending_recovery_claim_at(
+                "expired-claim-token",
+                "owner-a",
+                1_000 + RECOVERY_SETUP_LEASE_MS - 1,
+            )
             .await
             .unwrap();
         assert!(store
             .claim_pending_recovery_at(
                 "expired-claim-token",
                 &pending,
-                1_000 + RECOVERY_SETUP_LEASE_MS - 1,
+                "owner-b",
+                1_000 + RECOVERY_SETUP_LEASE_MS,
             )
             .await
             .is_err());
@@ -2600,14 +2731,34 @@ mod tests {
             .claim_pending_recovery_at(
                 "expired-claim-token",
                 &pending,
-                1_000 + RECOVERY_SETUP_LEASE_MS,
+                "owner-b",
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS,
             )
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("expired-claim-token", "owner-a")
+            .await
+            .unwrap();
+        assert!(store
+            .begin_recovery_safe_teardown_at(
+                "expired-claim-token",
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS + 1,
+            )
+            .await
+            .is_err());
+        assert!(store
+            .save_claimed_pending_recovery("expired-claim-token", &pending, "owner-a")
+            .await
+            .is_err());
+        store
+            .release_pending_recovery_claim("expired-claim-token", "owner-b")
             .await
             .unwrap();
         store
             .begin_recovery_safe_teardown_at(
                 "expired-claim-token",
-                1_000 + 2 * RECOVERY_SETUP_LEASE_MS,
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS + 1,
             )
             .await
             .unwrap();
@@ -2645,11 +2796,15 @@ mod tests {
         }))
         .unwrap();
         store
-            .claim_pending_recovery("issued-key-token", &seed)
+            .claim_pending_recovery("issued-key-token", &seed, "setup-owner")
             .await
             .unwrap();
         store
-            .save_pending_recovery("issued-key-token", Some(&issued))
+            .save_claimed_pending_recovery("issued-key-token", &issued, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("issued-key-token", "setup-owner")
             .await
             .unwrap();
 
@@ -3520,6 +3675,7 @@ mod tests {
             recovery_teardown_started: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@laura:example.invalid"),
@@ -3543,6 +3699,7 @@ mod tests {
             recovery_teardown_started: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-legacy".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@mallory:example.invalid"),
@@ -3564,6 +3721,7 @@ mod tests {
             recovery_teardown_started: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: token.to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@sweep-target:example.invalid"),
@@ -4458,6 +4616,7 @@ mod tests {
             recovery_teardown_started: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-legacy-no-timestamp".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@legacy:example.invalid"),
