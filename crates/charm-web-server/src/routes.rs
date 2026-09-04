@@ -2429,6 +2429,12 @@ async fn logout(
     require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
+        // Teardown is a security boundary, not request-scoped work. Axum may
+        // cancel this handler as soon as the initiating tab disconnects; keep
+        // local revocation, sync abortion, and persisted-token deletion owned
+        // by a detached task, while still awaiting it during the normal path.
+        let state = state.clone();
+        let cleanup = tokio::spawn(async move {
         // Captured before the live-session branch below moves `session`
         // into a spawned task — this is the fallback `persistence.remove`
         // needs at the very end to still clean up this session's crypto
@@ -2533,6 +2539,10 @@ async fn logout(
             if let Err(e) = persistence.remove(&token, live_crypto).await {
                 tracing::warn!("failed to remove persisted session on logout: {e}");
             }
+        }
+        });
+        if let Err(error) = cleanup.await {
+            tracing::warn!("logout cleanup task failed: {error}");
         }
     }
     // `remove` must be given a cookie matching the *original* cookie's

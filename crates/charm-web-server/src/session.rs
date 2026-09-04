@@ -1314,8 +1314,10 @@ impl SessionStore {
         token: &str,
         expected: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Option<Arc<Session>> {
-        // Remove admission first, but never hold the global map while a slow
-        // socket finishes its bounded send. Other accounts remain available.
+        // Revoke admission atomically with removal. Existing holders may keep
+        // an `Arc<Session>` after it leaves the map, so publish the closed bit
+        // before releasing the map lock; no detached worker can mistake the
+        // removed session for a live one.
         let session = {
             let mut sessions = self.inner.write().await;
             if expected.is_some_and(|closed| {
@@ -1325,24 +1327,31 @@ impl SessionStore {
             }) {
                 return None;
             }
-            sessions.remove(token)
-        };
-        if let Some(session) = &session {
-            let _send_guard = session.socket_send_lock.lock().await;
+            let session = sessions.remove(token);
+            if let Some(session) = &session {
+                session
+                    .session_closed
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             session
-                .session_closed
-                .store(true, std::sync::atomic::Ordering::Release);
-            let _ = session.events.send(ServerEvent::SessionInvalidated(()));
-        }
-
-        if let Some(session) = &session {
+        };
+        if let Some(removed) = &session {
             // `remove` is the permanent-session boundary used by explicit
             // logout, cross-instance revocation, and expiry. Keep encrypted
             // search-index deletion here so none of those callers can leave
             // decrypted message content orphaned on local disk. Idle eviction
             // deliberately uses `sweep_idle` instead and preserves the index
             // for a later persisted-session restore.
-            delete_message_search_index(session, crate::crypto_store::data_root_path()).await;
+            // Own the slow teardown independently of the caller. In
+            // particular, an HTTP request disappearing while a WebSocket send
+            // is backpressured must not strand decrypted state or skip the
+            // invalidation event.
+            let removed = Arc::clone(removed);
+            tokio::spawn(async move {
+                let _send_guard = removed.socket_send_lock.lock().await;
+                let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
+                delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
+            });
         }
 
         session
@@ -1627,21 +1636,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permanent_removal_waits_for_the_admitted_socket_send() {
+    async fn permanent_removal_is_cancellation_safe_behind_an_admitted_socket_send() {
         let store = SessionStore::new();
         let token = store
             .create(dummy_session("@send-boundary:example.org").await)
             .await;
         let session = store.get(&token).await.expect("live session");
+        let mut events = session.events.subscribe();
         let send_guard = session.socket_send_lock.lock().await;
-        let removal = store.remove(&token);
-        tokio::pin!(removal);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), &mut removal)
-                .await
-                .is_err()
-        );
-        assert!(!session
+        store.remove(&token).await.expect("removed session");
+        assert!(session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(
@@ -1651,11 +1655,10 @@ mod tests {
                 .is_none()
         );
         drop(send_guard);
-        removal.await.expect("removed session");
-        let _next_send = session.socket_send_lock.lock().await;
-        assert!(session
-            .session_closed
-            .load(std::sync::atomic::Ordering::Acquire));
+        tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("detached teardown completed")
+            .expect("session invalidation event");
     }
 
     #[tokio::test]
@@ -1687,7 +1690,10 @@ mod tests {
 
         let mut events = session.events.subscribe();
         store.remove(&token).await.expect("removed session");
-        let invalidated = events.try_recv().expect("session invalidation event");
+        let invalidated = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("detached teardown completed")
+            .expect("session invalidation event");
         assert_eq!(
             serde_json::to_value(invalidated).unwrap(),
             serde_json::json!({ "event": "session:invalidated", "data": null })
@@ -1696,10 +1702,13 @@ mod tests {
         assert!(session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire));
-        assert!(
-            !database_path.exists(),
-            "permanent session removal must delete the encrypted search database"
-        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while database_path.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("permanent session removal must delete the encrypted search database");
         let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
