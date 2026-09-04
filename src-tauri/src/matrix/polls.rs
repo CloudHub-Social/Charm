@@ -244,7 +244,7 @@ pub async fn get_pending_poll_end(
     state: State<'_, MatrixState>,
     room_id: String,
     poll_event_id: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<PendingPollEnd>, String> {
     let client = state.require_client().await?;
     pending_poll_end_impl(&client, &room_id, &poll_event_id).await
 }
