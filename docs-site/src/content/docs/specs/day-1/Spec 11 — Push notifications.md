@@ -276,8 +276,8 @@ The settings turn-off control remains available for persisted registrations
 even when the registration feature flag is off. Native cleanup also constructs
 the platform transport independently of this gate, including after process
 restart; new registrations still require the flag. This cleanup path needs
-remote/platform verification. APNs token refresh after session restoration
-still requires implementation and verification before this slice is merge-ready.
+remote/platform verification. APNs token refresh after session restoration is
+implemented; only native-device verification remains before this slice is release-ready.
 
 **Testable on Personal Team signing regardless:** app launch, WebView
 rendering, Matrix login, normal foreground sync, local storage/Keychain
