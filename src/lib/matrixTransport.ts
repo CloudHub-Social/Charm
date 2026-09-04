@@ -998,6 +998,7 @@ export async function invoke<T>(
   const adoptsSession = [
     "login",
     "register",
+    "begin_registration",
     "continue_registration",
     "login_with_token",
     "poll_sso_login",
@@ -1032,7 +1033,11 @@ export async function invoke<T>(
         // A later login increments the epoch, protecting it from this reply.
         suspendWebSession(epoch);
       } else if (command !== "try_restore_session" || epoch === webSessionEpoch) {
-        adoptWebSession(result);
+        if (command === "begin_registration" || command === "continue_registration") {
+          if (isRecord(result) && result.state === "complete") adoptWebSession(result.session);
+        } else {
+          adoptWebSession(result);
+        }
       }
     }
     return result;

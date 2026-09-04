@@ -388,6 +388,10 @@ baseline authentication. Tauri commands enforce the same flag and fully validate
 attempt and stage inputs when enabled; flags are rollout controls, not
 authorization boundaries.
 
+Completed web registration adopts the nested session returned by either the begin
+or continue endpoint and resumes live WebSocket events after an empty restore.
+Intermediate registration challenges do not resume an authenticated transport.
+
 ## Testing strategy
 
 - Rust/companion repository tests: flow selection, session threading, terms/dummy/

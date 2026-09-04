@@ -1150,6 +1150,26 @@ describe("matrix web transport", () => {
     },
   );
 
+  it.each(["begin_registration", "continue_registration"])(
+    "resumes a suspended transport only after %s completes registration",
+    async (command) => {
+      const unlisten = await listen("room_list:update", vi.fn());
+      fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+      await expect(invoke("try_restore_session")).resolves.toBeNull();
+      expect(MockWebSocket.instances).toHaveLength(1);
+      fetchMock().mockResolvedValueOnce(okJson({ state: "challenge", attempt_id: "pending" }));
+      await invoke(command, { request: {}, attemptId: "pending", response: {} });
+      expect(MockWebSocket.instances).toHaveLength(1);
+      fetchMock().mockResolvedValueOnce(
+        okJson({ state: "complete", session: { user_id: "@new:example.org" } }),
+      );
+      await invoke(command, { request: {}, attemptId: "pending", response: {} });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      expect(MockWebSocket.instances[1].readyState).not.toBe(MockWebSocket.CLOSED);
+      unlisten();
+    },
+  );
+
   it("does not suspend a new login when an older empty restore finishes", async () => {
     const unlisten = await listen("room_list:update", vi.fn());
     let finish!: (response: Response) => void;
