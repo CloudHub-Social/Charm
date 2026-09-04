@@ -36,6 +36,19 @@ nightly and Sentry symbolication both reflect what actually ships.
 
 ## Tier 4 — Production release _(signing-dependent)_
 
+The release-PR workflow checks out the exact merge commit, creates a draft with
+GitHub-generated release notes, and only then pushes the version tag. Knope
+continues to prepare versions and the changelog in the release PR. The artifact
+publisher requires a draft and never uses destructive asset replacement.
+Interrupted uploads may resume only when existing files have identical SHA-256
+digests. Different or unverifiable draft assets require explicit operator repair;
+a published release requires a new version rather than replacement files.
+Before publishing, the workflow verifies the complete remote asset count and
+GitHub-reported SHA-256 digests against its locally signed artifact set. Upload
+failure leaves an unpublished draft. Publication is serialized per version tag.
+These workflow paths still require CI and a real release rehearsal; configuration
+alone does not prove successful publication or recovery.
+
 Triggered by pushing a version tag (`v*`). Debug-symbol/release-artifact
 upload to Sentry is wired up. Linux, macOS, Windows, and Android jobs publish
 their distributable bundles plus platform-named SPDX JSON SBOMs to the matching

@@ -70,7 +70,14 @@ reason that needs to be fast.
 
 ## Tier 4 — Production release _(signing-dependent)_
 
-Triggered by pushing a version tag (`v*`). `release-builds.yml` requires
+Triggered by pushing a version tag (`v*`). `release.yml` pins the generated
+release PR's exact merge commit and creates a draft before pushing its tag.
+GitHub generates the draft notes; Knope still prepares the version
+and changelog in the release PR. Uploads never overwrite existing assets: retries
+reuse only byte-identical draft assets, and conflicting drafts require explicit
+operator repair. Publication requires the complete remote asset count and SHA-256
+digests to match the local set. Published releases are never mutated by a rerun.
+`release-builds.yml` also requires
 frontend sourcemaps and platform builds before publishing complete bundles,
 platform SPDX SBOMs, and a GPG-signed checksum manifest. Android and Windows
 use existing signing secrets and must verify the resulting native signatures.

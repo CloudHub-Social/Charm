@@ -937,6 +937,9 @@ jobs:
 
   publish-release-artifacts:
     name: Publish signed release artifacts
+    concurrency:
+      group: stable-release-publication-${{ github.ref }}
+      cancel-in-progress: false
     needs:
       [
         frontend-sourcemaps,
@@ -1006,7 +1009,7 @@ jobs:
           fi
           gpg --batch --armor --export "$key_id" > charm-release-signing-key.asc
 
-      - name: Attach assets to the GitHub release
+      - name: Stage and verify assets before publishing the draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1021,5 +1024,39 @@ jobs:
             fi
             sleep 10
           done
+          release_id=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          require_draft() {
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" != true ]; then
+              echo "::error::Refusing to modify an already-published release. Use a new version for replacement assets."
+              exit 1
+            fi
+          }
+          require_draft
           mapfile -d '' assets < <(find artifacts -type f -print0)
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          for file in "${assets[@]}"; do
+            name=$(basename "$file")
+            expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            remote=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+              | jq -r --arg name "$name" '.[] | select(.name == $name) | .digest')
+            if [ -n "$remote" ]; then
+              if [ "$remote" != "$expected" ]; then
+                echo "::error::Existing draft asset differs or lacks a digest; refusing to overwrite $name"
+                exit 1
+              fi
+            else
+              require_draft
+              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "$file"
+            fi
+          done
+          # Verify GitHub's complete stored set, not merely upload exit codes.
+          remote_count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[].name' | wc -l)
+          test "$remote_count" -eq "${#assets[@]}"
+          for file in "${assets[@]}"; do
+            name=$(basename "$file")
+            expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            actual=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+              | jq -r --arg name "$name" '.[] | select(.name == $name and .state == "uploaded") | .digest')
+            test "$actual" = "$expected"
+          done
+          require_draft
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
