@@ -779,6 +779,9 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         run: |
+          # Signing is complete and its temporary key has been removed. These
+          # upload-only Gradle tasks must not configure a stale signing path.
+          unset ANDROID_RELEASE_STORE_FILE
           gradle=src-tauri/gen/android/gradlew
           project_dir=src-tauri/gen/android
           tasks=(
