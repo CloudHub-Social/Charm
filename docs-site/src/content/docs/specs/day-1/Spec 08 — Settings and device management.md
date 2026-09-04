@@ -285,6 +285,10 @@ Surfaces changed:
     Startup retry clears an interrupted-wipe marker only after both session/store
     cleanup and deletion of every device-scoped search index have succeeded.
 16. Terminal authentication failure revokes the in-memory client and invalidates
+    its push registration first, using the same transport and persisted-endpoint
+    cleanup as explicit logout. A rejected homeserver pusher deletion does not
+    skip local/platform cleanup. Failures use identifier-free diagnostics.
+    It then invalidates
     search backfill before cleanup. The live search database is closed before
     its files are deleted, with the contended index lock and filesystem work on
     a blocking worker. Query and indexing kill-switch cleanup release the index

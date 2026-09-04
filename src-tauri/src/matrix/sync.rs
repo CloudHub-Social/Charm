@@ -808,6 +808,20 @@ async fn teardown_terminal_auth_session(app: &AppHandle, client: &Client) {
         return;
     }
 
+    // Match explicit logout: unregister the OS transport and remove its
+    // persisted endpoint while the active client is still available. A stale
+    // token may prevent deleting the homeserver pusher, but the shared helper
+    // still performs local/platform cleanup after that server error.
+    if crate::push::unregister_push_impl(app, &state)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            command = "terminal_session_cleanup",
+            status = "push_cleanup_incomplete"
+        );
+    }
+
     // Revoke access before waiting on disk work. Generation invalidation also
     // prevents an in-flight backfill from reopening this session's index.
     *state.client.lock().await = None;
