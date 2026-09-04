@@ -166,5 +166,11 @@
     "description": "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room.",
     "key": "room_upgrades",
     "owner": "Spec 31 (room upgrades)"
+  },
+  {
+    "default": false,
+    "description": "Customize appearance and display preferences, including clock and date formats.",
+    "key": "appearance_parity",
+    "owner": "Spec 47 (appearance customization)"
   }
 ]
