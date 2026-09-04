@@ -7,6 +7,7 @@
 //! public attempt id.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -38,11 +39,31 @@ use crate::session::{CryptoStoreHandle, Session};
 
 const ATTEMPT_TTL: Duration = Duration::from_secs(20 * 60);
 const MAX_PENDING_AUTH_ATTEMPTS: usize = 64;
+const SUPERSEDED_CAPACITY_WAIT: Duration = Duration::from_secs(5);
+const CANCELLED_SSO_REVOKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAIL_QUOTA_WINDOW: Duration = Duration::from_secs(10 * 60);
 const MAX_MAILS_PER_SOURCE: usize = 5;
 const MAX_MAILS_PER_ADDRESS: usize = 3;
 const MAX_MAIL_QUOTA_KEYS: usize = 4096;
 const REGISTRATION_EMAIL_RESEND_DELAY: Duration = Duration::from_secs(30);
+const MAX_PASSWORD_RESET_RECEIPTS: usize = 4096;
+const PASSWORD_RESET_UNCERTAIN: &str =
+    "password reset may already have been submitted; check whether your new password works";
+
+/// Secret-free receipt retained after the request leaves the pending store.
+/// Cancellation and dispatch must share one order, not two token checks.
+struct PasswordResetReceipt {
+    owner: String,
+    created_at: Instant,
+    phase: Arc<AtomicU8>,
+}
+
+fn commit_password_reset_dispatch(phase: &AtomicU8) -> Result<(), String> {
+    phase
+        .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| ())
+        .map_err(|_| "password reset attempt expired or was cancelled".to_owned())
+}
 
 type AuthenticatedClient = (
     LoginResponse,
@@ -68,8 +89,26 @@ struct MailQuota {
     by_address: HashMap<String, Vec<Instant>>,
 }
 
+/// A weak lifetime witness distinguishes an actual capacity owner from a
+/// cancellation-only record left behind by an early setup/quota failure.
+pub struct AuthCapacity {
+    // Rust drops fields in declaration order. Release capacity before its
+    // ownership witness disappears, so a racing replacement can reuse or wait.
+    _permit: OwnedSemaphorePermit,
+    lifetime: Arc<()>,
+}
+
+impl AuthCapacity {
+    fn new(permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            _permit: permit,
+            lifetime: Arc::new(()),
+        }
+    }
+}
+
 struct PendingRegistration {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     crypto: Option<CryptoStoreHandle>,
@@ -81,7 +120,7 @@ struct PendingRegistration {
 }
 
 struct PendingPasswordReset {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     client_secret: matrix_sdk::ruma::OwnedClientSecret,
@@ -96,7 +135,7 @@ struct PendingPasswordReset {
 }
 
 struct PendingSso {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     client: Client,
     crypto: Option<CryptoStoreHandle>,
@@ -111,19 +150,29 @@ enum SsoCompletionResult {
 }
 
 struct CompletedSso {
-    _capacity: OwnedSemaphorePermit,
+    _capacity: AuthCapacity,
     owner: String,
     result: SsoCompletionResult,
     created_at: Instant,
 }
 
 async fn discard_completed_sso(completion: CompletedSso) {
-    let SsoCompletionResult::Success(completed) = completion.result else {
+    discard_sso_result(completion.result).await;
+}
+
+async fn discard_sso_result(result: SsoCompletionResult) {
+    let SsoCompletionResult::Success(completed) = result else {
         return;
     };
     let (_, session, _, _) = *completed;
     let crypto = session.persisted_crypto.clone();
-    let _ = session.client.matrix_auth().logout().await;
+    // Remote revocation is best-effort. A hanging homeserver must not retain
+    // the temporary SDK store or block the replacement browser flow forever.
+    let _ = tokio::time::timeout(
+        CANCELLED_SSO_REVOKE_TIMEOUT,
+        session.client.matrix_auth().logout(),
+    )
+    .await;
     drop(session);
     crate::auth::cleanup_failed_crypto_store(&crypto);
 }
@@ -133,12 +182,53 @@ pub struct PendingAuthStore {
     transitions: Arc<Mutex<()>>,
     registrations: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     password_resets: Arc<Mutex<HashMap<String, PendingPasswordReset>>>,
+    password_reset_receipts: Arc<Mutex<HashMap<String, PasswordResetReceipt>>>,
     sso_attempts: Arc<Mutex<HashMap<String, PendingSso>>>,
     completed_sso: Arc<Mutex<HashMap<String, CompletedSso>>>,
     cancellations: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
+    capacity_owners: Arc<std::sync::Mutex<HashMap<String, (String, std::sync::Weak<()>)>>>,
     mail_quota: Arc<Mutex<MailQuota>>,
     mail_quota_salt: Arc<String>,
     capacity: Arc<Semaphore>,
+}
+
+/// Admission has no payload or expiry task yet. A disconnected request must
+/// still remove its exact cancellation entry while waiting for capacity.
+struct AdmissionCleanup {
+    store: PendingAuthStore,
+    attempt_id: String,
+    cancellation: CancellationToken,
+    armed: bool,
+}
+
+impl Drop for AdmissionCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cancellation.cancel();
+        let store = self.store.clone();
+        let attempt_id = self.attempt_id.clone();
+        tokio::spawn(async move {
+            store.cancel_token(&attempt_id).await;
+        });
+    }
+}
+
+/// Server-derived browser ownership, including both pre-auth cookie namespaces.
+#[derive(Clone)]
+pub struct AuthOwner {
+    pub id: String,
+    pub superseded: Vec<String>,
+}
+
+impl From<String> for AuthOwner {
+    fn from(id: String) -> Self {
+        Self {
+            id,
+            superseded: Vec::new(),
+        }
+    }
 }
 
 impl Default for PendingAuthStore {
@@ -147,9 +237,11 @@ impl Default for PendingAuthStore {
             transitions: Arc::default(),
             registrations: Arc::default(),
             password_resets: Arc::default(),
+            password_reset_receipts: Arc::default(),
             sso_attempts: Arc::default(),
             completed_sso: Arc::default(),
             cancellations: Arc::default(),
+            capacity_owners: Arc::default(),
             mail_quota: Arc::default(),
             mail_quota_salt: Arc::new(opaque_id()),
             capacity: Arc::new(Semaphore::new(MAX_PENDING_AUTH_ATTEMPTS)),
@@ -158,37 +250,133 @@ impl Default for PendingAuthStore {
 }
 
 impl PendingAuthStore {
+    fn capacity_handoff(&self, owners: &[String]) -> Option<Arc<()>> {
+        let mut active = self
+            .capacity_owners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        active.retain(|_, (_, lifetime)| lifetime.strong_count() > 0);
+        active.values().find_map(|(previous, lifetime)| {
+            owners
+                .contains(previous)
+                .then(|| lifetime.upgrade())
+                .flatten()
+        })
+    }
+
     async fn admit_owner_attempt(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         attempt_id: String,
         cancellation: CancellationToken,
-    ) {
-        let completed = {
+    ) -> Result<AuthCapacity, String> {
+        let mut cleanup = AdmissionCleanup {
+            store: self.clone(),
+            attempt_id: attempt_id.clone(),
+            cancellation: cancellation.clone(),
+            armed: true,
+        };
+        let owner = owner.into();
+        let capacity_owner = owner.id.clone();
+        let (completed, capacity, handoff) = {
             let _transition = self.transitions.lock().await;
-            let completed = self.clear_owner_attempts(&owner).await;
-            self.cancellations
-                .lock()
-                .await
-                .insert(attempt_id, (owner, cancellation));
-            completed
+            let mut owners = owner.superseded;
+            owners.push(owner.id.clone());
+            owners.sort_unstable();
+            owners.dedup();
+            // Retain the existing ownership witness before cancellation.
+            // It spans permit release/acquisition and publication so another
+            // admission cannot observe a false no-owner handoff gap.
+            let handoff = self.capacity_handoff(&owners);
+            let mut completed = Vec::new();
+            for previous in owners {
+                completed.extend(self.clear_owner_attempts(&previous).await);
+            }
+            let capacity = self.reserve_capacity().map(AuthCapacity::new);
+            if let Ok(capacity) = &capacity {
+                self.capacity_owners
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(
+                        attempt_id.clone(),
+                        (capacity_owner.clone(), Arc::downgrade(&capacity.lifetime)),
+                    );
+            }
+            if capacity.is_ok() || handoff.is_some() {
+                self.cancellations
+                    .lock()
+                    .await
+                    .insert(attempt_id.clone(), (owner.id, cancellation.clone()));
+            }
+            (completed, capacity, handoff)
         };
         for completion in completed {
-            discard_completed_sso(completion).await;
+            discard_sso_result(completion).await;
         }
+        // In-flight setup/continuation owns its permit on another task's
+        // stack. That task may need `transitions` to observe cancellation,
+        // so never hold the transition lock while awaiting its released slot.
+        let capacity = match capacity {
+            Err(_) if handoff.is_some() => {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err("authentication attempt was superseded".to_string()),
+                    released = tokio::time::timeout(SUPERSEDED_CAPACITY_WAIT, self.capacity.clone().acquire_owned()) => {
+                        released.ok().and_then(Result::ok).map(AuthCapacity::new).ok_or_else(||
+                            "too many authentication attempts are in progress; try again later".to_string())
+                    }
+                }
+            }
+            result => result,
+        };
+        if let Ok(capacity) = &capacity {
+            self.capacity_owners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    attempt_id.clone(),
+                    (capacity_owner, Arc::downgrade(&capacity.lifetime)),
+                );
+        }
+        // The new witness is now visible, or this bounded wait has failed.
+        // A dropped future releases the handoff automatically too.
+        drop(handoff);
+        if capacity.is_err() || cancellation.is_cancelled() {
+            self.cancel_token(&attempt_id).await;
+        }
+        if cancellation.is_cancelled() && capacity.is_ok() {
+            return Err("authentication attempt was superseded".to_string());
+        }
+        cleanup.armed = false;
+        capacity
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
+        self.cancel_owners(&[owner]).await;
+    }
+
+    /// Cancels every attempt belonging to the browser's pre-authentication
+    /// owner cookies under one transition lock. This prevents a new flow from
+    /// being admitted between clearing the discovery and active-flow owners.
+    pub async fn cancel_owners(&self, owners: &[&str]) {
+        if owners.is_empty() {
+            return;
+        }
         let completed = {
             let _transition = self.transitions.lock().await;
-            self.clear_owner_attempts(owner).await
+            let mut unique = HashSet::new();
+            let mut completed = Vec::new();
+            for owner in owners.iter().copied().filter(|owner| unique.insert(*owner)) {
+                completed.extend(self.clear_owner_attempts(owner).await);
+            }
+            completed
         };
         for completion in completed {
-            discard_completed_sso(completion).await;
+            discard_sso_result(completion).await;
         }
     }
 
-    async fn clear_owner_attempts(&self, owner: &str) -> Vec<CompletedSso> {
+    async fn clear_owner_attempts(&self, owner: &str) -> Vec<SsoCompletionResult> {
         let attempt_ids = {
             let guard = self.cancellations.lock().await;
             guard
@@ -216,24 +404,32 @@ impl PendingAuthStore {
                 .collect::<Vec<_>>();
             attempt_ids
                 .into_iter()
-                .filter_map(|attempt_id| guard.remove(&attempt_id))
+                // Release capacity inside the transition; remote cleanup runs
+                // afterward and must not prevent replacement at the limit.
+                .filter_map(|attempt_id| {
+                    guard
+                        .remove(&attempt_id)
+                        .map(|completion| completion.result)
+                })
                 .collect::<Vec<_>>()
         }
     }
 
     pub async fn start_sso(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         idp_id: Option<String>,
         callback_url: String,
         has_persistence: bool,
     ) -> Result<(String, String), String> {
-        let capacity = self.reserve_capacity()?;
+        let owner = owner.into();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
-            .await;
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
+        let owner = owner.id;
         let (client, crypto) = match tokio::select! {
             result = crate::auth::build_client(&homeserver_url, has_persistence) => result,
             () = cancellation.cancelled() => {
@@ -347,7 +543,7 @@ impl PendingAuthStore {
             return Err("single sign-on attempt expired or was already used".to_string());
         }
         let cleanup_crypto = crypto.clone();
-        let result = async {
+        let authenticate = async {
             client
                 .matrix_auth()
                 .login_token(&login_token)
@@ -355,11 +551,36 @@ impl PendingAuthStore {
                 .send()
                 .await
                 .map_err(|_| "single sign-on failed".to_string())?;
-            let completed =
-                crate::auth::finish_authenticated_client(client, crypto, "sso login").await?;
+            let completed = crate::auth::finish_authenticated_client(
+                client.clone(),
+                crypto.clone(),
+                "sso login",
+            )
+            .await?;
             Ok(Box::new(authenticated(completed, homeserver_url)))
-        }
-        .await;
+        };
+        let result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                // The authentication future is dropped before this branch:
+                // it can no longer publish a session or start initial sync.
+                // Release admission capacity before best-effort revocation,
+                // just as for a discarded completed SSO result.
+                drop(_capacity);
+                self.finish_attempt(attempt_id).await;
+                if client.matrix_auth().session().is_some() {
+                    let _ = tokio::time::timeout(
+                        CANCELLED_SSO_REVOKE_TIMEOUT,
+                        client.matrix_auth().logout(),
+                    ).await;
+                }
+                drop(client);
+                crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
+                return Err("single sign-on attempt expired or was already used".to_string());
+            }
+            result = authenticate => result,
+        };
+        drop(client);
         let failed = result.is_err();
         if failed {
             crate::auth::cleanup_failed_crypto_store(&cleanup_crypto);
@@ -452,16 +673,16 @@ impl PendingAuthStore {
 
     pub async fn login_with_token(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         token: String,
         has_persistence: bool,
     ) -> Result<(AuthenticatedClient, String), String> {
-        let _capacity = self.reserve_capacity()?;
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.admit_owner_attempt(owner, attempt_id.clone(), cancellation.clone())
-            .await;
+        let _capacity = self
+            .admit_owner_attempt(owner, attempt_id.clone(), cancellation.clone())
+            .await?;
         self.spawn_expiry(attempt_id.clone());
         match login_with_token_inner(homeserver_url, token, has_persistence, &cancellation).await {
             Ok(completed) => Ok((completed, attempt_id)),
@@ -474,18 +695,18 @@ impl PendingAuthStore {
 
     pub async fn begin_registration(
         &self,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         request: RegisterRequest,
         has_persistence: bool,
     ) -> Result<BeginRegistrationResult, String> {
-        let capacity = self.reserve_capacity()?;
+        let owner = owner.into();
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
+        let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let homeserver_url = request.homeserver_url.clone();
         let build_result = tokio::select! {
@@ -805,11 +1026,11 @@ impl PendingAuthStore {
     pub async fn request_password_reset(
         &self,
         source: String,
-        owner: String,
+        owner: impl Into<AuthOwner>,
         homeserver_url: String,
         email: String,
     ) -> Result<PasswordResetChallenge, String> {
-        let capacity = self.reserve_capacity()?;
+        let owner = owner.into();
         let delivery_email = email.trim().to_owned();
         let Some((local_part, domain)) = delivery_email.rsplit_once('@') else {
             return Err("enter an email address".to_string());
@@ -821,10 +1042,10 @@ impl PendingAuthStore {
         let created_at = Instant::now();
         let attempt_id = opaque_id();
         let cancellation = CancellationToken::new();
-        self.cancellations
-            .lock()
-            .await
-            .insert(attempt_id.clone(), (owner.clone(), cancellation.clone()));
+        let capacity = self
+            .admit_owner_attempt(owner.clone(), attempt_id.clone(), cancellation.clone())
+            .await?;
+        let owner = owner.id;
         self.spawn_expiry(attempt_id.clone());
         let client_result = tokio::select! {
             result = async {
@@ -1055,13 +1276,17 @@ impl PendingAuthStore {
             .remove(attempt_id)
             .ok_or_else(|| "password reset attempt expired or was cancelled".to_string())?;
         drop(guard);
+        let phase = self
+            .password_reset_dispatch_phase(owner, attempt_id)
+            .await?;
         let result = tokio::select! {
-            result = complete_password_reset(&mut pending, token.as_deref(), new_password) => result,
+            result = complete_password_reset(&mut pending, token.as_deref(), new_password, &phase) => result,
             () = cancellation.cancelled() => {
                 Err("password reset attempt expired or was cancelled".to_string())
             }
         };
-        if result.is_err() && pending.created_at.elapsed() <= ATTEMPT_TTL {
+        let dispatched = phase.load(Ordering::SeqCst) & 2 != 0;
+        if result.is_err() && !dispatched && pending.created_at.elapsed() <= ATTEMPT_TTL {
             if !self
                 .restore_password_reset(attempt_id.to_owned(), pending)
                 .await
@@ -1071,14 +1296,90 @@ impl PendingAuthStore {
         } else {
             self.finish_attempt(attempt_id).await;
         }
-        result
+        if result.is_err() && dispatched {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            result
+        }
     }
 
     pub async fn cancel_password_reset(&self, owner: &str, attempt_id: &str) -> Result<(), String> {
-        self.owned_cancellation(owner, attempt_id).await?;
-        self.cancel_token(attempt_id).await;
+        // Lock order is shared with dispatch registration and generic cleanup.
+        let mut cancellations = self.cancellations.lock().await;
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        let receipt = receipts.get(attempt_id);
+        let owned = cancellations
+            .get(attempt_id)
+            .is_some_and(|(current, _)| current == owner)
+            || receipt.is_some_and(|receipt| receipt.owner == owner);
+        if !owned {
+            return Err("authentication attempt is no longer current".to_owned());
+        }
+        let dispatched =
+            receipt.is_some_and(|receipt| receipt.phase.fetch_or(1, Ordering::SeqCst) & 2 != 0);
+        if let Some((_, token)) = cancellations.remove(attempt_id) {
+            token.cancel();
+        }
+        drop(receipts);
+        drop(cancellations);
         self.password_resets.lock().await.remove(attempt_id);
-        Ok(())
+        if dispatched {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn cancel_password_resets_for_owner(&self, owner: &str) -> Result<(), String> {
+        self.cancel_owner(owner).await;
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        if receipts
+            .values()
+            .any(|receipt| receipt.owner == owner && receipt.phase.load(Ordering::SeqCst) & 2 != 0)
+        {
+            Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn password_reset_dispatch_phase(
+        &self,
+        owner: &str,
+        attempt_id: &str,
+    ) -> Result<Arc<AtomicU8>, String> {
+        let cancellations = self.cancellations.lock().await;
+        if !cancellations
+            .get(attempt_id)
+            .is_some_and(|(current, token)| current == owner && !token.is_cancelled())
+        {
+            return Err("password reset attempt expired or was cancelled".to_owned());
+        }
+        let mut receipts = self.password_reset_receipts.lock().await;
+        receipts.retain(|_, receipt| receipt.created_at.elapsed() <= ATTEMPT_TTL);
+        if let Some(receipt) = receipts.get(attempt_id) {
+            return if receipt.owner == owner && receipt.phase.load(Ordering::SeqCst) == 0 {
+                Ok(receipt.phase.clone())
+            } else {
+                Err(PASSWORD_RESET_UNCERTAIN.to_owned())
+            };
+        }
+        // Never evict an unexpired receipt to admit another mutation.
+        if receipts.len() >= MAX_PASSWORD_RESET_RECEIPTS {
+            return Err("too many password reset attempts; try again later".to_owned());
+        }
+        let phase = Arc::new(AtomicU8::new(0));
+        receipts.insert(
+            attempt_id.to_owned(),
+            PasswordResetReceipt {
+                owner: owner.to_owned(),
+                created_at: Instant::now(),
+                phase: phase.clone(),
+            },
+        );
+        Ok(phase)
     }
 
     async fn take_registration(
@@ -1213,7 +1514,11 @@ impl PendingAuthStore {
     }
 
     async fn cancel_token(&self, attempt_id: &str) {
-        if let Some((_, token)) = self.cancellations.lock().await.remove(attempt_id) {
+        let mut cancellations = self.cancellations.lock().await;
+        if let Some(receipt) = self.password_reset_receipts.lock().await.get(attempt_id) {
+            receipt.phase.fetch_or(1, Ordering::SeqCst);
+        }
+        if let Some((_, token)) = cancellations.remove(attempt_id) {
             token.cancel();
         }
     }
@@ -1289,7 +1594,7 @@ pub enum PollSsoResult {
     Pending,
     Complete {
         completed: Box<AuthenticatedClient>,
-        _capacity: OwnedSemaphorePermit,
+        _capacity: AuthCapacity,
     },
     Failed(String),
     Expired,
@@ -1713,6 +2018,15 @@ fn is_public_network_ip(ip: std::net::IpAddr) -> bool {
                 return is_public_network_ip(mapped.into());
             }
             let segments = ip.segments();
+            if segments[..6] == [0, 0, 0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_network_ip(embedded.into());
+            }
             !(ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
@@ -1730,6 +2044,7 @@ async fn complete_password_reset(
     pending: &mut PendingPasswordReset,
     token: Option<&str>,
     new_password: String,
+    phase: &AtomicU8,
 ) -> Result<(), String> {
     if let Some(submit_url) = &pending.submit_url {
         // The token may be single-use. A retry after the password-change
@@ -1759,10 +2074,11 @@ async fn complete_password_reset(
     .map_err(|_| "could not confirm password reset".to_string())?;
     let mut request = change_password::v3::Request::new(new_password);
     request.auth = Some(AuthData::EmailIdentity(identity));
+    commit_password_reset_dispatch(phase)?;
     pending
         .client
         .send(request)
-        .with_request_config(RequestConfig::new().skip_auth())
+        .with_request_config(RequestConfig::new().skip_auth().retry_limit(0))
         .await
         .map(|_| ())
         .map_err(|_| "could not confirm password reset".to_string())
@@ -1820,9 +2136,11 @@ fn sso_selection_is_advertised(flows: &[LoginType], selected: Option<&str>) -> (
 mod tests {
     use super::{
         is_public_network_ip, sanitize_submit_url, sso_selection_is_advertised,
-        summarize_login_flows, PendingAuthStore, PendingPasswordReset, PendingSso, PollSsoResult,
+        summarize_login_flows, AuthCapacity, AuthOwner, CompletedSso, PendingAuthStore,
+        PendingPasswordReset, PendingSso, PollSsoResult, SsoCompletionResult,
         MAX_PENDING_AUTH_ATTEMPTS,
     };
+    use std::time::{Duration, Instant};
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -1861,7 +2179,7 @@ mod tests {
         store.password_resets.lock().await.insert(
             attempt_id,
             PendingPasswordReset {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner,
                 client,
                 client_secret: matrix_sdk::ruma::ClientSecret::new(),
@@ -1895,6 +2213,210 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn password_reset_cancellation_before_dispatch_prevents_mutation() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        store
+            .cancel_password_reset("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.password_resets.lock().await.is_empty());
+        assert!(store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn password_reset_late_cancellation_preserves_owner_bound_uncertainty() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        super::commit_password_reset_dispatch(&phase).unwrap();
+        assert!(store
+            .cancel_password_reset("browser-b", "reset-attempt")
+            .await
+            .is_err());
+        assert_eq!(phase.load(super::Ordering::SeqCst), 2);
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .cancel_password_reset("browser-a", "reset-attempt")
+                    .await
+                    .unwrap_err(),
+                super::PASSWORD_RESET_UNCERTAIN
+            );
+        }
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.cancellations.lock().await.is_empty());
+        assert!(store.password_resets.lock().await.is_empty());
+        assert_eq!(
+            store.capacity.available_permits(),
+            MAX_PENDING_AUTH_ATTEMPTS
+        );
+    }
+
+    #[tokio::test]
+    async fn password_reset_owner_cleanup_orders_before_dispatch() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        store.cancel_owner("browser-a").await;
+        assert!(super::commit_password_reset_dispatch(&phase).is_err());
+        assert!(store.password_resets.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_reset_owner_only_cleanup_does_not_hide_dispatched_mutation() {
+        let store = reset_store_for_resend(false).await;
+        let phase = store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        super::commit_password_reset_dispatch(&phase).unwrap();
+        assert!(store
+            .cancel_password_resets_for_owner("browser-b")
+            .await
+            .is_ok());
+        assert_eq!(phase.load(super::Ordering::SeqCst), 2);
+        assert_eq!(
+            store
+                .cancel_password_resets_for_owner("browser-a")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert_eq!(
+            store
+                .cancel_password_resets_for_owner("browser-a")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert!(store.password_resets.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_reset_receipts_are_bounded_without_evicting_live_evidence() {
+        let store = reset_store_for_resend(false).await;
+        {
+            let mut receipts = store.password_reset_receipts.lock().await;
+            for index in 0..super::MAX_PASSWORD_RESET_RECEIPTS {
+                receipts.insert(
+                    index.to_string(),
+                    super::PasswordResetReceipt {
+                        owner: "another-browser".to_owned(),
+                        created_at: Instant::now(),
+                        phase: std::sync::Arc::new(super::AtomicU8::new(2)),
+                    },
+                );
+            }
+        }
+        assert!(store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .is_err());
+        {
+            let mut receipts = store.password_reset_receipts.lock().await;
+            assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);
+            receipts.get_mut("0").unwrap().created_at =
+                Instant::now() - super::ATTEMPT_TTL - Duration::from_secs(1);
+        }
+        store
+            .password_reset_dispatch_phase("browser-a", "reset-attempt")
+            .await
+            .unwrap();
+        let receipts = store.password_reset_receipts.lock().await;
+        assert_eq!(receipts.len(), super::MAX_PASSWORD_RESET_RECEIPTS);
+        assert!(!receipts.contains_key("0"));
+        assert_eq!(receipts["1"].phase.load(super::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn password_reset_cancel_after_http_dispatch_does_not_restore_or_claim_prevention() {
+        let received = std::sync::Arc::new(tokio::sync::Notify::new());
+        let request_received = received.clone();
+        let router = axum::Router::new()
+            .route(
+                "/_matrix/client/versions",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"versions": ["v1.11"]}))
+                }),
+            )
+            .route(
+                "/_matrix/client/v3/account/password",
+                axum::routing::post(move || {
+                    let received = request_received.clone();
+                    async move {
+                        received.notify_one();
+                        std::future::pending::<axum::http::StatusCode>().await
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(format!("http://{}", listener.local_addr().unwrap()))
+            .build()
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let store = reset_store_for_resend(false).await;
+        store
+            .password_resets
+            .lock()
+            .await
+            .get_mut("reset-attempt")
+            .unwrap()
+            .client = client;
+        let confirming = store.clone();
+        let confirmation = tokio::spawn(async move {
+            confirming
+                .confirm_password_reset(
+                    "browser-a",
+                    "reset-attempt",
+                    None,
+                    "test-password".to_owned(),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), received.notified())
+            .await
+            .expect("password request reached server");
+        assert_eq!(
+            store
+                .cancel_password_reset("browser-a", "reset-attempt")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), confirmation)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        assert!(store.password_resets.lock().await.is_empty());
+        assert_eq!(
+            store
+                .cancel_password_reset("browser-a", "reset-attempt")
+                .await
+                .unwrap_err(),
+            super::PASSWORD_RESET_UNCERTAIN
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn upstream_password_reset_resend_failure_remains_generic_success() {
         let store = reset_store_for_resend(false).await;
 
@@ -1908,6 +2430,83 @@ mod tests {
             store.password_resets.lock().await["reset-attempt"].send_attempt,
             2
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_sso_callback_releases_capacity_during_a_stalled_request() {
+        let received = std::sync::Arc::new(tokio::sync::Notify::new());
+        let request_received = received.clone();
+        let router = axum::Router::new().fallback(move || {
+            let received = request_received.clone();
+            async move {
+                received.notify_one();
+                std::future::pending::<axum::http::StatusCode>().await
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let homeserver_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url(&homeserver_url)
+            .build()
+            .await
+            .unwrap();
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let cancellation = CancellationToken::new();
+        let capacity = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "callback".to_owned(),
+                cancellation.clone(),
+            )
+            .await
+            .unwrap();
+        store.sso_attempts.lock().await.insert(
+            "callback".to_owned(),
+            PendingSso {
+                _capacity: capacity,
+                owner: "browser".to_owned(),
+                client,
+                crypto: None,
+                homeserver_url,
+                cancellation,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        let callback_store = store.clone();
+        let callback = tokio::spawn(async move {
+            callback_store
+                .complete_sso_callback("callback", "test-token".to_owned())
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), received.notified())
+            .await
+            .expect("callback must reach the stalled HTTP request");
+        let replacement = tokio::time::timeout(
+            Duration::from_secs(3),
+            store.admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("cancellation must release capacity before the five-second admission limit")
+        .expect("replacement is admitted");
+        assert!(tokio::time::timeout(Duration::from_secs(3), callback)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert!(store.completed_sso.lock().await.is_empty());
+        assert!(!store.cancellations.lock().await.contains_key("callback"));
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(store.reserve_capacity().is_err());
+        drop(replacement);
+        server.abort();
     }
 
     #[tokio::test]
@@ -1927,7 +2526,7 @@ mod tests {
         store.sso_attempts.lock().await.insert(
             "sso-state".to_owned(),
             PendingSso {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner: "browser-a".to_owned(),
                 client,
                 crypto: None,
@@ -1994,7 +2593,7 @@ mod tests {
         store.sso_attempts.lock().await.insert(
             "old-sso".to_owned(),
             PendingSso {
-                _capacity: store.reserve_capacity().expect("capacity"),
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("capacity")),
                 owner: "browser-a".to_owned(),
                 client,
                 crypto: None,
@@ -2010,7 +2609,8 @@ mod tests {
                 "new-token-login".to_owned(),
                 CancellationToken::new(),
             )
-            .await;
+            .await
+            .expect("replacement admission");
 
         assert!(old_cancellation.is_cancelled());
         assert!(!store.sso_attempts.lock().await.contains_key("old-sso"));
@@ -2019,6 +2619,298 @@ mod tests {
             .lock()
             .await
             .contains_key("new-token-login"));
+    }
+
+    #[tokio::test]
+    async fn owner_admission_waits_for_the_multi_owner_transition() {
+        let store = PendingAuthStore::default();
+        let transition = store.transitions.lock().await;
+        let admission = store.admit_owner_attempt(
+            "owner".to_owned(),
+            "attempt".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            _ = &mut admission => panic!("admission bypassed transition lock"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.is_empty());
+        drop(transition);
+        let _capacity = admission.await.expect("admission");
+        assert!(store.cancellations.lock().await.contains_key("attempt"));
+    }
+
+    #[tokio::test]
+    async fn replacement_admission_cancels_both_cookie_owners() {
+        let store = PendingAuthStore::default();
+        let preauth = CancellationToken::new();
+        let discovery = CancellationToken::new();
+        store
+            .admit_owner_attempt("preauth".to_owned(), "old-a".to_owned(), preauth.clone())
+            .await
+            .expect("preauth admission");
+        store
+            .admit_owner_attempt(
+                "discovery".to_owned(),
+                "old-b".to_owned(),
+                discovery.clone(),
+            )
+            .await
+            .expect("discovery admission");
+        let replacement = CancellationToken::new();
+        store
+            .admit_owner_attempt(
+                AuthOwner {
+                    id: "preauth".to_owned(),
+                    superseded: vec!["preauth".to_owned(), "discovery".to_owned()],
+                },
+                "replacement".to_owned(),
+                replacement.clone(),
+            )
+            .await
+            .expect("replacement admission");
+        assert!(preauth.is_cancelled());
+        assert!(discovery.is_cancelled());
+        assert!(!replacement.is_cancelled());
+        let cancellations = store.cancellations.lock().await;
+        assert_eq!(cancellations.len(), 1);
+        assert!(cancellations.contains_key("replacement"));
+    }
+
+    #[tokio::test]
+    async fn replacement_waits_for_cancelled_in_flight_capacity_without_holding_transition() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let old_token = CancellationToken::new();
+        let old_permit = store
+            .admit_owner_attempt("browser".to_owned(), "old".to_owned(), old_token.clone())
+            .await
+            .unwrap();
+        let old_store = store.clone();
+        let old_task = tokio::spawn(async move {
+            old_token.cancelled().await;
+            let _transition = old_store.transitions.lock().await;
+            drop(old_permit);
+        });
+        let replacement = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("replacement must await the cancelled setup's permit");
+        old_task.await.unwrap();
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(store.reserve_capacity().is_err());
+        drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn cancellation_only_owner_does_not_wait_for_unrelated_capacity() {
+        let store = PendingAuthStore::default();
+        let old = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        // Model a post-admission quota/setup error: the permit is dropped,
+        // but cancellation metadata remains until normal expiry/cleanup.
+        drop(old);
+        assert!(store.cancellations.lock().await.contains_key("old"));
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            store.admit_owner_attempt(
+                "browser".to_owned(),
+                "new".to_owned(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("non-owning attempt must not enter the five-second capacity wait");
+        assert!(result.is_err());
+        assert!(!store.cancellations.lock().await.contains_key("new"));
+    }
+
+    #[tokio::test]
+    async fn capacity_owner_remains_visible_during_waiter_publication_gap() {
+        let store = PendingAuthStore::default();
+        let owner = "browser".to_owned();
+        let old = store
+            .admit_owner_attempt(owner.clone(), "old".to_owned(), CancellationToken::new())
+            .await
+            .unwrap();
+        let handoff = store
+            .capacity_handoff(std::slice::from_ref(&owner))
+            .unwrap();
+        drop(old);
+        // Model a waiter that acquired capacity but has not published its
+        // new witness yet. The retained handoff must remain discoverable.
+        let _occupied = (0..MAX_PENDING_AUTH_ATTEMPTS)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let cancellation = CancellationToken::new();
+        let admission = store.admit_owner_attempt(owner, "new".to_owned(), cancellation.clone());
+        tokio::pin!(admission);
+        tokio::select! {
+            biased;
+            _ = &mut admission => panic!("handoff was misclassified as a fresh owner"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.contains_key("new"));
+        cancellation.cancel();
+        assert!(admission.await.is_err());
+        drop(handoff);
+        assert!(store.capacity_handoff(&["browser".to_owned()]).is_none());
+    }
+
+    #[tokio::test]
+    async fn dropped_capacity_wait_removes_its_admission_entry() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let _old_permit = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let mut waiting = Box::pin(store.admit_owner_attempt(
+            "browser".to_owned(),
+            "disconnected".to_owned(),
+            cancellation.clone(),
+        ));
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("replacement must wait for capacity"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store
+            .cancellations
+            .lock()
+            .await
+            .contains_key("disconnected"));
+        drop(waiting);
+        assert!(cancellation.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while store
+                .cancellations
+                .lock()
+                .await
+                .contains_key("disconnected")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("disconnected admission must be removed without an expiry task");
+        assert!(store.reserve_capacity().is_err());
+    }
+
+    #[tokio::test]
+    async fn newest_attempt_supersedes_a_replacement_waiting_for_capacity() {
+        let store = PendingAuthStore::default();
+        let _others = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().unwrap())
+            .collect::<Vec<_>>();
+        let old_permit = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "old".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let waiting = store.admit_owner_attempt(
+            "browser".to_owned(),
+            "waiting".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(waiting);
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("replacement must wait for the old task's permit"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(store.cancellations.lock().await.contains_key("waiting"));
+
+        let newest = store.admit_owner_attempt(
+            "browser".to_owned(),
+            "newest".to_owned(),
+            CancellationToken::new(),
+        );
+        tokio::pin!(newest);
+        tokio::select! {
+            biased;
+            _ = &mut newest => panic!("newest attempt must also wait for capacity"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(
+            waiting.await.is_err(),
+            "superseded waiter must not be admitted"
+        );
+        drop(old_permit);
+        let _newest_permit = newest
+            .await
+            .expect("newest attempt receives released capacity");
+        let cancellations = store.cancellations.lock().await;
+        assert_eq!(cancellations.len(), 1);
+        assert!(cancellations.contains_key("newest"));
+        assert!(store.reserve_capacity().is_err());
+    }
+
+    #[tokio::test]
+    async fn replacement_reuses_its_owner_slot_at_capacity_without_admitting_strangers() {
+        let store = PendingAuthStore::default();
+        let _other_permits = (0..MAX_PENDING_AUTH_ATTEMPTS - 1)
+            .map(|_| store.reserve_capacity().expect("other owner capacity"))
+            .collect::<Vec<_>>();
+        store.completed_sso.lock().await.insert(
+            "old".to_owned(),
+            CompletedSso {
+                _capacity: AuthCapacity::new(store.reserve_capacity().expect("owner capacity")),
+                owner: "browser".to_owned(),
+                result: SsoCompletionResult::Failed("cancelled".to_owned()),
+                created_at: Instant::now(),
+            },
+        );
+        let denied = store
+            .admit_owner_attempt(
+                "stranger".to_owned(),
+                "denied".to_owned(),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(denied.is_err());
+        assert!(!store.cancellations.lock().await.contains_key("denied"));
+        let _replacement = store
+            .admit_owner_attempt(
+                "browser".to_owned(),
+                "replacement".to_owned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("owner replaces its own slot at capacity");
+        assert!(store.completed_sso.lock().await.is_empty());
+        assert!(store.cancellations.lock().await.contains_key("replacement"));
+        assert!(
+            store.reserve_capacity().is_err(),
+            "replacement retains the capacity bound"
+        );
     }
 
     #[test]
@@ -2128,6 +3020,32 @@ mod tests {
         assert!(store.cancellations.lock().await.is_empty());
     }
 
+    #[tokio::test]
+    async fn browser_owner_cancellation_supersedes_both_cookie_namespaces() {
+        let store = PendingAuthStore::default();
+        let preauth = CancellationToken::new();
+        let discovery = CancellationToken::new();
+        {
+            let mut cancellations = store.cancellations.lock().await;
+            cancellations.insert(
+                "preauth-attempt".to_owned(),
+                ("preauth-owner".to_owned(), preauth.clone()),
+            );
+            cancellations.insert(
+                "discovery-attempt".to_owned(),
+                ("discovery-owner".to_owned(), discovery.clone()),
+            );
+        }
+
+        store
+            .cancel_owners(&["preauth-owner", "discovery-owner"])
+            .await;
+
+        assert!(preauth.is_cancelled());
+        assert!(discovery.is_cancelled());
+        assert!(store.cancellations.lock().await.is_empty());
+    }
+
     #[test]
     fn email_submission_urls_require_https_or_same_origin_http() {
         let homeserver =
@@ -2177,6 +3095,10 @@ mod tests {
             "64:ff9b:1::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::192.168.1.1",
+            "::169.254.169.254",
         ] {
             assert!(
                 !is_public_network_ip(address.parse().expect("valid IP")),
@@ -2186,5 +3108,6 @@ mod tests {
         assert!(is_public_network_ip(
             "1.1.1.1".parse().expect("valid public IP")
         ));
+        assert!(is_public_network_ip("::8.8.8.8".parse().unwrap()));
     }
 }
