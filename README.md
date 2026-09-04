@@ -84,8 +84,8 @@ because it adds any real security over SHA256 — SHA1 is broken for
 collision resistance. Treat `SHA256SUMS.txt` and the GPG signatures below as
 the actual integrity checks, and `SHA1SUMS.txt` as compatibility-only.
 
-**GPG signatures** — attached when the `GPG_PRIVATE_KEY` repo secret is
-configured (see below): every artifact gets its own detached
+**GPG signatures** — attached when `GPG_PRIVATE_KEY` is configured in the
+protected `nightly-signing` or `release-signing` environment (see below): every artifact gets its own detached
 `<filename>.asc`, and `SHA256SUMS.txt`/`SHA1SUMS.txt` are signed too (so
 verifying `SHA256SUMS.txt.asc` alone vouches for every artifact's hash,
 without checking each `.asc` individually — either approach works). The
