@@ -210,6 +210,7 @@ pub async fn setup_with_custody(
         }
     };
     let mut pending = custody.claim(&pending).await?;
+    let resumed_after_server_mutation = pending.server_mutation_started;
     let operation = async {
         custody.checkpoint().await?;
         // From this point onward an SDK call can create or replace remote
@@ -222,12 +223,31 @@ pub async fn setup_with_custody(
             match client.encryption().recovery().enable_backup().await {
                 Ok(()) => {}
                 Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
-                    // The server made no change, so this generated seed owns
-                    // no credential. Remove the marker before releasing the
-                    // claim rather than permanently vetoing logout.
-                    custody.clear_claimed().await?;
+                    if resumed_after_server_mutation {
+                        // A prior attempt may have created this backup before
+                        // its post-mutation checkpoint completed. Preserve the
+                        // protected seed and teardown veto rather than
+                        // misclassifying our own partial mutation as a
+                        // pre-existing backup and destroying its custody.
+                        return Err(
+                            "An interrupted recovery setup may have created the existing backup. \
+                             Protected recovery state was retained; finish or repair recovery \
+                             before signing out."
+                                .into(),
+                        );
+                    }
+                    // This attempt observed BackupExists without changing the
+                    // server. Clear its no-op seed. If the atomic deletion
+                    // itself transiently fails, at least persist that no
+                    // mutation occurred so releasing the claim cannot trap
+                    // logout behind a credential that was never created.
+                    if custody.clear_claimed().await.is_err() {
+                        pending.server_mutation_started = false;
+                        custody.save_claimed(&pending).await?;
+                    }
                     return Err(
-                        "A server-side key backup already exists. Restore the existing recovery instead."
+                        "A server-side key backup already exists. Restore the existing recovery \
+                         instead."
                             .into(),
                     );
                 }

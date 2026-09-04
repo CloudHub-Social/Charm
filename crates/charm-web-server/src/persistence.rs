@@ -1109,7 +1109,10 @@ impl PersistenceStore {
     /// review finding on #280). A read is far cheaper than the write this
     /// deliberately stays split from.
     pub(crate) async fn exists(&self, token: &str) -> Result<bool, String> {
-        Ok(self.read_one_with_version_result(token).await?.is_some())
+        Ok(self
+            .read_one_with_version_result(token)
+            .await?
+            .is_some_and(|(entry, _)| !entry.recovery_teardown_started))
     }
 
     /// Cheap, no-`Client`-required check for whether `token`'s persisted
@@ -2742,6 +2745,35 @@ mod tests {
                 .await
                 .is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn teardown_tombstone_is_not_an_existing_authenticated_session() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "tombstoned-session-token",
+                "https://example.invalid",
+                &dummy_session("@tombstoned:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        assert!(store.exists("tombstoned-session-token").await.unwrap());
+
+        store
+            .begin_recovery_safe_teardown("tombstoned-session-token")
+            .await
+            .unwrap();
+
+        assert!(!store.exists("tombstoned-session-token").await.unwrap());
     }
 
     #[tokio::test]
