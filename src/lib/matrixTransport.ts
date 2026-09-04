@@ -25,6 +25,13 @@ let webSsoAttemptId: string | null = null;
 let webSessionEpoch = 0;
 let webSessionKnown = false;
 let webSessionInvalidated = false;
+type WebLogoutState = {
+  epoch: number;
+  completion: Promise<void>;
+  finish: () => void;
+  invalidated: boolean;
+};
+let webLogoutPending: WebLogoutState | null = null;
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -162,6 +169,13 @@ function dispatchWebEvent(event: string, payload: unknown): void {
 function invalidateWebSession(epoch: number, requireKnown = true): void {
   if (epoch !== webSessionEpoch || (requireKnown && !webSessionKnown) || webSessionInvalidated)
     return;
+  if (webLogoutPending?.epoch === epoch) {
+    // The initiating tab must not expose replacement login before the logout
+    // response has finished applying its cookie deletion. Other tabs invalidate
+    // immediately because they have no self-issued logout in flight.
+    webLogoutPending.invalidated = true;
+    return;
+  }
   webSessionEpoch += 1;
   webSessionKnown = false;
   webSessionInvalidated = true;
@@ -975,6 +989,26 @@ export async function invoke<T>(
   options?: InvokeOptions,
 ): Promise<T> {
   if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args, options);
+  const adoptsSession = [
+    "login",
+    "register",
+    "continue_registration",
+    "login_with_token",
+    "poll_sso_login",
+    "try_restore_session",
+  ].includes(command);
+  if (adoptsSession || command === "logout") {
+    while (webLogoutPending) await webLogoutPending.completion;
+  }
+  let logoutState: WebLogoutState | null = null;
+  if (command === "logout") {
+    let finish: () => void = () => undefined;
+    const completion = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    logoutState = { epoch: webSessionEpoch, completion, finish, invalidated: false };
+    webLogoutPending = logoutState;
+  }
   // invokeWeb has no breadcrumb/capture logic of its own (unlike the Tauri
   // path's observability/ipc wrapper), so options like skipBreadcrumb and
   // captureOnError have nothing to do here — but a caller's
@@ -984,22 +1018,20 @@ export async function invoke<T>(
   const epoch = webSessionEpoch;
   try {
     const result = await invokeWeb<T>(command, args ?? {});
-    if (
-      [
-        "login",
-        "register",
-        "continue_registration",
-        "login_with_token",
-        "poll_sso_login",
-        "try_restore_session",
-      ].includes(command)
-    ) {
+    if (logoutState) logoutState.invalidated = true;
+    if (adoptsSession) {
       if (command !== "try_restore_session" || epoch === webSessionEpoch) adoptWebSession(result);
     }
     return result;
   } catch (error) {
     options?.onFailureBreadcrumb?.(error, Math.round(performance.now() - startedAt));
     throw error;
+  } finally {
+    if (logoutState) {
+      webLogoutPending = null;
+      if (logoutState.invalidated) invalidateWebSession(logoutState.epoch, false);
+      logoutState.finish();
+    }
   }
 }
 

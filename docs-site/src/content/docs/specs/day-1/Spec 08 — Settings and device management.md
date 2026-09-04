@@ -276,6 +276,10 @@ Surfaces changed:
     Local teardown publishes invalidation while login completion is excluded,
     including successful teardown followed by a physical-cleanup failure, so
     the renderer cannot remain authenticated after the active client is gone.
+    On web, self-issued logout defers renderer invalidation until its HTTP response
+    settles, and replacement authentication waits for that response's cookie deletion.
+    Invalidation in other tabs is immediate; an offline logout failure alone is not
+    treated as proof that the session was revoked.
 15. The default-off **Forget local data** action uses its own `forget_local_data`
     flag in both the renderer and native command, independently of message search.
     It requires typed and native-system

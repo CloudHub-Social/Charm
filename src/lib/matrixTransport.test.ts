@@ -1183,6 +1183,48 @@ describe("matrix web transport", () => {
     unlisten();
   });
 
+  it("holds self-logout invalidation and replacement login until cookie deletion settles", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    let finishLogout!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finishLogout = resolve;
+      }),
+    );
+    const logout = invoke("logout");
+    MockWebSocket.instances.at(-1)!.emit({ event: "session:invalidated", data: null });
+    expect(invalidated).not.toHaveBeenCalled();
+    const requestsBeforeLogin = fetchMock().mock.calls.length;
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    const login = invoke("login", { request: {} });
+    await Promise.resolve();
+    expect(fetchMock()).toHaveBeenCalledTimes(requestsBeforeLogin);
+    finishLogout(okJson());
+    await logout;
+    await login;
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(lastFetch()[0]).toBe("https://api.example/api/auth/login");
+    unlisten();
+  });
+
+  it("releases self-logout waiting after a network failure without inventing invalidation", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockRejectedValueOnce(new Error("offline"));
+    await expect(invoke("logout")).rejects.toThrow("offline");
+    expect(invalidated).not.toHaveBeenCalled();
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    await expect(invoke("login", { request: {} })).resolves.toEqual({
+      user_id: "@bob:example.org",
+    });
+    unlisten();
+  });
+
   it("resets WebSocket reconnect backoff after a successful connection", async () => {
     vi.useFakeTimers();
     const unlisten = await listen("room_list:update", vi.fn());
