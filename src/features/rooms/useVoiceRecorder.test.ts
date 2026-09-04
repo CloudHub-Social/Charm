@@ -306,6 +306,21 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("uses the exact duration deadline when the timeout callback is delivered late", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    const clock = vi.spyOn(performance, "now");
+    clock.mockReturnValue(0);
+    await act(async () => {
+      await result.current.start();
+    });
+    clock.mockReturnValue(600_050);
+    await act(async () => vi.advanceTimersByTime(600_000));
+
+    expect(result.current.phase).toBe("preview");
+    expect(result.current.preview?.metadata.duration_ms).toBe(600_000);
+    clock.mockRestore();
+  });
+
   it("discards an oversized chunk without creating a preview", async () => {
     const { result } = renderHook(() => useVoiceRecorder());
     await act(async () => {

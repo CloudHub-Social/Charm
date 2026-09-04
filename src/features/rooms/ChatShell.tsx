@@ -1147,7 +1147,7 @@ export function ChatShell({
               <Send size={16} />
             </button>
           </div>
-          {voiceRecordingEnabled && !roomMutationsBlocked && (
+          {voiceRecordingEnabled && !roomMutationsBlocked && !roomSettingsOpen && (
             <VoiceRecorder
               key={`${currentUserId}:${room.room_id}`}
               mobile={layout === "mobile"}

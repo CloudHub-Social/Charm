@@ -460,6 +460,19 @@ describe("ChatShell", () => {
     expect(await screen.findByTestId("voice-gesture-mode")).toHaveTextContent("mobile");
   });
 
+  it("unmounts the recorder when room settings covers the chat", async () => {
+    mockUseFlag.mockImplementation((key) => key === "voice_recording");
+    const store = createStore();
+    renderChatShell(store);
+    expect(await screen.findByTestId("voice-gesture-mode")).toBeInTheDocument();
+
+    act(() => {
+      store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });
+    });
+
+    expect(screen.queryByTestId("voice-gesture-mode")).not.toBeInTheDocument();
+  });
+
   it("marks the exhausted start of history as all caught up", async () => {
     getTimelinePage.mockResolvedValueOnce({
       messages: [summary({ event_id: "$oldest", sender: "@alice:localhost", body: "oldest" })],

@@ -23,6 +23,7 @@ export function useVoiceRecorder() {
     stream: MediaStream;
     context: AudioContext;
     timer: ReturnType<typeof setInterval>;
+    durationTimer: ReturnType<typeof setTimeout>;
     requestStop: () => void;
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
@@ -37,6 +38,7 @@ export function useVoiceRecorder() {
     active.current = null;
     if (!capture) return;
     clearInterval(capture.timer);
+    clearTimeout(capture.durationTimer);
     capture.stream.getTracks().forEach((track) => track.stop());
     if (capture.recorder.state !== "inactive") capture.recorder.stop();
     void capture.context.close().catch(() => {});
@@ -133,9 +135,9 @@ export function useVoiceRecorder() {
       const samples = new Float32Array(analyser.fftSize);
       let startedAt = 0;
       let stoppedAt: number | null = null;
-      function requestStop() {
+      function requestStop(requestedAt = performance.now()) {
         if (recorder.state === "inactive") return;
-        stoppedAt = performance.now();
+        stoppedAt = requestedAt;
         recorder.stop();
       }
       let bytes = 0;
@@ -200,11 +202,14 @@ export function useVoiceRecorder() {
         setLevel(Number.isFinite(amplitude) ? amplitude : 0);
         const elapsed = Math.round(performance.now() - startedAt);
         setElapsedMs(Math.min(MAX_DURATION_MS, elapsed));
-        if (elapsed >= MAX_DURATION_MS) requestStop();
       }, 100);
-      active.current = { recorder, stream, context, timer, requestStop };
       preparing.current = null;
       startedAt = performance.now();
+      const durationTimer = setTimeout(
+        () => requestStop(startedAt + MAX_DURATION_MS),
+        MAX_DURATION_MS,
+      );
+      active.current = { recorder, stream, context, timer, durationTimer, requestStop };
       recorder.start(250);
       setPhase("recording");
     } catch (cause) {
