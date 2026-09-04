@@ -205,9 +205,10 @@ homeservers. The parity audit (2026-07-13) found:
   Matrix client; tests cover abandoned and quota-permitted attempt accumulation.
 - Rate limits and deliberately ambiguous homeserver responses must remain generic
   in the UI so Charm does not become an account-enumeration oracle.
-- Cancellation is checked again at the irreversible password-change dispatch
-  boundary. Once dispatched, Charm awaits and reports that request's result rather
-  than claiming cancellation prevented a mutation that may already have occurred.
+- Native cancellation and commitment to irreversible password-change dispatch
+  share an atomic state transition. If cancellation wins, no request is dispatched;
+  if dispatch wins, cancellation reports that it cannot undo the request, even
+  before the network future is first polled. Charm awaits the request's result.
   Unauthenticated recovery networking classifies both IPv4-mapped and legacy
   IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,

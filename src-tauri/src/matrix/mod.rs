@@ -160,7 +160,7 @@ pub struct MatrixState {
     /// reset value during network requests, preventing a cancelled or
     /// superseded attempt from changing the password later.
     pub(crate) pending_password_reset_cancel:
-        std::sync::Mutex<Option<(String, tokio_util::sync::CancellationToken)>>,
+        std::sync::Mutex<Option<(String, auth::PasswordResetCancellation)>>,
     /// Set while a QR login is in the `QrScanned` stage (waiting for the
     /// user to type in the check code shown on the other device) — see
     /// `qr_login::submit_qr_check_code`.
