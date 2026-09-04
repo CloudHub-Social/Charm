@@ -330,6 +330,8 @@ disabled, with the companion still requiring the pre-auth owner cookie. Closing
 an empty recovery form or disabling recovery without an active request must not
 cancel an older, acknowledged reset or display dispatch uncertainty. In-flight
 discovery and issued attempts retain cancellation and late-result cleanup.
+An idle recovery rollout change must not clear another sign-in operation's busy
+state or error feedback.
 
 ## Testing strategy
 

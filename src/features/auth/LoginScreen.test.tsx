@@ -956,6 +956,31 @@ describe("LoginScreen password recovery", () => {
     },
   );
 
+  it("does not release a pending sign-in when recovery is disabled", async () => {
+    let finishLogin: ((session: LoginResponse) => void) | undefined;
+    login.mockReturnValue(
+      new Promise<LoginResponse>((resolve) => {
+        finishLogin = resolve;
+      }),
+    );
+    const onSignedIn = vi.fn();
+    const { rerender } = render(<LoginScreen onSignedIn={onSignedIn} />);
+    await discoverLoginChoices();
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    featureFlags.registrationEnabled = false;
+    rerender(<LoginScreen onSignedIn={onSignedIn} />);
+    expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    expect(cancelPasswordReset).not.toHaveBeenCalled();
+    expect(login).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishLogin?.(fakeSession());
+    });
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the same pre-verification state for an opaque rejected recovery request", async () => {
     requestPasswordReset.mockResolvedValue({
       attempt_id: "opaque-rejected-attempt",

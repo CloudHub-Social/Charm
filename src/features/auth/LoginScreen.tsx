@@ -690,10 +690,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     // A kill switch stops new recovery work, but cannot undo a dispatched
     // password change. Preserve terminal results until the user acknowledges
     // them and share the Cancel button's awaited, deduplicated cancellation.
-    if (passwordResetComplete || passwordResetCancellationUncertain) return;
+    // Do not reset shared login state when recovery is not the active surface.
+    if (!showPasswordReset || passwordResetComplete || passwordResetCancellationUncertain) return;
     void closePasswordReset();
   }, [
     registrationUiaEnabled,
+    showPasswordReset,
     passwordResetComplete,
     passwordResetCancellationUncertain,
     closePasswordReset,
