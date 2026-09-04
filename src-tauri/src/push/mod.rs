@@ -193,9 +193,7 @@ pub(crate) fn global_app_handle() -> Option<AppHandle> {
 /// Selects the platform transport by `cfg`. Returns `None` on desktop (no
 /// remote-push transport there — see this module's doc comment).
 ///
-pub fn active_transport(
-    #[allow(unused_variables)] app: &AppHandle,
-) -> Option<Arc<dyn NotificationTransport>> {
+pub fn active_transport(app: &AppHandle) -> Option<Arc<dyn NotificationTransport>> {
     #[cfg(target_os = "ios")]
     {
         let app_data_dir = app.path().app_data_dir().ok()?;
@@ -212,7 +210,9 @@ pub fn active_transport(
 /// Cleanup must reach the OS even after a restart with registration disabled.
 /// Constructing a transport does not register it; new registrations must go
 /// through `active_transport` instead.
-fn platform_transport(app: &AppHandle) -> Option<Arc<dyn NotificationTransport>> {
+fn platform_transport(
+    #[allow(unused_variables)] app: &AppHandle,
+) -> Option<Arc<dyn NotificationTransport>> {
     #[cfg(target_os = "android")]
     {
         Some(Arc::new(android::UnifiedPushTransport::new()) as Arc<dyn NotificationTransport>)
