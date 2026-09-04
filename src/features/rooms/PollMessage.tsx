@@ -28,14 +28,16 @@ export function PollMessage({
   const poll = message.poll;
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [endedLocally, setEndedLocally] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
+  const ended = poll.ended || endedLocally;
 
   const hasRealEventId = message.event_id.startsWith("$");
   const canEndPoll = own || (rowActions?.canRedact ?? false);
-  const showResults = poll.kind === "disclosed" || poll.ended;
+  const showResults = poll.kind === "disclosed" || ended;
   const totalVotes = poll.answers.reduce((sum, answer) => sum + answer.votes, 0);
 
   function getActionsHandle() {
@@ -46,6 +48,8 @@ export function PollMessage({
   async function vote(answerId: string) {
     if (
       currentPoll.ended ||
+      endedLocally ||
+      ending ||
       unsupportedSelectionCount ||
       mutationsDisabled ||
       !hasRealEventId ||
@@ -64,11 +68,20 @@ export function PollMessage({
   }
 
   async function end() {
-    if (!canEndPoll || currentPoll.ended || mutationsDisabled || !hasRealEventId || ending) return;
+    if (
+      !canEndPoll ||
+      ended ||
+      mutationsDisabled ||
+      !hasRealEventId ||
+      ending ||
+      pendingAnswerId !== null
+    )
+      return;
     setEnding(true);
     setError(null);
     try {
       await endPoll(roomId, message.event_id);
+      setEndedLocally(true);
     } catch {
       setError("The poll could not be ended.");
     } finally {
@@ -96,7 +109,22 @@ export function PollMessage({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs font-medium text-muted-foreground">
-                {message.sender_display_name ?? message.sender}
+                {rowActions?.onSenderClick ? (
+                  <button
+                    type="button"
+                    className="hover:underline"
+                    onClick={() =>
+                      rowActions.onSenderClick?.(
+                        message.sender,
+                        message.sender_display_name ?? message.sender,
+                      )
+                    }
+                  >
+                    {message.sender_display_name ?? message.sender}
+                  </button>
+                ) : (
+                  (message.sender_display_name ?? message.sender)
+                )}
               </p>
               <h3 className="mt-1 text-base font-semibold text-foreground">{poll.question}</h3>
             </div>
@@ -117,7 +145,8 @@ export function PollMessage({
                   type="button"
                   aria-pressed={answer.selected_by_me}
                   disabled={
-                    poll.ended ||
+                    ended ||
+                    ending ||
                     unsupportedSelectionCount ||
                     mutationsDisabled ||
                     !hasRealEventId ||
@@ -133,7 +162,7 @@ export function PollMessage({
                       : "border-border bg-background text-foreground hover:bg-accent",
                   )}
                 >
-                  {showResults && (
+                  {showResults && !unsupportedSelectionCount && (
                     <span
                       className="absolute inset-y-0 left-0 bg-primary/10"
                       style={{ width: `${percentage}%` }}
@@ -149,7 +178,8 @@ export function PollMessage({
                       />
                     ) : showResults ? (
                       <span className="shrink-0 text-xs font-medium text-muted-foreground">
-                        {answer.votes} · {percentage}%
+                        {answer.votes}
+                        {!unsupportedSelectionCount && ` · ${percentage}%`}
                       </span>
                     ) : answer.selected_by_me ? (
                       <span className="shrink-0 text-xs font-medium text-primary">Selected</span>
@@ -162,17 +192,19 @@ export function PollMessage({
 
           <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
             <span>
-              {poll.ended
-                ? `${totalVotes} ${totalVotes === 1 ? "vote" : "votes"} · Poll closed`
+              {ended
+                ? `${totalVotes} ${unsupportedSelectionCount ? "selections" : totalVotes === 1 ? "vote" : "votes"} · Poll closed`
                 : showResults
-                  ? `${totalVotes} ${totalVotes === 1 ? "vote" : "votes"}`
+                  ? `${totalVotes} ${unsupportedSelectionCount ? "selections" : totalVotes === 1 ? "vote" : "votes"}`
                   : "Results hidden until the poll closes"}
             </span>
-            {canEndPoll && !poll.ended && (
+            {canEndPoll && !ended && (
               <button
                 type="button"
                 onClick={() => void end()}
-                disabled={mutationsDisabled || !hasRealEventId || ending}
+                disabled={
+                  mutationsDisabled || !hasRealEventId || ending || pendingAnswerId !== null
+                }
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {ending ? "Ending…" : "End poll"}

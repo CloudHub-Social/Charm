@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
 import { PollMessage } from "./PollMessage";
@@ -89,6 +89,73 @@ beforeEach(() => {
 });
 
 describe("PollMessage", () => {
+  it("does not label multi-select answer totals as voters or percentages", () => {
+    render(
+      <PollMessage
+        message={pollMessage({
+          max_selections: 2,
+          answers: [
+            { id: "0", text: "Pizza", votes: 1, selected_by_me: true },
+            { id: "1", text: "Tacos", votes: 1, selected_by_me: true },
+          ],
+        })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+    expect(screen.getByText("2 selections")).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/2 votes/)).not.toBeInTheDocument();
+  });
+
+  it("opens the sender profile through the shared row action", () => {
+    const onSenderClick = vi.fn();
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own={false}
+        rowActions={rowActions({ onSenderClick })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Alice" }));
+    expect(onSenderClick).toHaveBeenCalledWith("@alice:example.org", "Alice");
+  });
+
+  it("excludes voting while closing and after close succeeds before the timeline catches up", async () => {
+    let finish!: () => void;
+    endPoll.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    const answer = screen.getByRole("button", { name: /Pizza/ });
+    expect(answer).toBeDisabled();
+    fireEvent.click(answer);
+    expect(voteOnPoll).not.toHaveBeenCalled();
+    await act(async () => finish());
+    expect(answer).toBeDisabled();
+    expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
+  });
+
+  it("does not end a poll while a vote is pending", async () => {
+    let finish!: () => void;
+    voteOnPoll.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    fireEvent.click(screen.getByRole("button", { name: /Pizza/ }));
+    expect(screen.getByRole("button", { name: "End poll" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    expect(endPoll).not.toHaveBeenCalled();
+    await act(async () => finish());
+  });
   it("renders forwarded read receipts", () => {
     render(
       <PollMessage

@@ -113,7 +113,7 @@ describe("MessageRow dispatcher", () => {
   );
 
   it.each<MessageLayout>(["bubble", "discord", "irc"])(
-    "does not offer text editing for a poll fallback in %s mode",
+    "does not offer unsupported actions for a poll fallback in %s mode",
     async (messageLayout) => {
       mockUseFlag.mockImplementation((flag: string) => flag !== "polls");
       const store = createStore();
@@ -152,6 +152,7 @@ describe("MessageRow dispatcher", () => {
               getActionsHandle={() => undefined}
               registerActionsRef={vi.fn()}
               onReply={vi.fn()}
+              onForward={vi.fn()}
               onReact={vi.fn()}
               onEdit={vi.fn()}
               onDelete={vi.fn()}
@@ -172,7 +173,9 @@ describe("MessageRow dispatcher", () => {
         ctrlKey: false,
         pointerType: "mouse",
       });
-      expect(await screen.findByText("Reply")).toBeInTheDocument();
+      expect(await screen.findByText("Copy")).toBeInTheDocument();
+      expect(screen.queryByText("Reply")).not.toBeInTheDocument();
+      expect(screen.queryByText("Forward")).not.toBeInTheDocument();
       expect(screen.queryByText("Edit")).not.toBeInTheDocument();
     },
   );

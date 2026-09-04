@@ -49,6 +49,7 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
   }, [open, roomId]);
 
   function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen && pending) return;
     if (!nextOpen) requestId.current += 1;
     onOpenChange(nextOpen);
   }
@@ -61,6 +62,7 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (pending) return;
     const normalizedQuestion = question.trim();
     const normalizedOptions = options.map((option) => option.value.trim());
     if (!normalizedQuestion || normalizedOptions.some((option) => !option)) {
@@ -80,7 +82,7 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
     setError(null);
     try {
       await createPoll(roomId, normalizedQuestion, normalizedOptions, disclosed);
-      if (requestId.current === id) handleOpenChange(false);
+      if (requestId.current === id) onOpenChange(false);
     } catch {
       if (requestId.current === id) setError("The poll could not be created.");
     } finally {
@@ -90,7 +92,16 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent
+        className="max-w-md"
+        showCloseButton={!pending}
+        onEscapeKeyDown={(event) => {
+          if (pending) event.preventDefault();
+        }}
+        onInteractOutside={(event) => {
+          if (pending) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Create poll</DialogTitle>
           <DialogDescription>
@@ -187,7 +198,12 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
           )}
 
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => handleOpenChange(false)}
+              disabled={pending}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>
