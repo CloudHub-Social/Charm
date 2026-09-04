@@ -12,7 +12,7 @@ settings the audit found in Charm 1.0 but not Charm 2.0.
 
 ## Problem & why now
 
-The [feature gallery](/features/#appearance-display) documents the default-off
+The [feature gallery](/features/) documents the default-off
 preview controls using the CI-captured Appearance settings journey. This preview
 entry does not imply completion of the remaining parity items below.
 
