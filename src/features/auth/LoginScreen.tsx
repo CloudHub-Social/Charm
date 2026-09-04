@@ -106,6 +106,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [recoveryToken, setRecoveryToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [passwordResetComplete, setPasswordResetComplete] = useState(false);
+  const [passwordResetCancellationUncertain, setPasswordResetCancellationUncertain] =
+    useState(false);
   const [passwordResetNotice, setPasswordResetNotice] = useState<string | null>(null);
   // Separate from `pending`: true from the moment the browser is opened
   // until the charm://sso-callback deep link arrives (or the user cancels).
@@ -240,6 +242,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     setShowPasswordReset(false);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
+    setPasswordResetCancellationUncertain(false);
     setPasswordResetNotice(null);
     setRecoveryEmail("");
     setRecoveryToken("");
@@ -651,18 +654,31 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     }
   }
 
-  function closePasswordReset() {
-    passwordResetOperationRef.current += 1;
+  async function closePasswordReset() {
+    if (passwordResetCancellationRef.current) return;
+    const operation = ++passwordResetOperationRef.current;
     const attemptId = passwordResetAttemptRef.current;
     passwordResetAttemptRef.current = null;
-    const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(logAndIgnore);
-    passwordResetCancellationRef.current = cancellation;
-    void cancellation.finally(() => {
-      if (passwordResetCancellationRef.current === cancellation) {
-        passwordResetCancellationRef.current = undefined;
+    let cancellationUncertain = false;
+    // Returning from an acknowledged terminal result is not another cancellation.
+    if (!passwordResetComplete && !passwordResetCancellationUncertain) {
+      setPending(true);
+      const cancellation = cancelPasswordReset(attemptId ?? undefined).catch(() => {
+        // Never display or log raw backend errors from this sensitive operation.
+        cancellationUncertain = true;
+      });
+      passwordResetCancellationRef.current = cancellation;
+      try {
+        await cancellation;
+      } finally {
+        if (passwordResetCancellationRef.current === cancellation) {
+          passwordResetCancellationRef.current = undefined;
+        }
       }
-    });
-    setShowPasswordReset(false);
+    }
+    if (passwordResetOperationRef.current !== operation) return;
+    setShowPasswordReset(cancellationUncertain);
+    setPasswordResetCancellationUncertain(cancellationUncertain);
     setPasswordResetChallenge(undefined);
     setPasswordResetComplete(false);
     setPasswordResetNotice(null);
@@ -683,7 +699,17 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
         {showPasswordReset ? (
           <div className="flex flex-col gap-5">
-            {passwordResetComplete ? (
+            {passwordResetCancellationUncertain ? (
+              <div className="flex flex-col gap-4">
+                <p role="alert" className="text-sm text-destructive">
+                  Cancellation could not be confirmed. Your password may still change. If your old
+                  password no longer works, try the new password or request another recovery email.
+                </p>
+                <Button type="button" onClick={closePasswordReset}>
+                  Return to sign in
+                </Button>
+              </div>
+            ) : passwordResetComplete ? (
               <div className="flex flex-col gap-4" aria-live="polite">
                 <div className="flex flex-col gap-1">
                   <h2 className="text-sm font-semibold">Password updated</h2>

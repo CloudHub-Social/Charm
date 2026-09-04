@@ -212,6 +212,9 @@ homeservers. The parity audit (2026-07-13) found:
   A bounded attempt-status record remains after completion until the next attempt;
   a late cancellation cannot claim it prevented a completed password change.
   Unknown or superseded attempt IDs likewise cannot claim prevention.
+  The recovery UI waits for cancellation before dismissing the form. If cancellation
+  cannot be confirmed, it clears sensitive inputs and shows an explicit warning
+  that the password may still change, with an acknowledged return to sign-in.
   Unauthenticated recovery networking classifies both IPv4-mapped and legacy
   IPv4-compatible IPv6 destinations through the same public-address deny list.
 - The companion applies per-source and keyed-hash-per-address reset-mail quotas,
