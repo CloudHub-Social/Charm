@@ -72,8 +72,8 @@ describe("AppearancePanel", () => {
   it("selects and persists a local font family", async () => {
     renderPanel();
     openMenu("Charm default");
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Serif", exact: true }));
-    expect(screen.getByRole("button", { name: "Serif", exact: true })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Serif$/ }));
+    expect(screen.getByRole("button", { name: /^Serif$/ })).toBeInTheDocument();
     await waitFor(() =>
       expect(storeSet).toHaveBeenLastCalledWith(
         "appearance",
