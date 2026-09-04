@@ -303,6 +303,9 @@ Surfaces changed:
     credential-deletion error must not skip the physical wipe attempt. The
     command reports failure from either teardown or physical cleanup instead of
     returning success for incomplete deletion; login exclusion spans both stages.
+    Matrix credentials, OAuth credentials, the SDK store, and its passphrase are
+    each attempted even if an earlier target fails. Any failure retains cleanup
+    intent for retry rather than reporting a completed wipe.
     A fallback marker outside the Matrix-store directory retains the same full-wipe
     semantics if the primary marker cannot be written, including after remote
     deactivation. Neither marker permits session restoration while cleanup is pending.

@@ -809,18 +809,33 @@ fn discard_cancelled_account_store_locked(
     // Resolve without `store_path`: its create-on-access contract is useful
     // for live stores but would manufacture an empty directory while cleanup
     // is trying to prove the cancelled store is absent.
-    let path = matrix_store_root(app)?.join(account_key);
-    match std::fs::remove_dir_all(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("failed to remove cancelled account store: {error}")),
-    }
-    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
-        .map_err(|error| error.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    discard_cancelled_account_store_with(
+        || {
+            let path = matrix_store_root(app)?.join(account_key);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("failed to remove cancelled account store: {error}")),
+            }
+        },
+        || {
+            let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+                .map_err(|error| error.to_string())?;
+            match entry.delete_credential() {
+                Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        },
+    )
+}
+
+fn discard_cancelled_account_store_with(
+    remove_store: impl FnOnce() -> Result<(), String>,
+    clear_passphrase: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let store = remove_store();
+    let passphrase = clear_passphrase();
+    store.and(passphrase)
 }
 
 /// Atomically removes every durable artifact for a registration that was
@@ -829,9 +844,24 @@ fn discard_cancelled_account_store_locked(
 /// relocation commit writes its session credentials.
 pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    clear_session(account_key)?;
-    clear_oauth_session(account_key)?;
-    discard_cancelled_account_store_locked(app, account_key)
+    discard_cancelled_account_session_with(
+        || clear_session(account_key),
+        || clear_oauth_session(account_key),
+        || discard_cancelled_account_store_locked(app, account_key),
+    )
+}
+
+fn discard_cancelled_account_session_with(
+    clear_matrix: impl FnOnce() -> Result<(), String>,
+    clear_oauth: impl FnOnce() -> Result<(), String>,
+    clear_store: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // A failed keychain operation must not prevent the independent wipe targets.
+    // Keep the first error so callers retain durable cleanup intent for retry.
+    let matrix = clear_matrix();
+    let oauth = clear_oauth();
+    let store = clear_store();
+    matrix.and(oauth).and(store)
 }
 
 /// One-time dev-only migration for the pre-Spec-15 layout, where
@@ -1849,6 +1879,34 @@ mod tests {
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
+
+    #[test]
+    fn account_wipe_attempts_every_target_despite_independent_failures() {
+        for failing_step in [
+            None,
+            Some("matrix"),
+            Some("oauth"),
+            Some("store"),
+            Some("passphrase"),
+        ] {
+            let calls = std::cell::RefCell::new(Vec::new());
+            let step = |name| {
+                calls.borrow_mut().push(name);
+                if failing_step == Some(name) {
+                    Err("injected cleanup failure".to_owned())
+                } else {
+                    Ok(())
+                }
+            };
+            let result = discard_cancelled_account_session_with(
+                || step("matrix"),
+                || step("oauth"),
+                || discard_cancelled_account_store_with(|| step("store"), || step("passphrase")),
+            );
+            assert_eq!(*calls.borrow(), ["matrix", "oauth", "store", "passphrase"]);
+            assert_eq!(result.is_err(), failing_step.is_some());
+        }
+    }
 
     #[test]
     fn committed_cleanup_failure_is_not_an_uncommitted_rollback() {
