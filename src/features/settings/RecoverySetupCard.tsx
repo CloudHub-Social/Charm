@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,8 +12,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { setupRecovery } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
-import { RECOVERY_STATUS_QUERY_KEY, useSetupRecovery } from "./useDevices";
+import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
 export function RecoverySetupCard({
   enabled,
@@ -25,7 +26,10 @@ export function RecoverySetupCard({
   recoveryDisabled: boolean;
 }) {
   const queryClient = useQueryClient();
-  const setup = useSetupRecovery();
+  // Do not place credentials in TanStack's mutation variables/data cache.
+  const setupInFlight = useRef(false);
+  const [setupPending, setSetupPending] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -42,21 +46,31 @@ export function RecoverySetupCard({
       confirmation === passphrase);
 
   async function startSetup() {
-    if (!enabled || setup.isPending || !passphraseValid || !crossSigningReady) return;
-    const summary = await setup.mutateAsync(hasPassphrase ? passphrase : undefined);
-    setPassphrase("");
-    setConfirmation("");
-    setSetupOpen(false);
-    setRoomKeysBackedUp(summary.room_keys_backed_up);
-    setRecoveryKey(summary.recovery_key);
+    if (!enabled || setupInFlight.current || !passphraseValid || !crossSigningReady) return;
+    setupInFlight.current = true;
+    setSetupPending(true);
+    setSetupError(null);
+    try {
+      const summary = await setupRecovery(hasPassphrase ? passphrase : undefined);
+      setSetupOpen(false);
+      setRoomKeysBackedUp(summary.room_keys_backed_up);
+      setRecoveryKey(summary.recovery_key);
+    } catch {
+      setSetupError("Could not set up recovery. Please try again.");
+    } finally {
+      setPassphrase("");
+      setConfirmation("");
+      setupInFlight.current = false;
+      setSetupPending(false);
+    }
   }
 
   function closeSetup() {
-    if (setup.isPending) return;
+    if (setupInFlight.current) return;
     setSetupOpen(false);
     setPassphrase("");
     setConfirmation("");
-    setup.reset();
+    setSetupError(null);
   }
 
   function finish() {
@@ -132,17 +146,17 @@ export function RecoverySetupCard({
                 onChange={(event) => setConfirmation(event.target.value)}
               />
             </div>
-            {setup.isError && <p className="text-sm text-destructive">{String(setup.error)}</p>}
+            {setupError && <p className="text-sm text-destructive">{setupError}</p>}
           </div>
           <DialogFooter>
-            <Button variant="secondary" onClick={closeSetup} disabled={setup.isPending}>
+            <Button variant="secondary" onClick={closeSetup} disabled={setupPending}>
               Cancel
             </Button>
             <Button
               onClick={() => startSetup().catch(logAndIgnore)}
-              disabled={!enabled || !passphraseValid || setup.isPending}
+              disabled={!enabled || !passphraseValid || setupPending}
             >
-              {setup.isPending ? "Backing up room keys…" : "Create backup"}
+              {setupPending ? "Backing up room keys…" : "Create backup"}
             </Button>
           </DialogFooter>
         </DialogContent>

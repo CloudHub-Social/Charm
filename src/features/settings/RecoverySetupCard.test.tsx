@@ -26,7 +26,9 @@ describe("RecoverySetupCard", () => {
   });
 
   it("keeps the generated recovery key visible until the user confirms it is saved", async () => {
-    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
+    const { client, unmount } = renderWithProviders(
+      <RecoverySetupCard enabled crossSigningReady recoveryDisabled />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
     fireEvent.change(screen.getByLabelText("Optional passphrase"), {
@@ -39,6 +41,7 @@ describe("RecoverySetupCard", () => {
 
     await waitFor(() => expect(setupRecovery).toHaveBeenCalledWith("long-enough-passphrase"));
     expect(await screen.findByText("EsTx generated recovery key")).toBeInTheDocument();
+    expect(client.getMutationCache().getAll()).toEqual([]);
     const done = screen.getByRole("button", { name: "Done" });
     expect(done).toBeDisabled();
 
@@ -47,6 +50,9 @@ describe("RecoverySetupCard", () => {
     await waitFor(() =>
       expect(screen.queryByText("EsTx generated recovery key")).not.toBeInTheDocument(),
     );
+    expect(client.getMutationCache().getAll()).toEqual([]);
+    unmount();
+    expect(client.getMutationCache().getAll()).toEqual([]);
   });
 
   it("allows setup without an optional passphrase", async () => {
