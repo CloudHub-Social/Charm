@@ -1,7 +1,20 @@
 import { createRef } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, type ComposerHandle } from "./Composer";
+
+const flags = vi.hoisted(() => ({ composerParity: false }));
+vi.mock("@/featureFlags", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/featureFlags")>();
+  return {
+    ...actual,
+    useFlag: (key: Parameters<typeof actual.useFlag>[0]) =>
+      key === "composer_parity" ? flags.composerParity : actual.useFlag(key),
+  };
+});
+beforeEach(() => {
+  flags.composerParity = false;
+});
 
 vi.mock("@/lib/matrix", () => ({
   getRoomMembers: vi.fn().mockResolvedValue([]),
@@ -94,7 +107,30 @@ describe("Composer", () => {
     expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bold/ })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Message general")).toBeInTheDocument());
-    expect(screen.getByLabelText("Message general")).toHaveAttribute("spellcheck", "true");
+    expect(screen.getByLabelText("Message general")).toHaveAttribute("spellcheck", "false");
+  });
+
+  it("updates native spellcheck on rollout and kill switch without losing the draft", async () => {
+    const props = {
+      roomId: "!spellcheck:example.org",
+      mode: "send" as const,
+      placeholder: "Message",
+      onSubmit: vi.fn(),
+      onSlashCommand: vi.fn(),
+      onEscape: vi.fn(),
+      onTypingInput: vi.fn(),
+    };
+    const view = render(<Composer {...props} />);
+    const editable = await screen.findByLabelText("Message");
+    expect(editable).toHaveAttribute("spellcheck", "false");
+    pasteText(editable, "retained draft");
+    flags.composerParity = true;
+    view.rerender(<Composer {...props} />);
+    await waitFor(() => expect(editable).toHaveAttribute("spellcheck", "true"));
+    flags.composerParity = false;
+    view.rerender(<Composer {...props} />);
+    await waitFor(() => expect(editable).toHaveAttribute("spellcheck", "false"));
+    expect(editable).toHaveTextContent("retained draft");
   });
 
   it("can collapse the formatting toolbar for a compact mobile composer", async () => {

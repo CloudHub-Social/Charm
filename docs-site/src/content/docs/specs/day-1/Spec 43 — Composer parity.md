@@ -126,8 +126,10 @@ blank text. Parser and wire-content regressions are included. The updated
 `SlashCommand` union requires CI-generated bindings; generation and end-to-end
 verification remain pending.
 
-The editable surface explicitly enables native `spellcheck`, with a DOM regression
-assertion. Platform-native underline and correction behavior still requires manual
+The editable surface enables native `spellcheck` only while the default-off
+`composer_parity` flag is enabled. Rollout and kill-switch changes update the live
+editor without discarding its draft, with DOM regression coverage for both
+transitions. Platform-native underline and correction behavior still requires manual
 verification. Strikethrough and code-block toolbar controls use the existing
 TipTap StarterKit extensions behind the default-off `composer_parity` flag.
 Their command dispatch and hidden-by-default behavior have regression tests.

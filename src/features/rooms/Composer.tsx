@@ -359,7 +359,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         role: "textbox",
         // Keep native OS/webview correction available without a custom
         // dictionary or sending draft text to an application service.
-        spellcheck: "true",
+        spellcheck: String(composerParityEnabled),
         "aria-multiline": "true",
         "aria-label": placeholder,
         // Not a native HTML placeholder (contenteditable has none) — kept
@@ -453,6 +453,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         ...editorProps,
         attributes: {
           ...attributes,
+          spellcheck: String(composerParityEnabled),
           "aria-label": placeholder,
           placeholder,
         },
@@ -462,7 +463,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // `data-placeholder` switches immediately even though the document did
     // not change during the responsive-layout transition.
     editor.view.dispatch(editor.state.tr);
-  }, [editor, placeholder]);
+  }, [editor, placeholder, composerParityEnabled]);
 
   // Reports the editor's initial content emptiness once it's created
   // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
