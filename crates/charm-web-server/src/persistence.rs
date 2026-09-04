@@ -1160,6 +1160,12 @@ impl PersistenceStore {
         // here claiming a single 15s bound.
         let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
             let entry = self.read_one(token).await?;
+            if entry.recovery_teardown_started {
+                if let Err(error) = self.remove(token, None).await {
+                    tracing::warn!("failed to finish teardown for persisted session: {error}");
+                }
+                return None;
+            }
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             let user_id = entry.session.meta.user_id.clone();
             match restore_one(&entry, initial_presence, self.crypto_backup.as_deref()).await {
@@ -2050,7 +2056,19 @@ impl PersistenceStore {
         // responds at all can't block startup indefinitely either.
         let now = now_unix();
         let max_age_secs = max_age.as_secs();
-        let entries = self.read_all().await.into_iter().filter(|entry| {
+        let entries = self.read_all().await;
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.recovery_teardown_started)
+        {
+            if let Err(error) = self.remove(&entry.token, None).await {
+                tracing::warn!("failed to finish startup teardown for persisted session: {error}");
+            }
+        }
+        let entries = entries.into_iter().filter(|entry| {
+            if entry.recovery_teardown_started {
+                return false;
+            }
             let expired = entry_is_expired(entry.last_seen_unix, now, max_age_secs);
             if expired {
                 tracing::info!(
@@ -3699,6 +3717,29 @@ mod tests {
         assert!(store.restore_by_token("never-saved", None).await.is_none());
     }
 
+    #[tokio::test]
+    async fn restore_by_token_finishes_a_teardown_tombstone_instead_of_restoring_it() {
+        let dir = scratch_dir("restore-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [51u8; 32]);
+        store
+            .save(
+                "tok-teardown",
+                "https://example.invalid",
+                &dummy_session("@teardown:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-teardown")
+            .await
+            .unwrap();
+
+        assert!(store.restore_by_token("tok-teardown", None).await.is_none());
+        assert!(store.read_one("tok-teardown").await.is_none());
+    }
+
     /// A persisted entry whose homeserver can't actually be reached (dead
     /// domain, network down) must drop out to `None` the same way
     /// `restore_all` drops an unrestorable entry rather than propagating the
@@ -4669,6 +4710,32 @@ mod tests {
             remaining,
             HashSet::from(["tok-expired".to_string(), "tok-fresh".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn restore_all_finishes_teardown_tombstones_before_startup_restore() {
+        let dir = scratch_dir("restore-all-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [52u8; 32]);
+        store
+            .save(
+                "tok-teardown-all",
+                "https://example.invalid",
+                &dummy_session("@teardown-all:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-teardown-all")
+            .await
+            .unwrap();
+
+        let restored = store
+            .restore_all(std::time::Duration::from_secs(30 * 24 * 60 * 60))
+            .await;
+        assert!(restored.is_empty());
+        assert!(store.read_one("tok-teardown-all").await.is_none());
     }
 
     #[tokio::test]
