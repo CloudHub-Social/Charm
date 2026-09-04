@@ -123,8 +123,8 @@ addition. No DTO changes for formatting (rides `formatted_body`).
 on native and web. The backend uses Ruma's `notice_plain` constructor and the
 existing serialized send helper, preserving `m.notice` semantics and refusing
 blank text. Parser and wire-content regressions are included. The updated
-`SlashCommand` union requires CI-generated bindings; generation and end-to-end
-verification remain pending.
+`SlashCommand` union's CI-generated binding is committed; end-to-end verification
+of the current candidate remains pending.
 
 The editable surface enables native `spellcheck` only while the default-off
 `composer_parity` flag is enabled. Rollout and kill-switch changes update the live
@@ -133,8 +133,7 @@ transitions. Platform-native underline and correction behavior still requires ma
 verification. Strikethrough and code-block toolbar controls use the existing
 TipTap StarterKit extensions behind the default-off `composer_parity` flag.
 Their command dispatch and hidden-by-default behavior have regression tests.
-The new flag's generated frontend catalog/type still needs CI-generated output
-committed before this draft is buildable. Link insertion uses the existing TipTap
+The new flag's CI-generated frontend catalog/type is committed. Link insertion uses the existing TipTap
 link mark and an accessible dialog, validates absolute web/mail/telephone URLs,
 rejects embedded credentials, and refuses stale selections after draft changes.
 Room/account changes remount the toolbar and close its dialog. These behaviors
@@ -145,8 +144,11 @@ local echoes, failed sends, redactions, undecrypted placeholders, and attachment
 the backend also rejects non-text message subtypes rather than replacing their
 fallback bodies with text. Editing text, emote, or notice preserves that original
 subtype, formatting, and mentions. The timeline now exports explicit text-edit
-eligibility; CI-generated bindings and the ArrowUp consumer update are pending.
-autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
+eligibility, and ArrowUp requires an explicit positive value, skipping unknown
+legacy values and non-text fallback bodies. The binding was imported from CI run
+33845346784, where all 521 native tests passed, including subtype preservation
+and non-text rejection; the consumer regressions await current-head CI.
+Autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
 their existing behavior. It does not fetch additional history to find an edit
 target. Shortcut regression tests are pending CI.
 

@@ -61,6 +61,9 @@ describe("useMessageActionController", () => {
       message,
       { ...own, event_id: "$redacted", redacted: true },
       { ...own, event_id: "$encrypted", is_undecrypted: true },
+      { ...own, event_id: "$location", text_editable: false },
+      { ...own, event_id: "$custom", text_editable: false },
+      { ...own, event_id: "$legacy", text_editable: undefined },
       { ...own, event_id: "local-echo" },
       { ...own, event_id: "$pending", send_state: { state: "pending" as const } },
       { ...own, event_id: "$failed", send_state: { state: "error" as const, message: "failed" } },
@@ -102,6 +105,24 @@ describe("useMessageActionController", () => {
     expect(result.current.editLastMessage([message])).toBe(false);
     expect(mocks.handleEdit).not.toHaveBeenCalled();
   });
+
+  it.each([false, undefined])(
+    "does not edit unknown or non-text fallback bodies (%s)",
+    (textEditable) => {
+      const { result } = renderHook(() =>
+        useMessageActionController({
+          roomId: "!one:example.org",
+          currentUserId: message.sender,
+          setReplyTarget: vi.fn(),
+          setEditingEventId: vi.fn(),
+        }),
+      );
+      expect(result.current.editLastMessage([{ ...message, text_editable: textEditable }])).toBe(
+        false,
+      );
+      expect(mocks.handleEdit).not.toHaveBeenCalled();
+    },
+  );
 
   it("leaves the composer alone when there is no own editable message", () => {
     const { result } = renderHook(() =>

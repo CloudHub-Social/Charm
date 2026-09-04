@@ -91,6 +91,7 @@ export function useMessageActionController({
         message.send_state.state !== "sent" ||
         message.redacted ||
         message.is_undecrypted ||
+        message.text_editable !== true ||
         message.media !== null
       ) {
         continue;
