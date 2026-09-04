@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as featureFlags from "@/featureFlags";
 import { featureFlagTestHooks, FEATURE_FLAG_CATALOG } from "@/featureFlags";
 import { LabsPanel } from "./LabsPanel";
 
@@ -11,11 +12,26 @@ beforeEach(() => {
   localStorage.clear();
   featureFlagTestHooks.reset();
 });
+afterEach(() => vi.restoreAllMocks());
 
 /** A flag known to exist in the generated catalog, for stable assertions. */
 const A_FLAG = "canary";
 
 describe("LabsPanel", () => {
+  it("reports rejected flag changes without exposing backend errors", async () => {
+    vi.spyOn(featureFlags, "setFeatureFlagOverride").mockRejectedValueOnce(
+      new Error("private backend detail"),
+    );
+    render(<LabsPanel />);
+    const toggle = screen.getByRole("switch", { name: "Toggle Canary" });
+    fireEvent.click(toggle);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not finish applying the flag change",
+    );
+    expect(screen.queryByText("private backend detail")).not.toBeInTheDocument();
+    expect(toggle).not.toBeChecked();
+    await waitFor(() => expect(toggle).toBeEnabled());
+  });
   it("lists every catalog flag with its default state", () => {
     render(<LabsPanel />);
     for (const key of Object.keys(FEATURE_FLAG_CATALOG)) {
@@ -46,7 +62,9 @@ describe("LabsPanel", () => {
     await waitFor(() => expect(toggle).toBeChecked());
 
     const note = await screen.findByText(/Overridden/);
-    fireEvent.click(within(note).getByRole("button", { name: /Reset to default/ }));
+    const reset = within(note).getByRole("button", { name: /Reset to default/ });
+    await waitFor(() => expect(reset).toBeEnabled());
+    fireEvent.click(reset);
 
     await waitFor(() => expect(toggle).not.toBeChecked());
     expect(screen.queryByText(/Overridden/)).not.toBeInTheDocument();

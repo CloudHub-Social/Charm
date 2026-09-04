@@ -24,6 +24,13 @@ cross-signing status command to finally surface in UI.
 
 ## Current state (in repo)
 
+Hard (non-soft-logout) `M_UNKNOWN_TOKEN` sync failures remove web-session
+admission and notify the browser to return to sign-in. Native terminal cleanup
+must first establish a durable restore veto; if storage prevents that, the sync
+error remains visible in the retained shell for retry. Failed ordinary logout
+also retains push registration until that durable boundary succeeds. A late
+restore rejection cannot override an already-delivered session invalidation.
+
 - **Auth shipped**: `login`, `register`, `discover_homeserver`, `start_sso_login` /
   `complete_sso_login` / `cancel_sso_login`, `try_restore_session`, QR login — all in
   `src-tauri/src/matrix/mod.rs` + `qr_login.rs`. **No `logout`.**
@@ -238,7 +245,14 @@ Surfaces changed:
 1. A **Log out** control signs the user out: server-side session revoked (best effort),
    both keychain entries (`session` and `oauth-session`) cleared, `MatrixState.client`
    set to `None`, and the UI returns to `LoginScreen`. A subsequent app relaunch does
-   **not** auto-restore (`try_restore_session` returns `None`).
+   **not** auto-restore (`try_restore_session` returns `None`). Durable primary/fallback
+   tombstones suppress restore until interrupted credential and encrypted-search cleanup
+   finishes; a newly committed login clears the tombstones only after the store/session
+   pair is installed.
+   Startup retries attempt both credential kinds and encrypted-search deletion even
+   if a credential store is unavailable. Full-wipe retries likewise attempt search
+   deletion after an SDK-store cleanup failure. Markers remain until every required
+   target succeeds; failure-path regressions are included, pending current-head CI.
 2. Logout succeeds and clears local session even when the server-side revoke call fails
    (offline), and shows no false error.
 3. Editing display name persists via `set_display_name` and is reflected after refetch;
@@ -246,7 +260,8 @@ Surfaces changed:
 4. Password change with correct current password succeeds; a UIA/`M_FORBIDDEN` challenge
    surfaces a clear "re-enter your password" prompt rather than a raw error.
 5. Deactivate account, after double-confirm, deactivates server-side and tears down the
-   local session identically to logout.
+   local session identically to logout, then removes the retained SDK store and records
+   account-wide retry intent before any fallible local cleanup.
 6. Devices panel lists all of the account's devices with display name, last-seen, a
    trust badge, and the current device clearly marked (`is_current`).
 7. Revoking (signing out) another device calls `delete_device`, satisfies UIA, and the
@@ -266,6 +281,93 @@ Surfaces changed:
 13. All new IPC types exist as ts-rs bindings in `src/bindings/` **and** as matching
     hand-authored types/wrappers in `src/lib/matrix.ts`; `CrossSigningStatusSummary` is
     reused, not redefined.
+14. The renderer installs `session:invalidated` before starting restore. Listener or
+    restore setup failures preserve local data and show a retryable startup error rather
+    than silently presenting an unexplained logged-out screen.
+    Local teardown publishes invalidation while login completion is excluded,
+    including successful teardown followed by a physical-cleanup failure, so
+    the renderer cannot remain authenticated after the active client is gone.
+    On web, self-issued logout defers renderer invalidation until its HTTP response
+    settles, and replacement authentication waits for that response's cookie deletion.
+    Invalidation in other tabs is immediate; an offline logout failure alone is not
+    treated as proof that the session was revoked.
+    A revoked WebSocket sends the payload-free terminal invalidation event before
+    closing, including revocation during replay or between lookup and subscription.
+    It does not send further retained account payloads.
+15. The default-off **Forget local data** action uses its own `forget_local_data`
+    flag in both the renderer and native command, independently of message search.
+    It requires typed and native-system
+    confirmation, signs out, and physically removes the retained Matrix store, keychain
+    passphrase, and every encrypted search index for the account on this device without
+    deleting the server-side Matrix account. Confirmation is bound to the account and
+    device selected before the native dialog opens; a changed session requires fresh
+    confirmation. Canceling the typed-confirmation dialog clears its input, so
+    reopening always requires typing the confirmation again. Login completion
+    remains serialized through physical deletion.
+    Startup retry clears an interrupted-wipe marker only after both session/store
+    cleanup and deletion of every device-scoped search index have succeeded.
+    Once account-wide cleanup intent is durable, an ordinary sign-out marker or
+    credential-deletion error must not skip the physical wipe attempt. The
+    command reports failure from either teardown or physical cleanup instead of
+    returning success for incomplete deletion; login exclusion spans both stages.
+    Matrix credentials, OAuth credentials, the SDK store, and its passphrase are
+    each attempted even if an earlier target fails. Any failure retains cleanup
+    intent for retry rather than reporting a completed wipe.
+    A settings command's completion callback is bound to the renderer session
+    that initiated it. If native invalidation already permitted a replacement
+    login, the old callback cannot clear that replacement's state or caches.
+    A fallback marker outside the Matrix-store directory retains the same full-wipe
+    semantics if the primary marker cannot be written, including after remote
+    deactivation. Neither marker permits session restoration while cleanup is pending.
+    Replacement password/SSO and OAuth/QR login adoption also rejects either
+    marker before relocating a store or saving credentials. An unreadable or
+    malformed marker fails closed. The user must finish the pending cleanup
+    (including its startup retry) before signing back into that account.
+    Cancelling an in-flight SSO callback suppresses only the backend's confirmed
+    cancellation result. Post-commit cleanup or device-revocation failures remain
+    visible, while restart waits for completion and cancellation to settle.
+16. Hard terminal authentication failure revokes the in-memory client and invalidates
+    its push registration first, using the same transport and persisted-endpoint
+    cleanup as explicit logout. A rejected homeserver pusher deletion does not
+    skip local/platform cleanup. Failures use identifier-free diagnostics.
+    It then invalidates
+    search backfill before cleanup. The live search database is closed before
+    its files are deleted, with the contended index lock and filesystem work on
+    a blocking worker. Query and indexing kill-switch cleanup release the index
+    lock before resetting lifecycle state, preventing lock-order inversion with
+    reconciliation; the index is reacquired for purge before returning unavailable.
+    Timeline and pinned-event caches, volatile push state, the native badge, and
+    renderer authentication are cleared before starting that blocking worker,
+    while replacement login is still excluded. A worker panic therefore cannot
+    strand the renderer in the invalidated account's authenticated shell.
+    The web companion emits the same `session:invalidated` event atomically with
+    permanent session removal, before awaited search-index deletion. Connected
+    tabs use the existing renderer reset listener. Authenticated HTTP 401s also
+    invalidate the browser session; socket closure probes `/api/auth/me` so a
+    missed removal event can be recovered. Network failures alone do not log out.
+    Invalidation stops reconnect/keepalive until a successful new login or restore;
+    session epochs prevent stale 401s from invalidating a replacement login.
+    That worker owns the login-exclusion guard until it
+    finishes, even if the awaiting sync task is aborted. Failed cleanup retains
+    the durable retry marker when marker persistence succeeds. Both credential
+    deletions are attempted independently even if the marker write fails,
+    matching ordinary logout; incomplete cleanup is reported without logging
+    keychain errors or treating the missing marker as successful cleanup.
+    `M_UNKNOWN_TOKEN` with `soft_logout: true` never enters this destructive path;
+    its existing device and persisted crypto state are retained. The dedicated
+    same-device reauthentication UI/flow remains an outstanding readiness item,
+    not a completed feature merely because destructive cleanup is excluded.
+    Logout, local-data removal, and deactivation workers likewise retain shared
+    ownership of login exclusion through blocking cleanup, even if their caller
+    is cancelled. The caller retains exclusion after a worker panic so recovery
+    cannot race a replacement login. Cancellation and panic regressions are
+    included; GitHub Actions verification is pending.
+    Local-data removal makes a best-effort remote revoke with a five-second
+    deadline after clearing local session state. It drops that request's SDK
+    client before physical store deletion instead of leaving an unbounded
+    background request holding store files open. Remote success and delayed
+    response regression tests are pending CI; this does not prove that a remote
+    session was revoked when the homeserver is unavailable.
 
 ## Testing
 
@@ -321,13 +423,27 @@ Surfaces changed:
 - **`client.devices()` last-seen fields** can be sparse/absent on some homeservers; UI
   must tolerate `None`.
 - **Logout store retention**: plain logout may retain `matrix_store` encrypted at rest,
-  but Spec 28 closes and deletes the current account's plaintext message-search index.
-  Spec 28 PR 1 owns a Day-1 "Forget local data" account-management action that removes
-  every retained account store plus its key material. Its confirmation must distinguish
-  the encrypted SDK store from the already-deleted plaintext search index; plain-logout
-  copy must remain accurate about what is retained.
+  while deleting the current device's separately encrypted message-search index.
+  Logout and deactivation revalidate their requested account/device after acquiring
+  login exclusion, rejecting stale actions before revocation or deletion. Deactivation
+  holds exclusion through the remote request and local cleanup; a UIA challenge
+  releases it before the next user-input round. This prevents an in-flight account
+  action from clearing a replacement session. The new concurrency regression is
+  pending CI verification.
+  The independently default-off `forget_local_data` account-management control requires typed
+  confirmation plus a native system confirmation, closes the session, and removes every retained matrix-sdk store,
+  keychain passphrase, and encrypted search index for that account on this device. It
+  does not deactivate the Matrix account or erase server-side messages. Cleanup intent
+  is persisted before teardown, so an interrupted filesystem/keychain deletion is
+  retried at startup without silently restoring the account; plain-logout copy remains
+  explicit that it is not a device wipe.
 - **Notification-settings API surface** (`NotificationSettings` helper method names) can
   vary across matrix-rust-sdk versions — verify against the pinned `Cargo.toml` version.
+
+Permanent web-session removal serializes its revocation boundary with each admitted
+WebSocket payload send. Sends time out after five seconds so an unresponsive peer
+cannot hold that boundary indefinitely. Deactivation clears full-wipe retry intent
+only after both retained SDK data and account-wide search indexes are removed.
 
 ## Effort estimate
 

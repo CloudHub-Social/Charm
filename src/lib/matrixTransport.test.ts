@@ -57,11 +57,13 @@ describe("matrix web transport", () => {
     vi.useRealTimers();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://api.example");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson({ ok: true })));
     vi.stubGlobal("WebSocket", MockWebSocket);
+    const resetTransport = await listen("test:reset", () => {});
+    resetTransport();
     MockWebSocket.instances = [];
     localStorage.clear();
   });
@@ -1133,6 +1135,157 @@ describe("matrix web transport", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(MockWebSocket.instances).toHaveLength(3);
 
+    unlisten();
+  });
+
+  it.each([400, 401])(
+    "suspends sockets after an empty restore (%s), then resumes on login",
+    async (status) => {
+      vi.useFakeTimers();
+      const invalidated = vi.fn();
+      const unlisten = await listen("session:invalidated", invalidated);
+      MockWebSocket.instances[0].close();
+      fetchMock().mockResolvedValueOnce(new Response("no session", { status }));
+      await expect(invoke("try_restore_session")).resolves.toBeNull();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(invalidated).not.toHaveBeenCalled();
+      fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+      await invoke("login", { request: {} });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      unlisten();
+    },
+  );
+
+  it.each(["begin_registration", "continue_registration"])(
+    "resumes a suspended transport only after %s completes registration",
+    async (command) => {
+      const unlisten = await listen("room_list:update", vi.fn());
+      fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+      await expect(invoke("try_restore_session")).resolves.toBeNull();
+      expect(MockWebSocket.instances).toHaveLength(1);
+      fetchMock().mockResolvedValueOnce(okJson({ state: "challenge", attempt_id: "pending" }));
+      await invoke(command, { request: {}, attemptId: "pending", response: {} });
+      expect(MockWebSocket.instances).toHaveLength(1);
+      fetchMock().mockResolvedValueOnce(
+        okJson({ state: "complete", session: { user_id: "@new:example.org" } }),
+      );
+      await invoke(command, { request: {}, attemptId: "pending", response: {} });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      expect(MockWebSocket.instances[1].readyState).not.toBe(MockWebSocket.CLOSED);
+      unlisten();
+    },
+  );
+
+  it("does not suspend a new login when an older empty restore finishes", async () => {
+    const unlisten = await listen("room_list:update", vi.fn());
+    let finish!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const restore = invoke("try_restore_session");
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("login", { request: {} });
+    const activeSocket = MockWebSocket.instances.at(-1)!;
+    finish(new Response("no session", { status: 401 }));
+    await expect(restore).resolves.toBeNull();
+    expect(activeSocket.readyState).not.toBe(MockWebSocket.CLOSED);
+    unlisten();
+  });
+
+  it("invalidates an authenticated session on 401 and stops reconnecting", async () => {
+    vi.useFakeTimers();
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+    await expect(invoke("list_rooms")).rejects.toThrow("no session");
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    const count = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(MockWebSocket.instances).toHaveLength(count);
+    unlisten();
+  });
+
+  it("checks closed sockets for revoked sessions without logging out on network failure", async () => {
+    vi.useFakeTimers();
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockRejectedValueOnce(new Error("offline"));
+    MockWebSocket.instances.at(-1)!.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(invalidated).not.toHaveBeenCalled();
+    fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
+    MockWebSocket.instances.at(-1)!.close();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+
+  it("ignores stale 401 replies after adopting a newer session", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    let finish!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const oldRequest = invoke("list_rooms").catch(() => {});
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    await invoke("login", { request: {} });
+    finish(new Response("no session", { status: 401 }));
+    await oldRequest;
+    expect(invalidated).not.toHaveBeenCalled();
+    unlisten();
+  });
+
+  it("holds self-logout invalidation and replacement login until cookie deletion settles", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    let finishLogout!: (response: Response) => void;
+    fetchMock().mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finishLogout = resolve;
+      }),
+    );
+    const logout = invoke("logout");
+    MockWebSocket.instances.at(-1)!.emit({ event: "session:invalidated", data: null });
+    expect(invalidated).not.toHaveBeenCalled();
+    const requestsBeforeLogin = fetchMock().mock.calls.length;
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    const login = invoke("login", { request: {} });
+    await Promise.resolve();
+    expect(fetchMock()).toHaveBeenCalledTimes(requestsBeforeLogin);
+    finishLogout(okJson());
+    await logout;
+    await login;
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(lastFetch()[0]).toBe("https://api.example/api/auth/login");
+    unlisten();
+  });
+
+  it("releases self-logout waiting after a network failure without inventing invalidation", async () => {
+    const invalidated = vi.fn();
+    const unlisten = await listen("session:invalidated", invalidated);
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@alice:example.org" }));
+    await invoke("try_restore_session");
+    fetchMock().mockRejectedValueOnce(new Error("offline"));
+    await expect(invoke("logout")).rejects.toThrow("offline");
+    expect(invalidated).not.toHaveBeenCalled();
+    fetchMock().mockResolvedValueOnce(okJson({ user_id: "@bob:example.org" }));
+    await expect(invoke("login", { request: {} })).resolves.toEqual({
+      user_id: "@bob:example.org",
+    });
     unlisten();
   });
 

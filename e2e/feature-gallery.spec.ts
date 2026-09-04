@@ -46,6 +46,33 @@ test("public room directory searches the homeserver", async ({ page }) => {
   await captureSnapshot(page, "feature-room-directory");
 });
 
+test("forget local data requires explicit confirmation and can be cancelled", async ({ page }) => {
+  await page.addInitScript(enableFlags, { forget_local_data: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Forget local data", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Forget local data?", exact: true });
+  await expect(confirmation).toBeVisible();
+  const forget = confirmation.getByRole("button", { name: "Forget local data", exact: true });
+  await expect(forget).toBeDisabled();
+  await expect(
+    confirmation.getByText(/Matrix account and server-side messages are not deleted/),
+  ).toBeVisible();
+  await captureSnapshot(page, "feature-forget-local-data-confirm");
+  await confirmation.getByLabel("Type FORGET to confirm").fill("FORGET");
+  await expect(forget).toBeEnabled();
+  // The gallery demonstrates the consent boundary, not native deletion against a mock host.
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(confirmation).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Profile", exact: true })).toBeVisible();
+});
+
 test("full emoji picker opens from the composer", async ({ page }) => {
   await page.addInitScript(enableFlags, { full_emoji_picker: true });
   await page.addInitScript(installMockTauri, {

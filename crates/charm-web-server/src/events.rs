@@ -37,6 +37,8 @@ pub struct SasUpdatePayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", content = "data")]
 pub enum ServerEvent {
+    #[serde(rename = "session:invalidated")]
+    SessionInvalidated(()),
     #[serde(rename = "sync:state")]
     SyncState(SyncStateEvent),
     #[serde(rename = "room_list:update")]
