@@ -271,17 +271,6 @@ async fn clear_local_session_locked(
     search_cleanup_scope: SearchCleanupScope,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
-    // Keep this authenticated session available until its pusher has been
-    // removed. Otherwise a failed deletion cannot be retried after local
-    // credentials are discarded, and a later reuse of the device token can
-    // revive delivery for the signed-out account.
-    if crate::push::unregister_push_impl(app, state).await.is_err() {
-        // Remote and platform cleanup are already best-effort and bounded;
-        // the helper only reports failure when its local retry record could
-        // not be written or removed. Do not trap the account on a broken or
-        // full filesystem when credential teardown can still proceed.
-        tracing::warn!(command = "logout", status = "push_cleanup_record_failed");
-    }
     let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()
@@ -304,6 +293,14 @@ async fn clear_local_session_locked(
         return Err(
             "Could not persist sign-out. Your session remains open; retry signing out.".into(),
         );
+    }
+
+    // Only remove push after logout has a durable restore veto. If storage
+    // failures retain the live session for retry, its notifications must stay
+    // registered too. The live SDK client remains available for the bounded
+    // homeserver deletion even though local credential files are now cleared.
+    if crate::push::unregister_push_impl(app, state).await.is_err() {
+        tracing::warn!(command = "logout", status = "push_cleanup_record_failed");
     }
 
     // Cleared *before* the awaited teardown below, not after: `state.client`
