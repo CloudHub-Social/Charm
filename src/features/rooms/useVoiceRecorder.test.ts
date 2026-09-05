@@ -151,6 +151,18 @@ describe("useVoiceRecorder", () => {
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
+  it("discards capture when a timeline-owned dialog opens", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => result.current.start());
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    await act(async () => document.body.append(dialog));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toContain("dialog opened");
+    dialog.remove();
+  });
+
   it("does not count delayed stop-event delivery as recorded audio", async () => {
     const { result } = renderHook(() => useVoiceRecorder());
     await act(async () => result.current.start());

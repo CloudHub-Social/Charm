@@ -231,7 +231,9 @@ describe("AppShell", () => {
     expect(screen.getByText("space-rail")).toBeInTheDocument();
     expect(screen.getByText("room-list")).toBeInTheDocument();
     expect(screen.getByText("chat-content")).toBeInTheDocument();
-    expect(screen.getByText("right-panel")).toBeInTheDocument();
+    const rightPanel = screen.getByText("right-panel");
+    expect(rightPanel).toBeInTheDocument();
+    expect(rightPanel.parentElement).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 

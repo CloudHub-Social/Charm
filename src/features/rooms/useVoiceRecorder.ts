@@ -94,6 +94,23 @@ export function useVoiceRecorder() {
     };
   }, [phase, clearResources]);
 
+  useEffect(() => {
+    if (phase !== "requesting" && phase !== "recording") return;
+    function abandonDialogCoveredCapture() {
+      if (!document.querySelector('[role="dialog"]')) return;
+      clearResources();
+      setPreview(null);
+      setPhase("idle");
+      setElapsedMs(0);
+      setLevel(0);
+      setError("Recording was discarded when a dialog opened over the chat.");
+    }
+    abandonDialogCoveredCapture();
+    const observer = new MutationObserver(abandonDialogCoveredCapture);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [phase, clearResources]);
+
   function stop() {
     if (active.current) {
       active.current.requestStop();

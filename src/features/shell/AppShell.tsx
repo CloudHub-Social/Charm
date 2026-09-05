@@ -108,7 +108,11 @@ export function AppShell({
       {layout === "desktop" && rightPanel}
       {layout === "mobile" &&
         (mobileView === "detail" && activeRoomId ? (
-          rightPanel
+          rightPanel && (
+            <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
+              {rightPanel}
+            </div>
+          )
         ) : (
           <div className="flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
             {spaceRail}
