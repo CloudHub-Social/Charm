@@ -49,11 +49,12 @@ export const UserMention = Mention.extend({
   parseHTML() {
     return [
       {
-        tag: 'a[data-mx-pill][href^="https://matrix.to/#/@"]',
-        getAttrs: parseMentionAnchor("@"),
-      },
-      {
-        tag: 'a[data-mx-pill][href^="https://matrix.to/#/%40"]',
+        // Match the stable pill marker and validate/decode the href in
+        // getAttrs. URL fragments and percent-encoded sigils are not
+        // matched consistently by every DOMParser/CSS-selector path used by
+        // ProseMirror clipboard parsing, which previously collapsed a pasted
+        // pill to its display label before slash-command dispatch.
+        tag: "a[data-mx-pill]",
         getAttrs: parseMentionAnchor("@"),
       },
     ];
@@ -87,11 +88,7 @@ export const RoomMention = Mention.extend({
   parseHTML() {
     return [
       {
-        tag: 'a[data-mx-pill][href^="https://matrix.to/#/!"]',
-        getAttrs: parseMentionAnchor("!"),
-      },
-      {
-        tag: 'a[data-mx-pill][href^="https://matrix.to/#/%21"]',
+        tag: "a[data-mx-pill]",
         getAttrs: parseMentionAnchor("!"),
       },
     ];

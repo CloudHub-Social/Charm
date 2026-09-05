@@ -8,6 +8,11 @@ export function guardedStarterKit(enabled: () => boolean) {
       return (this.parent?.() ?? []).map((extension) => {
         if (!["strike", "codeBlock"].includes(extension.name)) return extension;
         return extension.extend({
+          // A disabled formatting feature must not keep expanding an
+          // existing marked range when text is inserted at its boundary.
+          // Stored-mark cleanup handles keyboard input; a non-inclusive mark
+          // also covers paste transactions, which do not inherit storedMarks.
+          ...(extension.name === "strike" ? { inclusive: false } : {}),
           addKeyboardShortcuts() {
             return Object.fromEntries(
               Object.entries(this.parent?.() ?? {}).map(([key, command]) => [

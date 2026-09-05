@@ -53,7 +53,7 @@ describe("UserMention", () => {
     anchor.textContent = "@Alice";
 
     const rules = UserMention.config.parseHTML!.call({} as never)!;
-    const attrs = rules[1]!.getAttrs!(anchor);
+    const attrs = rules[0]!.getAttrs!(anchor);
 
     expect(attrs).toEqual({ id: "@alice:example.org", label: "Alice" });
   });

@@ -7,6 +7,10 @@ import { Mark, mergeAttributes } from "@tiptap/core";
  */
 export const MatrixSpoiler = Mark.create({
   name: "matrixSpoiler",
+  // Do not let text inserted beside an existing spoiler silently become
+  // concealed after the composer-parity kill switch has turned formatting
+  // controls off. The author can explicitly toggle the mark while enabled.
+  inclusive: false,
   addAttributes() {
     return {
       reason: {
