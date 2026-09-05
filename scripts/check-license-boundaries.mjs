@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,8 +210,30 @@ const sableCallName = /sable[-_ ]?call/i;
 const narrativeDocument = /\.mdx?$/i;
 const sourceArchiveText =
   /(?:^|\/)(?:Dockerfile|Containerfile|Makefile|Justfile|Podfile|gradlew)$|\.(?:[cm]?[jt]sx?|rs|py|sh|bash|zsh|fish|ps1|bat|cmd|jsonc?|ya?ml|toml|xml|html?|css|scss|sass|less|svg|astro|vue|svelte|hbs|njk|liquid|graphql|gql|sql|proto|gradle|kts?|java|swift|plist|pbxproj|xcconfig|properties|conf|config|env|lock|txt|snap|fixture)$/i;
+const opaqueArchiveArtifact =
+  /\.(?:wasm|zip|tar|tgz|gz|7z|rar|jar|aar|apk|aab|dylib|so|dll|exe|bin)$/i;
+const auditedOpaqueArtifacts = new Map([
+  [
+    "src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar",
+    "e996d452d2645e70c01c11143ca2d3742734a28da2bf61f25c82bdc288c9e637",
+  ],
+]);
 
 for (const trackedFile of trackedFiles) {
+  if (opaqueArchiveArtifact.test(trackedFile)) {
+    const expectedHash = auditedOpaqueArtifacts.get(trackedFile);
+    if (!expectedHash) {
+      errors.push(`Opaque source-archive artifact requires explicit audit: ${trackedFile}`);
+    } else {
+      const actualHash = createHash("sha256")
+        .update(readFileSync(path.join(repositoryRoot, trackedFile)))
+        .digest("hex");
+      if (actualHash !== expectedHash) {
+        errors.push(`Audited opaque artifact changed without review: ${trackedFile}`);
+      }
+    }
+  }
+
   const isNarrativeDocument = narrativeDocument.test(trackedFile);
   const archiveContainsForbiddenSource =
     trackedFile !== checkerRelativePath &&

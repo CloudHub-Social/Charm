@@ -38,7 +38,7 @@ const npmDirectory = path.resolve(
 );
 const licenseFilename =
   /^(?:licen[cs]e|copying|notice|copyright|authors?|contributors?|patents?)(?:$|[._-])/i;
-const licenseTermsFilename = /(?:^|\/)(?:licen[cs]e|copying)(?:$|[._-])|^(?:licen[cs]es?)\//i;
+const licenseTermsFilename = /(?:^|\/)(?:licen[cs]e|copying)(?:$|[._-])/i;
 const entries = new Map();
 const errors = [];
 const mitLicenseText = `MIT License

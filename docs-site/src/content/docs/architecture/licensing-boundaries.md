@@ -55,6 +55,8 @@ Charm may integrate with Sable Call only as external software:
 The CI `license:check` guard preserves the repository side of this boundary by
 rejecting Sable Call dependencies, packaging inputs, packaged assets, and
 non-document material that would be redistributed in release source archives.
+Opaque executable/archive formats require an explicitly reviewed SHA-256 pin;
+the Gradle wrapper JAR is the sole current exception.
 
 ## Widget security and privacy boundary
 

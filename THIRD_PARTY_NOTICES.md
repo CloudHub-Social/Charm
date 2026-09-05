@@ -31,7 +31,7 @@ Representative directly bundled frontend dependencies include:
 | Radix UI                                 | MIT                                      |
 | Sentry JavaScript SDK                    | MIT                                      |
 | JetBrains Mono and Manrope font packages | OFL-1.1                                  |
-| Gradle wrapper scripts                   | Apache-2.0                               |
+| Gradle wrapper scripts and pinned JAR    | Apache-2.0                               |
 
 This short table is an attribution index, not a replacement for the lockfiles,
 generated `THIRD_PARTY_LICENSES.txt`, or release SBOMs.
@@ -42,6 +42,10 @@ Foundation's [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html) and
 [LGPLv3](https://www.gnu.org/licenses/lgpl-3.0.html) publications. They cover
 resolved packages that declare those licenses but omit the terms from a split
 platform package; package-provided terms remain preferred.
+
+Opaque executable and archive formats are rejected from release source
+archives unless their provenance has been reviewed and their exact SHA-256 is
+pinned by `license:check`. The Gradle wrapper JAR is the sole current exception.
 
 ## External software: Sable Call
 
