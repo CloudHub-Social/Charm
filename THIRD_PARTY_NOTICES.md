@@ -13,15 +13,15 @@ and reviewing that inventory is a release gate, not a claim made by this file.
 
 Representative directly bundled frontend dependencies include:
 
-| Component | License declared by its package metadata |
-| --- | --- |
-| React and React DOM | MIT |
-| DOMPurify | MPL-2.0 OR Apache-2.0 |
-| Tiptap | MIT |
-| Radix UI | MIT |
-| Sentry JavaScript SDK | MIT |
-| JetBrains Mono and Manrope font packages | OFL-1.1 |
-| Gradle wrapper scripts | Apache-2.0 |
+| Component                                | License declared by its package metadata |
+| ---------------------------------------- | ---------------------------------------- |
+| React and React DOM                      | MIT                                      |
+| DOMPurify                                | MPL-2.0 OR Apache-2.0                    |
+| Tiptap                                   | MIT                                      |
+| Radix UI                                 | MIT                                      |
+| Sentry JavaScript SDK                    | MIT                                      |
+| JetBrains Mono and Manrope font packages | OFL-1.1                                  |
+| Gradle wrapper scripts                   | Apache-2.0                               |
 
 This short table is an attribution index, not a replacement for the lockfiles,
 license texts, or release SBOMs.

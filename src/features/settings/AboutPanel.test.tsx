@@ -16,6 +16,7 @@ afterEach(() => {
 
 describe("AboutPanel", () => {
   it("shows the app version, source, license, and third-party notices", () => {
+    vi.stubEnv("VITE_BUILD_ID", "");
     render(<AboutPanel />);
     // Scoped to the <span> (Version row) — the Build row's fallback button
     // renders "{version}-dev" (formatBuildIdForDisplay), not the bare
@@ -46,6 +47,20 @@ describe("AboutPanel", () => {
       name: "Copy build identifier 0.4.2+pr187.a1b2c3d",
     });
     expect(buildButton).toHaveTextContent("0.4.2-pr187 (sha-a1b2c3d)");
+  });
+
+  it("pins legal metadata links to the build source revision", () => {
+    vi.stubEnv("VITE_BUILD_ID", "0.4.2+nightly.a1b2c3d");
+    render(<AboutPanel />);
+
+    expect(screen.getByRole("link", { name: "Apache-2.0" })).toHaveAttribute(
+      "href",
+      "https://github.com/CloudHub-Social/Charm/blob/a1b2c3d/LICENSE",
+    );
+    expect(screen.getByRole("link", { name: "Notices" })).toHaveAttribute(
+      "href",
+      "https://github.com/CloudHub-Social/Charm/blob/a1b2c3d/THIRD_PARTY_NOTICES.md",
+    );
   });
 
   it("copies the build identifier to the clipboard when clicked", async () => {

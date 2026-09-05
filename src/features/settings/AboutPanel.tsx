@@ -1,11 +1,9 @@
 import { useState } from "react";
 import packageJson from "../../../package.json";
-import { formatBuildIdForDisplay, getBuildId } from "@/lib/buildId";
+import { formatBuildIdForDisplay, getBuildId, getBuildSourceRef } from "@/lib/buildId";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const REPO_URL = "https://github.com/CloudHub-Social/Charm";
-const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`;
-const THIRD_PARTY_NOTICES_URL = `${REPO_URL}/blob/main/THIRD_PARTY_NOTICES.md`;
 
 /**
  * Copyable build identifier (Spec 24). Displays a friendlier rendering of
@@ -41,8 +39,13 @@ function BuildIdControl({ buildId }: { buildId: string }) {
   );
 }
 
-/** Static app metadata — version, build id, and repo link. No telemetry/update-check UI (out of scope for Spec 18's IA rework). */
+/** Static app metadata — version, build id, source, and revision-pinned legal links. No telemetry/update-check UI (out of scope for Spec 18's IA rework). */
 export function AboutPanel() {
+  const buildId = getBuildId();
+  const sourceRef = getBuildSourceRef(buildId);
+  const licenseUrl = `${REPO_URL}/blob/${sourceRef}/LICENSE`;
+  const thirdPartyNoticesUrl = `${REPO_URL}/blob/${sourceRef}/THIRD_PARTY_NOTICES.md`;
+
   return (
     <div className="max-w-lg space-y-6">
       <h1 className="text-lg font-bold text-foreground">About</h1>
@@ -51,7 +54,7 @@ export function AboutPanel() {
           title="Version"
           control={<span className="text-sm text-muted-foreground">{packageJson.version}</span>}
         />
-        <SettingTile title="Build" control={<BuildIdControl buildId={getBuildId()} />} />
+        <SettingTile title="Build" control={<BuildIdControl buildId={buildId} />} />
         <SettingTile
           title="Source"
           control={
@@ -69,7 +72,7 @@ export function AboutPanel() {
           title="License"
           control={
             <a
-              href={LICENSE_URL}
+              href={licenseUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm font-medium text-foreground underline"
@@ -82,7 +85,7 @@ export function AboutPanel() {
           title="Third-party"
           control={
             <a
-              href={THIRD_PARTY_NOTICES_URL}
+              href={thirdPartyNoticesUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm font-medium text-foreground underline"

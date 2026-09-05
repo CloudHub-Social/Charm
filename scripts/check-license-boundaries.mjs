@@ -42,6 +42,9 @@ for (const noticePath of ["../NOTICE", "../LICENSING.md", "../THIRD_PARTY_NOTICE
     errors.push(`src-tauri/tauri.conf.json must package ${noticePath}.`);
   }
 }
+if (/sable[-_ ]?call/i.test(JSON.stringify(tauriConfig.bundle))) {
+  errors.push("src-tauri/tauri.conf.json bundle configuration cannot reference Sable Call.");
+}
 
 const trackedFilesResult = spawnSync("git", ["ls-files", "-z"], {
   cwd: repositoryRoot,
