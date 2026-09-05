@@ -86,6 +86,7 @@ describe("UserMention", () => {
 
   it.each([
     "https://matrix.to/#/@alice:example.org/path",
+    "https://matrix.to/#/@alice:example.org:",
     "https://matrix.to/#/@alice:example.org:99999",
   ])("rejects a pill whose server name is malformed: %s", (href) => {
     const anchor = document.createElement("a");

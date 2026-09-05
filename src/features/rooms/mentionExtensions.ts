@@ -24,7 +24,11 @@ function isValidMatrixId(id: string, sigil: string): boolean {
   const invalidLocalpart = Array.from(localpart).some(
     (character) => character === ":" || /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
   );
-  if (!serverName || invalidLocalpart) return false;
+  // URL parsing normalizes `https://example.org:` to `https://example.org/`,
+  // but Matrix's `server-name = host [ ":" port ]` requires at least one
+  // port digit when the separator is present. Check the source spelling
+  // before URL normalization can erase that malformed empty port.
+  if (!serverName || serverName.endsWith(":") || invalidLocalpart) return false;
   try {
     const parsed = new URL(`https://${serverName}`);
     return (
