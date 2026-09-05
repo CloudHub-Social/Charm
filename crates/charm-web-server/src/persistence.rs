@@ -508,7 +508,7 @@ impl PersistenceStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(object_store::Error::NotImplemented) => {
+            Err(object_store::Error::NotImplemented { .. }) => {
                 // LocalFileSystem, used for local development and these
                 // single-process tests, has no conditional writes. The
                 // per-token lock still preserves its in-process ordering.
