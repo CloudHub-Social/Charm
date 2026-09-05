@@ -67,6 +67,19 @@ export function VoiceRecorder({
     }
   }
 
+  function cancelInterruptedPointerCapture(pointerId: number) {
+    if (pointer.current?.id !== pointerId) return;
+    if (!pointer.current.cancelled) {
+      // A browser may cancel pointer capture while its microphone permission
+      // sheet is open. Preserve that in-flight request exactly like a normal
+      // release; `stop()` records the user's intent and lets the recorder
+      // discard a late grant without invalidating the permission result.
+      if (recorder.phase === "requesting") recorder.stop();
+      else recorder.discard();
+    }
+    pointer.current = null;
+  }
+
   return (
     <section aria-label="Voice message" className="mt-2 rounded-lg border border-border p-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -108,14 +121,10 @@ export function VoiceRecorder({
               suppressPointerClick.current = true;
             }}
             onPointerCancel={(event) => {
-              if (pointer.current?.id !== event.pointerId) return;
-              if (!pointer.current.cancelled) recorder.discard();
-              pointer.current = null;
+              cancelInterruptedPointerCapture(event.pointerId);
             }}
             onLostPointerCapture={(event) => {
-              if (pointer.current?.id !== event.pointerId) return;
-              if (!pointer.current.cancelled) recorder.discard();
-              pointer.current = null;
+              cancelInterruptedPointerCapture(event.pointerId);
             }}
           >
             {recorder.phase === "requesting"

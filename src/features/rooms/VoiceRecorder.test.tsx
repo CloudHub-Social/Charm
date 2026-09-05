@@ -154,9 +154,22 @@ describe("VoiceRecorder", () => {
   it.each(["pointercancel", "lostpointercapture"])("discards when capture ends via %s", (event) => {
     const button = renderMobileRecorder();
     pointerEvent(button, "pointerdown");
+    capture.phase = "recording";
     pointerEvent(button, event);
     expect(capture.discard).toHaveBeenCalledOnce();
   });
+
+  it.each(["pointercancel", "lostpointercapture"])(
+    "preserves a pending microphone permission result when capture ends via %s",
+    (event) => {
+      const button = renderMobileRecorder();
+      pointerEvent(button, "pointerdown");
+      capture.phase = "requesting";
+      pointerEvent(button, event);
+      expect(capture.stop).toHaveBeenCalledOnce();
+      expect(capture.discard).not.toHaveBeenCalled();
+    },
+  );
 
   it("ignores a second finger's release", () => {
     const button = renderMobileRecorder();
