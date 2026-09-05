@@ -432,13 +432,14 @@ pub async fn register_push(
             )
             .await;
             if removed {
-                if let Some(previous) = pending_cleanup.previous.take() {
-                    save_endpoint_record(&persisted_endpoint_path(&app, account_key)?, &previous)?;
+                let restored = pending_cleanup.previous.take();
+                if let Some(previous) = restored.as_ref() {
+                    save_endpoint_record(&persisted_endpoint_path(&app, account_key)?, previous)?;
                 } else {
                     clear_persisted_endpoint(&app, account_key)?;
-                }
-                if let Some(transport) = active_transport(&app) {
-                    let _ = transport.unregister().await;
+                    if let Some(transport) = active_transport(&app) {
+                        let _ = transport.unregister().await;
+                    }
                 }
             } else {
                 return Err(
@@ -625,15 +626,15 @@ pub async fn refresh_push_registration(
             if !cleanup_complete {
                 return Err("Staged push cleanup is still pending; retry when online".into());
             }
-            if let Some(transport) = active_transport(&app) {
-                let _ = transport.unregister().await;
-            }
             let restored = previous.previous.take().map(|record| *record);
             let path = persisted_endpoint_path(&app, &account_key)?;
             if let Some(restored) = restored {
                 save_endpoint_record(&path, &restored)?;
                 previous = restored;
             } else {
+                if let Some(transport) = active_transport(&app) {
+                    let _ = transport.unregister().await;
+                }
                 clear_persisted_endpoint(&app, &account_key)?;
                 return Ok(());
             }
