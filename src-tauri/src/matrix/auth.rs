@@ -4614,6 +4614,8 @@ pub async fn complete_sso_login(
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
 
+    install_session_callbacks(&client, &account_key, &homeserver_url)?;
+
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),
