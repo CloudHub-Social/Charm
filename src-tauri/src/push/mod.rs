@@ -1189,10 +1189,16 @@ pub async fn get_push_status(
                     if persisted.disabled {
                         // Status reads stay local and responsive. Registration,
                         // explicit opt-out, and logout own bounded retry attempts.
-                        status.last_error = Some(
-                            "Push is off locally; homeserver cleanup will retry when online."
-                                .into(),
-                        );
+                        status = PushStatus {
+                            transport: persisted.kind,
+                            registered: true,
+                            endpoint_present: true,
+                            last_error: Some(
+                                "Push is off locally; homeserver cleanup will retry when online."
+                                    .into(),
+                            ),
+                            available: false,
+                        };
                     } else if persisted.staged {
                         if let Some(previous) = persisted.previous.as_ref() {
                             status = PushStatus {

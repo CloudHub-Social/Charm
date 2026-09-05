@@ -28,8 +28,8 @@ workstream in the launch set.
 - Android has its UnifiedPush/FCM native bridge and headless decrypt entry point. Its killed-app
   delivery and gateway paths still require the real-device/integration gates below.
 - iOS APNs token registration is implemented behind the default-off
-  `ios_push_notifications` flag using the pinned SableClient notification plugin revision
-  `758156fd9b1cbc99c83062194a2a59c411b5907f` (MIT). The plugin supplies the Swift
+  `ios_push_notifications` flag using the pinned notification plugin revision
+  `1e0e9ee7464a553d891598bf4376d444b05bed3c` (MIT). The plugin supplies the Swift
   application-delegate bridge; Charm owns the Matrix pusher and privacy lifecycle.
   The native plugin owns the token completely; Charm grants the renderer no token-event
   permission, and the token payload never crosses Charm IPC or enters frontend caches.
@@ -139,10 +139,11 @@ workstream in the launch set.
 
 ### iOS upstream provenance
 
-- Audited source: `SableClient/Sable` at `1873c32984529ebac1d350933a5088873abe960c`
-  (retrieved 2026-09-03). Sable pins `SableClient/tauri-plugin-notifications` at
-  `758156fd9b1cbc99c83062194a2a59c411b5907f`; Charm pins the same commit rather than a
-  floating branch.
+- Audited source: `Just-Insane/tauri-plugin-notifications` at
+  `1e0e9ee7464a553d891598bf4376d444b05bed3c` (retrieved 2026-09-05). This revision is
+  based on `SableClient/tauri-plugin-notifications` commit
+  `758156fd9b1cbc99c83062194a2a59c411b5907f` and adds an opt-in boundary for generic
+  push-token events. Charm pins the exact hardened commit rather than a floating branch.
 - The plugin is MIT licensed. The imported seam is limited to its maintained Tauri/Swift APNs
   registration bridge; no AGPL Sable application code or assets are copied.
 - Sable's open issue #376 documents that its own AltStore build still lacks operational push
