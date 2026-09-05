@@ -159,7 +159,7 @@ async fn pending_poll_end_locked(
     poll_event_id: &EventId,
     close_key: &str,
 ) -> Result<Option<PendingPollEnd>, String> {
-    if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
+    if let Some(pending) = pending_poll_end(room, poll_event_id).await? {
         reconcile_acknowledged_poll_end(client, close_key, &pending).await?;
         return Ok(Some(pending));
     }
