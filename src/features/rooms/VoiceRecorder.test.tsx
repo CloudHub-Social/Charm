@@ -59,6 +59,23 @@ describe("VoiceRecorder", () => {
     expect(capture.discard).not.toHaveBeenCalled();
   });
 
+  it("pauses a preserved preview when a dialog covers the chat", async () => {
+    render(<VoiceRecorder mobile={false} onSend={vi.fn()} onClearFailedUpload={vi.fn()} />);
+    const audio = screen.getByLabelText("Voice message preview") as HTMLAudioElement;
+    const pause = vi.fn();
+    Object.defineProperty(audio, "pause", { value: pause });
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+
+    await act(async () => {
+      document.body.append(dialog);
+      await Promise.resolve();
+    });
+
+    expect(pause).toHaveBeenCalledOnce();
+    dialog.remove();
+  });
+
   it("discards without uploading", () => {
     const onSend = vi.fn();
     render(<VoiceRecorder mobile={false} onSend={onSend} onClearFailedUpload={vi.fn()} />);

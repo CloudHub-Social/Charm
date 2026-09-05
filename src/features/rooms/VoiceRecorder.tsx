@@ -20,6 +20,7 @@ export function VoiceRecorder({
   const [sendError, setSendError] = useState(false);
   const sendingRef = useRef(false);
   const mounted = useRef(true);
+  const previewAudio = useRef<HTMLAudioElement>(null);
   const pointer = useRef<{ id: number; x: number; cancelled: boolean } | null>(null);
   const suppressPointerClick = useRef(false);
   useEffect(() => {
@@ -33,6 +34,16 @@ export function VoiceRecorder({
     onCaptureChange?.(capturing);
     return () => onCaptureChange?.(false);
   }, [capturing, onCaptureChange]);
+  useEffect(() => {
+    if (!recorder.preview) return;
+    function pauseCoveredPreview() {
+      if (document.querySelector('[role="dialog"]')) previewAudio.current?.pause();
+    }
+    pauseCoveredPreview();
+    const observer = new MutationObserver(pauseCoveredPreview);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [recorder.preview]);
   const seconds = Math.floor(recorder.elapsedMs / 1000);
   const duration = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const buttonClass = "min-h-11 rounded-md px-3 text-sm hover:bg-accent disabled:opacity-50";
@@ -126,6 +137,7 @@ export function VoiceRecorder({
         {recorder.preview && (
           <>
             <audio
+              ref={previewAudio}
               controls
               preload="metadata"
               src={recorder.preview.url}
