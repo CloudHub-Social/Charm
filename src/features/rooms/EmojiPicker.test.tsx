@@ -154,15 +154,11 @@ describe("EmojiPicker", () => {
     const disconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
     const view = render(<EmojiPickerPanel accountId="@alice:example.org" onSelect={vi.fn()} />);
     const picker = await screen.findByTestId("full-emoji-picker");
-    // Model the library's conditional status node, including lazy DOM insertion.
-    const container = document.createElement("div");
-    container.className = "epr-search-container";
-    const input = document.createElement("input");
-    input.setAttribute("aria-controls", "epr-search-id");
-    container.append(input);
-    picker.append(container);
+    const input = screen.getByRole("textbox", { name: "Emoji search" });
+    const container = input.parentElement!;
     await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
 
+    // Model the library's conditional status node across search and clear.
     const status = document.createElement("div");
     status.id = "epr-search-id";
     status.setAttribute("role", "status");
