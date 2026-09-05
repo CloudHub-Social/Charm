@@ -32,7 +32,7 @@ export function PollMessage({
 }: PollMessageProps) {
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
-  const hasPoll = poll !== undefined;
+  const hasPoll = poll != null;
   const pollEnded = poll?.ended ?? false;
   // Timeline snapshots are the bounded reconciliation signal for a queued
   // close. Include vote/content changes as well as end/edit flags so a
@@ -48,12 +48,14 @@ export function PollMessage({
   const [endRequestPending, setEndRequestPending] = useState(false);
   const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
   const [endFailed, setEndFailed] = useState(false);
+  const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     setEnding(false);
     setEndRequestPending(false);
     setEndTransactionId(null);
     setEndFailed(false);
+    setEndRecheck(0);
     setError(null);
   }, [message.event_id, roomId]);
   useEffect(() => {
@@ -62,12 +64,14 @@ export function PollMessage({
       !hasPoll ||
       !message.event_id.startsWith("$") ||
       endRequestPending ||
-      (endTransactionId !== null && !pollEnded && lastEndStateRevision.current === pollRevision)
+      (endTransactionId !== null &&
+        !pollEnded &&
+        lastEndStateRevision.current === `${pollRevision}:${endRecheck}`)
     ) {
       setRestoringEndState(false);
       return;
     }
-    lastEndStateRevision.current = pollRevision;
+    lastEndStateRevision.current = `${pollRevision}:${endRecheck}`;
     let active = true;
     setRestoringEndState(true);
     void getPendingPollEnd(roomId, message.event_id)
@@ -109,6 +113,7 @@ export function PollMessage({
     };
   }, [
     endRequestPending,
+    endRecheck,
     endTransactionId,
     hasPoll,
     message.event_id,
@@ -117,6 +122,11 @@ export function PollMessage({
     pollRevision,
     roomId,
   ]);
+  useEffect(() => {
+    if (!endTransactionId || pollEnded || endRequestPending || endFailed) return;
+    const timeout = window.setTimeout(() => setEndRecheck((revision) => revision + 1), 2_000);
+    return () => window.clearTimeout(timeout);
+  }, [endFailed, endRecheck, endRequestPending, endTransactionId, pollEnded]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;

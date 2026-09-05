@@ -854,6 +854,25 @@ async fn resolve_avatar_path_cached(
 /// Maps one `EventTimelineItem` to a `RoomMessageSummary`, keeping the DTO
 /// shape Spec 02/03 established stable. See the module-level doc for the
 /// per-field mapping rationale.
+fn visible_poll_votes(disclose: bool, count: usize) -> u32 {
+    if disclose {
+        u32::try_from(count).unwrap_or(u32::MAX)
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod poll_visibility_tests {
+    use super::visible_poll_votes;
+
+    #[test]
+    fn undisclosed_poll_counts_are_redacted_before_dto_serialization() {
+        assert_eq!(visible_poll_votes(false, 7), 0);
+        assert_eq!(visible_poll_votes(true, 7), 7);
+    }
+}
+
 async fn timeline_item_to_summary(
     item: &EventTimelineItem,
     own_user_id: Option<&UserId>,
@@ -1005,6 +1024,8 @@ async fn timeline_item_to_summary(
                 PollKind::Undisclosed => PollKindSummary::Undisclosed,
                 _ => PollKindSummary::Custom,
             };
+            let ended = result.end_time.is_some();
+            let disclose_votes = ended || !matches!(&kind, PollKindSummary::Undisclosed);
             let answers = result
                 .answers
                 .into_iter()
@@ -1013,9 +1034,10 @@ async fn timeline_item_to_summary(
                     PollAnswerSummary {
                         id: answer.id,
                         text: answer.text,
-                        votes: voters
-                            .map(|voters| u32::try_from(voters.len()).unwrap_or(u32::MAX))
-                            .unwrap_or_default(),
+                        votes: visible_poll_votes(
+                            disclose_votes,
+                            voters.map(|voters| voters.len()).unwrap_or_default(),
+                        ),
                         selected_by_me: own_user_id.is_some_and(|own_user_id| {
                             voters.is_some_and(|voters| {
                                 voters.iter().any(|voter| voter == own_user_id.as_str())
@@ -1035,7 +1057,7 @@ async fn timeline_item_to_summary(
                     kind,
                     max_selections: result.max_selections,
                     answers,
-                    ended: result.end_time.is_some(),
+                    ended,
                     edited: result.has_been_edited,
                 }),
                 ..base

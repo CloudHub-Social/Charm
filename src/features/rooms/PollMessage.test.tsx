@@ -310,6 +310,26 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: "Discard failed close" })).toBeEnabled();
   });
 
+  it("rechecks a queued close even when poll content is unchanged", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      getPendingPollEnd
+        .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: false })
+        .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: true });
+      render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+      expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      expect(screen.getByRole("button", { name: "Retry closing poll" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Discard failed close" })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("blocks mutations while a queued close is being restored", async () => {
     let finish!: (pending: null) => void;
     getPendingPollEnd.mockImplementationOnce(
