@@ -174,6 +174,7 @@ export function PollMessage({
       (!hasPoll && !recoveryOnly) ||
       !message.event_id.startsWith("$") ||
       endRequestPending ||
+      (pollEnded && endFailed && endTransactionId !== null) ||
       (endTransactionId !== null &&
         !pollEnded &&
         lastEndStateRevision.current === `${pollRevision}:${endRecheck}`)

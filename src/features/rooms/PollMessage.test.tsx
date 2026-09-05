@@ -226,11 +226,11 @@ describe("PollMessage", () => {
     expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
 
-  it("does not restore creator-only close state for another user's poll", () => {
+  it("does not restore creator-only close state for another user's poll", async () => {
     render(<PollMessage message={pollMessage()} roomId="!other-room:example.org" own={false} />);
 
     expect(getPendingPollEnd).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled());
   });
 
   it("clears restored close state when another renderer discards it", async () => {
