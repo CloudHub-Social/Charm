@@ -47,6 +47,7 @@ export function PollMessage({
   const [restoringEndState, setRestoringEndState] = useState(shouldRestoreEnd);
   const [endRequestPending, setEndRequestPending] = useState(false);
   const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
+  const [endAcknowledged, setEndAcknowledged] = useState(false);
   const [endFailed, setEndFailed] = useState(false);
   const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +55,7 @@ export function PollMessage({
     setEnding(false);
     setEndRequestPending(false);
     setEndTransactionId(null);
+    setEndAcknowledged(false);
     setEndFailed(false);
     setEndRecheck(0);
     setError(null);
@@ -78,6 +80,14 @@ export function PollMessage({
       .then(async (pending) => {
         if (!active) return;
         if (!pending) {
+          if (endAcknowledged && endTransactionId !== null && !pollEnded) {
+            // The send queue drops a successful local echo before the sync
+            // timeline necessarily contains the poll end. Keep the admission
+            // lock until that authoritative timeline confirmation arrives.
+            setEnding(true);
+            setEndFailed(false);
+            return;
+          }
           setEndTransactionId(null);
           setEnding(false);
           setEndFailed(false);
@@ -113,6 +123,7 @@ export function PollMessage({
     };
   }, [
     endRequestPending,
+    endAcknowledged,
     endRecheck,
     endTransactionId,
     hasPoll,
@@ -182,10 +193,12 @@ export function PollMessage({
     try {
       if (endTransactionId && endFailed) {
         await resendMessage(roomId, endTransactionId);
+        setEndAcknowledged(true);
         setEndFailed(false);
       } else {
         const transactionId = await endPoll(roomId, message.event_id);
         setEndTransactionId(transactionId);
+        setEndAcknowledged(true);
         setEndFailed(false);
       }
     } catch {
@@ -202,6 +215,7 @@ export function PollMessage({
     try {
       await discardFailedMessage(roomId, endTransactionId);
       setEndTransactionId(null);
+      setEndAcknowledged(false);
       setEndFailed(false);
       setEnding(false);
       setError(null);

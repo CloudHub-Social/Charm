@@ -330,6 +330,27 @@ describe("PollMessage", () => {
     }
   });
 
+  it("keeps a locally acknowledged close locked until the timeline ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      getPendingPollEnd.mockResolvedValue(null);
+      endPoll.mockResolvedValueOnce("txn-acknowledged-end");
+      render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+      await act(async () => {});
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("blocks mutations while a queued close is being restored", async () => {
     let finish!: (pending: null) => void;
     getPendingPollEnd.mockImplementationOnce(
