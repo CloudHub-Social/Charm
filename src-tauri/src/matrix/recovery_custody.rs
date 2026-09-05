@@ -209,6 +209,9 @@ pub async fn pending_summary(
     // The seed was committed BEFORE SDK enable. This also recovers a key when
     // the process died between server-side enablement and the local result save.
     match pending_seed_state(client, &pending).await? {
+        PendingSeedState::Disabled if pending.server_mutation_started => Err(
+            repairable_setup_error("Recovery setup stopped before secret storage was created."),
+        ),
         PendingSeedState::Disabled => Ok(None),
         PendingSeedState::Usable(summary) => Ok(Some(summary)),
         PendingSeedState::Replaced => Err(
@@ -733,6 +736,25 @@ mod tests {
         assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
             .await
             .is_err());
+        assert!(custody.load().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn interrupted_preissuance_setup_requires_repair_when_secret_storage_is_disabled() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        mock_disabled_secret_storage(&server).await;
+        let mut interrupted = pending();
+        interrupted.recovery_key = None;
+        interrupted.room_keys_backed_up = false;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(interrupted)),
+            fail_save: false,
+        };
+
+        let error = pending_summary(&client, &custody).await.unwrap_err();
+
+        assert!(error.contains(REPAIR_REQUIRED_GUIDANCE));
         assert!(custody.load().await.unwrap().is_some());
     }
 
