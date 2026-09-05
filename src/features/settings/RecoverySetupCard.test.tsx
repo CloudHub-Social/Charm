@@ -111,7 +111,7 @@ describe("RecoverySetupCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
     fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
 
-    expect(screen.getByText(/deletes a server backup only when it can prove/)).toBeInTheDocument();
+    expect(screen.getByText(/delete a server backup only when its protected/)).toBeInTheDocument();
     expect(repairInterruptedRecoverySetup).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Repair incomplete setup" }));
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
@@ -131,7 +131,7 @@ describe("RecoverySetupCard", () => {
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
-    expect(screen.getByText(/deletes a server backup only when it can prove/)).toBeInTheDocument();
+    expect(screen.getByText(/delete a server backup only when its protected/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Repair incomplete setup" }));
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
   });
