@@ -296,6 +296,13 @@ struct PersistedPushEndpoint {
     /// deletions still need an authenticated retry.
     #[serde(default)]
     disabled: bool,
+    /// A replacement endpoint was durably staged before its homeserver
+    /// mutation. `previous` remains the authoritative active registration
+    /// until the replacement is finalized.
+    #[serde(default)]
+    staged: bool,
+    #[serde(default)]
+    previous: Option<Box<PersistedPushEndpoint>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +319,8 @@ impl From<&PushEndpoint> for PersistedPushEndpoint {
             kind: endpoint.kind,
             retired: Vec::new(),
             disabled: false,
+            staged: false,
+            previous: None,
         }
     }
 }
@@ -411,10 +420,33 @@ pub async fn register_push(
     if let Some((account_key, mut pending_cleanup)) = account_key
         .as_ref()
         .and_then(|key| load_persisted_endpoint(&app, key).map(|record| (key, record)))
-        .filter(|(_, record)| record.disabled)
+        .filter(|(_, record)| record.disabled || record.staged)
     {
-        if retry_persisted_push_cleanup(&client, &mut pending_cleanup).await {
-            let _ = clear_persisted_endpoint(&app, account_key);
+        if pending_cleanup.staged {
+            let removed = finish_remote_push_cleanup(
+                client.pusher().delete(PusherIds::new(
+                    pending_cleanup.url_or_token.clone(),
+                    pending_cleanup.app_id.clone(),
+                )),
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+            if removed {
+                if let Some(previous) = pending_cleanup.previous.take() {
+                    save_endpoint_record(&persisted_endpoint_path(&app, account_key)?, &previous)?;
+                } else {
+                    clear_persisted_endpoint(&app, account_key)?;
+                }
+                if let Some(transport) = active_transport(&app) {
+                    let _ = transport.unregister().await;
+                }
+            } else {
+                return Err(
+                    "Previous staged push cleanup is still pending; retry when online.".into(),
+                );
+            }
+        } else if retry_persisted_push_cleanup(&client, &mut pending_cleanup).await {
+            clear_persisted_endpoint(&app, account_key)?;
         } else {
             let path = persisted_endpoint_path(&app, account_key)?;
             save_endpoint_record(&path, &pending_cleanup)?;
@@ -441,8 +473,10 @@ pub async fn register_push(
             // Persist a cleanup tombstone before the homeserver mutation. If
             // the process exits after set_pusher succeeds, the next launch can
             // still remove this exact pusher before allowing registration.
+            let previous = load_persisted_endpoint(&app, account_key);
             let mut staged = PersistedPushEndpoint::from(&endpoint);
-            staged.disabled = true;
+            staged.staged = true;
+            staged.previous = previous.clone().map(Box::new);
             let staged_path = persisted_endpoint_path(&app, account_key)?;
             if let Err(error) = save_endpoint_record(&staged_path, &staged) {
                 let _ = transport.unregister().await;
@@ -450,7 +484,19 @@ pub async fn register_push(
             }
             match client.pusher().set(pusher, false).await {
                 Ok(()) => {
-                    let persisted = save_persisted_endpoint(&app, account_key, &endpoint);
+                    let mut active = PersistedPushEndpoint::from(&endpoint);
+                    if let Some(previous) = previous.as_ref() {
+                        active.retired = previous.retired.clone();
+                        if previous.url_or_token != endpoint.url_or_token
+                            || previous.app_id != endpoint.app_id
+                        {
+                            active.retired.push(RetiredPusher {
+                                token: previous.url_or_token.clone(),
+                                app_id: previous.app_id.clone(),
+                            });
+                        }
+                    }
+                    let persisted = save_endpoint_record(&staged_path, &active);
                     if let Err(error) = persisted {
                         let rollback_complete = finish_remote_push_cleanup(
                             client.pusher().delete(PusherIds::new(
@@ -461,17 +507,28 @@ pub async fn register_push(
                         )
                         .await;
                         if rollback_complete {
-                            let _ = clear_persisted_endpoint(&app, account_key);
+                            if let Some(previous) = previous.as_ref() {
+                                let _ = save_endpoint_record(&staged_path, previous);
+                            } else {
+                                let _ = clear_persisted_endpoint(&app, account_key);
+                            }
                         }
                         let _ = transport.unregister().await;
                         PushStatus {
                             transport: endpoint.kind,
-                            registered: false,
-                            endpoint_present: false,
+                            registered: previous.is_some(),
+                            endpoint_present: previous.is_some(),
                             last_error: Some(error),
                             available: false,
                         }
                     } else {
+                        retry_retired_push_cleanup(
+                            &client,
+                            &mut active,
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                        let _ = save_endpoint_record(&staged_path, &active);
                         *state
                             .push_transport
                             .lock()
@@ -493,11 +550,25 @@ pub async fn register_push(
                     // nor clean up (there's nothing in `push_transport` for
                     // `unregister_push` to act on otherwise).
                     let _ = transport.unregister().await;
-                    let _ = clear_persisted_endpoint(&app, account_key);
+                    let rollback_complete = finish_remote_push_cleanup(
+                        client.pusher().delete(PusherIds::new(
+                            endpoint.url_or_token.clone(),
+                            endpoint.app_id.clone(),
+                        )),
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await;
+                    if rollback_complete {
+                        if let Some(previous) = previous.as_ref() {
+                            let _ = save_endpoint_record(&staged_path, previous);
+                        } else {
+                            let _ = clear_persisted_endpoint(&app, account_key);
+                        }
+                    }
                     PushStatus {
                         transport: endpoint.kind,
-                        registered: false,
-                        endpoint_present: false,
+                        registered: previous.is_some(),
+                        endpoint_present: previous.is_some(),
                         last_error: Some(e.to_string()),
                         available: false,
                     }
@@ -539,9 +610,34 @@ pub async fn refresh_push_registration(
             return Err("Session changed; push refresh ignored".into());
         }
         let account_key = persistence::account_key(&expected_user_id);
-        let Some(previous) = load_persisted_endpoint(&app, &account_key) else {
+        let Some(mut previous) = load_persisted_endpoint(&app, &account_key) else {
             return Ok(());
         };
+        if previous.staged {
+            let cleanup_complete = finish_remote_push_cleanup(
+                client.pusher().delete(PusherIds::new(
+                    previous.url_or_token.clone(),
+                    previous.app_id.clone(),
+                )),
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+            if !cleanup_complete {
+                return Err("Staged push cleanup is still pending; retry when online".into());
+            }
+            if let Some(transport) = active_transport(&app) {
+                let _ = transport.unregister().await;
+            }
+            let restored = previous.previous.take().map(|record| *record);
+            let path = persisted_endpoint_path(&app, &account_key)?;
+            if let Some(restored) = restored {
+                save_endpoint_record(&path, &restored)?;
+                previous = restored;
+            } else {
+                clear_persisted_endpoint(&app, &account_key)?;
+                return Ok(());
+            }
+        }
         if previous.kind != PusherKind::Apns {
             return Ok(());
         }
@@ -580,7 +676,19 @@ pub async fn refresh_push_registration(
             }
             Err(_) => {
                 // Keep the previous registration and opt-out controls alive.
-                let status = finalize_and_emit(&app, PushStatus { transport: PusherKind::Apns, registered: true, endpoint_present: true, last_error: Some("Push refresh failed; the previous registration is retained. Retry when online.".into()), available: false });
+                let status = finalize_and_emit(
+                    &app,
+                    PushStatus {
+                        transport: PusherKind::Apns,
+                        registered: true,
+                        endpoint_present: true,
+                        last_error: Some(
+                            "Push refresh failed; the previous registration is retained. Retry when online."
+                                .into(),
+                        ),
+                        available: false,
+                    },
+                );
                 *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
                 return Err("Push refresh failed; previous registration retained".into());
             }
@@ -603,13 +711,38 @@ async fn refresh_existing_endpoint(
     let changed =
         previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id;
     let name = client.device_id().map(|id| id.as_str()).unwrap_or("Charm");
-    client
+    if changed {
+        let mut staged = PersistedPushEndpoint::from(&endpoint);
+        staged.staged = true;
+        staged.previous = Some(Box::new(previous.clone()));
+        if let Err(error) = persist(&staged) {
+            let _ = transport.unregister().await;
+            return Err(error);
+        }
+    }
+    let set_result = client
         .pusher()
         .set(build_pusher_init(&endpoint, name).into(), false)
-        .await
-        .map_err(|_| "Homeserver rejected push refresh")?;
+        .await;
+    if set_result.is_err() {
+        if changed {
+            let rollback_complete = finish_remote_push_cleanup(
+                client.pusher().delete(PusherIds::new(
+                    endpoint.url_or_token.clone(),
+                    endpoint.app_id.clone(),
+                )),
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+            if rollback_complete {
+                let _ = persist(&previous);
+            }
+            let _ = transport.unregister().await;
+        }
+        return Err("Homeserver rejected push refresh".into());
+    }
     let mut record = PersistedPushEndpoint::from(&endpoint);
-    record.retired = previous.retired;
+    record.retired = previous.retired.clone();
     // A token can rotate back to a formerly-retired value. Never delete the
     // endpoint we just installed while retrying earlier cleanup.
     record
@@ -617,19 +750,23 @@ async fn refresh_existing_endpoint(
         .retain(|old| old.token != endpoint.url_or_token || old.app_id != endpoint.app_id);
     if changed {
         record.retired.push(RetiredPusher {
-            token: previous.url_or_token,
-            app_id: previous.app_id,
+            token: previous.url_or_token.clone(),
+            app_id: previous.app_id.clone(),
         });
     }
     if let Err(error) = persist(&record) {
         if changed {
-            let _ = client
-                .pusher()
-                .delete(PusherIds::new(
+            let rollback_complete = finish_remote_push_cleanup(
+                client.pusher().delete(PusherIds::new(
                     endpoint.url_or_token.clone(),
                     endpoint.app_id.clone(),
-                ))
-                .await;
+                )),
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+            if rollback_complete {
+                let _ = persist(&previous);
+            }
             let _ = transport.unregister().await;
         }
         return Err(error);
@@ -702,6 +839,9 @@ pub(crate) async fn unregister_push_impl(
         .or_else(|| transport_endpoint.as_ref().map(PersistedPushEndpoint::from));
     let mut persistence_error = None;
     if let (Some(account_key), Some(record)) = (&account_key, pending_cleanup.as_mut()) {
+        if record.staged {
+            include_staged_previous_cleanup_targets(record);
+        }
         record.disabled = true;
         if let Err(error) = persisted_endpoint_path(app, account_key)
             .and_then(|path| save_endpoint_record(&path, record))
@@ -821,6 +961,25 @@ async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPus
     current_removed && record.retired.is_empty()
 }
 
+fn include_staged_previous_cleanup_targets(record: &mut PersistedPushEndpoint) {
+    let mut previous = record.previous.take().map(|record| *record);
+    while let Some(mut prior) = previous {
+        record.retired.extend(prior.retired.drain(..));
+        record.retired.push(RetiredPusher {
+            token: prior.url_or_token,
+            app_id: prior.app_id,
+        });
+        previous = prior.previous.take().map(|record| *record);
+    }
+    record
+        .retired
+        .sort_by(|left, right| (&left.token, &left.app_id).cmp(&(&right.token, &right.app_id)));
+    record
+        .retired
+        .dedup_by(|left, right| left.token == right.token && left.app_id == right.app_id);
+    record.staged = false;
+}
+
 /// Re-registers `endpoint` with the homeserver directly, bypassing
 /// `NotificationTransport::register()` — used when a transport hands over a
 /// *new* endpoint unprompted (e.g. `push::android`'s JNI bridge observing a
@@ -863,7 +1022,7 @@ pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint)
         );
         return;
     };
-    if previous.disabled {
+    if previous.disabled || previous.staged {
         tracing::warn!(
             command = "reregister_endpoint",
             status = "ignored_while_push_disabled"
@@ -942,6 +1101,9 @@ pub(crate) async fn handle_transport_unregistered(app: &AppHandle) {
     };
 
     if let Some(mut persisted) = load_persisted_endpoint(app, &account_key) {
+        if persisted.staged {
+            include_staged_previous_cleanup_targets(&mut persisted);
+        }
         persisted.disabled = true;
         if retry_persisted_push_cleanup(&client, &mut persisted).await {
             let _ = clear_persisted_endpoint(app, &account_key);
@@ -1005,6 +1167,24 @@ pub async fn get_push_status(
                             "Push is off locally; homeserver cleanup will retry when online."
                                 .into(),
                         );
+                    } else if persisted.staged {
+                        if let Some(previous) = persisted.previous.as_ref() {
+                            status = PushStatus {
+                                transport: previous.kind,
+                                registered: true,
+                                endpoint_present: true,
+                                last_error: Some(
+                                    "A push replacement is awaiting cleanup; retry when online."
+                                        .into(),
+                                ),
+                                available: false,
+                            };
+                        } else {
+                            status.last_error = Some(
+                                "An incomplete push registration is awaiting cleanup; retry when online."
+                                    .into(),
+                            );
+                        }
                     } else {
                         status = PushStatus {
                             transport: persisted.kind,
@@ -1617,10 +1797,13 @@ mod tests {
             })
             .await
             .is_err());
-            assert_eq!(writes, 0);
-            assert!(!transport
-                .unregistered
-                .load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(writes, usize::from(!os_failure));
+            assert_eq!(
+                transport
+                    .unregistered
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                !os_failure
+            );
         }
     }
 
@@ -1695,7 +1878,12 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(endpoint.url_or_token, "new-token");
-            assert_eq!(writes[0].retired[0].token, "old-token");
+            assert!(writes[0].staged);
+            assert_eq!(
+                writes[0].previous.as_ref().unwrap().url_or_token,
+                "old-token"
+            );
+            assert_eq!(writes[1].retired[0].token, "old-token");
             assert_eq!(
                 writes.last().unwrap().retired.len(),
                 usize::from(fail_delete)
@@ -1752,6 +1940,29 @@ mod tests {
         let restored: PersistedPushEndpoint =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(restored.retired[0].token, "old-token");
+    }
+
+    #[test]
+    fn staged_push_record_keeps_every_registration_for_explicit_opt_out() {
+        let old = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "old-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        let mut staged = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "new-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        staged.staged = true;
+        staged.previous = Some(Box::new(old));
+
+        include_staged_previous_cleanup_targets(&mut staged);
+
+        assert!(!staged.staged);
+        assert!(staged.previous.is_none());
+        assert_eq!(staged.retired.len(), 1);
+        assert_eq!(staged.retired[0].token, "old-token");
     }
 
     #[tokio::test]

@@ -31,11 +31,11 @@ workstream in the launch set.
   `ios_push_notifications` flag using the pinned SableClient notification plugin revision
   `758156fd9b1cbc99c83062194a2a59c411b5907f` (MIT). The plugin supplies the Swift
   application-delegate bridge; Charm owns the Matrix pusher and privacy lifecycle.
-  The pinned `AppDelegateSwizzler.swift` already emits `push-token`. Charm subscribes
-  only on iOS, after authentication, with listener-only plugin permissions; the
-  token payload is not forwarded through Charm IPC or stored in frontend caches.
-  Rust re-reads the native token after restore, foregrounding, and distinct token
-  events, only for an already-enabled registration and the exact current user/device.
+  The native plugin owns the token completely; Charm grants the renderer no token-event
+  permission, and the token payload never crosses Charm IPC or enters frontend caches.
+  Rust re-reads the native token after restore and whenever the app foregrounds, only
+  for an already-enabled registration and the exact current user/device. A rotation
+  received while suspended is therefore reconciled on the next foreground or restart.
   Registration, refresh, and opt-out share session/lifecycle exclusion. Failed
   refresh preserves the previous registration; changed-token cleanup targets are
   retained for retry. Lifecycle and transport regressions await CI, and do not
