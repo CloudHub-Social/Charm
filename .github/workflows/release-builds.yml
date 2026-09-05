@@ -1144,6 +1144,20 @@ jobs:
                       echo "::error::Existing draft uses a different OpenPGP release key; refusing to mix signing identities. Repair the unpublished draft explicitly or use a new version."
                       exit 1
                     fi
+                    # Older draft assets may predate GitHub's digest field.
+                    # Prove the stored public key is byte-identical before
+                    # replacing that draft-only asset to obtain a digest.
+                    key_dir=$(mktemp -d)
+                    gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                      --pattern "$name" --dir "$key_dir"
+                    if ! cmp -s "$key_dir/$name" "$file"; then
+                      echo "::error::Existing draft uses an unverifiable OpenPGP release key; refusing to mix signing identities."
+                      exit 1
+                    fi
+                    require_draft
+                    asset_id=$(jq -er '.id' <<<"$remote")
+                    gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+                    gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "$file"
                     ;;
                   *.asc)
                     # Detached OpenPGP signatures include creation-time and
