@@ -117,7 +117,12 @@ export function PollMessage({
             setVoteFailed(false);
             setError(null);
           } catch {
-            if (active) setError("The failed vote could not be discarded.");
+            if (active) {
+              setPendingAnswerId(pending.answer_id);
+              setVoteTransactionId(pending.transaction_id);
+              setVoteFailed(true);
+              setError("The failed vote could not be discarded.");
+            }
           }
           return;
         }
@@ -635,17 +640,32 @@ export function PollMessage({
               )}
             </div>
           )}
-          {voteFailed && voteTransactionId && (
+          {endFailed && endTransactionId && ended && (
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <p>Your vote failed to send.</p>
+              <p>The failed poll close still needs cleanup.</p>
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
-                disabled={restoringVoteState}
-                onClick={() => void retryVote()}
+                disabled={endRequestPending}
+                onClick={() => void abandonEnd()}
               >
-                Retry vote
+                Discard failed close
               </button>
+            </div>
+          )}
+          {voteFailed && voteTransactionId && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <p>Your vote failed to send.</p>
+              {!pollEnded && !message.redacted && (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                  disabled={restoringVoteState}
+                  onClick={() => void retryVote()}
+                >
+                  Retry vote
+                </button>
+              )}
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"

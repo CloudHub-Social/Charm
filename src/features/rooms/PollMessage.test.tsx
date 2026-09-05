@@ -320,6 +320,18 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: "Discard close" })).toBeInTheDocument();
   });
 
+  it("keeps close cleanup available on an ordinary ended poll card", async () => {
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-failed-end",
+      failed: true,
+    });
+    discardPollEnd.mockRejectedValueOnce(new Error("temporary transport failure"));
+    render(<PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />);
+
+    expect(await screen.findByRole("button", { name: "Discard failed close" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
+  });
+
   it("does not retain a successful queued close after the timeline ended", async () => {
     getPendingPollEnd
       .mockResolvedValueOnce({ transaction_id: "txn-synced-end", failed: false })
@@ -641,6 +653,21 @@ describe("PollMessage", () => {
     await waitFor(() =>
       expect(discardPollVote).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-ended-vote"),
     );
+    expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
+  });
+
+  it("keeps vote cleanup available when ended-poll auto-discard fails", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-ended-vote",
+      answer_id: "0",
+      failed: true,
+    });
+    discardPollVote.mockRejectedValueOnce(new Error("temporary transport failure"));
+    render(
+      <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own={false} />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Discard vote" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
   });
 
