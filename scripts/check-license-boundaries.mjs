@@ -73,7 +73,7 @@ const packagingInputPatterns = [
   /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i,
 ];
 const bundledAssetRoot =
-  /^(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i;
+  /(?:^|\/)(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i;
 const sableCallName = /sable[-_ ]?call/i;
 
 for (const trackedFile of trackedFiles) {
