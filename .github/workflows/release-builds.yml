@@ -59,7 +59,7 @@ jobs:
             echo "::error::Release tag $GITHUB_REF_NAME does not match application version v$package_version"
             exit 1
           fi
-          previous_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          previous_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name // ""')
           PREVIOUS_RELEASE_TAG="$previous_release_tag" node scripts/sync-android-version-code.mjs --check
 
   frontend-sourcemaps:
@@ -350,6 +350,16 @@ jobs:
         run: |
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri build
+
+      - name: Remove stable macOS signing identity
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/release-signing.keychain-db"
+          if [ -e "$keychain" ]; then
+            security lock-keychain "$keychain"
+            security delete-keychain "$keychain"
+          fi
 
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
       # `cargo build` runs inside a generated Xcode "Run Script" build phase
