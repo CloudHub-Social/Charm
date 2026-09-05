@@ -292,11 +292,7 @@ describe("PollMessage", () => {
     render(<PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />);
 
     await waitFor(() =>
-      expect(discardPollEnd).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-failed-end",
-      ),
+      expect(discardPollEnd).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-failed-end"),
     );
     expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
@@ -353,11 +349,7 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: "Retry closing poll" })).toBeEnabled();
     fireEvent.click(discard);
     await waitFor(() =>
-      expect(discardPollEnd).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-failed-end",
-      ),
+      expect(discardPollEnd).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-failed-end"),
     );
   });
 
@@ -502,11 +494,7 @@ describe("PollMessage", () => {
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(retryPollVote).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-failed-vote",
-      ),
+      expect(retryPollVote).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-failed-vote"),
     );
   });
 
@@ -521,11 +509,7 @@ describe("PollMessage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Discard vote" }));
 
     await waitFor(() =>
-      expect(discardPollVote).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-failed-vote",
-      ),
+      expect(discardPollVote).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-failed-vote"),
     );
   });
 
@@ -536,12 +520,7 @@ describe("PollMessage", () => {
       failed: true,
     });
     render(
-      <PollMessage
-        message={pollMessage()}
-        roomId="!room:example.org"
-        own={false}
-        recoveryOnly
-      />,
+      <PollMessage message={pollMessage()} roomId="!room:example.org" own={false} recoveryOnly />,
     );
 
     expect(await screen.findByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
@@ -576,19 +555,11 @@ describe("PollMessage", () => {
       failed: true,
     });
     render(
-      <PollMessage
-        message={pollMessage({ ended: true })}
-        roomId="!room:example.org"
-        own={false}
-      />,
+      <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own={false} />,
     );
 
     await waitFor(() =>
-      expect(discardPollVote).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-ended-vote",
-      ),
+      expect(discardPollVote).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-ended-vote"),
     );
     expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
   });

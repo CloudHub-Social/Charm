@@ -60,8 +60,8 @@ export function PollMessage({
   const lastEndStateRevision = useRef<string | null>(null);
   const shouldRestoreEnd = Boolean(
     own &&
-      (recoveryOnly || (message.poll && !message.poll.ended)) &&
-      message.event_id.startsWith("$"),
+    (recoveryOnly || (message.poll && !message.poll.ended)) &&
+    message.event_id.startsWith("$"),
   );
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [voteTransactionId, setVoteTransactionId] = useState<string | null>(null);
@@ -93,9 +93,7 @@ export function PollMessage({
           setPendingAnswerId(null);
           setVoteTransactionId(null);
           setVoteFailed(false);
-          setError((current) =>
-            current === "Your vote could not be sent." ? null : current,
-          );
+          setError((current) => (current === "Your vote could not be sent." ? null : current));
           return;
         }
         // A response to an already-ended poll can never become valid. Do
@@ -137,15 +135,7 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [
-    hasPoll,
-    message.event_id,
-    pollEnded,
-    pollRevision,
-    recoveryOnly,
-    roomId,
-    voteRecheck,
-  ]);
+  }, [hasPoll, message.event_id, pollEnded, pollRevision, recoveryOnly, roomId, voteRecheck]);
   useEffect(() => {
     if (!voteTransactionId || voteFailed) return;
     const timeout = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);
