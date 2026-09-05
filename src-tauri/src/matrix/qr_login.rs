@@ -367,15 +367,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // was just saved above.
                 let _ = persistence::clear_session(&account_key);
 
-                if let Err(message) = super::auth::install_session_callbacks(
-                    &client,
-                    &account_key,
-                    &homeserver_url,
-                ) {
-                    let _ = app.emit(
-                        "qr_login:progress",
-                        QrLoginProgressEvent::Error { message },
-                    );
+                if let Err(message) =
+                    super::auth::install_session_callbacks(&client, &account_key, &homeserver_url)
+                {
+                    let _ = app.emit("qr_login:progress", QrLoginProgressEvent::Error { message });
                     return;
                 }
 

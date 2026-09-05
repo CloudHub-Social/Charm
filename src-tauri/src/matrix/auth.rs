@@ -966,11 +966,9 @@ pub(crate) fn install_session_callbacks(
     account_key: &str,
     homeserver_url: &str,
 ) -> Result<(), String> {
-    let initial_session = client
-        .session()
-        .ok_or_else(|| {
-            "cannot persist refresh tokens without an authenticated session".to_string()
-        })?;
+    let initial_session = client.session().ok_or_else(|| {
+        "cannot persist refresh tokens without an authenticated session".to_string()
+    })?;
     let kind = match &initial_session {
         AuthSession::Matrix(_) => PersistedSessionKind::Matrix,
         AuthSession::OAuth(_) => PersistedSessionKind::OAuth,
@@ -1010,15 +1008,11 @@ pub(crate) fn install_session_callbacks(
                 PersistedSessionKind::OAuth => {
                     let saved = persistence::load_oauth_session(&reload_account_key)
                         .map_err(callback_error)?
-                        .ok_or_else(|| {
-                            callback_error("the persisted OAuth session was removed")
-                        })?;
+                        .ok_or_else(|| callback_error("the persisted OAuth session was removed"))?;
                     if saved.user.meta.user_id != reload_user_id
                         || saved.user.meta.device_id != reload_device_id
                     {
-                        return Err(callback_error(
-                            "the persisted OAuth session was superseded",
-                        ));
+                        return Err(callback_error("the persisted OAuth session was superseded"));
                     }
                     SessionTokens {
                         access_token: saved.user.tokens.access_token,
