@@ -8,8 +8,9 @@ fake_pnpm="$test_root/pnpm"
 count_file="$test_root/count"
 
 cleanup() {
-  rm -f "$fake_pnpm" "$count_file"
-  rmdir "$test_root"
+  # The target comes directly from mktemp above. Keep EXIT cleanup idempotent so
+  # an assertion failure cannot be masked by a second cleanup failure.
+  rm -rf -- "$test_root" || true
 }
 trap cleanup EXIT
 
