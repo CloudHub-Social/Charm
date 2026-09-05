@@ -654,14 +654,12 @@ mod unopened_poll_notification_tests {
         event["content"]["m.relates_to"] = serde_json::json!({
             "rel_type": "m.replace", "event_id": "$original"
         });
-        assert!(
-            super::unopened_notification_content(
-                serde_json::from_value(event).unwrap(),
-                true,
-                None,
-            )
-            .is_none()
-        );
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event).unwrap(),
+            true,
+            None,
+        )
+        .is_none());
     }
 
     #[test]
@@ -684,14 +682,12 @@ mod unopened_poll_notification_tests {
                 }
             }
         });
-        assert!(
-            super::unopened_notification_content(
-                serde_json::from_value(event).unwrap(),
-                true,
-                None,
-            )
-            .is_none()
-        );
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event).unwrap(),
+            true,
+            None,
+        )
+        .is_none());
     }
 }
 
