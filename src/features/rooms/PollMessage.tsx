@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import type { RoomMessageSummary } from "@/lib/matrix";
@@ -34,6 +34,8 @@ export function PollMessage({
   const poll = message.poll;
   const hasPoll = poll !== undefined;
   const pollEnded = poll?.ended ?? false;
+  const pollRevision = `${message.event_id}:${pollEnded}:${poll?.edited ?? false}`;
+  const lastEndStateRevision = useRef<string | null>(null);
   const shouldRestoreEnd = Boolean(
     own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),
   );
@@ -57,11 +59,12 @@ export function PollMessage({
       !hasPoll ||
       !message.event_id.startsWith("$") ||
       endRequestPending ||
-      (endTransactionId !== null && !pollEnded)
+      (endTransactionId !== null && !pollEnded && lastEndStateRevision.current === pollRevision)
     ) {
       setRestoringEndState(false);
       return;
     }
+    lastEndStateRevision.current = pollRevision;
     let active = true;
     setRestoringEndState(true);
     void getPendingPollEnd(roomId, message.event_id)
@@ -101,7 +104,16 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [endRequestPending, endTransactionId, hasPoll, message.event_id, own, pollEnded, roomId]);
+  }, [
+    endRequestPending,
+    endTransactionId,
+    hasPoll,
+    message.event_id,
+    own,
+    pollEnded,
+    pollRevision,
+    roomId,
+  ]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
