@@ -348,7 +348,13 @@ pub async fn retry_poll_end_impl(
     // echo before the next timeline sync; a process crash in that interval
     // must still leave voting and duplicate closes disabled after restart.
     set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
-    let retried = resend_message_impl(client, room_id, transaction_id).await?;
+    let retried = match resend_message_impl(client, room_id, transaction_id).await {
+        Ok(retried) => retried,
+        Err(error) => {
+            clear_acknowledged_poll_end(client, &close_key).await?;
+            return Err(error);
+        }
+    };
     if retried {
         set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
     } else {
