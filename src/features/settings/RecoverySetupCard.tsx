@@ -21,6 +21,9 @@ import {
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
+const REPLACED_PENDING_RECOVERY_ERROR =
+  "Pending recovery no longer matches the account's current secret storage.";
+
 function setupFailureGuidance(error: unknown): string {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
   // Only map known conditions to static copy; never render an arbitrary native,
@@ -80,8 +83,16 @@ export function RecoverySetupCard({
         setRecoveryKey(summary.recovery_key);
         setRoomKeysBackedUp(summary.room_keys_backed_up);
       })
-      .catch(() => {
-        if (active && generation === requestGeneration.current) setPendingReadError(true);
+      .catch((error) => {
+        if (!active || generation !== requestGeneration.current) return;
+        const message =
+          error instanceof Error ? error.message : typeof error === "string" ? error : "";
+        if (message.includes(REPLACED_PENDING_RECOVERY_ERROR)) {
+          setRepairAvailable(true);
+          setPendingReadError(false);
+        } else {
+          setPendingReadError(true);
+        }
       });
     return () => {
       active = false;
@@ -175,7 +186,7 @@ export function RecoverySetupCard({
   function closeRepair() {
     if (repairing) return;
     setRepairOpen(false);
-    setSetupOpen(true);
+    if (enabled && recoveryDisabled) setSetupOpen(true);
   }
 
   async function finish() {
@@ -213,6 +224,19 @@ export function RecoverySetupCard({
         <p role="alert">
           Could not reopen pending recovery. Reopen Settings when online before signing out.
         </p>
+      )}
+      {repairAvailable && !(enabled && recoveryDisabled) && (
+        <SettingsCard heading="Recovery repair required">
+          <SettingTile>
+            <p className="mb-3 text-sm text-muted-foreground">
+              This device retained protected state from an interrupted recovery setup. Repair it
+              before signing out.
+            </p>
+            <Button size="sm" variant="destructive" onClick={openRepair}>
+              Repair interrupted setup
+            </Button>
+          </SettingTile>
+        </SettingsCard>
       )}
       {enabled && recoveryDisabled && (
         <SettingsCard heading="Recovery">

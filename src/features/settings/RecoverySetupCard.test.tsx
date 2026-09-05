@@ -122,6 +122,20 @@ describe("RecoverySetupCard", () => {
     );
   });
 
+  it("offers repair after a retained pre-issuance setup is replaced", async () => {
+    getPendingRecoverySetup.mockRejectedValue(
+      new Error(
+        "Pending recovery no longer matches the account's current secret storage. Restart recovery setup.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
+    expect(screen.getByText(/deletes a server backup only when it can prove/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Repair incomplete setup" }));
+    await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
+  });
+
   it("requires local cross-signing keys before setup", () => {
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady={false} recoveryDisabled />);
 
