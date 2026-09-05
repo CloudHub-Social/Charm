@@ -62,13 +62,20 @@ function parseMentionAnchor(idPrefix: string) {
     const href = element.getAttribute("href") ?? "";
     const permalinkPrefix = "https://matrix.to/#/";
     if (!href.startsWith(permalinkPrefix)) return false;
-    let id: string;
-    try {
-      id = decodeURIComponent(href.slice(permalinkPrefix.length).split("?")[0]);
-    } catch {
-      return false;
+    const fragment = href.slice(permalinkPrefix.length);
+    let id = "";
+    for (const candidate of [fragment, fragment.split("?")[0]]) {
+      try {
+        const decoded = decodeURIComponent(candidate);
+        if (isValidMatrixId(decoded, idPrefix)) {
+          id = decoded;
+          break;
+        }
+      } catch {
+        // Try the query-stripped legacy spelling next.
+      }
     }
-    if (!isValidMatrixId(id, idPrefix)) return false;
+    if (!id) return false;
     const text = element.textContent ?? "";
     return { id, label: text === id ? null : text.replace(/^[@#]/, "") };
   };
@@ -105,7 +112,7 @@ export const UserMention = Mention.extend({
     return [
       "a",
       mergeAttributes(HTMLAttributes, {
-        href: `https://matrix.to/#/${id}`,
+        href: `https://matrix.to/#/${encodeURIComponent(id)}`,
         "data-mx-pill": "true",
       }),
       pillText("@", node.attrs.label as string | null, id),
@@ -136,7 +143,7 @@ export const RoomMention = Mention.extend({
     return [
       "a",
       mergeAttributes(HTMLAttributes, {
-        href: `https://matrix.to/#/${id}`,
+        href: `https://matrix.to/#/${encodeURIComponent(id)}`,
         "data-mx-pill": "true",
       }),
       pillText("#", node.attrs.label as string | null, id),

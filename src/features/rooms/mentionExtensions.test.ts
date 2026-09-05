@@ -15,7 +15,7 @@ describe("UserMention", () => {
     }) as [string, Record<string, string>, string];
 
     expect(tag).toBe("a");
-    expect(attrs.href).toBe("https://matrix.to/#/@alice:example.org");
+    expect(attrs.href).toBe("https://matrix.to/#/%40alice%3Aexample.org");
     expect(attrs["data-mx-pill"]).toBe("true");
     expect(text).toBe("@Alice");
   });
@@ -84,6 +84,16 @@ describe("UserMention", () => {
     expect(rules[0]!.getAttrs!(anchor)).toBe(false);
   });
 
+  it("preserves a question mark in a legacy raw user-id fragment", () => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", "https://matrix.to/#/@alice?work:example.org");
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "@Alice";
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+
+    expect(rules[0]!.getAttrs!(anchor)).toEqual({ id: "@alice?work:example.org", label: "Alice" });
+  });
+
   it.each([
     "https://matrix.to/#/@alice:example.org/path",
     "https://matrix.to/#/@alice:example.org:",
@@ -111,7 +121,7 @@ describe("RoomMention", () => {
     }) as [string, Record<string, string>, string];
 
     expect(tag).toBe("a");
-    expect(attrs.href).toBe("https://matrix.to/#/!abc:example.org");
+    expect(attrs.href).toBe("https://matrix.to/#/%21abc%3Aexample.org");
     expect(text).toBe("#General");
   });
 
