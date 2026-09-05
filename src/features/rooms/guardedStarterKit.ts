@@ -7,12 +7,7 @@ export function guardedStarterKit(enabled: () => boolean) {
     addExtensions() {
       return (this.parent?.() ?? []).map((extension) => {
         if (!["strike", "codeBlock"].includes(extension.name)) return extension;
-        return extension.extend({
-          // A disabled formatting feature must not keep expanding an
-          // existing marked range when text is inserted at its boundary.
-          // Stored-mark cleanup handles keyboard input; a non-inclusive mark
-          // also covers paste transactions, which do not inherit storedMarks.
-          ...(extension.name === "strike" ? { inclusive: false } : {}),
+        const guarded = extension.extend({
           addKeyboardShortcuts() {
             return Object.fromEntries(
               Object.entries(this.parent?.() ?? {}).map(([key, command]) => [
@@ -41,6 +36,13 @@ export function guardedStarterKit(enabled: () => boolean) {
             );
           },
         });
+        // A disabled formatting feature must not keep expanding an existing
+        // marked range when text is inserted at its boundary. Stored-mark
+        // cleanup handles keyboard input; a non-inclusive mark also covers
+        // paste transactions, which do not inherit storedMarks. Keep this in
+        // a second extension layer so it does not narrow the guarded methods'
+        // TipTap `this.parent` type to the mark-only config.
+        return extension.name === "strike" ? guarded.extend({ inclusive: false }) : guarded;
       });
     },
   });
