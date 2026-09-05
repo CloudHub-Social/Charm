@@ -171,6 +171,8 @@ define_feature_flag_keys!(
         JumpToDate,
         /// Spec 31 admin-triggered room upgrades and tombstoned-room handling.
         RoomUpgrades,
+        /// Day-2 Spec 06 searchable public-room directory and join flow.
+        RoomDirectory,
         /// Day-2 Spec 03 creation, voting, and creator-only closure of polls.
         Polls,
         /// Spec 44 encrypted manual megolm key-file import and export.
@@ -213,6 +215,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => false,
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
+            FeatureFlagKey::RoomDirectory => false,
             FeatureFlagKey::Polls => false,
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
@@ -307,6 +310,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
+            FeatureFlagKey::RoomDirectory => {
+                "Browse and search the homeserver's public room directory, then join a result."
+            }
             FeatureFlagKey::Polls => {
                 "Create, vote in, and display Matrix polls, with creator-only poll closure."
             }
@@ -361,6 +367,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "Spec 53 (avatars and presence visuals)",
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
+            FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
             FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
@@ -399,6 +406,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::AvatarPresenceVisuals => "avatar_presence_visuals",
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
+            FeatureFlagKey::RoomDirectory => "room_directory",
             FeatureFlagKey::Polls => "polls",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
