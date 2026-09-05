@@ -100,12 +100,16 @@ const packagingInputPatterns = [
   /(?:^|\/)(?:build\.rs|Makefile|Justfile)$/i,
   /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i,
 ];
-const bundledAssetRoot =
-  /(?:^|\/)(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i;
+const bundledAssetPatterns = [
+  /(?:^|\/)(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i,
+  /^src-tauri\/gen\/apple\/(?:assets|Assets\.xcassets)\//i,
+  /^src-tauri\/gen\/android\/app\/src\/main\/(?:assets|res|resources)\//i,
+];
 const sableCallName = /sable[-_ ]?call/i;
 
 for (const trackedFile of trackedFiles) {
-  if (bundledAssetRoot.test(trackedFile) && sableCallName.test(trackedFile)) {
+  const isBundledAsset = bundledAssetPatterns.some((pattern) => pattern.test(trackedFile));
+  if (isBundledAsset && sableCallName.test(trackedFile)) {
     errors.push(`Sable Call material cannot be stored in a packaged asset path: ${trackedFile}`);
   }
 
