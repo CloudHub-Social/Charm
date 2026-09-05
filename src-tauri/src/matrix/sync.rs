@@ -501,12 +501,26 @@ async fn notify_unopened_room_messages(
         };
 
         for raw_event in &update.timeline.events {
+            #[derive(serde::Deserialize)]
+            struct EventMentions {
+                content: ContentMentions,
+            }
+            #[derive(serde::Deserialize)]
+            struct ContentMentions {
+                #[serde(rename = "m.mentions")]
+                mentions: Option<matrix_sdk::ruma::events::Mentions>,
+            }
+            let mentions = raw_event
+                .raw()
+                .deserialize::<EventMentions>()
+                .ok()
+                .and_then(|event| event.content.mentions);
             let deserialize_result: Result<AnySyncTimelineEvent, _> = raw_event.raw().deserialize();
             let Ok(deserialized) = deserialize_result else {
                 continue;
             };
             let Some(original) =
-                unopened_notification_content(deserialized, poll_notifications_enabled)
+                unopened_notification_content(deserialized, poll_notifications_enabled, mentions)
             else {
                 continue;
             };
@@ -549,6 +563,7 @@ struct UnopenedNotificationContent {
 fn unopened_notification_content(
     event: matrix_sdk::ruma::events::AnySyncTimelineEvent,
     polls_enabled: bool,
+    fallback_mentions: Option<matrix_sdk::ruma::events::Mentions>,
 ) -> Option<UnopenedNotificationContent> {
     use matrix_sdk::ruma::events::poll::unstable_start::UnstablePollStartEventContent;
     use matrix_sdk::ruma::events::room::message::Relation;
@@ -583,7 +598,7 @@ fn unopened_notification_content(
                     .text
                     .clone()
                     .unwrap_or_else(|| format!("Poll: {}", content.poll_start.question.text)),
-                mentions: None,
+                mentions: fallback_mentions,
             })
         }
         // matrix-sdk-ui 0.18 does not yet aggregate stable m.poll.start into a
@@ -617,25 +632,35 @@ mod unopened_poll_notification_tests {
         });
         assert!(super::unopened_notification_content(
             serde_json::from_value(event.clone()).unwrap(),
-            false
+            false,
+            None,
         )
         .is_none());
+        let mentions = serde_json::from_value(serde_json::json!({
+            "user_ids": ["@bob:example.org"]
+        }))
+        .unwrap();
         let notification = super::unopened_notification_content(
             serde_json::from_value(event.clone()).unwrap(),
             true,
+            Some(mentions),
         )
         .unwrap();
         assert_eq!(notification.body, "Lunch?");
         assert_eq!(notification.event_id.as_str(), "$poll");
         assert_eq!(notification.sender.as_str(), "@alice:example.org");
-        assert!(notification.mentions.is_none());
+        assert!(notification.mentions.is_some());
         event["content"]["m.new_content"] = content;
         event["content"]["m.relates_to"] = serde_json::json!({
             "rel_type": "m.replace", "event_id": "$original"
         });
         assert!(
-            super::unopened_notification_content(serde_json::from_value(event).unwrap(), true)
-                .is_none()
+            super::unopened_notification_content(
+                serde_json::from_value(event).unwrap(),
+                true,
+                None,
+            )
+            .is_none()
         );
     }
 
@@ -660,8 +685,12 @@ mod unopened_poll_notification_tests {
             }
         });
         assert!(
-            super::unopened_notification_content(serde_json::from_value(event).unwrap(), true,)
-                .is_none()
+            super::unopened_notification_content(
+                serde_json::from_value(event).unwrap(),
+                true,
+                None,
+            )
+            .is_none()
         );
     }
 }

@@ -1449,15 +1449,22 @@ async fn fetch_message_mentions(
         .load_or_fetch_event(&parsed_event_id, None)
         .await
         .ok()?;
-    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
-        original.kind.raw().deserialize().ok()?;
-    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
-        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
-    ) = deserialized
-    else {
-        return None;
-    };
-    msg.as_original()?.content.mentions.clone()
+    #[derive(serde::Deserialize)]
+    struct EventMentions {
+        content: ContentMentions,
+    }
+    #[derive(serde::Deserialize)]
+    struct ContentMentions {
+        #[serde(rename = "m.mentions")]
+        mentions: Option<matrix_sdk::ruma::events::Mentions>,
+    }
+    original
+        .kind
+        .raw()
+        .deserialize::<EventMentions>()
+        .ok()?
+        .content
+        .mentions
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

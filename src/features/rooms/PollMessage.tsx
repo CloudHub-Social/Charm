@@ -40,11 +40,13 @@ export function PollMessage({
   const [restoringEndState, setRestoringEndState] = useState(shouldRestoreEnd);
   const [endRequestPending, setEndRequestPending] = useState(false);
   const [endTransactionId, setEndTransactionId] = useState<string | null>(null);
+  const [endFailed, setEndFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     setEnding(false);
     setEndRequestPending(false);
     setEndTransactionId(null);
+    setEndFailed(false);
     setError(null);
   }, [message.event_id, roomId]);
   useEffect(() => {
@@ -59,6 +61,7 @@ export function PollMessage({
         if (!active || !pending) return;
         setEndTransactionId(pending.transaction_id);
         setEnding(true);
+        setEndFailed(pending.failed);
         if (pending.failed) setError("The poll could not be ended.");
       })
       .catch(() => {
@@ -116,6 +119,7 @@ export function PollMessage({
       !hasRealEventId ||
       restoringEndState ||
       endRequestPending ||
+      (endTransactionId !== null && !endFailed) ||
       pendingAnswerId !== null
     )
       return;
@@ -123,11 +127,13 @@ export function PollMessage({
     setEndRequestPending(true);
     setError(null);
     try {
-      if (endTransactionId) {
+      if (endTransactionId && endFailed) {
         await resendMessage(roomId, endTransactionId);
+        setEndFailed(false);
       } else {
         const transactionId = await endPoll(roomId, message.event_id);
         setEndTransactionId(transactionId);
+        setEndFailed(false);
       }
     } catch {
       setError("The poll could not be ended.");
@@ -143,6 +149,7 @@ export function PollMessage({
     try {
       await discardFailedMessage(roomId, endTransactionId);
       setEndTransactionId(null);
+      setEndFailed(false);
       setEnding(false);
       setError(null);
     } catch {
@@ -278,22 +285,25 @@ export function PollMessage({
                   !hasRealEventId ||
                   restoringEndState ||
                   endRequestPending ||
+                  (endTransactionId !== null && !endFailed) ||
                   pendingAnswerId !== null
                 }
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {endRequestPending
                   ? "Ending…"
-                  : endTransactionId
+                  : endFailed
                     ? "Retry closing poll"
-                    : "End poll"}
+                    : endTransactionId
+                      ? "Close queued"
+                      : "End poll"}
               </button>
             )}
           </div>
           {ending && !ended && !endRequestPending && (
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
               <p>Close queued. Waiting for the timeline to confirm.</p>
-              {error && endTransactionId && (
+              {endFailed && endTransactionId && (
                 <button
                   type="button"
                   className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent"

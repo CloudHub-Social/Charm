@@ -187,8 +187,8 @@ describe("PollMessage", () => {
     await act(async () => finish("txn-end"));
     expect(answer).toBeDisabled();
     expect(screen.queryByText(/Poll closed/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry closing poll" }));
-    await waitFor(() => expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-end"));
+    expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
+    expect(resendMessage).not.toHaveBeenCalled();
     expect(endPoll).toHaveBeenCalledOnce();
     expect(answer).toBeDisabled();
     view.rerender(
@@ -203,9 +203,9 @@ describe("PollMessage", () => {
       transaction_id: "txn-restored-end",
       failed: false,
     });
-    render(<PollMessage message={pollMessage()} roomId="!restored-room:example.org" own={false} />);
+    render(<PollMessage message={pollMessage()} roomId="!restored-room:example.org" own />);
 
-    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
     expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
@@ -236,13 +236,14 @@ describe("PollMessage", () => {
       .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: false })
       .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: true });
     const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
-    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
 
     view.rerender(
       <PollMessage message={pollMessage({ edited: true })} roomId="!room:example.org" own />,
     );
 
     const discard = await screen.findByRole("button", { name: "Discard failed close" });
+    expect(screen.getByRole("button", { name: "Retry closing poll" })).toBeEnabled();
     fireEvent.click(discard);
     await waitFor(() =>
       expect(discardFailedMessage).toHaveBeenCalledWith("!room:example.org", "txn-failed-end"),
