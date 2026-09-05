@@ -6,9 +6,15 @@ interface VoiceRecorderProps {
   mobile: boolean;
   onSend: (file: File, metadata: VoiceMessageMetadata) => Promise<boolean>;
   onClearFailedUpload: (file: File) => void;
+  onCaptureChange?: (capturing: boolean) => void;
 }
 
-export function VoiceRecorder({ mobile, onSend, onClearFailedUpload }: VoiceRecorderProps) {
+export function VoiceRecorder({
+  mobile,
+  onSend,
+  onClearFailedUpload,
+  onCaptureChange,
+}: VoiceRecorderProps) {
   const recorder = useVoiceRecorder();
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(false);
@@ -23,6 +29,10 @@ export function VoiceRecorder({ mobile, onSend, onClearFailedUpload }: VoiceReco
     };
   }, []);
   const capturing = recorder.phase === "recording" || recorder.phase === "requesting";
+  useEffect(() => {
+    onCaptureChange?.(capturing);
+    return () => onCaptureChange?.(false);
+  }, [capturing, onCaptureChange]);
   const seconds = Math.floor(recorder.elapsedMs / 1000);
   const duration = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const buttonClass = "min-h-11 rounded-md px-3 text-sm hover:bg-accent disabled:opacity-50";

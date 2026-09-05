@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import type { ReactElement } from "react";
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
 import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
@@ -55,9 +55,20 @@ vi.mock("@/featureFlags", () => ({
 }));
 
 vi.mock("./VoiceRecorder", () => ({
-  VoiceRecorder: ({ mobile }: { mobile: boolean }) => (
-    <div data-testid="voice-gesture-mode">{mobile ? "mobile" : "desktop"}</div>
-  ),
+  VoiceRecorder: ({
+    mobile,
+    onCaptureChange,
+  }: {
+    mobile: boolean;
+    onCaptureChange?: (capturing: boolean) => void;
+  }) => {
+    useEffect(() => () => onCaptureChange?.(false), [onCaptureChange]);
+    return (
+      <div data-testid="voice-gesture-mode" onClick={() => onCaptureChange?.(true)}>
+        {mobile ? "mobile" : "desktop"}
+      </div>
+    );
+  },
 }));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -471,6 +482,17 @@ describe("ChatShell", () => {
     });
 
     expect(screen.queryByTestId("voice-gesture-mode")).not.toBeInTheDocument();
+  });
+
+  it("does not open the attachment picker while voice capture is active", async () => {
+    mockUseFlag.mockImplementation((key) => key === "voice_recording");
+    renderChatShell();
+    fireEvent.click(await screen.findByTestId("voice-gesture-mode"));
+
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+    expect(attachButton).toBeDisabled();
+    fireEvent.click(attachButton);
+    expect(openFileDialog).not.toHaveBeenCalled();
   });
 
   it("marks the exhausted start of history as all caught up", async () => {
