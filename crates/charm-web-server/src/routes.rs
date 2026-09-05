@@ -1635,7 +1635,7 @@ async fn discard_unpublished_login(state: &AppState, token: &str) {
         {
             handle.abort();
         }
-        let _cleanup = tokio::spawn(async move {
+        tokio::spawn(async move {
             let _ = session.client.matrix_auth().logout().await;
         });
     }
@@ -2489,7 +2489,7 @@ async fn logout(
         // later authentication, so a slow homeserver must not delay the logout
         // response while the bounded revocation attempt finishes.
         let state = state.clone();
-        tokio::spawn(async move {
+        let _cleanup = tokio::spawn(async move {
             if let Some(session) = state.sessions.remove(&token).await {
                 let live_crypto = session.persisted_crypto.clone();
                 if let Some(handle) = session
