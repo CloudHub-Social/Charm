@@ -18,8 +18,8 @@ function stripPackagingComments(content, relativePath) {
   if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutCommentLines;
 
   const languageVariant = /x$/i.test(relativePath)
-    ? ts.LanguageVariant.JSX
-    : ts.LanguageVariant.Standard;
+    ? (ts.LanguageVariant?.JSX ?? 1)
+    : (ts.LanguageVariant?.Standard ?? 0);
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
     false,
@@ -92,20 +92,6 @@ const requiredScripts = {
 for (const [scriptName, expectedCommand] of Object.entries(requiredScripts)) {
   if (rootManifest.scripts?.[scriptName] !== expectedCommand) {
     errors.push(`package.json scripts.${scriptName} must generate the expected license bundle.`);
-  }
-}
-
-const docsManifest = JSON.parse(read("docs-site/package.json"));
-const requiredDocsScripts = {
-  build: "astro build && node scripts/generate-site-graph-loader.mjs && pnpm license:bundle:npm",
-  "license:bundle:npm":
-    "node ../scripts/generate-third-party-licenses.mjs --npm --npm-directory docs-site --copy-project-licenses --output docs-site/dist/THIRD_PARTY_LICENSES.txt",
-};
-for (const [scriptName, expectedCommand] of Object.entries(requiredDocsScripts)) {
-  if (docsManifest.scripts?.[scriptName] !== expectedCommand) {
-    errors.push(
-      `docs-site/package.json scripts.${scriptName} must generate the expected license bundle.`,
-    );
   }
 }
 

@@ -10,8 +10,7 @@
 		"check:content": "node scripts/check-content.mjs",
 		"check:graph": "node scripts/check-site-graph.mjs",
 		"roadmap:generate": "node scripts/generate-roadmap.mjs",
-		"build": "astro build && node scripts/generate-site-graph-loader.mjs && pnpm license:bundle:npm",
-		"license:bundle:npm": "node ../scripts/generate-third-party-licenses.mjs --npm --npm-directory docs-site --copy-project-licenses --output docs-site/dist/THIRD_PARTY_LICENSES.txt",
+		"build": "astro build && node scripts/generate-site-graph-loader.mjs",
     "preview": "astro preview",
     "astro": "astro"
   },

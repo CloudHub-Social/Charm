@@ -8,9 +8,10 @@ The lockfiles are the canonical dependency inventory for a source revision.
 Distribution builds generate `THIRD_PARTY_LICENSES.txt` from the installed pnpm
 graph and Cargo's locked external-crate graph. That file reproduces the resolved
 packages' available license, notice, copying, and copyright files and is
-included in web, Tauri, documentation-site, and companion-server artifacts.
-Generation fails when a resolved dependency does not provide a distributable
-license text.
+included in web, Tauri, and companion-server artifacts.
+When a split package omits a standalone file, generation uses a same-repository
+license file or supported canonical SPDX text with that package's attribution.
+It fails when none of those sources can resolve the declared license.
 
 Each published release also includes signed, platform-named SPDX JSON software
 bills of materials. As the README explains, those SBOMs describe the

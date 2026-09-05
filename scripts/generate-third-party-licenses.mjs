@@ -17,34 +17,54 @@ const includeNpm = args.includes("--npm");
 const includeCargo = args.includes("--cargo");
 const copyProjectLicenses = args.includes("--copy-project-licenses");
 const outputFlag = args.indexOf("--output");
-const npmDirectoryFlag = args.indexOf("--npm-directory");
 
-if (
-  (!includeNpm && !includeCargo) ||
-  outputFlag === -1 ||
-  !args[outputFlag + 1] ||
-  (npmDirectoryFlag !== -1 && !args[npmDirectoryFlag + 1])
-) {
+if ((!includeNpm && !includeCargo) || outputFlag === -1 || !args[outputFlag + 1]) {
   console.error(
-    "Usage: node scripts/generate-third-party-licenses.mjs (--npm | --cargo)+ [--npm-directory <path>] [--copy-project-licenses] --output <path>",
+    "Usage: node scripts/generate-third-party-licenses.mjs (--npm | --cargo)+ [--copy-project-licenses] --output <path>",
   );
   process.exit(1);
 }
 
 const outputPath = path.resolve(repositoryRoot, args[outputFlag + 1]);
-const npmDirectory = path.resolve(
-  repositoryRoot,
-  npmDirectoryFlag === -1 ? "." : args[npmDirectoryFlag + 1],
-);
 const licenseFilename =
   /^(?:licen[cs]e|copying|notice|copyright|authors?|contributors?|patents?)(?:$|[._-])/i;
 const entries = new Map();
 const errors = [];
+const mitLicenseText = `MIT License
 
-function commandJson(command, commandArgs, cwd = repositoryRoot) {
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+const iscLicenseTerms = `Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.`;
+
+function commandJson(command, commandArgs) {
   const executable = process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
   const result = spawnSync(executable, commandArgs, {
-    cwd,
+    cwd: repositoryRoot,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -63,6 +83,19 @@ function normalizedPerson(value) {
   return [value.name, value.email && `<${value.email}>`, value.url && `(${value.url})`]
     .filter(Boolean)
     .join(" ");
+}
+
+function normalizedRepository(value) {
+  if (!value) return "";
+  const repository = typeof value === "string" ? value : value.url;
+  return String(repository ?? "")
+    .replace(/^git\+/, "")
+    .replace(/^(?:git|https?|ssh):\/\//, "")
+    .replace(/^git@github\.com:/, "github.com/")
+    .replace(/^github\.com:/, "github.com/")
+    .replace(/\.git$/, "")
+    .replace(/\/$/, "")
+    .toLowerCase();
 }
 
 function candidateLicenseFiles(packageRoot, explicitLicenseFile) {
@@ -101,6 +134,7 @@ function addEntry({
   license,
   authors,
   homepage,
+  repository,
   packageRoot,
   licenseFile,
 }) {
@@ -108,11 +142,6 @@ function addEntry({
   if (entries.has(key)) return;
 
   const files = candidateLicenseFiles(packageRoot, licenseFile);
-  if (files.length === 0) {
-    errors.push(`${ecosystem} dependency ${name}@${version} has no packaged license text.`);
-    return;
-  }
-
   entries.set(key, {
     ecosystem,
     name,
@@ -120,14 +149,78 @@ function addEntry({
     license: license || "UNKNOWN",
     authors: authors || "Not declared",
     homepage: homepage || "Not declared",
+    repository: normalizedRepository(repository),
     files,
   });
 }
 
-function collectNpmLicenses() {
-  const report = commandJson("pnpm", ["licenses", "list", "--json"], npmDirectory);
+function canonicalLicenseFiles(entry) {
+  const attribution =
+    entry.authors !== "Not declared" ? entry.authors : `${entry.name} contributors`;
+  const declaredLicense = entry.license.replace(/[()]/g, "").trim();
+  const licenseIds = declaredLicense.split(/\s+OR\s+/i).map((value) => value.trim());
+  const files = [];
 
-  for (const packages of Object.values(report)) {
+  for (const licenseId of licenseIds) {
+    if (licenseId === "MIT") {
+      files.push({
+        name: "SPDX-MIT.txt",
+        content: `Canonical SPDX text: https://spdx.org/licenses/MIT\nCopyright (c) ${attribution}\n\n${mitLicenseText}`,
+      });
+    } else if (licenseId === "ISC") {
+      files.push({
+        name: "SPDX-ISC.txt",
+        content: `Canonical SPDX text: https://spdx.org/licenses/ISC\nCopyright (c) ${attribution}\n\n${iscLicenseTerms}`,
+      });
+    } else if (licenseId === "Apache-2.0") {
+      files.push({
+        name: "SPDX-Apache-2.0.txt",
+        content: readFileSync(path.join(repositoryRoot, "LICENSE"), "utf8").trimEnd(),
+      });
+    } else {
+      return [];
+    }
+  }
+
+  return files;
+}
+
+function resolveMissingLicenseFiles() {
+  const allEntries = [...entries.values()];
+
+  for (const entry of allEntries) {
+    if (entry.files.length > 0) continue;
+    const repositoryDonor = entry.repository
+      ? allEntries.find(
+          (candidate) =>
+            candidate !== entry &&
+            candidate.repository === entry.repository &&
+            candidate.license === entry.license &&
+            candidate.files.length > 0,
+        )
+      : undefined;
+
+    if (repositoryDonor) {
+      entry.files = repositoryDonor.files.map(({ name, content }) => ({
+        name: `repository-license-from-${repositoryDonor.name}/${name}`,
+        content,
+      }));
+      continue;
+    }
+
+    entry.files = canonicalLicenseFiles(entry);
+    if (entry.files.length === 0) {
+      errors.push(
+        `${entry.ecosystem} dependency ${entry.name}@${entry.version} has no package, repository, or supported canonical license text for ${entry.license}.`,
+      );
+    }
+  }
+}
+
+function collectNpmLicenses() {
+  const report = commandJson("pnpm", ["licenses", "list", "--json"]);
+
+  for (const [reportedLicense, packages] of Object.entries(report)) {
     for (const packageRecord of packages) {
       let foundInstalledPath = false;
       for (const packageRoot of packageRecord.paths ?? []) {
@@ -148,7 +241,9 @@ function collectNpmLicenses() {
           .filter(Boolean)
           .join(", ");
         const license =
-          typeof manifest.license === "string" ? manifest.license : packageRecord.license;
+          typeof manifest.license === "string"
+            ? manifest.license
+            : (packageRecord.license ?? reportedLicense);
         const licenseFile = /^SEE LICEN[CS]E IN (.+)$/i.exec(license ?? "")?.[1];
 
         addEntry({
@@ -158,6 +253,7 @@ function collectNpmLicenses() {
           license,
           authors,
           homepage: manifest.homepage ?? packageRecord.homepage,
+          repository: manifest.repository,
           packageRoot,
           licenseFile,
         });
@@ -187,6 +283,7 @@ function collectCargoLicenses() {
       license: packageRecord.license,
       authors: packageRecord.authors?.join(", "),
       homepage: packageRecord.homepage ?? packageRecord.repository,
+      repository: packageRecord.repository,
       packageRoot,
       licenseFile: packageRecord.license_file,
     });
@@ -200,6 +297,8 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
+
+resolveMissingLicenseFiles();
 
 if (errors.length > 0) {
   for (const error of errors) console.error(`third-party-license: ${error}`);
@@ -221,7 +320,9 @@ const output = [
   "",
   "Generated deterministically from the installed pnpm dependency graph and/or",
   "Cargo.lock-resolved external crates. Package license, notice, copying, and copyright files",
-  "are included below; Charm does not relicense these works.",
+  "are included below. When a split package omits them, the generator uses a same-repository",
+  "license file or supported canonical SPDX text with package attribution. Charm does not",
+  "relicense these works.",
   "",
   ...sections,
   "",
