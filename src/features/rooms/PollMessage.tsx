@@ -228,7 +228,16 @@ export function PollMessage({
     setError(null);
     try {
       if (endTransactionId && endFailed) {
-        await resendMessage(roomId, endTransactionId);
+        const retried = await resendMessage(roomId, endTransactionId);
+        if (!retried) {
+          acknowledgedPollCloses.delete(closeKey);
+          setEndTransactionId(null);
+          setEndAcknowledged(false);
+          setEndFailed(false);
+          setEnding(false);
+          setError("The failed poll close is no longer available to retry.");
+          return;
+        }
         acknowledgedPollCloses.set(closeKey, endTransactionId);
         setEndAcknowledged(true);
         setEndFailed(false);

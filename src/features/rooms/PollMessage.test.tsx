@@ -95,7 +95,7 @@ beforeEach(() => {
   resetAcknowledgedPollClosesForTests();
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
-  resendMessage.mockReset().mockResolvedValue(undefined);
+  resendMessage.mockReset().mockResolvedValue(true);
   getPendingPollEnd.mockReset().mockResolvedValue(null);
   confirmPollEndSynced.mockReset().mockResolvedValue(undefined);
   discardFailedMessage.mockReset().mockResolvedValue(true);
@@ -237,6 +237,42 @@ describe("PollMessage", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+  });
+
+  it("does not acknowledge a retry when another renderer already removed the close", async () => {
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-removed-end",
+      failed: true,
+    });
+    resendMessage.mockResolvedValueOnce(false);
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    const retry = await screen.findByRole("button", { name: "Retry closing poll" });
+
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-removed-end"),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Close queued" })).not.toBeInTheDocument();
+  });
+
+  it("retains the admission lock after actually retrying a failed close", async () => {
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-retried-end",
+      failed: true,
+    });
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    const retry = await screen.findByRole("button", { name: "Retry closing poll" });
+
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-retried-end"),
+    );
+    expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
   });
 
   it("discards a failed local close after another client ends the poll", async () => {

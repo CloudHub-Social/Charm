@@ -591,10 +591,7 @@ fn unopened_notification_content(
             Some(UnopenedNotificationContent {
                 event_id: original.event_id.clone(),
                 sender: original.sender.clone(),
-                body: content
-                    .text
-                    .clone()
-                    .unwrap_or_else(|| format!("Poll: {}", content.poll_start.question.text)),
+                body: format!("Poll: {}", content.poll_start.question.text),
                 mentions: fallback_mentions,
             })
         }
@@ -643,10 +640,20 @@ mod unopened_poll_notification_tests {
             Some(mentions),
         )
         .unwrap();
-        assert_eq!(notification.body, "Lunch?");
+        assert_eq!(notification.body, "Poll: Lunch?");
         assert_eq!(notification.event_id.as_str(), "$poll");
         assert_eq!(notification.sender.as_str(), "@alice:example.org");
         assert!(notification.mentions.is_some());
+
+        event["content"]["org.matrix.msc1767.text"] =
+            serde_json::json!("Poll: Lunch?\nPizza\nTacos");
+        let notification = super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(notification.body, "Poll: Lunch?");
         event["content"]["m.new_content"] = content;
         event["content"]["m.relates_to"] = serde_json::json!({
             "rel_type": "m.replace", "event_id": "$original"

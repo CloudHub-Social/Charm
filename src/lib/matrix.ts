@@ -637,11 +637,13 @@ export function sendReply(roomId: string, inReplyToEventId: string, body: string
 /**
  * Retries a failed message send in place via the send queue's own retry
  * primitive (`SendHandle::unwedge`), rather than re-composing and sending
- * new content. `transactionId` is the failed local echo's
+ * new content. Resolves `true` only when the local echo was still present
+ * and was actually unwedgeable; `false` means another renderer already
+ * removed it. `transactionId` is the failed local echo's
  * `RoomMessageSummary.transaction_id` (present while `send_state.state` is
  * `"error"`).
  */
-export function resendMessage(roomId: string, transactionId: string): Promise<void> {
+export function resendMessage(roomId: string, transactionId: string): Promise<boolean> {
   return invoke("resend_message", { roomId, transactionId });
 }
 

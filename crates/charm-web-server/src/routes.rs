@@ -3945,10 +3945,10 @@ async fn resend_message(
     // without this check.
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    resend_message_impl(&session.client, &room_id, &transaction_id)
+    let retried = resend_message_impl(&session.client, &room_id, &transaction_id)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(retried))
 }
 
 async fn discard_failed_message(
