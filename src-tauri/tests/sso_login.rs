@@ -214,6 +214,10 @@ async fn sso_login_completes_with_a_real_working_session() {
         .session()
         .expect("a session is set on the client after SSO login");
     assert_eq!(session.meta.user_id.localpart(), "sso-test");
+    assert!(
+        session.tokens.refresh_token.is_some(),
+        "SSO requests a refresh token for durable native sessions"
+    );
 
     client
         .whoami()
