@@ -159,6 +159,7 @@ function textWithMentionIds(editor: Editor): string {
     if (node.type.name === "userMention" || node.type.name === "roomMention") {
       return typeof node.attrs.id === "string" ? node.attrs.id : "";
     }
+    if (node.type.name === "hardBreak") return "\n";
     return "";
   });
 }

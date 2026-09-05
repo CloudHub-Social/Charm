@@ -70,6 +70,43 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("preserves hard breaks in message-style slash commands", async () => {
+    flags.composerParity = true;
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!plain-hard-break:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.paste(editable, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/html"
+            ? "<p>/plain first<br>second</p>"
+            : type === "text/plain"
+              ? "/plain first\nsecond"
+              : "",
+        types: ["text/html", "text/plain"],
+      },
+    });
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(onSlashCommand).toHaveBeenCalledWith({
+        command: "plain",
+        args: ["first", "second"],
+        text: "first\nsecond",
+      }),
+    );
+  });
+
   it.each(["unban", "ignore", "unignore", "plain", "shrug", "tableflip", "notice"])(
     "resolves mention IDs for /%s in replies",
     async (command) => {
