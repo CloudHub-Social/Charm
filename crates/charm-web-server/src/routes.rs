@@ -2514,7 +2514,21 @@ async fn logout(
                         .has_persisted_object(&token)
                         .await
                         .unwrap_or(true);
-                    if revoked.is_ok() || !durable_token_exists {
+                    if durable_token_exists {
+                        // The live client revokes the newest in-memory token,
+                        // while the version-fenced helper revokes and marks
+                        // whichever exact token pair is currently durable.
+                        // A racing refresh on another instance either loses
+                        // the conditional write or is re-read and revoked;
+                        // no unconditional delete can erase an unrevoked pair.
+                        if let Err(error) =
+                            persistence.finish_recovery_safe_teardown(&token).await
+                        {
+                            tracing::warn!(
+                                "failed to finish persisted session logout; retained teardown tombstone: {error}"
+                            );
+                        }
+                    } else if revoked.is_ok() {
                         let live_crypto = live_crypto
                             .as_ref()
                             .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
@@ -2522,11 +2536,12 @@ async fn logout(
                             tracing::warn!("failed to remove persisted session on logout: {error}");
                         }
                     } else if let Err(error) = revoked {
-                        // Keep the tombstoned encrypted token so startup or a
-                        // later request can retry revocation. The browser cookie
-                        // is still cleared and this live session stays removed.
+                        // No durable token exists to retry. The browser cookie
+                        // is still cleared and this live session stays removed;
+                        // retain the crypto store rather than deleting custody
+                        // after an unconfirmed homeserver revocation.
                         tracing::warn!(
-                            "failed to revoke Matrix session on logout; retained teardown tombstone: {error}"
+                            "failed to revoke non-persisted Matrix session: {error}"
                         );
                     }
                 } else if let Err(error) = revoked {
