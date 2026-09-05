@@ -59,6 +59,7 @@ import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 import { PollDialog } from "./PollDialog";
 import { PollComposerAction } from "./PollComposerAction";
+import { PollRecoveryTray } from "./PollRecoveryTray";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -306,6 +307,10 @@ export function ChatShell({
     timelineStateEventsEnabled || roomUpgradesEnabled,
     hideMembershipEvents,
     showHiddenEvents,
+  );
+  const loadedEventIds = useMemo(
+    () => new Set(messages.map((message) => message.event_id)),
+    [messages],
   );
   const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
@@ -983,6 +988,8 @@ export function ChatShell({
           </div>
         </div>
       )}
+
+      <PollRecoveryTray roomId={room.room_id} loadedEventIds={loadedEventIds} />
 
       <UploadTray
         uploads={uploads}

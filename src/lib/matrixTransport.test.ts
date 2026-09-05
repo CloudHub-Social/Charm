@@ -273,6 +273,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "get_pending_poll_relations",
+      { roomId: "!r:example.org" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/poll-relations/pending",
+      undefined,
+    ],
+    [
       "retry_poll_vote",
       { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-vote" },
       "POST",

@@ -605,6 +605,11 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           String(args.pollEventId),
         )}/vote`,
       );
+    case "get_pending_poll_relations":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/poll-relations/pending`,
+      );
     case "retry_poll_vote":
       return requestJson<T>(
         "POST",

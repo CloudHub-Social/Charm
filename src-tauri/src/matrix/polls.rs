@@ -46,6 +46,22 @@ pub struct PendingPollVote {
     failed: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingPollRelationKind {
+    Vote,
+    End,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingPollRelation {
+    poll_event_id: String,
+    transaction_id: String,
+    kind: PendingPollRelationKind,
+    answer_id: Option<String>,
+    failed: bool,
+}
+
 fn poll_end_key(client: &Client, room_id: &RoomId, poll_id: &EventId) -> Result<String, String> {
     let user_id = client.user_id().ok_or("No active Matrix account")?;
     let device_id = client.device_id().ok_or("No active Matrix device")?;
@@ -184,6 +200,52 @@ async fn pending_poll_vote(
                 failed: send_error.is_some(),
             })
     }))
+}
+
+pub async fn pending_poll_relations_impl(
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<PendingPollRelation>, String> {
+    let room = room_for(client, room_id)?;
+    let (echoes, _) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(echoes
+        .into_iter()
+        .filter_map(|echo| {
+            let LocalEchoContent::Event {
+                serialized_event,
+                send_error,
+                ..
+            } = echo.content
+            else {
+                return None;
+            };
+            let transaction_id = echo.transaction_id.to_string();
+            let failed = send_error.is_some();
+            match serialized_event.deserialize().ok()? {
+                AnyMessageLikeEventContent::UnstablePollResponse(content) => {
+                    Some(PendingPollRelation {
+                        poll_event_id: content.relates_to.event_id.to_string(),
+                        transaction_id,
+                        kind: PendingPollRelationKind::Vote,
+                        answer_id: content.poll_response.answers.first().cloned(),
+                        failed,
+                    })
+                }
+                AnyMessageLikeEventContent::UnstablePollEnd(content) => Some(PendingPollRelation {
+                    poll_event_id: content.relates_to.event_id.to_string(),
+                    transaction_id,
+                    kind: PendingPollRelationKind::End,
+                    answer_id: None,
+                    failed,
+                }),
+                _ => None,
+            }
+        })
+        .collect())
 }
 
 pub async fn pending_poll_vote_impl(
@@ -581,6 +643,15 @@ pub async fn get_pending_poll_end(
 }
 
 #[tauri::command]
+pub async fn get_pending_poll_relations(
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<Vec<PendingPollRelation>, String> {
+    let client = state.require_client().await?;
+    pending_poll_relations_impl(&client, &room_id).await
+}
+
+#[tauri::command]
 pub async fn confirm_poll_end_synced(
     state: State<'_, MatrixState>,
     room_id: String,
@@ -725,6 +796,14 @@ mod tests {
         assert_eq!(pending.answer_id, "0");
         let (echoes, _) = room.send_queue().subscribe().await.unwrap();
         assert_eq!(echoes.len(), 1);
+        let relations = pending_poll_relations_impl(&client, room_id.as_str())
+            .await
+            .unwrap();
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].poll_event_id, poll_id.as_str());
+        assert!(matches!(relations[0].kind, PendingPollRelationKind::Vote));
+        assert_eq!(relations[0].answer_id.as_deref(), Some("0"));
+        assert!(!relations[0].failed);
     }
 
     #[tokio::test]

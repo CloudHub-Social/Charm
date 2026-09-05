@@ -1519,6 +1519,7 @@ pub fn run() {
             matrix::polls::discard_poll_end,
             matrix::polls::get_pending_poll_vote,
             matrix::polls::get_pending_poll_end,
+            matrix::polls::get_pending_poll_relations,
             matrix::polls::confirm_poll_end_synced,
             matrix::send::send_attachment,
             matrix::send::forward_message,

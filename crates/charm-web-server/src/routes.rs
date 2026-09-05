@@ -38,7 +38,7 @@ use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
     confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl,
     discard_poll_vote_impl, end_poll_impl, pending_poll_end_impl, pending_poll_vote_impl,
-    retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
+    pending_poll_relations_impl, retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
 };
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
@@ -196,6 +196,10 @@ pub fn router(state: AppState) -> Router {
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
         .route("/api/rooms/{room_id}/polls", post(create_poll))
+        .route(
+            "/api/rooms/{room_id}/poll-relations/pending",
+            get(get_pending_poll_relations),
+        )
         .route(
             "/api/rooms/{room_id}/polls/{poll_event_id}/vote",
             get(get_pending_poll_vote).post(vote_on_poll),
@@ -3700,6 +3704,18 @@ async fn get_pending_poll_vote(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     let pending = pending_poll_vote_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(pending))
+}
+
+async fn get_pending_poll_relations(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let pending = pending_poll_relations_impl(&session.client, &room_id)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(pending))

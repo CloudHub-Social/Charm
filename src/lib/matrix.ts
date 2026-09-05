@@ -614,6 +614,19 @@ export interface PendingPollEnd {
   failed: boolean;
 }
 
+export interface PendingPollRelation {
+  poll_event_id: string;
+  transaction_id: string;
+  kind: "vote" | "end";
+  answer_id: string | null;
+  failed: boolean;
+}
+
+/** Lists poll relations independently of whether their target event is loaded. */
+export function getPendingPollRelations(roomId: string): Promise<PendingPollRelation[]> {
+  return invokeMatrix("get_pending_poll_relations", { roomId });
+}
+
 /** Returns the queued poll-close state, including after a row remount. */
 export function getPendingPollEnd(
   roomId: string,

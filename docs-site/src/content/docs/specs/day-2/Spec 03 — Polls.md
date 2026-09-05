@@ -92,6 +92,10 @@ the per-poll mutation lock, preventing one window from discarding an echo while
 another window retries it. Disabling the rollout hides creation and ordinary poll
 interaction, but a recovery-only controller remains mounted behind the fallback
 event row so an outstanding failed relation can still be retried or discarded.
+The active room also scans its durable poll-relation echoes and renders the same
+Retry/Discard recovery above the composer when the target poll is outside the
+loaded timeline window; loaded targets remain owned by their poll row so the two
+surfaces do not duplicate controls.
 
 ## API/contract changes
 
@@ -99,7 +103,8 @@ event row so an outstanding failed relation can still be retried or discarded.
 - New `PollSummary`, `PollAnswerSummary`, and `PollKindSummary` bindings.
 - New `create_poll`, `vote_on_poll`, and `end_poll` commands plus matching
   authenticated web routes, with poll-specific pending-state, retry, discard, and
-  close-confirmation commands for failed-send recovery.
+  close-confirmation commands for failed-send recovery. A read-only room-level
+  pending-relation command supports recovery when the target event is not loaded.
 - The bodyless web poll-end route applies the same allowed-origin validation as
   other authenticated state-changing routes before resolving its session cookie.
 - New default-off `polls` feature flag catalog entry.
