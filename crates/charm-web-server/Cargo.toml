@@ -3,6 +3,9 @@ name = "charm-web-server"
 version = "0.1.0"
 edition = "2021"
 description = "Companion HTTP server exposing matrix-rust-sdk over the network for the Charm web client (Spec 16, sub-PR B: WebSocket event channel + encrypted-at-rest session persistence, on top of sub-PR A's HTTP router)."
+authors = ["Evie Gauthier and Charm contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/CloudHub-Social/Charm"
 
 # Deliberately not folded into src-tauri's own Cargo.toml: src-tauri's
 # manifest/lockfile are already load-bearing for the existing Tauri/mobile
