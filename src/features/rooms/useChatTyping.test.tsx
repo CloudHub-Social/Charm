@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatTyping } from "./useChatTyping";
 import type { PrivacySettings } from "@/lib/matrix";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 
 const sendTyping = vi.fn();
 const getPrivacySettings = vi.fn();
@@ -33,6 +34,30 @@ beforeEach(() => {
 });
 
 describe("useChatTyping", () => {
+  it("withdraws typing and blocks refreshes when retained chat content is hidden", async () => {
+    let visible = true;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ChatVisibilityContext.Provider value={visible}>{children}</ChatVisibilityContext.Provider>
+      </QueryClientProvider>
+    );
+    const { result, rerender } = renderHook(
+      () => useChatTyping("!room:localhost", "@me:localhost"),
+      { wrapper },
+    );
+    result.current.handleTypingInput();
+    expect(sendTyping).toHaveBeenCalledWith("!room:localhost", true);
+    sendTyping.mockClear();
+
+    visible = false;
+    rerender();
+    await waitFor(() => expect(sendTyping).toHaveBeenCalledWith("!room:localhost", false));
+    sendTyping.mockClear();
+    result.current.handleTypingInput();
+    expect(sendTyping).not.toHaveBeenCalled();
+  });
+
   it("withdraws an already-sent typing notice once hide_typing turns on (review fix)", async () => {
     // Review fix: send_typing's own Rust enforcement only suppresses
     // *future* typing sends once hide_typing is on — it can't retroactively
