@@ -173,6 +173,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 43 extended composer formatting and command controls.
         ComposerParity,
+        /// Spec 44 encrypted manual megolm key-file import and export.
+        CryptoKeyFiles,
         /// Spec 47 appearance customization and display preferences.
         AppearanceParity,
     }
@@ -212,6 +214,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::ComposerParity => false,
+            FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
         }
     }
@@ -305,6 +308,9 @@ impl FeatureFlagKey {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
             FeatureFlagKey::ComposerParity => "Use extended composer formatting and command controls.",
+            FeatureFlagKey::CryptoKeyFiles => {
+                "Import or export standard passphrase-encrypted Matrix room-key files."
+            }
             FeatureFlagKey::AppearanceParity => {
                 "Customize appearance and display preferences, including clock and date formats."
             }
@@ -354,6 +360,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::ComposerParity => "Spec 43 (composer parity)",
+            FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
@@ -391,6 +398,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::ComposerParity => "composer_parity",
+            FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
@@ -713,9 +721,8 @@ mod tests {
     fn generated_frontend_catalog_matches_rust_catalog() {
         let expected =
             serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize");
-        // Export the authoritative value as CI evidence even when parity
-        // fails. This lets CI-only contributors retrieve generated metadata
-        // without hand-maintaining the frontend copy or weakening this gate.
+        // Preserve the authoritative output for CI-only contributors while
+        // retaining the parity assertion below as a required gate.
         let output =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".artifacts/generated-bindings");
         std::fs::create_dir_all(&output).expect("create generated catalog directory");
