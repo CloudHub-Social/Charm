@@ -384,6 +384,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/verification/recovery/setup", post(setup_recovery))
         .route(
+            "/api/verification/recovery/setup/repair",
+            post(repair_interrupted_recovery_setup),
+        )
+        .route(
             "/api/verification/recovery/pending",
             get(get_pending_recovery_setup).post(acknowledge_recovery_setup),
         )
@@ -5713,6 +5717,58 @@ async fn acknowledge_recovery_setup(
         request.recovery_key,
     )
     .await
+    .map_err(ApiError::bad_request)?;
+    Ok(([("cache-control", "no-store")], Json(())))
+}
+
+async fn repair_interrupted_recovery_setup(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
+    let persistence = state
+        .persistence
+        .as_ref()
+        .ok_or_else(|| ApiError::bad_request("Protected recovery storage is unavailable."))?;
+    let cookie = jar
+        .get(SESSION_COOKIE)
+        .ok_or_else(|| ApiError::unauthorized("Not signed in."))?;
+    if !session.crypto_store_open || session.persisted_crypto.is_none() {
+        return Err(ApiError::bad_request(
+            "Sign in again with durable encrypted storage before repairing recovery.",
+        ));
+    }
+
+    // Transfer the destructive repair to an owned task so an HTTP disconnect
+    // cannot leave its cross-process claim held until lease expiry.
+    let repair_persistence = Arc::clone(persistence);
+    let repair_session = Arc::clone(&session);
+    let repair_token = cookie.value().to_string();
+    let repair_owner = format!("{:032x}", rand::random::<u128>());
+    drop(guard);
+    tokio::spawn(async move {
+        let _guard = repair_session.recovery_setup_lock.lock().await;
+        if repair_session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed; recovery repair was not started.".to_string());
+        }
+        charm_lib::matrix::recovery_custody::repair_interrupted_setup(
+            &repair_session.client,
+            &WebRecoveryCustody {
+                persistence: &repair_persistence,
+                token: &repair_token,
+                session: &repair_session,
+                owner: Some(&repair_owner),
+            },
+        )
+        .await
+    })
+    .await
+    .map_err(|_| ApiError::bad_request("Recovery repair task failed."))?
     .map_err(ApiError::bad_request)?;
     Ok(([("cache-control", "no-store")], Json(())))
 }

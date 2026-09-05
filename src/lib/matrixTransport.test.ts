@@ -85,6 +85,13 @@ describe("matrix web transport", () => {
       "/api/verification/recovery/pending",
       { recovery_key: "saved-key" },
     ],
+    [
+      "repair_interrupted_recovery_setup",
+      {},
+      "POST",
+      "/api/verification/recovery/setup/repair",
+      undefined,
+    ],
     ["discover_homeserver", { input: "matrix.org" }, "POST", "/api/auth/discover", "matrix.org"],
     [
       "login",

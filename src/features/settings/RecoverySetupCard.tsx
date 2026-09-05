@@ -12,7 +12,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { acknowledgeRecoverySetup, getPendingRecoverySetup, setupRecovery } from "@/lib/matrix";
+import {
+  acknowledgeRecoverySetup,
+  getPendingRecoverySetup,
+  repairInterruptedRecoverySetup,
+  setupRecovery,
+} from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
@@ -55,6 +60,10 @@ export function RecoverySetupCard({
   const [setupPending, setSetupPending] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [repairAvailable, setRepairAvailable] = useState(false);
+  const [repairOpen, setRepairOpen] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
@@ -93,6 +102,7 @@ export function RecoverySetupCard({
     setPendingReadError(false);
     setSetupPending(true);
     setSetupError(null);
+    setRepairAvailable(false);
     try {
       const summary = await setupRecovery(hasPassphrase ? passphrase : undefined);
       setSetupOpen(false);
@@ -100,11 +110,34 @@ export function RecoverySetupCard({
       setRecoveryKey(summary.recovery_key);
     } catch (error) {
       setSetupError(setupFailureGuidance(error));
+      const message =
+        error instanceof Error ? error.message : typeof error === "string" ? error : "";
+      setRepairAvailable(message.includes("interrupted recovery setup may have created"));
     } finally {
       setPassphrase("");
       setConfirmation("");
       setupInFlight.current = false;
       setSetupPending(false);
+    }
+  }
+
+  async function repairInterruptedSetup() {
+    if (repairing) return;
+    setRepairing(true);
+    setRepairError(null);
+    try {
+      await repairInterruptedRecoverySetup();
+      setRepairAvailable(false);
+      setRepairOpen(false);
+      setSetupOpen(false);
+      setSetupError(null);
+      void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
+    } catch {
+      setRepairError(
+        "Could not delete the incomplete backup. Protected recovery state was retained; try again when online.",
+      );
+    } finally {
+      setRepairing(false);
     }
   }
 
@@ -207,6 +240,11 @@ export function RecoverySetupCard({
               />
             </div>
             {setupError && <p className="text-sm text-destructive">{setupError}</p>}
+            {repairAvailable && (
+              <Button type="button" variant="destructive" onClick={() => setRepairOpen(true)}>
+                Repair interrupted setup
+              </Button>
+            )}
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={closeSetup} disabled={setupPending}>
@@ -217,6 +255,36 @@ export function RecoverySetupCard({
               disabled={!enabled || !passphraseValid || setupPending}
             >
               {setupPending ? "Backing up room keys…" : "Create backup"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={repairOpen} onOpenChange={(open) => !repairing && setRepairOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete incomplete backup?</DialogTitle>
+            <DialogDescription>
+              The interrupted setup created a server backup without preserving its usable key. Charm
+              will delete only that incomplete backup and keep your local room keys, so you can
+              retry recovery setup or sign out.
+            </DialogDescription>
+          </DialogHeader>
+          {repairError && (
+            <p className="text-sm text-destructive" role="alert">
+              {repairError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setRepairOpen(false)} disabled={repairing}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => repairInterruptedSetup().catch(logAndIgnore)}
+              disabled={repairing}
+            >
+              {repairing ? "Repairing…" : "Delete incomplete backup"}
             </Button>
           </DialogFooter>
         </DialogContent>

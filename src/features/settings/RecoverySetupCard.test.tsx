@@ -6,16 +6,19 @@ import { RecoverySetupCard } from "./RecoverySetupCard";
 const setupRecovery = vi.fn();
 const getPendingRecoverySetup = vi.fn();
 const acknowledgeRecoverySetup = vi.fn();
+const repairInterruptedRecoverySetup = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   setupRecovery: (...args: unknown[]) => setupRecovery(...args),
   getPendingRecoverySetup: (...args: unknown[]) => getPendingRecoverySetup(...args),
   acknowledgeRecoverySetup: (...args: unknown[]) => acknowledgeRecoverySetup(...args),
+  repairInterruptedRecoverySetup: (...args: unknown[]) => repairInterruptedRecoverySetup(...args),
 }));
 
 beforeEach(() => {
   getPendingRecoverySetup.mockReset().mockResolvedValue(null);
   acknowledgeRecoverySetup.mockReset().mockResolvedValue(undefined);
+  repairInterruptedRecoverySetup.mockReset().mockResolvedValue(undefined);
   setupRecovery.mockReset().mockResolvedValue({
     recovery_key: "EsTx generated recovery key",
     room_keys_backed_up: true,
@@ -94,6 +97,31 @@ describe("RecoverySetupCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not acknowledge");
     expect(screen.getByText("keep this key")).toBeInTheDocument();
+  });
+
+  it("requires confirmation before deleting an incomplete backup", async () => {
+    setupRecovery.mockRejectedValue(
+      new Error(
+        "An interrupted recovery setup may have created the existing backup. Protected recovery state was retained; finish or repair recovery before signing out.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
+
+    expect(
+      screen.getByText(/created a server backup without preserving its usable key/),
+    ).toBeInTheDocument();
+    expect(repairInterruptedRecoverySetup).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete incomplete backup" }));
+    await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Delete incomplete backup" }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("requires local cross-signing keys before setup", () => {

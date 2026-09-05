@@ -679,6 +679,11 @@ export function acknowledgeRecoverySetup(recoveryKey: string): Promise<void> {
   return invoke("acknowledge_recovery_setup", { recoveryKey }, { captureOnError: false });
 }
 
+/** Deletes an unusable backup left by an interrupted first-time setup. */
+export function repairInterruptedRecoverySetup(): Promise<void> {
+  return invoke("repair_interrupted_recovery_setup", {}, { captureOnError: false });
+}
+
 // captureOnError: false — a wrong/invalid recovery key is an expected user-input
 // error (same class as a wrong password), not a bug report; DevicesPanel already
 // surfaces it inline via the mutation's own error state. `recoveryKey` itself never

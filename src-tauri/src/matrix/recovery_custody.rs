@@ -308,6 +308,53 @@ pub async fn acknowledge(
     custody.save(None).await
 }
 
+/// Deletes only the unusable backup left by an interrupted setup, then clears
+/// the protected marker so the user can retry setup or sign out. An issued
+/// recovery key is never eligible for this destructive repair path.
+pub async fn repair_interrupted_setup(
+    client: &Client,
+    custody: &dyn RecoveryCustody,
+) -> Result<(), String> {
+    let Some(pending) = custody.load().await? else {
+        return Err("No interrupted recovery setup needs repair.".into());
+    };
+    if pending.has_issued_key() || !pending.server_mutation_started {
+        return Err("Pending recovery cannot be repaired by deleting its backup.".into());
+    }
+
+    let pending = custody.claim(&pending).await?;
+    if pending.has_issued_key() || !pending.server_mutation_started {
+        let _ = custody.release().await;
+        return Err("Pending recovery changed before repair started.".into());
+    }
+    let operation = async {
+        custody.checkpoint().await?;
+        client
+            .encryption()
+            .backups()
+            .disable_and_delete()
+            .await
+            .map_err(|_| {
+                "Could not delete the incomplete server backup. Protected recovery state was retained."
+                    .to_string()
+            })?;
+        // Persist the known no-backup state before releasing the teardown veto.
+        // If either write fails, custody stays intact and repair is retryable.
+        custody.checkpoint().await?;
+        custody.clear_claimed().await
+    };
+    let result = operation.await;
+    let release = custody.release().await;
+    match (result, release) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => {
+            tracing::warn!("Recovery repair admission release failed: {error}");
+            Ok(())
+        }
+    }
+}
+
 pub(crate) struct NativeRecoveryCustody {
     account_key: String,
 }
@@ -401,6 +448,15 @@ pub async fn acknowledge_recovery_setup(
         recovery_key,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn repair_interrupted_recovery_setup(
+    state: State<'_, MatrixState>,
+) -> Result<(), String> {
+    let _guard = state.login_completion_lock.lock().await;
+    let client = state.require_client().await?;
+    repair_interrupted_setup(&client, &NativeRecoveryCustody::for_client(&client)?).await
 }
 
 #[cfg(test)]
@@ -553,6 +609,44 @@ mod tests {
                 .recovery_key,
             ISSUED_KEY
         );
+    }
+
+    #[tokio::test]
+    async fn restart_after_backup_creation_can_delete_the_incomplete_backup() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_keys_version().exists().expect(1).mount().await;
+        server
+            .mock_delete_room_keys_version()
+            .ok()
+            .expect(1)
+            .mount()
+            .await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(PendingRecoverySetup {
+                passphrase: "protected interrupted seed".into(),
+                recovery_key: None,
+                room_keys_backed_up: false,
+                server_mutation_started: true,
+            })),
+            fail_save: false,
+        };
+
+        repair_interrupted_setup(&client, &custody).await.unwrap();
+
+        assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn repair_never_deletes_a_backup_with_an_issued_recovery_key() {
+        let (_server, client) = client_with_current_recovery_key().await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(pending())),
+            fail_save: false,
+        };
+
+        assert!(repair_interrupted_setup(&client, &custody).await.is_err());
+        assert!(custody.load().await.unwrap().is_some());
     }
 
     #[tokio::test]
