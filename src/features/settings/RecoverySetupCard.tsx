@@ -167,6 +167,17 @@ export function RecoverySetupCard({
     setSetupError(null);
   }
 
+  function openRepair() {
+    setSetupOpen(false);
+    setRepairOpen(true);
+  }
+
+  function closeRepair() {
+    if (repairing) return;
+    setRepairOpen(false);
+    setSetupOpen(true);
+  }
+
   async function finish() {
     if (!saved || !recoveryKey || acknowledgementInFlight.current) return;
     acknowledgementInFlight.current = true;
@@ -259,7 +270,7 @@ export function RecoverySetupCard({
             </div>
             {setupError && <p className="text-sm text-destructive">{setupError}</p>}
             {repairAvailable && (
-              <Button type="button" variant="destructive" onClick={() => setRepairOpen(true)}>
+              <Button type="button" variant="destructive" onClick={openRepair}>
                 Repair interrupted setup
               </Button>
             )}
@@ -278,7 +289,7 @@ export function RecoverySetupCard({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={repairOpen} onOpenChange={(open) => !repairing && setRepairOpen(open)}>
+      <Dialog open={repairOpen} onOpenChange={(open) => !open && closeRepair()}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Repair incomplete recovery setup?</DialogTitle>
@@ -294,7 +305,7 @@ export function RecoverySetupCard({
             </p>
           )}
           <DialogFooter>
-            <Button variant="secondary" onClick={() => setRepairOpen(false)} disabled={repairing}>
+            <Button variant="secondary" onClick={closeRepair} disabled={repairing}>
               Cancel
             </Button>
             <Button
