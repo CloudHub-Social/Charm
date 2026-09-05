@@ -64,9 +64,13 @@ vi.mock("./VoiceRecorder", () => ({
   }) => {
     useEffect(() => () => onCaptureChange?.(false), [onCaptureChange]);
     return (
-      <div data-testid="voice-gesture-mode" onClick={() => onCaptureChange?.(true)}>
+      <button
+        type="button"
+        data-testid="voice-gesture-mode"
+        onClick={() => onCaptureChange?.(true)}
+      >
         {mobile ? "mobile" : "desktop"}
-      </div>
+      </button>
     );
   },
 }));

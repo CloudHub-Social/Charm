@@ -88,8 +88,12 @@ describe("AppShell", () => {
         content: (
           <>
             <VisibilityProbe />
-            <audio />
-            <video />
+            <audio>
+              <track kind="captions" />
+            </audio>
+            <video>
+              <track kind="captions" />
+            </video>
           </>
         ),
         rightPanel: null,
@@ -125,7 +129,9 @@ describe("AppShell", () => {
         content={
           <>
             <VisibilityProbe />
-            <audio />
+            <audio>
+              <track kind="captions" />
+            </audio>
           </>
         }
         rightPanel={null}
@@ -147,7 +153,11 @@ describe("AppShell", () => {
     const props = {
       spaceRail: null,
       roomList: null,
-      content: <audio />,
+      content: (
+        <audio>
+          <track kind="captions" />
+        </audio>
+      ),
       rightPanel: null,
       activeRoomId: "!room:example.org",
       selectionRequestId: 0,
