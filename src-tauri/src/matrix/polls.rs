@@ -692,11 +692,9 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            end_poll_impl(&client, room_id.as_str(), poll_id.as_str())
-                .await
-                .is_err()
-        );
+        assert!(end_poll_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .is_err());
         let pending = pending_poll_vote_impl(&client, room_id.as_str(), poll_id.as_str())
             .await
             .unwrap()
