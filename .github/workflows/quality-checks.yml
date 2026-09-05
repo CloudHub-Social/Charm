@@ -246,11 +246,16 @@ jobs:
 
       # Keep the audit required, but collect frontend test/build evidence
       # before calling the external advisory service (#502). Audit failures
-      # still fail this required job. Run even if an earlier check failed,
-      # provided installation succeeded; do not gate on changed paths.
+      # still fail this required job. The wrapper retries only recognized
+      # advisory-service/network failures once; a high advisory fails on the
+      # first attempt and a second network failure remains fatal. Run even if
+      # an earlier check failed, provided installation succeeded; do not gate
+      # on changed paths.
       - name: Audit frontend dependencies
         if: ${{ !cancelled() && steps.frontend_install.outcome == 'success' }}
-        run: pnpm audit --audit-level=high
+        run: |
+          bash .github/scripts/audit-frontend-dependencies.test.sh
+          bash .github/scripts/audit-frontend-dependencies.sh
 
   storybook-a11y:
     name: Storybook (build + axe a11y)
