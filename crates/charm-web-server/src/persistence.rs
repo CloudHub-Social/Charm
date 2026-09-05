@@ -1295,6 +1295,43 @@ impl PersistenceStore {
         }
     }
 
+    /// Rebuilds the persisted encrypted client without an initial sync,
+    /// solely to validate recovery custody before automatic expiry. Unlike
+    /// the revoke-only client above, this must open the original crypto store
+    /// because secret-storage validation depends on that identity.
+    async fn restore_client_for_recovery_validation(
+        &self,
+        token: &str,
+    ) -> Option<matrix_sdk::Client> {
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            let client = build_client_for_restore(&entry, self.crypto_backup.as_deref())
+                .await
+                .ok()?;
+            client
+                .matrix_auth()
+                .restore_session(
+                    entry.session,
+                    matrix_sdk::store::RoomLoadSettings::default(),
+                )
+                .await
+                .ok()?;
+            Some(client)
+        })
+        .await;
+
+        match outcome {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    "restoring a client for recovery validation timed out after \
+                     {RESTORE_TIMEOUT:?}"
+                );
+                None
+            }
+        }
+    }
+
     fn decrypt(
         &self,
         blob: &EncryptedBlob,
@@ -1916,6 +1953,53 @@ impl PersistenceStore {
             // presence — see this function's doc comment.
             if sessions.is_genuinely_active(&entry.token, max_age).await {
                 continue;
+            }
+            if let Some(pending) = entry
+                .pending_recovery
+                .as_ref()
+                .filter(|pending| pending.has_issued_key())
+            {
+                // A valid issued key normally vetoes expiry until acknowledgement.
+                // A key made unusable by another client's secret-storage replacement
+                // can never be acknowledged, so validate it with the encrypted
+                // live/restored client and CAS-clear only that exact stale record.
+                let client = match sessions.get(&entry.token).await {
+                    Some(session) => Some(session.client.clone()),
+                    None => {
+                        self.restore_client_for_recovery_validation(&entry.token)
+                            .await
+                    }
+                };
+                let Some(client) = client else {
+                    tracing::warn!(
+                        "skipped expiry teardown because pending recovery could not be validated"
+                    );
+                    continue;
+                };
+                match charm_lib::matrix::recovery_custody::issued_key_is_stale(&client, pending)
+                    .await
+                {
+                    Ok(true) => {
+                        if let Err(error) = self
+                            .discard_stale_pending_recovery(&entry.token, pending)
+                            .await
+                        {
+                            tracing::warn!(
+                                "skipped expiry teardown because stale recovery custody could not \
+                                 be cleared safely: {error}"
+                            );
+                            continue;
+                        }
+                    }
+                    Ok(false) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            "skipped expiry teardown because pending recovery validation was \
+                             inconclusive: {error}"
+                        );
+                        continue;
+                    }
+                }
             }
             // Expiry is destructive session teardown just like explicit
             // logout: it aborts the resident sync loop, revokes the Matrix
@@ -4110,7 +4194,7 @@ mod tests {
 
     /// Expiry has the same destructive consequences as explicit logout and
     /// therefore must honor the same recovery-custody admission boundary.
-    /// An issued key that has not yet been acknowledged keeps the session
+    /// An in-progress server mutation without an issued key keeps the session
     /// available even when its ordinary activity timestamp is stale.
     #[tokio::test]
     async fn sweep_expired_preserves_a_stale_session_with_pending_recovery_custody() {
@@ -4126,8 +4210,9 @@ mod tests {
         .await;
         let pending = serde_json::from_value(serde_json::json!({
             "passphrase": "protected-seed-not-plaintext",
-            "recovery_key": "protected-key-not-plaintext",
-            "room_keys_backed_up": true
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": true
         }))
         .unwrap();
         store
@@ -4152,6 +4237,90 @@ mod tests {
             !retained.recovery_teardown_started,
             "a custody veto must happen before expiry writes a teardown tombstone"
         );
+    }
+
+    /// A key invalidated by a replacement secret-storage setup can no longer
+    /// be acknowledged. Expiry may clear that exact stale custody record, but
+    /// only after validating it through the live encrypted Matrix client.
+    #[tokio::test]
+    async fn sweep_expired_clears_definitively_stale_issued_recovery_before_teardown() {
+        use matrix_sdk::ruma::events::secret_storage::key::{
+            SecretStorageEncryptionAlgorithm, SecretStorageKeyEventContent,
+            SecretStorageV1AesHmacSha2Properties,
+        };
+        use matrix_sdk::ruma::serde::Base64;
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server
+            .mock_get_default_secret_storage_key()
+            .ok(client.user_id().unwrap(), "current")
+            .mount()
+            .await;
+        server
+            .mock_get_secret_storage_key()
+            .ok(
+                client.user_id().unwrap(),
+                &SecretStorageKeyEventContent::new(
+                    "current".into(),
+                    SecretStorageEncryptionAlgorithm::V1AesHmacSha2(
+                        SecretStorageV1AesHmacSha2Properties::new(
+                            Some(Base64::parse("xv5b6/p3ExEw++wTyfSHEg==").unwrap()),
+                            Some(
+                                Base64::parse("ujBBbXahnTAMkmPUX2/0+VTfUh63pGyVRuBcDMgmJC8=")
+                                    .unwrap(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .mount()
+            .await;
+
+        let dir = scratch_dir("sweep-expired-stale-issued-recovery");
+        let store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(
+            &store,
+            "tok-stale-issued-recovery",
+            now_unix().saturating_sub(sixty_days),
+        )
+        .await;
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": "DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .save_pending_recovery("tok-stale-issued-recovery", Some(&pending))
+            .await
+            .unwrap();
+
+        let sessions = crate::session::SessionStore::new();
+        let session = crate::session::Session::new(client, "@test:localhost".into(), None, false);
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backdated;
+        sessions
+            .insert("tok-stale-issued-recovery".into(), session)
+            .await;
+
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        let retained = store
+            .read_one("tok-stale-issued-recovery")
+            .await
+            .expect("failed revocation keeps the teardown record retryable");
+        assert!(retained.pending_recovery.is_none());
+        assert!(retained.recovery_teardown_started);
+        assert!(sessions.get("tok-stale-issued-recovery").await.is_none());
     }
 
     /// Regression test for two related review findings on #280. Codex

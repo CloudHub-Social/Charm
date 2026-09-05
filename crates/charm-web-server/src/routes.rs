@@ -5693,9 +5693,11 @@ struct AcknowledgeRecoveryRequest {
 
 async fn acknowledge_recovery_setup(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     Json(request): Json<AcknowledgeRecoveryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let _guard = session.recovery_setup_lock.lock().await;
     require_open_recovery_session(&session)?;
@@ -5818,9 +5820,11 @@ fn require_open_recovery_session(session: &Session) -> Result<(), ApiError> {
 
 async fn setup_recovery(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     Json(request): Json<SetupRecoveryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     if !state.crypto_backup_setup_enabled {
         return Err(ApiError::not_found("recovery setup is not enabled"));
@@ -5960,6 +5964,35 @@ mod recovery_setup_route_tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_mutations_reject_cross_origin_requests_before_session_lookup() {
+        for (uri, body) in [
+            (
+                "/api/verification/recovery/setup",
+                r#"{"passphrase":"private phrase"}"#,
+            ),
+            (
+                "/api/verification/recovery",
+                r#"{"recovery_key":"private key"}"#,
+            ),
+        ] {
+            let response = router(AppState::default())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("origin", "https://attacker.example")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
     }
 }

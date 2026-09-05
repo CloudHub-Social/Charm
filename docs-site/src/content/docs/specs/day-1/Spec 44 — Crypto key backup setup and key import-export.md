@@ -53,6 +53,9 @@ interrupted result write. This implementation and its regressions await CI.
   never hold the pending credential. Save the key before logout, web session
   expiry, or device-data removal; automatic expiry uses the same protected teardown
   admission as logout and will not remove a session while recovery custody is pending.
+  If another client makes an issued key definitively stale by replacing secret storage,
+  expiry conditionally clears only that exact custody record before teardown; unavailable
+  or inconclusive validation remains fail-closed.
   Real-account interrupted-setup/restart/restore
   verification remains a release gate; CI regressions cover offline retrieval,
   acknowledgement failure, remount, encrypted storage, token isolation, resave,

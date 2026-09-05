@@ -297,7 +297,9 @@ pub(crate) async fn enable_recovery_impl(
                 _ => {}
             }
         }
-        false
+        // Stream closure alone is not a backup failure. Preserve success
+        // unless the SDK explicitly reported an upload error above.
+        room_keys_backed_up
     });
     let result = match passphrase {
         Some(passphrase) => enable.with_passphrase(passphrase).await,
