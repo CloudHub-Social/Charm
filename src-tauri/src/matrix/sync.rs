@@ -502,19 +502,16 @@ async fn notify_unopened_room_messages(
 
         for raw_event in &update.timeline.events {
             #[derive(serde::Deserialize)]
-            struct EventMentions {
-                content: ContentMentions,
-            }
-            #[derive(serde::Deserialize)]
             struct ContentMentions {
                 #[serde(rename = "m.mentions")]
                 mentions: Option<matrix_sdk::ruma::events::Mentions>,
             }
             let mentions = raw_event
                 .raw()
-                .deserialize::<EventMentions>()
+                .get_field::<ContentMentions>("content")
                 .ok()
-                .and_then(|event| event.content.mentions);
+                .flatten()
+                .and_then(|content| content.mentions);
             let deserialize_result: Result<AnySyncTimelineEvent, _> = raw_event.raw().deserialize();
             let Ok(deserialized) = deserialize_result else {
                 continue;

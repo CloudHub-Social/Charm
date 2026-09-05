@@ -1450,10 +1450,6 @@ async fn fetch_message_mentions(
         .await
         .ok()?;
     #[derive(serde::Deserialize)]
-    struct EventMentions {
-        content: ContentMentions,
-    }
-    #[derive(serde::Deserialize)]
     struct ContentMentions {
         #[serde(rename = "m.mentions")]
         mentions: Option<matrix_sdk::ruma::events::Mentions>,
@@ -1461,10 +1457,9 @@ async fn fetch_message_mentions(
     original
         .kind
         .raw()
-        .deserialize::<EventMentions>()
+        .get_field::<ContentMentions>("content")
         .ok()?
-        .content
-        .mentions
+        .and_then(|content| content.mentions)
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

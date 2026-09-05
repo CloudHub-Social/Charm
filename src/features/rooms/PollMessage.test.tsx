@@ -185,12 +185,12 @@ describe("PollMessage", () => {
     fireEvent.click(answer);
     expect(voteOnPoll).not.toHaveBeenCalled();
     await act(async () => finish("txn-end"));
-    expect(answer).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled());
     expect(screen.queryByText(/Poll closed/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
     expect(resendMessage).not.toHaveBeenCalled();
     expect(endPoll).toHaveBeenCalledOnce();
-    expect(answer).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
     view.rerender(
       <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />,
     );
