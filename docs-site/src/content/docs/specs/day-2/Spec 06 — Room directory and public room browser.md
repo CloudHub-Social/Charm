@@ -3,10 +3,13 @@ title: Charm 2.0 Spec — Room directory and public room browser
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 sidebar:
   label: "Room directory & public browser"
 ---
+
+**Status:** implementation is in review behind the default-off `room_directory`
+feature flag.
 
 **Workstream:** one PR / one agent.
 
@@ -22,7 +25,7 @@ invite/alias/link from outside the app.
 ## Non-goals
 
 - Not a full room-discovery/recommendation engine — a straightforward searchable
-  list of the current homeserver's public room directory (`GET
+  list of the current homeserver's public room directory (`POST
   /_matrix/client/v3/publicRooms`), matching baseline Matrix client functionality.
 - Not federated cross-homeserver directory aggregation in Phase 1 — start with the
   user's own homeserver's directory; querying a specific *other* known homeserver
@@ -48,14 +51,29 @@ invite/alias/link from outside the app.
 
 ## Data flow
 
-New IPC command `search_public_rooms(server?, query, since?) -> PaginatedRoomList`,
-thin-wrapping the homeserver's `/publicRooms` endpoint. No new sync-side state —
-this is a request/response query pattern, not a synced data source.
+The `search_public_rooms(query, since, limit) -> PublicRoomPage` command uses the
+Matrix SDK's maintained filtered-public-rooms request on desktop. The hosted web
+companion exposes the same authenticated contract at
+`POST /api/rooms/directory/search`. No new sync-side state is introduced — this
+is a request/response query pattern, not a synced data source.
 
 ## API/contract changes
 
-New IPC command as above with pagination token handling. No changes to existing
-commands.
+The new command returns room id, name, topic, canonical alias, avatar MXC URI,
+joined-member count, the next pagination token, and the homeserver's optional
+total estimate. Queries are trimmed and opaque pagination tokens pass through unchanged; page size defaults to
+20, and the backend caps it at 50. Joining deliberately continues through the
+existing `join_room` command.
+
+The initial browser filters out spaces, custom room types, and non-public join
+rules before producing actionable results; knock and space navigation remain
+outside this slice. Pagination tokens and the estimate still describe the
+homeserver's unfiltered directory. The metadata follows the
+[Matrix public-room contract](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms).
+Typing a replacement query immediately suspends pagination throughout debounce.
+Successful joins reuse the existing refresh-and-pending-selection path, so a
+delayed room-list sync keeps the current conversation visible until the joined
+room is available.
 
 ## Testing strategy
 
@@ -65,6 +83,21 @@ commands.
   join-from-directory flow reusing existing join command, empty/error states.
 - Manual: browse a real homeserver's public directory, join a room from it, confirm
   it appears correctly in the room list afterward.
+
+## Implementation
+
+- A globe action in the room-list header opens the browser when
+  `room_directory` is enabled.
+- Search is debounced and sent to the homeserver; results are never produced by
+  downloading and filtering an entire directory in the renderer.
+- Pagination appends unique rooms by room id and preserves the server's next
+  token.
+- Room avatars reuse Charm's existing authenticated Matrix media resolution on
+  desktop and web.
+- Join actions prefer a canonical alias when available, reuse the existing join
+  flow, select the resolved room id, and close the browser after success.
+- Phase 1 searches only the signed-in account's own homeserver. Remote-server
+  selection and directory-publication controls remain follow-ups.
 
 ## Trade-offs
 

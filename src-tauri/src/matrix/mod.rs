@@ -18,6 +18,7 @@ pub mod privacy_settings;
 pub mod profiles;
 pub mod qr_login;
 pub mod room_admin;
+pub mod room_directory;
 pub mod rooms;
 pub mod search;
 pub mod secret_store;

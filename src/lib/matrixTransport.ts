@@ -528,6 +528,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", "/api/rooms/join", {
         room_id_or_alias: args.roomIdOrAlias,
       });
+    case "search_public_rooms":
+      return requestJson<T>("POST", "/api/rooms/directory/search", {
+        query: args.query ?? null,
+        since: args.since ?? null,
+        limit: args.limit ?? 20,
+      });
     case "knock_room":
       return requestJson<T>("POST", "/api/rooms/knock", {
         room_id_or_alias: args.roomIdOrAlias,
