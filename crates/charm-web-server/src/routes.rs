@@ -5710,7 +5710,7 @@ async fn repair_interrupted_recovery_setup(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let guard = session.recovery_setup_lock.lock().await;
+    let guard = Arc::clone(&session.recovery_setup_lock).lock_owned().await;
     require_open_recovery_session(&session)?;
     let persistence = state
         .persistence
@@ -5731,9 +5731,8 @@ async fn repair_interrupted_recovery_setup(
     let repair_session = Arc::clone(&session);
     let repair_token = cookie.value().to_string();
     let repair_owner = format!("{:032x}", rand::random::<u128>());
-    drop(guard);
     tokio::spawn(async move {
-        let _guard = repair_session.recovery_setup_lock.lock().await;
+        let _guard = guard;
         if repair_session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire)
@@ -5809,7 +5808,7 @@ async fn setup_recovery(
     if !state.crypto_backup_setup_enabled {
         return Err(ApiError::not_found("recovery setup is not enabled"));
     }
-    let _guard = session.recovery_setup_lock.lock().await;
+    let guard = Arc::clone(&session.recovery_setup_lock).lock_owned().await;
     require_open_recovery_session(&session)?;
     // Never mutate server-side recovery from a legacy in-memory-only session.
     // Verify persistence before enabling anything, not only after issuing a key.
@@ -5849,9 +5848,8 @@ async fn setup_recovery(
     let setup_token = cookie.value().to_string();
     let setup_owner = format!("{:032x}", rand::random::<u128>());
     let setup_passphrase = request.passphrase;
-    drop(_guard);
     let summary = tokio::spawn(async move {
-        let _guard = setup_session.recovery_setup_lock.lock().await;
+        let _guard = guard;
         if setup_session
             .session_closed
             .load(std::sync::atomic::Ordering::Acquire)
