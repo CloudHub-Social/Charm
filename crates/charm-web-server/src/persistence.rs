@@ -56,8 +56,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce, Payload};
+use aes_gcm::{Aes256Gcm, Key};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use futures_util::StreamExt;
@@ -65,7 +65,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
 
 pub const MASTER_KEY_ENV: &str = "CHARM_WEB_SERVER_MASTER_KEY";
@@ -876,7 +876,7 @@ impl PersistenceStore {
         path: &ObjectPath,
     ) -> Result<EncryptedBlob, String> {
         let plaintext = serde_json::to_vec(session).map_err(|e| e.to_string())?;
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = self
             .key
             .encrypt(
@@ -1088,7 +1088,7 @@ impl PersistenceStore {
                     }
                     continue;
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     // The read above already confirmed the object exists,
                     // so an unconditional overwrite here is a same-object
                     // update, not a resurrection — safe even without
@@ -1324,7 +1324,7 @@ impl PersistenceStore {
                             .to_string(),
                     );
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     return self
                         .store
                         .put(&path, PutPayload::from(json))
@@ -2434,7 +2434,7 @@ mod tests {
             },
         }))
         .unwrap();
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = store
             .key
             .encrypt(&nonce, legacy_plaintext.as_ref())
