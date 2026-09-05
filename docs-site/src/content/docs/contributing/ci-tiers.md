@@ -36,9 +36,10 @@ nightly and Sentry symbolication both reflect what actually ships.
 
 ## Tier 4 — Production release _(signing-dependent)_
 
-The release-PR workflow checks out the exact merge commit, creates a draft with
-GitHub-generated release notes, and only then pushes the version tag. Knope
-continues to prepare versions and the changelog in the release PR. The artifact
+The release-PR workflow checks out the exact merge commit, creates or verifies the
+version tag first, then creates or verifies the draft with GitHub-generated release
+notes, and explicitly dispatches the tagged build. Knope continues to prepare
+versions and the changelog in the release PR. The artifact
 publisher requires a draft and never uses destructive asset replacement.
 Interrupted uploads may resume only when existing files have identical SHA-256
 digests. Different or unverifiable draft assets require explicit operator repair;

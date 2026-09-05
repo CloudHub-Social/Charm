@@ -1117,6 +1117,10 @@ jobs:
               remote_digest=$(jq -r '.digest // empty' <<<"$remote")
               if [ -n "$remote_digest" ] && [ "$remote_digest" != "$expected" ]; then
                 case "$name" in
+                  charm-release-signing-key.asc)
+                    echo "::error::Existing draft uses a different OpenPGP release key; refusing to mix signing identities. Repair the unpublished draft explicitly or use a new version."
+                    exit 1
+                    ;;
                   *.asc)
                     # Detached OpenPGP signatures include creation-time and
                     # nonce material. On a resumed draft, reuse the existing
