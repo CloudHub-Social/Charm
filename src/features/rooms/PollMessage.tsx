@@ -34,7 +34,10 @@ export function PollMessage({
   const poll = message.poll;
   const hasPoll = poll !== undefined;
   const pollEnded = poll?.ended ?? false;
-  const pollRevision = `${message.event_id}:${pollEnded}:${poll?.edited ?? false}`;
+  // Timeline snapshots are the bounded reconciliation signal for a queued
+  // close. Include vote/content changes as well as end/edit flags so a
+  // rejection observed alongside an unrelated vote cannot remain hidden.
+  const pollRevision = `${message.event_id}:${JSON.stringify(poll)}`;
   const lastEndStateRevision = useRef<string | null>(null);
   const shouldRestoreEnd = Boolean(
     own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),

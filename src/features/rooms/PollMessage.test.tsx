@@ -286,6 +286,30 @@ describe("PollMessage", () => {
     );
   });
 
+  it("reconciles a failed queued close when vote totals change", async () => {
+    getPendingPollEnd
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: false })
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: true });
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
+
+    view.rerender(
+      <PollMessage
+        message={pollMessage({
+          answers: [
+            { id: "pizza", text: "Pizza", votes: 2, selected_by_me: false },
+            { id: "salad", text: "Salad", votes: 0, selected_by_me: false },
+          ],
+        })}
+        roomId="!room:example.org"
+        own
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Discard failed close" })).toBeEnabled();
+  });
+
   it("blocks mutations while a queued close is being restored", async () => {
     let finish!: (pending: null) => void;
     getPendingPollEnd.mockImplementationOnce(
