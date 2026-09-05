@@ -11,6 +11,15 @@ already at full parity; this closes the slash-command breadth and formatting gap
 
 ## Problem & why now
 
+Message-sending slash commands also dispatch from reply mode; edit mode never
+parses them as commands. Editing an active link updates its existing text range
+instead of inserting another URL. Disabling composer parity clears future
+spoiler/strike typing marks and exits the active code block without stripping
+already-authored formatting. Strike/code-block keyboard shortcuts, input rules,
+and paste rules also check the current flag on every invocation, so they cannot
+reactivate staged formatting after the kill switch. Message-style slash commands
+retain selected user mentions in `m.mentions`. These boundaries have CI regression coverage.
+
 The parity audit (2026-07-13) found Charm 2.0's composer solid on autocomplete
 (@user, #room, :emoji:, /command all covered) but thin on two axes vs Charm 1.0:
 
@@ -116,6 +125,110 @@ addition. No DTO changes for formatting (rides `formatted_body`).
   action; Charm 2.0's `FormattingToolbar.tsx` (bold/italic/code/quote/lists, plus
   the spoiler/block-code/strike this spec adds) has no "insert link" button. Add one
   (select text → add URL → `<a>` mark) alongside the other formatting marks.
+
+## Implementation progress
+
+`/notice` is staged behind `composer_parity` and dispatches through `run_command`
+on native and web. The backend uses Ruma's `notice_plain` constructor and the
+existing serialized send helper, preserving `m.notice` semantics and refusing
+blank text. Parser and wire-content regressions are included. The updated
+`SlashCommand` union's CI-generated binding is committed; end-to-end verification
+of the current candidate remains pending.
+
+The editable surface enables native `spellcheck` only while the default-off
+`composer_parity` flag is enabled. Rollout and kill-switch changes update the live
+editor without discarding its draft, with DOM regression coverage for both
+transitions. Platform-native underline and correction behavior still requires manual
+verification. Strikethrough and code-block toolbar controls use the existing
+TipTap StarterKit extensions behind the default-off `composer_parity` flag.
+Their command dispatch and hidden-by-default behavior have regression tests.
+The new flag's CI-generated frontend catalog/type is committed. Link insertion uses the existing TipTap
+link mark and an accessible dialog, validates absolute web/mail/telephone URLs,
+rejects embedded credentials, and refuses stale selections after draft changes.
+Room/account changes remount the toolbar and close its dialog. These behaviors
+have regression tests but remain pending CI verification. Bare ArrowUp in an empty
+send-mode paragraph reuses the existing edit action for the latest editable own
+text message in the loaded timeline, behind the same default-off flag. It skips
+local echoes, failed sends, redactions, undecrypted placeholders, and attachments;
+the backend also rejects non-text message subtypes rather than replacing their
+fallback bodies with text. Editing text, emote, or notice preserves that original
+subtype, formatting, and mentions. The timeline now exports explicit text-edit
+eligibility. The Edit menu in every message layout and the row action handler also
+require explicit text-edit eligibility, independently of the composer parity flag.
+Non-text and unknown events cannot open the text editor. ArrowUp requires an explicit positive value, skipping unknown
+legacy values and non-text fallback bodies. The binding was imported from CI run
+33845346784, where all 521 native tests passed, including subtype preservation
+and non-text rejection; the consumer regressions await current-head CI.
+Autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
+their existing behavior. It does not fetch additional history to find an edit
+target. Shortcut regression tests are pending CI.
+
+The spoiler toolbar control uses TipTap's mark API to serialize
+`span[data-mx-spoiler]`, preserving existing spoiler reasons and nested formatting
+when editing or restoring drafts. Schema parsing remains available with the flag
+off so an existing spoiler is not silently removed during editing; only the new
+toolbar action is staged. The existing received-content renderer conceals spoilers
+independently of `rich_message_rendering`, with regression coverage for both flag
+states. Spoilers are a presentation feature, not encryption: the Matrix plain-text
+fallback still contains the text. Edit and reply submissions now carry the
+serialized formatted body and mentions through both native IPC and companion
+HTTP routes, reusing the normal message-content builder before applying Matrix
+replacement/reply relations. Previously those two paths discarded all formatting.
+This is a content-preservation bug fix, not a rollout-gated authoring feature:
+disabling parity hides the new controls but must not strip existing formatting,
+spoiler markup, or explicit mentions from submitted edits and replies. Regression
+cases cover both flag states.
+Hook/transport regressions and the message-actions integration scenario cover
+spoiler retention at these boundaries, pending CI verification.
+The default-off composer flag also enables `/plain`, `/shrug`, and `/tableflip`
+in parsing and suggestions. These reuse the existing plain-message send path;
+`/plain` preserves internal whitespace and treats markup literally. Dispatch
+rechecks the flag and room mutation guard, rejects empty `/plain`, and only
+scrolls after a successful message send in the same room. Message-sending commands
+consume reply context at dispatch, matching normal submission; non-message commands
+leave it intact. Clearing happens before awaiting the send so it cannot erase a
+new reply selected while that send is pending. Remaining slash-command
+requirements and CI/manual
+verification remain open; this does not establish full composer parity.
+
+`/join <room id or alias>` is also staged behind `composer_parity`, in parsing,
+suggestions, and dispatch. It requires exactly one target and reuses the existing
+`joinRoom` transport and SDK-backed identifier validation. It joins without changing
+the current selection, sending a message, or clearing reply context; the normal
+room-list stream exposes the joined room. Routing, argument-count, and flag-off
+regressions await CI. This follows the existing
+[Matrix join operation](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3joinroomidoralias).
+
+The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
+existing membership, global display-name, and ignored-user IPC operations.
+The web companion exposes ignored-user reads and mutations through authenticated
+JSON routes, sharing the native SDK helpers and user-ID validation. User identifiers
+are carried in JSON bodies, not URL paths. Transport mappings and unauthenticated
+route rejection have regression coverage, pending CI and live end-to-end verification.
+Missing arguments show usage; ignore/unignore require exactly
+one user identifier. Backend validation and authorization remain authoritative.
+Ignore-list mutations serialize the complete server-read/modify/write sequence
+per homeserver and account across native callers and companion sessions in one
+process. They fetch current account data rather than the SDK's potentially stale
+sync cache; malformed or failed reads never fall back to overwriting an empty list.
+This does not provide distributed locking against other clients or companion
+processes: Matrix account data remains last-write-wins across those writers.
+Concurrent block/block and block/unblock regressions cover preservation of existing
+entries without waiting for sync, plus malformed-data and homeserver isolation.
+Successful ignore/unignore slash commands invalidate the settings ignored-user
+query. Successful `/nick` commands invalidate Settings and room-list profile queries.
+Failed commands leave cached queries untouched and retain inline failure feedback.
+Explicit native and web settings reads fetch current server account data so this
+invalidation cannot refill the list from pre-mutation sync state. Timeline and
+search filtering retain their separate sync-local reads for offline operation.
+Failures show inline feedback without logging action arguments, and completion
+does not update feedback after a room switch. Parsing and dispatch regressions
+are included, pending CI. These commands do not send chat messages or trigger
+message-send scrolling. `/nick` changes the global profile, not the per-room nick.
+
+The link dialog contains Escape so dismissal does not cancel an unsaved message
+edit. Formatting controls wrap within the composer at narrow mobile widths;
+regressions cover 320px and 375px layouts with the parity flag on and off.
 
 ## What I'd revisit as this grows
 

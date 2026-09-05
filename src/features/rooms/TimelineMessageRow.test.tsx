@@ -34,6 +34,7 @@ function controller(): MessageActionController {
     confirmDialog: vi.fn(async () => true),
     getActionsHandle: vi.fn(),
     registerActionsRef: vi.fn(),
+    editLastMessage: vi.fn(() => false),
     rowActions: vi.fn(() => ({
       onReply: vi.fn(),
       onReact: vi.fn(),

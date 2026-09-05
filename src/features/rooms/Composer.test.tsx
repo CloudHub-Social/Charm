@@ -1,7 +1,21 @@
 import { createRef } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as FeatureFlagsModule from "@/featureFlags";
 import { Composer, type ComposerHandle } from "./Composer";
+
+const flags = vi.hoisted(() => ({ composerParity: false }));
+vi.mock("@/featureFlags", async (importOriginal) => {
+  const actual = await importOriginal<typeof FeatureFlagsModule>();
+  return {
+    ...actual,
+    useFlag: (key: Parameters<typeof actual.useFlag>[0]) =>
+      key === "composer_parity" ? flags.composerParity : actual.useFlag(key),
+  };
+});
+beforeEach(() => {
+  flags.composerParity = false;
+});
 
 vi.mock("@/lib/matrix", () => ({
   getRoomMembers: vi.fn().mockResolvedValue([]),
@@ -19,16 +33,287 @@ afterEach(cleanup);
  * has no real IME/keypress-to-DOM-mutation pipeline, but ProseMirror's paste
  * handling is real DOM event handling that inserts clipboard text into the
  * doc, so this exercises the actual editor rather than a fake. */
-function pasteText(editable: Element, text: string) {
+function pasteText(editable: Element, text: string, matchFormatting = false) {
+  // Paste-and-match-style uses the active typing marks. Ordinary clipboard
+  // paste instead takes marks from the surrounding document, not storedMarks.
+  if (matchFormatting) fireEvent.keyDown(editable, { key: "Shift", shiftKey: true });
   fireEvent.paste(editable, {
+    shiftKey: matchFormatting,
     clipboardData: {
       getData: (type: string) => (type === "text/plain" ? text : ""),
       types: ["text/plain"],
     },
   });
+  if (matchFormatting) fireEvent.keyUp(editable, { key: "Shift", shiftKey: false });
 }
 
 describe("Composer", () => {
+  it("dispatches message slash commands while replying", async () => {
+    flags.composerParity = true;
+    const onSlashCommand = vi.fn().mockResolvedValue(true);
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!reply-command:example.org"
+        mode="reply"
+        placeholder="Reply"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Reply");
+    pasteText(editable, "/plain reply body");
+    fireEvent.keyDown(editable, { key: "Enter" });
+    await waitFor(() => expect(onSlashCommand).toHaveBeenCalled());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("preserves hard breaks in message-style slash commands", async () => {
+    flags.composerParity = true;
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!plain-hard-break:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.paste(editable, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/html"
+            ? "<p>/plain first<br>second</p>"
+            : type === "text/plain"
+              ? "/plain first\nsecond"
+              : "",
+        types: ["text/html", "text/plain"],
+      },
+    });
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(onSlashCommand).toHaveBeenCalledWith({
+        command: "plain",
+        args: ["first", "second"],
+        text: "first\nsecond",
+      }),
+    );
+  });
+
+  it.each(["unban", "ignore", "unignore", "plain", "shrug", "tableflip", "notice"])(
+    "resolves mention IDs for /%s in replies",
+    async (command) => {
+      flags.composerParity = true;
+      const onSlashCommand = vi.fn();
+      render(
+        <Composer
+          roomId={`!reply-${command}:example.org`}
+          mode="reply"
+          placeholder="Reply"
+          onSubmit={vi.fn()}
+          onSlashCommand={onSlashCommand}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+        />,
+      );
+      const editable = await screen.findByLabelText("Reply");
+      fireEvent.paste(editable, {
+        clipboardData: {
+          getData: (type: string) =>
+            type === "text/html"
+              ? `<p>/${command} <a data-mx-pill="true" href="https://matrix.to/#/%40alice%3Aexample.org">Alice</a></p>`
+              : type === "text/plain"
+                ? `/${command} Alice`
+                : "",
+          types: ["text/html", "text/plain"],
+        },
+      });
+      fireEvent.keyDown(editable, { key: "Enter" });
+      await waitFor(() =>
+        expect(onSlashCommand).toHaveBeenCalledWith(
+          ["plain", "shrug", "tableflip"].includes(command)
+            ? {
+                command,
+                args: ["@alice:example.org"],
+                text: "@alice:example.org",
+                mentionIds: ["@alice:example.org"],
+              }
+            : command === "notice"
+              ? {
+                  command,
+                  args: ["@alice:example.org"],
+                  mentionIds: ["@alice:example.org"],
+                }
+              : { command, args: ["@alice:example.org"], action: true },
+        ),
+      );
+    },
+  );
+
+  it.each([
+    ["Spoiler", "span[data-mx-spoiler]", '<p><span data-mx-spoiler="true">authored</span></p>'],
+    ["Strikethrough", "s", "<p><s>authored</s></p>"],
+    ["Code block", "pre", "<pre><code>authored</code></pre>"],
+  ])(
+    "stops active %s formatting on kill switch without stripping the draft",
+    async (label, selector, initialHtml) => {
+      flags.composerParity = true;
+      const props = {
+        roomId: `!kill-${label.replaceAll(" ", "-")}:example.org`,
+        mode: "edit" as const,
+        initialHtml,
+        placeholder: "Message",
+        onSubmit: vi.fn(),
+        onSlashCommand: vi.fn(),
+        onEscape: vi.fn(),
+        onTypingInput: vi.fn(),
+      };
+      const view = render(<Composer {...props} />);
+      const editable = await screen.findByLabelText("Message");
+      expect(editable.querySelector(selector)).toHaveTextContent("authored");
+      flags.composerParity = false;
+      view.rerender(<Composer {...props} />);
+      pasteText(editable, "new text", true);
+      expect(editable.querySelector(selector)).toHaveTextContent("authored");
+      expect(editable.querySelector(selector)).not.toHaveTextContent("new text");
+      expect(editable).toHaveTextContent("new text");
+    },
+  );
+  it("edits on bare ArrowUp only while the send composer is truly empty", async () => {
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    for (const modifier of ["shiftKey", "ctrlKey", "altKey", "metaKey", "isComposing"]) {
+      fireEvent.keyDown(editable, { key: "ArrowUp", [modifier]: true });
+    }
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(editable, { key: "ArrowUp" })).toBe(false);
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+    onEditLastMessage.mockClear();
+    pasteText(editable, "draft");
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("draft");
+  });
+
+  it("edits on ArrowUp when an empty block format changed the document shape", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-blockquote:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.click(screen.getByRole("button", { name: "Block quote" }));
+    expect(editable.querySelector("blockquote")).toBeInTheDocument();
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat a mention-only draft as empty on ArrowUp", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-mention:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.paste(editable, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/html"
+            ? '<p><a data-mx-pill="true" href="https://matrix.to/#/%40alice%3Aexample.org">Alice</a></p>'
+            : type === "text/plain"
+              ? "Alice"
+              : "",
+        types: ["text/html", "text/plain"],
+      },
+    });
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("Alice");
+  });
+
+  it("treats hard breaks as whitespace for empty-composer ArrowUp editing", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-break:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.keyDown(editable, { key: "Enter", shiftKey: true });
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+  });
+
+  it.each(["reply", "edit"] as const)(
+    "does not replace an empty %s composer on ArrowUp",
+    async (mode) => {
+      const onEditLastMessage = vi.fn(() => true);
+      render(
+        <Composer
+          roomId={`!arrow-up-${mode}:example.org`}
+          mode={mode}
+          placeholder="Message"
+          onSubmit={vi.fn()}
+          onSlashCommand={vi.fn()}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+          onEditLastMessage={onEditLastMessage}
+        />,
+      );
+      fireEvent.keyDown(await screen.findByLabelText("Message"), { key: "ArrowUp" });
+      expect(onEditLastMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders the formatting toolbar and an editable region", async () => {
     render(
       <Composer
@@ -45,6 +330,30 @@ describe("Composer", () => {
     expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bold/ })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Message general")).toBeInTheDocument());
+    expect(screen.getByLabelText("Message general")).toHaveAttribute("spellcheck", "false");
+  });
+
+  it("updates native spellcheck on rollout and kill switch without losing the draft", async () => {
+    const props = {
+      roomId: "!spellcheck:example.org",
+      mode: "send" as const,
+      placeholder: "Message",
+      onSubmit: vi.fn(),
+      onSlashCommand: vi.fn(),
+      onEscape: vi.fn(),
+      onTypingInput: vi.fn(),
+    };
+    const view = render(<Composer {...props} />);
+    const editable = await screen.findByLabelText("Message");
+    expect(editable).toHaveAttribute("spellcheck", "false");
+    pasteText(editable, "retained draft");
+    flags.composerParity = true;
+    view.rerender(<Composer {...props} />);
+    await waitFor(() => expect(editable).toHaveAttribute("spellcheck", "true"));
+    flags.composerParity = false;
+    view.rerender(<Composer {...props} />);
+    await waitFor(() => expect(editable).toHaveAttribute("spellcheck", "false"));
+    expect(editable).toHaveTextContent("retained draft");
   });
 
   it("can collapse the formatting toolbar for a compact mobile composer", async () => {
@@ -194,6 +503,56 @@ describe("Composer", () => {
     expect(onSlashCommand).toHaveBeenCalledWith({ command: "me", args: ["👋"] });
   });
 
+  it("preserves shortcode literals in code while expanding surrounding text", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!code-shortcode:example.org"
+        mode="edit"
+        initialHtml={'<p>outside :smile:</p><pre><code>const mood = ":smile:";</code></pre>'}
+        placeholder="Edit message"
+        onSubmit={onSubmit}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Edit message"));
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: 'outside 😄\n\nconst mood = ":smile:";',
+        formattedBody: '<p>outside 😄</p><pre><code>const mood = ":smile:";</code></pre><p></p>',
+      }),
+    );
+  });
+
+  it("preserves significant outer whitespace in a code-block plain fallback", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!code-whitespace:example.org"
+        mode="edit"
+        initialHtml={"<pre><code>  indented\n\n</code></pre>"}
+        placeholder="Edit message"
+        onSubmit={onSubmit}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Edit message"));
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: "  indented\n\n",
+        formattedBody: "<pre><code>  indented\n\n</code></pre><p></p><p></p>",
+      }),
+    );
+  });
+
   it("does not submit an empty message on Enter", async () => {
     const onSubmit = vi.fn();
     render(
@@ -288,6 +647,33 @@ describe("Composer", () => {
 
     expect(onSlashCommand).not.toHaveBeenCalled();
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ body: "/usr/bin/env" }));
+  });
+
+  it("preserves a staged command instead of sending it when the rollout is disabled", async () => {
+    const onSubmit = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!disabled-command:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    pasteText(editable, "/nick private display name");
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSlashCommand).toHaveBeenCalledWith({
+      command: "nick",
+      args: ["private", "display", "name"],
+      disabled: true,
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("/nick private display name");
   });
 
   it("preloads initialHtml in edit mode", async () => {

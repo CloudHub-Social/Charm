@@ -8,6 +8,7 @@ import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
+import { isMessageSendingCommand } from "./slashCommands";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
@@ -570,7 +571,7 @@ export function ChatShell({
   // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes
   // through this separate path, not `onSubmit` — the same "scroll to the
   // user's own new message" gap applies here and was missed by the fix
-  // above. Gated on both `parsed.command === "me"` *and* the command
+  // above. Gated on the command being message-producing *and* the command
   // actually succeeding: most slash commands (`/topic`, `/invite`, `/kick`,
   // `/ban`, ...) never append a `RoomMessageSummary` even on success, and a
   // failed `/me` (bad args, no permission) doesn't either — scrolling
@@ -578,7 +579,7 @@ export function ChatShell({
   // at-bottom/read) for a command that sent nothing.
   async function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
     const succeeded = await handleSlashCommand(parsed);
-    if (parsed.command === "me" && succeeded) scrollToPresentAfterOwnSend();
+    if (isMessageSendingCommand(parsed) && succeeded) scrollToPresentAfterOwnSend();
   }
 
   // Files stage for an optional caption when `media_send_polish` is on;
@@ -1114,6 +1115,7 @@ export function ChatShell({
               onTypingInput={handleTypingInput}
               onBlur={stopTyping}
               onEmptyChange={setIsComposerEmpty}
+              onEditLastMessage={() => messageActionController.editLastMessage(messages)}
               showFormattingToolbar={!mobile || showMobileFormatting}
             />
             {mobile && (

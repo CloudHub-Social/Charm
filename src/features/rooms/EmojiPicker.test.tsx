@@ -23,7 +23,9 @@ vi.mock("emoji-picker-react", () => ({
       data-skin-tones-disabled={String(props.skinTonesDisabled ?? false)}
       data-custom-names={(props.customEmojis ?? []).flatMap((emoji) => emoji.names).join(",")}
     >
-      <input aria-label="Emoji search" aria-controls="epr-search-id" />
+      <div className="epr-search-container">
+        <input aria-label="Emoji search" aria-controls="epr-search-id" />
+      </div>
       <div className="epr-body" data-testid="emoji-results" />
       <button
         type="button"
@@ -87,8 +89,8 @@ describe("EmojiPicker", () => {
     expect(picker).toHaveAttribute("data-theme", "light");
     const search = screen.getByRole("textbox", { name: "Emoji search" });
     const results = screen.getByTestId("emoji-results");
-    expect(search.getAttribute("aria-controls")).toBe(results.id);
-    expect(results.id).not.toBe("");
+    await waitFor(() => expect(search).not.toHaveAttribute("aria-controls"));
+    expect(results).not.toHaveAttribute("id");
     expect(picker).toHaveAttribute("data-style", "native");
     expect(picker).toHaveAttribute("data-suggestions", "undefined");
     expect(picker.getAttribute("data-categories")?.split(",")).not.toContain("suggested");
@@ -146,5 +148,28 @@ describe("EmojiPicker", () => {
     expect(emojiPickerTheme("light")).toBe("light");
     expect(emojiPickerTheme("midnight")).toBe("dark");
     expect(emojiPickerTheme("system")).toBe("auto");
+  });
+
+  it("repairs the upstream search reference across lazy mount, search, and clear", async () => {
+    const disconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
+    const view = render(<EmojiPickerPanel accountId="@alice:example.org" onSelect={vi.fn()} />);
+    await screen.findByTestId("full-emoji-picker");
+    const input = screen.getByRole("textbox", { name: "Emoji search" });
+    const container = input.parentElement!;
+    await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
+
+    // Model the library's conditional status node across search and clear.
+    const status = document.createElement("div");
+    status.id = "epr-search-id";
+    status.setAttribute("role", "status");
+    container.append(status);
+    await waitFor(() => expect(input).toHaveAttribute("aria-controls", status.id));
+
+    status.remove();
+    await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
+    const disconnectsBeforeUnmount = disconnect.mock.calls.length;
+    view.unmount();
+    expect(disconnect.mock.calls.length).toBeGreaterThan(disconnectsBeforeUnmount);
+    disconnect.mockRestore();
   });
 });

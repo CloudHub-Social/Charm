@@ -20,6 +20,7 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
     <MessageActions
       accountId="@me:example.org"
       isOwn={false}
+      canEdit
       canRedact={false}
       onReply={onReply}
       onReact={onReact}
@@ -60,7 +61,17 @@ describe("MessageActions", () => {
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
   });
 
-  it("shows Edit only when isOwn is true", async () => {
+  it.each([false, undefined])(
+    "hides Edit without explicit text capability (%s)",
+    async (canEdit) => {
+      renderActions({ isOwn: true, canEdit });
+      openMenu();
+      expect(await screen.findByText("Reply")).toBeInTheDocument();
+      expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+    },
+  );
+
+  it("shows Edit for own text messages", async () => {
     renderActions({ isOwn: true, canRedact: false });
     openMenu();
 

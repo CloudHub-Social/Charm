@@ -41,6 +41,129 @@ describe("useMessageActionController", () => {
     mocks.isWebBuild.mockReturnValue(false);
   });
 
+  it("edits the newest eligible own text message, skipping unsafe timeline entries", () => {
+    const { result } = renderHook(() =>
+      useMessageActionController({
+        roomId: "!one:example.org",
+        currentUserId: "@me:example.org",
+        setReplyTarget: vi.fn(),
+        setEditingEventId: vi.fn(),
+      }),
+    );
+    const own = makeMessageSummary({
+      sender: "@me:example.org",
+      event_id: "$latest",
+      body: "hello",
+    });
+    const messages = [
+      { ...own, event_id: "$older" },
+      own,
+      message,
+      { ...own, event_id: "$redacted", redacted: true },
+      { ...own, event_id: "$encrypted", is_undecrypted: true },
+      { ...own, event_id: "$location", text_editable: false },
+      { ...own, event_id: "$custom", text_editable: false },
+      { ...own, event_id: "$legacy", text_editable: undefined },
+      { ...own, event_id: "local-echo" },
+      { ...own, event_id: "$pending", send_state: { state: "pending" as const } },
+      { ...own, event_id: "$failed", send_state: { state: "error" as const, message: "failed" } },
+      {
+        ...own,
+        event_id: "$file",
+        media: {
+          type: "File" as const,
+          filename: "file.txt",
+          mime: "text/plain",
+          size: 10,
+          caption: null,
+        },
+      },
+    ];
+    let handled = false;
+    act(() => {
+      handled = result.current.editLastMessage(messages);
+    });
+    expect(handled).toBe(true);
+    expect(mocks.handleEdit).toHaveBeenCalledExactlyOnceWith("$latest");
+  });
+
+  it.each([
+    { flag: false, disabled: false, roomId: "!one:example.org" },
+    { flag: true, disabled: true, roomId: "!one:example.org" },
+    { flag: true, disabled: false, roomId: null },
+  ])("does not edit with unavailable composer actions: %j", ({ flag, disabled, roomId }) => {
+    mocks.useFlag.mockReturnValue(flag);
+    const { result } = renderHook(() =>
+      useMessageActionController({
+        roomId,
+        currentUserId: message.sender,
+        setReplyTarget: vi.fn(),
+        setEditingEventId: vi.fn(),
+        mutationsDisabled: disabled,
+      }),
+    );
+    expect(result.current.editLastMessage([message])).toBe(false);
+    expect(mocks.handleEdit).not.toHaveBeenCalled();
+  });
+
+  it.each([false, undefined])(
+    "does not edit unknown or non-text fallback bodies (%s)",
+    (textEditable) => {
+      const { result } = renderHook(() =>
+        useMessageActionController({
+          roomId: "!one:example.org",
+          currentUserId: message.sender,
+          setReplyTarget: vi.fn(),
+          setEditingEventId: vi.fn(),
+        }),
+      );
+      expect(result.current.editLastMessage([{ ...message, text_editable: textEditable }])).toBe(
+        false,
+      );
+      expect(mocks.handleEdit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])("guards row editing independently of composer parity (%s)", (flag) => {
+    mocks.useFlag.mockReturnValue(flag);
+    const { result } = renderHook(() =>
+      useMessageActionController({
+        roomId: "!one:example.org",
+        currentUserId: message.sender,
+        setReplyTarget: vi.fn(),
+        setEditingEventId: vi.fn(),
+      }),
+    );
+    for (const invalid of [
+      { ...message, text_editable: false },
+      { ...message, text_editable: undefined },
+      { ...message, sender: "@other:example.org" },
+      { ...message, event_id: "local-echo" },
+      { ...message, redacted: true },
+      { ...message, is_undecrypted: true },
+      { ...message, send_state: { state: "pending" as const } },
+      { ...message, send_state: { state: "error" as const, message: "failed" } },
+    ]) {
+      act(() => result.current.rowActions(invalid).onEdit());
+    }
+    expect(mocks.handleEdit).not.toHaveBeenCalled();
+    act(() => result.current.rowActions(message).onEdit());
+    expect(mocks.handleEdit).toHaveBeenCalledExactlyOnceWith(message.event_id);
+  });
+
+  it("leaves the composer alone when there is no own editable message", () => {
+    const { result } = renderHook(() =>
+      useMessageActionController({
+        roomId: "!one:example.org",
+        currentUserId: "@me:example.org",
+        setReplyTarget: vi.fn(),
+        setEditingEventId: vi.fn(),
+      }),
+    );
+    expect(result.current.editLastMessage([message])).toBe(false);
+    expect(mocks.handleEdit).not.toHaveBeenCalled();
+  });
+
   it("scopes dialog targets to the room that opened them", () => {
     const { result, rerender } = renderHook(
       ({ roomId }) =>

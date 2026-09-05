@@ -588,6 +588,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/reply`, {
         in_reply_to_event_id: args.inReplyToEventId,
         body: args.body,
+        formatted_body: args.formattedBody,
+        mentions: args.mentions,
       });
     case "edit_message":
       return requestJson<T>(
@@ -595,7 +597,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
           String(args.eventId),
         )}/edit`,
-        { new_body: args.newBody },
+        { new_body: args.newBody, formatted_body: args.formattedBody, mentions: args.mentions },
       );
     case "redact_event":
       return requestBytes<T>(
@@ -680,6 +682,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/command`, {
         command: args.command,
         args: args.args,
+        in_reply_to_event_id: args.inReplyToEventId ?? null,
+        mention_ids: args.mentionIds ?? null,
       });
     case "send_read_receipt":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/receipt`, {
@@ -858,6 +862,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     }
     case "set_display_name":
       return requestJson<T>("PUT", "/api/profile/display-name", args.displayName);
+    case "get_ignored_users":
+      return requestJson<T>("GET", "/api/account/ignored-users");
+    case "ignore_user":
+      return requestJson<T>("POST", "/api/account/ignored-users/ignore", args.userId);
+    case "unignore_user":
+      return requestJson<T>("POST", "/api/account/ignored-users/unignore", args.userId);
     case "get_account_deactivate_url":
       return requestJson<T>("GET", "/api/account/deactivate-url");
     case "get_account_data":

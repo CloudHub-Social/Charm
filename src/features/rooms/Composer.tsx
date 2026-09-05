@@ -1,8 +1,8 @@
-import { Extension } from "@tiptap/core";
+import { Extension, generateText, type JSONContent } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { PluginKey } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
+import { guardedStarterKit } from "./guardedStarterKit";
 import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { getRoomMembers, listRooms } from "@/lib/matrix";
@@ -20,14 +20,56 @@ import {
   type RoomMemberOption,
   type RoomOption,
 } from "./composerSuggestions";
-import { resolveInlineShortcodes } from "./emojiShortcodes";
+import { resolveInlineShortcodes, resolveInlineShortcodesInHtml } from "./emojiShortcodes";
 import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
-import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
+import { MatrixSpoiler } from "./spoilerExtension";
+import {
+  isMessageSendingCommand,
+  parseSlashCommand,
+  unescapeLiteralSlash,
+  type ParsedSlashCommand,
+} from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 export type ComposerMode = "send" | "edit" | "reply";
+
+function resolveEditorPlainShortcodes(editor: Editor): string {
+  function resolveNode(node: JSONContent, insideCodeBlock = false): JSONContent {
+    const codeBlock = insideCodeBlock || node.type === "codeBlock";
+    const inlineCode = node.marks?.some((mark) => mark.type === "code") ?? false;
+    return {
+      ...node,
+      ...(node.text && !codeBlock && !inlineCode
+        ? { text: resolveInlineShortcodes(node.text) }
+        : {}),
+      ...(node.content
+        ? { content: node.content.map((child) => resolveNode(child, codeBlock)) }
+        : {}),
+    };
+  }
+
+  const document = resolveNode(editor.getJSON());
+  const plainText = generateText(document, editor.extensionManager.extensions);
+  const blocks = document.content ?? [];
+  const trailingEmptyParagraphs = [...blocks]
+    .reverse()
+    .findIndex((node) => node.type !== "paragraph" || node.content?.length);
+  const structuralParagraphCount =
+    trailingEmptyParagraphs === -1 ? blocks.length : trailingEmptyParagraphs;
+  const precedingBlock = blocks.at(-(structuralParagraphCount + 1));
+  // TipTap keeps empty paragraphs after a terminal code block so the cursor
+  // can exit it. `generateText` adds a block separator for each one; remove
+  // only those structural separators, never whitespace inside the code.
+  const structuralSuffix = "\n\n".repeat(structuralParagraphCount);
+  return structuralSuffix &&
+    precedingBlock?.type === "codeBlock" &&
+    plainText.endsWith(structuralSuffix)
+    ? plainText.slice(0, -structuralSuffix.length)
+    : plainText;
+}
 
 interface ComposerProps {
   accountId?: string;
@@ -52,6 +94,8 @@ interface ComposerProps {
    * emptiness is the only signal Send's disabled state needs.
    */
   onEmptyChange?: (isEmpty: boolean) => void;
+  /** Returns true only when an editable message was found. Empty send mode only. */
+  onEditLastMessage?: () => boolean;
   /** Mobile chat keeps formatting available without permanently spending a full toolbar row. */
   showFormattingToolbar?: boolean;
 }
@@ -150,6 +194,7 @@ function textWithMentionIds(editor: Editor): string {
     if (node.type.name === "userMention" || node.type.name === "roomMention") {
       return typeof node.attrs.id === "string" ? node.attrs.id : "";
     }
+    if (node.type.name === "hardBreak") return "\n";
     return "";
   });
 }
@@ -173,11 +218,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onTypingInput,
     onBlur,
     onEmptyChange,
+    onEditLastMessage,
     showFormattingToolbar = true,
   },
   ref,
 ) {
   const menu = useSuggestionMenu();
+  const composerParityEnabled = useFlag("composer_parity");
+  const composerParityRef = useRef(composerParityEnabled);
+  composerParityRef.current = composerParityEnabled;
   const menuOpenRef = useRef(false);
   // Tracks the last value reported via `onEmptyChange` so we only call it on
   // an actual empty/non-empty transition, not on every keystroke. `null`
@@ -259,7 +308,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const extensions = useMemo(
     () => [
-      StarterKit,
+      guardedStarterKit(() => composerParityRef.current),
+      MatrixSpoiler,
       UserMention.configure({
         suggestion: {
           char: "@",
@@ -301,7 +351,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // (e.g. "look /m"), where opening the menu would otherwise hijack
         // Enter for "select suggestion" instead of sending.
         allow: ({ range }) => range.from === 1,
-        items: ({ query }: { query: string }) => filterSlashCommands(query),
+        items: ({ query }: { query: string }) =>
+          filterSlashCommands(query, composerParityRef.current),
         command: ({ editor, range, props }) => {
           const spec = props as ReturnType<typeof filterSlashCommands>[number];
           editor.chain().focus().insertContentAt(range, `/${spec.name} `).run();
@@ -347,6 +398,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         // real browsers, but not one axe's static analysis infers on its
         // own, so it's spelled out here rather than relied on implicitly.
         role: "textbox",
+        // Keep native OS/webview correction available without a custom
+        // dictionary or sending draft text to an application service.
+        spellcheck: String(composerParityEnabled),
         "aria-multiline": "true",
         "aria-label": placeholder,
         // Not a native HTML placeholder (contenteditable has none) — kept
@@ -357,7 +411,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         class:
           "max-h-30 min-h-6 flex-1 resize-none bg-transparent px-1 py-2 text-[15px] text-foreground outline-none",
       },
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
         if (menuOpenRef.current) {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -380,6 +434,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             return true;
           }
           return false;
+        }
+
+        if (
+          event.key === "ArrowUp" &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.metaKey &&
+          !event.isComposing &&
+          !view.composing &&
+          mode === "send" &&
+          view.state.doc
+            .textBetween(0, view.state.doc.content.size, "\n", (node) =>
+              node.type.name === "hardBreak" ? "\n" : "\uFFFC",
+            )
+            .trim().length === 0 &&
+          onEditLastMessage?.()
+        ) {
+          event.preventDefault();
+          return true;
         }
 
         if (event.key === "Enter") {
@@ -422,6 +496,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         ...editorProps,
         attributes: {
           ...attributes,
+          spellcheck: String(composerParityEnabled),
           "aria-label": placeholder,
           placeholder,
         },
@@ -431,7 +506,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // `data-placeholder` switches immediately even though the document did
     // not change during the responsive-layout transition.
     editor.view.dispatch(editor.state.tr);
-  }, [editor, placeholder]);
+  }, [editor, placeholder, composerParityEnabled]);
+
+  useEffect(() => {
+    if (!editor || composerParityEnabled) return;
+    // Exit the active code block without converting or deleting authored code.
+    if (editor.isActive("codeBlock")) editor.commands.exitCode();
+    const { state } = editor;
+    // Change future typing marks only; unsetMark would strip a selected draft.
+    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter(
+      (mark) => !["matrixSpoiler", "strike", "link"].includes(mark.type.name),
+    );
+    editor.view.dispatch(state.tr.setStoredMarks(marks));
+  }, [editor, composerParityEnabled]);
 
   // Reports the editor's initial content emptiness once it's created
   // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
@@ -444,21 +531,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   function submit() {
     if (!editor) return;
-    const rawPlainText = resolveInlineShortcodes(editor.getText()).trim();
-    if (!rawPlainText) return;
+    const rawPlainText = resolveEditorPlainShortcodes(editor);
+    if (!rawPlainText.trim()) return;
 
     // Slash-command args need each `@mention` resolved to its real Matrix id
-    // (`@alice:example.org`), not its display label (`Alice`) — `getText()`
-    // above renders mentions by label, which `UserId::parse` on the Rust
-    // side would then reject. `textBetween`'s `leafText` hook substitutes
-    // the mention node's `id` attr for exactly this parsing pass; the
+    // (`@alice:example.org`), independently of the pill's display label.
+    // `textBetween`'s `leafText` hook explicitly substitutes the mention
+    // node's `id` attr for this parsing pass in both send and reply modes; the
     // regular send path doesn't need it since `m.mentions` is populated
     // separately via `collectMentionIds`.
     const commandText =
-      mode === "send" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
-    const slash = mode === "send" ? parseSlashCommand(commandText.trim()) : null;
+      mode !== "edit" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
+    const slash =
+      mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
-      onSlashCommand(slash);
+      if ("disabled" in slash) {
+        // Reserve staged command names across a live kill-switch transition.
+        // The owner shows local feedback; retaining the editor content lets
+        // the user copy or revise it without ever leaking it into the room.
+        onSlashCommand(slash);
+        return;
+      }
+      const mentionIds = collectMentionIds(editor);
+      onSlashCommand(
+        isMessageSendingCommand(slash)
+          ? { ...slash, ...(mentionIds.length ? { mentionIds } : {}) }
+          : slash,
+      );
       // `clearContent(false)` skips emitting `onUpdate` — clearing after a
       // send/command isn't the user typing, so it shouldn't re-trigger
       // `onTypingInput` and send a spurious `typing: true` right after
@@ -474,7 +573,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // unescape it here, once we know it isn't resolving to a real command,
     // so the literal `/` survives instead of being sent as `//`.
     const plainText = unescapeLiteralSlash(rawPlainText);
-    const html = resolveInlineShortcodes(editor.getHTML().replace(/^((?:<[^>]+>)*)\/\//, "$1/"));
+    const html = resolveInlineShortcodesInHtml(
+      editor.getHTML().replace(/^((?:<[^>]+>)*)\/\//, "$1/"),
+    );
 
     const mentionIds = collectMentionIds(editor);
     const content = serializeComposerContent(html, plainText, mentionIds);
@@ -496,8 +597,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [onEscape]);
 
   return (
-    <div className="flex flex-1 flex-col gap-1">
-      {showFormattingToolbar && <FormattingToolbar accountId={accountId} editor={editor} />}
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
+      {showFormattingToolbar && (
+        <FormattingToolbar key={`${accountId}:${roomId}`} accountId={accountId} editor={editor} />
+      )}
       <EditorContent editor={editor} />
       {menu.state.open && (
         <AutocompletePopover

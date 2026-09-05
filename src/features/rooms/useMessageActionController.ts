@@ -31,6 +31,7 @@ export function useMessageActionController({
   mutationsDisabled = false,
 }: UseMessageActionControllerOptions) {
   const messageActionParityEnabled = useFlag("message_action_parity");
+  const composerParityEnabled = useFlag("composer_parity");
   const [dialogTarget, setDialogTarget] = useState<MessageActionDialogTarget | null>(null);
   const actionsRegistryRef = useRef<{
     roomId: string | null;
@@ -79,13 +80,41 @@ export function useMessageActionController({
     else actionsRegistryRef.current.handles.delete(key);
   }
 
+  function canEditMessage(message: RoomMessageSummary): boolean {
+    return (
+      !mutationsDisabled &&
+      !!roomId &&
+      message.sender === currentUserId &&
+      message.event_id.startsWith("$") &&
+      message.send_state.state === "sent" &&
+      !message.redacted &&
+      !message.is_undecrypted &&
+      message.text_editable === true &&
+      message.media === null
+    );
+  }
+
+  /** The loaded timeline is chronological. Never edit a local echo or a placeholder. */
+  function editLastMessage(messages: readonly RoomMessageSummary[]): boolean {
+    if (!composerParityEnabled || mutationsDisabled || !roomId) return false;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!canEditMessage(message)) continue;
+      actions.handleEdit(message.event_id);
+      return true;
+    }
+    return false;
+  }
+
   function rowActions(message: RoomMessageSummary) {
     return {
       onReply: () => actions.handleReply(message),
       onReact: (emoji: string) => {
         if (!mutationsDisabled) actions.handleToggleReaction(message.event_id, emoji);
       },
-      onEdit: () => actions.handleEdit(message.event_id),
+      onEdit: () => {
+        if (canEditMessage(message)) actions.handleEdit(message.event_id);
+      },
       onDelete: () => {
         if (mutationsDisabled) return;
         if (messageActionParityEnabled) openDialog("delete", message.event_id);
@@ -138,6 +167,7 @@ export function useMessageActionController({
     confirmDialog,
     getActionsHandle,
     registerActionsRef,
+    editLastMessage,
     rowActions,
   };
 }

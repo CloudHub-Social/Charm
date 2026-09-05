@@ -1,8 +1,20 @@
 import type { Editor } from "@tiptap/react";
-import { Bold, Code, Italic, List, ListOrdered, Quote, Smile } from "lucide-react";
+import {
+  Bold,
+  Code,
+  CodeSquare,
+  Italic,
+  List,
+  ListOrdered,
+  Quote,
+  Smile,
+  Strikethrough,
+  EyeOff,
+} from "lucide-react";
 import { useFlag } from "@/featureFlags";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
+import { ComposerLinkButton } from "./ComposerLinkButton";
 
 interface FormattingToolbarProps {
   accountId?: string;
@@ -62,13 +74,43 @@ const BUTTONS: ToolbarButtonSpec[] = [
   },
 ];
 
-/** Bold/italic/code/quote/list toggle buttons bound to TipTap commands. */
+const EXTENDED_BUTTONS: ToolbarButtonSpec[] = [
+  {
+    key: "matrixSpoiler",
+    label: "Spoiler",
+    icon: EyeOff,
+    isActive: (e) => e.isActive("matrixSpoiler"),
+    run: (e) => e.chain().focus().toggleMark("matrixSpoiler").run(),
+  },
+  {
+    key: "strike",
+    label: "Strikethrough",
+    icon: Strikethrough,
+    isActive: (e) => e.isActive("strike"),
+    run: (e) => e.chain().focus().toggleStrike().run(),
+  },
+  {
+    key: "codeBlock",
+    label: "Code block",
+    icon: CodeSquare,
+    isActive: (e) => e.isActive("codeBlock"),
+    run: (e) => e.chain().focus().toggleCodeBlock().run(),
+  },
+];
+
+/** Formatting controls bound to the existing TipTap extensions. */
 export function FormattingToolbar({ accountId = "anonymous", editor }: FormattingToolbarProps) {
   const fullEmojiPickerEnabled = useFlag("full_emoji_picker");
+  const composerParityEnabled = useFlag("composer_parity");
+  const buttons = composerParityEnabled ? [...BUTTONS, ...EXTENDED_BUTTONS] : BUTTONS;
 
   return (
-    <div className="flex items-center gap-0.5" role="toolbar" aria-label="Formatting">
-      {BUTTONS.map(({ key, label, icon: Icon, isActive, run }) => (
+    <div
+      className="flex min-w-0 flex-wrap items-center gap-0.5"
+      role="toolbar"
+      aria-label="Formatting"
+    >
+      {buttons.map(({ key, label, icon: Icon, isActive, run }) => (
         <button
           key={key}
           type="button"
@@ -85,6 +127,7 @@ export function FormattingToolbar({ accountId = "anonymous", editor }: Formattin
           <Icon size={16} />
         </button>
       ))}
+      {composerParityEnabled && <ComposerLinkButton editor={editor} />}
       {fullEmojiPickerEnabled && (
         <EmojiPicker
           accountId={accountId}
