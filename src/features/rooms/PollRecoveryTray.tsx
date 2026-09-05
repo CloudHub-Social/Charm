@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   discardPollEnd,
   discardPollVote,
@@ -6,19 +6,24 @@ import {
   retryPollEnd,
   retryPollVote,
   type PendingPollRelation,
+  type RoomMessageSummary,
 } from "@/lib/matrix";
 
 interface PollRecoveryTrayProps {
   roomId: string;
-  loadedEventIds: ReadonlySet<string>;
+  loadedMessages: readonly Pick<RoomMessageSummary, "event_id">[];
 }
 
-export function PollRecoveryTray({ roomId, loadedEventIds }: PollRecoveryTrayProps) {
+export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayProps) {
   const [relations, setRelations] = useState<PendingPollRelation[]>([]);
   const [busyTransactionId, setBusyTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeRoomId = useRef(roomId);
   activeRoomId.current = roomId;
+  const loadedEventIds = useMemo(
+    () => new Set(loadedMessages.map((message) => message.event_id)),
+    [loadedMessages],
+  );
   const refresh = useCallback(async () => {
     const pending = await getPendingPollRelations(roomId);
     if (activeRoomId.current !== roomId) return;

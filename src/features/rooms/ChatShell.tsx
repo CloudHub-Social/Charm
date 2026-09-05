@@ -308,10 +308,6 @@ export function ChatShell({
     hideMembershipEvents,
     showHiddenEvents,
   );
-  const loadedEventIds = useMemo(
-    () => new Set(messages.map((message) => message.event_id)),
-    [messages],
-  );
   const tombstone = useRoomTombstone(roomUpgradesEnabled, currentTombstone, timelineItems);
   const replacementRoomId = tombstone?.replacement_room_id ?? null;
   const roomMutationsBlocked =
@@ -989,7 +985,7 @@ export function ChatShell({
         </div>
       )}
 
-      <PollRecoveryTray roomId={room.room_id} loadedEventIds={loadedEventIds} />
+      <PollRecoveryTray roomId={room.room_id} loadedMessages={messages} />
 
       <UploadTray
         uploads={uploads}

@@ -33,7 +33,7 @@ describe("PollRecoveryTray", () => {
         },
       ])
       .mockResolvedValue([]);
-    render(<PollRecoveryTray roomId="!room:example.org" loadedEventIds={new Set()} />);
+    render(<PollRecoveryTray roomId="!room:example.org" loadedMessages={[]} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
 
@@ -56,7 +56,10 @@ describe("PollRecoveryTray", () => {
       },
     ]);
     render(
-      <PollRecoveryTray roomId="!room:example.org" loadedEventIds={new Set(["$loaded-poll"])} />,
+      <PollRecoveryTray
+        roomId="!room:example.org"
+        loadedMessages={[{ event_id: "$loaded-poll" }]}
+      />,
     );
 
     await waitFor(() => expect(getPendingPollRelations).toHaveBeenCalledOnce());
