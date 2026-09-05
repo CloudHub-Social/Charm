@@ -50,7 +50,9 @@ interrupted result write. This implementation and its regressions await CI.
   the pending record with compare-and-swap; removed sessions are not resurrected.
   Browser local storage, query/mutation caches, and SDK raw custom state values
   never hold the pending credential. Save the key before logout, web session
-  expiry, or device-data removal. Real-account interrupted-setup/restart/restore
+  expiry, or device-data removal; automatic expiry uses the same protected teardown
+  admission as logout and will not remove a session while recovery custody is pending.
+  Real-account interrupted-setup/restart/restore
   verification remains a release gate; CI regressions cover offline retrieval,
   acknowledgement failure, remount, encrypted storage, token isolation, resave,
   and deletion without resurrection.

@@ -1917,6 +1917,20 @@ impl PersistenceStore {
             if sessions.is_genuinely_active(&entry.token, max_age).await {
                 continue;
             }
+            // Expiry is destructive session teardown just like explicit
+            // logout: it aborts the resident sync loop, revokes the Matrix
+            // token, and deletes the persisted session. Admit that teardown
+            // through the same cross-instance CAS boundary before any of
+            // those effects. An in-flight recovery setup or an issued key
+            // still awaiting custody must keep both the live and persisted
+            // session intact so the user can finish saving it.
+            if let Err(error) = self.begin_recovery_safe_teardown(&entry.token).await {
+                tracing::warn!(
+                    "skipped expiry teardown for a persisted session because protected recovery \
+                     is still active: {error}"
+                );
+                continue;
+            }
             // A token that reaches here can still be resident in
             // `SessionStore` — the only way that happens is `sweep_idle`'s
             // pending-verification/unpersisted-room exemptions, which pin a
@@ -4091,6 +4105,52 @@ mod tests {
             store.read_one("tok-stale").await.is_some(),
             "a stale session must stay persisted until its revocation is confirmed, not \
              deleted on a best-effort basis"
+        );
+    }
+
+    /// Expiry has the same destructive consequences as explicit logout and
+    /// therefore must honor the same recovery-custody admission boundary.
+    /// An issued key that has not yet been acknowledged keeps the session
+    /// available even when its ordinary activity timestamp is stale.
+    #[tokio::test]
+    async fn sweep_expired_preserves_a_stale_session_with_pending_recovery_custody() {
+        let dir = scratch_dir("sweep-expired-pending-recovery");
+        let store = PersistenceStore::new_for_test(&dir, [55u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(
+            &store,
+            "tok-pending-recovery",
+            now.saturating_sub(sixty_days),
+        )
+        .await;
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": "protected-key-not-plaintext",
+            "room_keys_backed_up": true
+        }))
+        .unwrap();
+        store
+            .save_pending_recovery("tok-pending-recovery", Some(&pending))
+            .await
+            .unwrap();
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &crate::session::SessionStore::new(),
+            )
+            .await;
+
+        assert_eq!(swept, 0);
+        let retained = store
+            .read_one("tok-pending-recovery")
+            .await
+            .expect("pending recovery session must remain persisted");
+        assert!(retained.pending_recovery.is_some());
+        assert!(
+            !retained.recovery_teardown_started,
+            "a custody veto must happen before expiry writes a teardown tombstone"
         );
     }
 
