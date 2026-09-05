@@ -471,7 +471,7 @@ describe("ChatShell", () => {
     expect(await screen.findByTestId("voice-gesture-mode")).toHaveTextContent("mobile");
   });
 
-  it("unmounts the recorder when room settings covers the chat", async () => {
+  it("keeps a stopped voice preview mounted when room settings covers the chat", async () => {
     mockUseFlag.mockImplementation((key) => key === "voice_recording");
     const store = createStore();
     renderChatShell(store);
@@ -481,7 +481,7 @@ describe("ChatShell", () => {
       store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });
     });
 
-    expect(screen.queryByTestId("voice-gesture-mode")).not.toBeInTheDocument();
+    expect(screen.getByTestId("voice-gesture-mode")).toBeInTheDocument();
   });
 
   it("does not open the attachment picker while voice capture is active", async () => {

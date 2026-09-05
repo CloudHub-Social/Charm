@@ -1148,20 +1148,15 @@ export function ChatShell({
               <Send size={16} />
             </button>
           </div>
-          {voiceRecordingEnabled &&
-            !roomMutationsBlocked &&
-            !roomSettingsOpen &&
-            !messageActionController.visibleDialogTarget &&
-            !jumpToDateOpen &&
-            pillProfile === null && (
-              <VoiceRecorder
-                key={`${currentUserId}:${room.room_id}`}
-                mobile={layout === "mobile"}
-                onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
-                onClearFailedUpload={dismissFailedUploadForFile}
-                onCaptureChange={setVoiceCaptureActive}
-              />
-            )}
+          {voiceRecordingEnabled && !roomMutationsBlocked && (
+            <VoiceRecorder
+              key={`${currentUserId}:${room.room_id}`}
+              mobile={layout === "mobile"}
+              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+              onClearFailedUpload={dismissFailedUploadForFile}
+              onCaptureChange={setVoiceCaptureActive}
+            />
+          )}
         </div>
       )}
       {!mobile && participants.length > 0 && (
