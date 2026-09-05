@@ -410,7 +410,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           !view.composing &&
           mode === "send" &&
           view.state.doc
-            .textBetween(0, view.state.doc.content.size, "\n", "\uFFFC")
+            .textBetween(0, view.state.doc.content.size, "\n", (node) =>
+              node.type.name === "hardBreak" ? "\n" : "\uFFFC",
+            )
             .trim().length === 0 &&
           onEditLastMessage?.()
         ) {

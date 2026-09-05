@@ -15,6 +15,28 @@ function pillText(sigil: string, label: string | null, id: string): string {
   return label ? `${sigil}${label}` : id;
 }
 
+function isValidMatrixId(id: string, sigil: string): boolean {
+  if (!id.startsWith(sigil)) return false;
+  const separator = id.indexOf(":", 1);
+  if (separator <= 1) return false;
+  const localpart = id.slice(1, separator);
+  const serverName = id.slice(separator + 1);
+  if (!serverName || /[:\s\u0000-\u001f]/.test(localpart)) return false;
+  try {
+    const parsed = new URL(`https://${serverName}`);
+    return (
+      parsed.hostname.length > 0 &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.pathname === "/" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reconstructs a mention node's `{id, label}` from its rendered anchor —
  * needed so a saved draft's HTML (e.g. from `useRoomDraft`, reloaded after
@@ -35,7 +57,7 @@ function parseMentionAnchor(idPrefix: string) {
     } catch {
       return false;
     }
-    if (!id.startsWith(idPrefix) || !/^[!@][^:\s]+:[^\s]+$/.test(id)) return false;
+    if (!isValidMatrixId(id, idPrefix)) return false;
     const text = element.textContent ?? "";
     return { id, label: text === id ? null : text.replace(/^[@#]/, "") };
   };

@@ -83,6 +83,20 @@ describe("UserMention", () => {
 
     expect(rules[0]!.getAttrs!(anchor)).toBe(false);
   });
+
+  it.each([
+    "https://matrix.to/#/@alice:example.org/path",
+    "https://matrix.to/#/@alice:example.org:99999",
+  ])("rejects a pill whose server name is malformed: %s", (href) => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", href);
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "@Alice";
+
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+
+    expect(rules[0]!.getAttrs!(anchor)).toBe(false);
+  });
 });
 
 describe("RoomMention", () => {

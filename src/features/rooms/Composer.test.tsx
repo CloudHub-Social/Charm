@@ -233,6 +233,29 @@ describe("Composer", () => {
     expect(editable).toHaveTextContent("Alice");
   });
 
+  it("treats hard breaks as whitespace for empty-composer ArrowUp editing", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-break:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.keyDown(editable, { key: "Enter", shiftKey: true });
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+  });
+
   it.each(["reply", "edit"] as const)(
     "does not replace an empty %s composer on ArrowUp",
     async (mode) => {
