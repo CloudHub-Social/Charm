@@ -332,7 +332,36 @@ jobs:
           keychain="$RUNNER_TEMP/nightly-signing.keychain-db"
           signing_cert="$RUNNER_TEMP/nightly-signing-cert.pem"
           if [ -e "$signing_cert" ]; then
-            sudo security remove-trusted-cert -d "$signing_cert" || true
+            # `security remove-trusted-cert` can wait indefinitely on trustd.
+            # Keep cleanup best-effort on this ephemeral runner, but do not let
+            # it prevent the already-built artifact from being published.
+            python3_path="$(command -v python3 || true)"
+            if [ -z "$python3_path" ]; then
+              echo "::warning::python3 is unavailable; the hosted runner will discard the temporary nightly signing trust at teardown."
+            else
+              sudo -n "$python3_path" - "$signing_cert" <<'PY' || true
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  ["/usr/bin/security", "remove-trusted-cert", "-d", sys.argv[1]],
+                  stdin=subprocess.DEVNULL,
+                  timeout=30,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  print(
+                      "::warning::Could not remove the temporary nightly signing trust; "
+                      "the hosted runner will discard it at teardown."
+                  )
+          except subprocess.TimeoutExpired:
+              print(
+                  "::warning::Timed out removing the temporary nightly signing trust; "
+                  "the hosted runner will discard it at teardown."
+              )
+          PY
+            fi
             rm -f -- "$signing_cert"
           fi
           if [ -e "$keychain" ]; then
