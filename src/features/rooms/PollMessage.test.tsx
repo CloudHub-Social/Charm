@@ -568,6 +568,44 @@ describe("PollMessage", () => {
     vi.useRealTimers();
   });
 
+  it("does not restart vote restoration for unrelated tally updates", async () => {
+    const view = render(
+      <PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />,
+    );
+    await waitFor(() => expect(getPendingPollVote).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <PollMessage
+        message={pollMessage({
+          answers: [
+            { id: "pizza", text: "Pizza", votes: 2, selected_by_me: false },
+            { id: "salad", text: "Salad", votes: 0, selected_by_me: false },
+          ],
+        })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+
+    expect(getPendingPollVote).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+  });
+
+  it("retries a transient pending-close lookup failure while the row stays mounted", async () => {
+    vi.useFakeTimers();
+    getPendingPollEnd
+      .mockRejectedValueOnce(new Error("temporary transport failure"))
+      .mockResolvedValueOnce({ transaction_id: "txn-restored-end", failed: true });
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+
+    await act(async () => Promise.resolve());
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+    expect(getPendingPollEnd).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Retry closing poll" })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   it("discards a failed vote after another client closes the poll", async () => {
     getPendingPollVote.mockResolvedValueOnce({
       transaction_id: "txn-ended-vote",

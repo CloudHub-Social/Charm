@@ -141,7 +141,7 @@ export function PollMessage({
       active = false;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [hasPoll, message.event_id, pollEnded, pollRevision, recoveryOnly, roomId, voteRecheck]);
+  }, [hasPoll, message.event_id, pollEnded, recoveryOnly, roomId, voteRecheck]);
   useEffect(() => {
     if (!voteTransactionId || voteFailed) return;
     const timeout = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);
@@ -178,6 +178,7 @@ export function PollMessage({
     }
     lastEndStateRevision.current = `${pollRevision}:${endRecheck}`;
     let active = true;
+    let retryTimer: number | undefined;
     setRestoringEndState(true);
     void getPendingPollEnd(roomId, message.event_id)
       .then(async (pending) => {
@@ -224,13 +225,19 @@ export function PollMessage({
         }
       })
       .catch(() => {
-        // The mutation command still rejects votes while a close is queued.
+        // An idle room may not produce another timeline revision. Keep
+        // retrying the local durable queue lookup until recovery state is
+        // visible again or this row unmounts.
+        if (active) {
+          retryTimer = window.setTimeout(() => setEndRecheck((revision) => revision + 1), 2_000);
+        }
       })
       .finally(() => {
         if (active) setRestoringEndState(false);
       });
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [
     closeKey,
