@@ -216,7 +216,7 @@ function canonicalLicenseFiles(entry) {
         },
       );
     } else {
-      return [];
+      continue;
     }
   }
 
