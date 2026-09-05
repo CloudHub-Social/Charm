@@ -83,10 +83,12 @@ platform SPDX SBOMs, and a GPG-signed checksum manifest. Android and Windows
 use existing signing secrets and must verify the resulting native signatures.
 The non-publishing `verify_platform_signing` dispatch is restricted to reviewed
 `main`; it provides actual signing evidence after the workflow merges.
-Apple production certificate import and notarization submission remain
-outstanding, and macOS verification intentionally blocks stable publication
-until those requirements are met. Updater readiness and actual signed-artifact
-validation remain separate gates; workflow implementation is not release proof.
+Apple production certificate import and notarization submission are wired to
+the protected `release-signing` environment; macOS verification intentionally
+blocks stable publication until those credentials exist and the signed,
+notarized artifacts pass validation. Updater readiness and actual
+signed-artifact validation remain separate gates; workflow implementation is
+not release proof.
 The canonical operational requirements, secret names, and evidence boundaries
 are in [the release-tier guide](../docs-site/src/content/docs/contributing/ci-tiers.md).
 
