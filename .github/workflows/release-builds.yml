@@ -1075,8 +1075,32 @@ jobs:
             if [ -n "$remote" ]; then
               remote_digest=$(jq -r '.digest // empty' <<<"$remote")
               if [ -n "$remote_digest" ] && [ "$remote_digest" != "$expected" ]; then
-                echo "::error::Existing draft asset digest differs; refusing to overwrite $name"
-                exit 1
+                case "$name" in
+                  *.asc)
+                    # Detached OpenPGP signatures include creation-time and
+                    # nonce material. On a resumed draft, reuse the existing
+                    # signature only after proving it validates the identical
+                    # local asset with this release key.
+                    signature_dir=$(mktemp -d)
+                    gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                      --pattern "$name" --dir "$signature_dir"
+                    export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+                    if ! gpg --batch --verify "$signature_dir/$name" "${file%.asc}"; then
+                      echo "::error::Existing draft signature does not validate for ${name%.asc}"
+                      exit 1
+                    fi
+                    cp "$signature_dir/$name" "$file"
+                    expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+                    if [ "$remote_digest" != "$expected" ]; then
+                      echo "::error::Downloaded draft signature digest differs for $name"
+                      exit 1
+                    fi
+                    ;;
+                  *)
+                    echo "::error::Existing draft asset digest differs; refusing to overwrite $name"
+                    exit 1
+                    ;;
+                esac
               fi
             else
               require_draft

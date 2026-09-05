@@ -80,6 +80,12 @@ and strictly verifies AAB signatures against the configured keystore alias.
 These checks use Android's [apksigner](https://developer.android.com/tools/apksigner)
 and Java's [jarsigner](https://docs.oracle.com/en/java/javase/18/docs/specs/man/jarsigner.html).
 
+Signing credentials are environment secrets only. Nightly identities belong in
+the protected `nightly-signing` environment; distinct production identities
+belong in `release-signing`. Do not also define this key material as repository
+secrets, because branch-selected workflow YAML can access repository secrets
+without crossing the protected signing-environment boundary.
+
 Tagged Windows builds require `WINDOWS_CERT_PFX` and `WINDOWS_CERT_PASSWORD`.
 The imported identity is passed to Tauri's Authenticode configuration. The app
 and installers must have valid signatures from that same identity before upload.
