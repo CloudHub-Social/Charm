@@ -234,6 +234,7 @@ describe("useVoiceRecorder", () => {
     expect(stopTrack).toHaveBeenCalledOnce();
     expect(FakeRecorder.instances).toHaveLength(0);
     expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toBe("Microphone access is ready. Hold again to record.");
   });
 
   it("releases a stream granted after unmount", async () => {
@@ -306,17 +307,27 @@ describe("useVoiceRecorder", () => {
   });
 
   it("preserves a permission denial when a mobile hold is released", async () => {
-    getUserMedia.mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"));
+    let deny!: (reason: DOMException) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((_resolve, reject) => {
+          deny = reject;
+        }),
+    );
     const { result } = renderHook(() => useVoiceRecorder());
-    await act(async () => {
-      await result.current.start();
+    let starting!: Promise<void>;
+    act(() => {
+      starting = result.current.start();
     });
-    const denial = result.current.error;
-
+    expect(result.current.phase).toBe("requesting");
     act(() => result.current.stop());
+    await act(async () => {
+      deny(new DOMException("denied", "NotAllowedError"));
+      await starting;
+    });
 
     expect(result.current.phase).toBe("idle");
-    expect(result.current.error).toBe(denial);
+    expect(result.current.error).toContain("Microphone access was denied");
   });
 
   it("stops at the duration limit and bounds waveform metadata", async () => {

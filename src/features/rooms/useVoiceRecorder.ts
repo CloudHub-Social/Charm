@@ -29,6 +29,7 @@ export function useVoiceRecorder() {
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
   const preparing = useRef<{ stream: MediaStream | null; context: AudioContext } | null>(null);
+  const stopRequestedDuringPermission = useRef(false);
 
   const releaseCapture = useCallback(() => {
     const pending = preparing.current;
@@ -47,6 +48,7 @@ export function useVoiceRecorder() {
 
   const clearResources = useCallback(() => {
     epoch.current += 1;
+    stopRequestedDuringPermission.current = false;
     releaseCapture();
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
     previewUrl.current = null;
@@ -115,7 +117,10 @@ export function useVoiceRecorder() {
     if (active.current) {
       active.current.requestStop();
     } else if (phase === "requesting") {
-      discard(); // Pointer released before permission was granted.
+      // Releasing a mobile hold must not invalidate the in-flight permission
+      // result. A denial still needs to reach the user; a grant is released
+      // immediately with an actionable prompt to hold again.
+      stopRequestedDuringPermission.current = true;
     }
   }
 
@@ -148,6 +153,13 @@ export function useVoiceRecorder() {
         return;
       }
       pending.stream = stream;
+      if (stopRequestedDuringPermission.current) {
+        stopRequestedDuringPermission.current = false;
+        releaseCapture();
+        setPhase("idle");
+        setError("Microphone access is ready. Hold again to record.");
+        return;
+      }
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
       context.createMediaStreamSource(stream).connect(analyser);
@@ -239,6 +251,7 @@ export function useVoiceRecorder() {
       setPhase("recording");
     } catch (cause) {
       if (epoch.current !== attempt) return;
+      stopRequestedDuringPermission.current = false;
       releaseCapture();
       setPhase("idle");
       setError(
