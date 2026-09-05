@@ -4,9 +4,9 @@
   "generatedAt": "2026-09-04T16:26:42.102Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 48,
+    "shipped": 49,
     "follow-up": 2,
-    "in-progress": 6,
+    "in-progress": 5,
     "planned": 21
   },
   "attention": [
@@ -1809,7 +1809,7 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 468,
