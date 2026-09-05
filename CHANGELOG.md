@@ -1,3 +1,38 @@
+## 0.1.3 (2026-09-05)
+
+### Features
+
+* Add experimental clock and date display preferences behind the disabled-by-default appearance parity flag. ([#497](<https://github.com/CloudHub-Social/Charm/pull/497>) by @Just-Insane)
+* Add native encrypted Matrix room-key import and export behind the default-off crypto key files flag. Transfers use native file pickers, preserve existing import passphrases, and stop if the active account or device changes before file processing begins. ([#484](<https://github.com/CloudHub-Social/Charm/pull/484>) by @Just-Insane)
+* Add a feature-flagged room calendar that jumps to and highlights messages by date. ([#460](<https://github.com/CloudHub-Social/Charm/pull/460>) by @Just-Insane)
+* Add opt-in voice-message recording with a local preview and explicit send or discard, behind the default-off voice recording flag. ([#496](<https://github.com/CloudHub-Social/Charm/pull/496>) by @Just-Insane)
+
+### Fixes
+
+* Stop anonymous web socket reconnect loops after an empty restore, and continue physical local-data deletion even when the preceding sign-out cleanup reports an error. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Bound encrypted room-key file reads and import a private snapshot so later source-file changes cannot bypass the size limit. ([#484](<https://github.com/CloudHub-Social/Charm/pull/484>) by @Just-Insane)
+* Block session restoration while cancelled-registration cleanup remains pending. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Filter unsupported directory entries and preserve room selection across delayed join sync; prevent pagination from racing a debounced search. ([#470](<https://github.com/CloudHub-Social/Charm/pull/470>) by @Just-Insane)
+* Stage release assets on an unpublished draft, verify the complete uploaded set, and refuse to overwrite published or conflicting assets during reruns. ([#494](<https://github.com/CloudHub-Social/Charm/pull/494>) by @Just-Insane)
+* Fix the iOS build while preserving fail-closed message-search backup exclusion. ([#480](<https://github.com/CloudHub-Social/Charm/pull/480>) by @Just-Insane)
+* Align native authentication destination filtering with the web companion outside the well-known NAT64 prefix. ([#488](<https://github.com/CloudHub-Social/Charm/pull/488>) by @Just-Insane)
+* Harden password-reset cancellation and IPv4-compatible IPv6 destination validation. ([#488](<https://github.com/CloudHub-Social/Charm/pull/488>) by @Just-Insane)
+* Keep account identifiers, local storage paths, and raw errors out of session-restore and store-relocation diagnostics. ([#481](<https://github.com/CloudHub-Social/Charm/pull/481>) by @Just-Insane)
+* Reject and attempt to revoke newly committed login sessions when final persistence cleanup fails, preventing silent restoration or resumption of a superseded client and reporting incomplete cleanup explicitly. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Reset both the message-search query and results when reopening the search dialog. ([#461](<https://github.com/CloudHub-Social/Charm/pull/461>) by @Just-Insane)
+* Prevent delayed search backfills from recreating stale pending state after renderer reload, and protect all backfill exits from clearing a replacement scan. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Harden encrypted message-search cleanup and exclude its mobile storage from backups. ([#450](<https://github.com/CloudHub-Social/Charm/pull/450>) by @Just-Insane)
+* Persist encrypted message-search kill-switch cleanup across renderer and process restarts. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Preserve the renderer-selected edit when upgrading a search index with equally ordered edits. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Reset native search readiness and backfill on renderer reload until the new page normalizes its flag cache. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Keep room-scoped message searches from widening when the active room changes. ([#451](<https://github.com/CloudHub-Social/Charm/pull/451>) by @Just-Insane)
+* Keep message search open and explain when an outdated result points to a room that is no longer joined. ([#453](<https://github.com/CloudHub-Social/Charm/pull/453>) by @Just-Insane)
+* Require fresh typed confirmation after canceling a local-data wipe, preserve replacement search scans when stale workers finish, and bound remote pusher cleanup before local session invalidation. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Carry desktop SSO cancellation through final session adoption and close temporary clients before cleanup. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Use bounded base64 for native voice uploads and enable mobile recording gestures independently of the chat redesign. ([#496](<https://github.com/CloudHub-Social/Charm/pull/496>) by @Just-Insane)
+* Stop remaining web session snapshot and event sends after session revocation. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+* Close a web connection revoked during its WebSocket upgrade before replaying session snapshots. ([#490](<https://github.com/CloudHub-Social/Charm/pull/490>) by @Just-Insane)
+
 ## 0.1.2 (2026-08-01)
 
 ### Fixes
