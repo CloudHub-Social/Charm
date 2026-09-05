@@ -120,6 +120,8 @@ on Charm files cannot substitute for those rights.
 - Release artifacts contain Charm's `LICENSE`, `NOTICE`, third-party notice
   index, and build-generated dependency license texts. The independently built
   documentation-site artifact carries the same files for its resolved graph.
+  Android APK/AAB builds also embed AboutLibraries metadata for the resolved
+  Gradle variant and fail on missing or non-allowlisted Maven licenses.
   Source archives contain the committed root license and notice files.
 - Artifact inspection finds no Sable Call bundle, asset, dependency, container,
   or offline cache.

@@ -12,6 +12,9 @@ included in web, Tauri, documentation-site, and companion-server artifacts.
 When a split package omits a standalone file, generation uses a same-repository
 license file or supported canonical license text with that package's attribution.
 It fails when none of those sources can resolve the declared license.
+Android builds additionally embed AboutLibraries metadata generated from the
+resolved Gradle variant. The build fails if a Maven artifact has no license or
+uses a license outside Charm's reviewed permissive allowlist.
 
 Each published release also includes signed, platform-named SPDX JSON software
 bills of materials. As the README explains, those SBOMs describe the

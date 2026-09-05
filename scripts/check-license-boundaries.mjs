@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const checkerRelativePath = path.relative(repositoryRoot, fileURLToPath(import.meta.url));
 const errors = [];
 const requiredLicensingFiles = ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"];
 const canonicalLicenseFiles = [
@@ -155,6 +156,17 @@ const serverDockerfile = stripPackagingComments(
 if (!serverDockerfile.includes("COPY LICENSE ./LICENSE")) {
   errors.push("The companion-server builder must provide LICENSE to the license generator.");
 }
+
+const androidBuild = stripPackagingComments(
+  read("src-tauri/gen/android/app/build.gradle.kts"),
+  "src-tauri/gen/android/app/build.gradle.kts",
+);
+if (!androidBuild.includes('id("com.mikepenz.aboutlibraries.plugin.android") version "13.2.1"')) {
+  errors.push("Android builds must generate native dependency license metadata.");
+}
+if (!androidBuild.includes("requireLicense = true") || !androidBuild.includes("StrictMode.FAIL")) {
+  errors.push("Android dependency license generation must fail closed.");
+}
 if (!serverDockerfile.includes("COPY scripts/license-texts ./scripts/license-texts")) {
   errors.push("The companion-server builder must provide canonical dependency license texts.");
 }
@@ -211,11 +223,15 @@ const sourceArchiveText =
 for (const trackedFile of trackedFiles) {
   const isNarrativeDocument = narrativeDocument.test(trackedFile);
   const archiveContainsForbiddenSource =
-    trackedFile !== "scripts/check-license-boundaries.mjs" &&
+    trackedFile !== checkerRelativePath &&
     !isNarrativeDocument &&
     sourceArchiveText.test(trackedFile) &&
     forbiddenSource.test(read(trackedFile));
-  if (!isNarrativeDocument && (sableCallName.test(trackedFile) || archiveContainsForbiddenSource)) {
+  if (
+    trackedFile !== checkerRelativePath &&
+    !isNarrativeDocument &&
+    (sableCallName.test(trackedFile) || archiveContainsForbiddenSource)
+  ) {
     errors.push(`Sable Call material cannot be included in source archives: ${trackedFile}`);
   }
 
@@ -241,7 +257,7 @@ for (const trackedFile of trackedFiles) {
   }
 
   const isPackagingInput = packagingInputPatterns.some((pattern) => pattern.test(trackedFile));
-  if (trackedFile !== "scripts/check-license-boundaries.mjs" && isPackagingInput) {
+  if (trackedFile !== checkerRelativePath && isPackagingInput) {
     const packagingContent = read(trackedFile);
     const executablePackagingContent = stripPackagingComments(packagingContent, trackedFile);
     const referencesSableCall =
