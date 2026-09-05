@@ -2156,8 +2156,8 @@ impl PersistenceStore {
             // the persisted entry below to revoke, not after: that live
             // session's own sync loop keeps running for as long as it
             // stays resident, and a token refresh it repersists
-            // mid-revocation — the homeserver round trip below
-            // (`restore_client_for_revocation` plus `logout()`) can take
+            // mid-revocation — the fenced helper's homeserver round trip
+            // (client restore plus `logout()`) can take
             // real time — would silently land a *new* access/refresh token
             // pair on disk for a token this sweep is about to revoke and
             // delete using the *old* one it already read, orphaning the
@@ -2195,83 +2195,16 @@ impl PersistenceStore {
                     handle.abort();
                 }
             }
-            // Removal only happens after a *confirmed* revocation — never
-            // on a best-effort basis. Deleting the local record before the
-            // homeserver has actually invalidated the access token would
-            // leave that token valid indefinitely with no persisted copy
-            // left for a later sweep to retry revoking (Codex review
-            // finding on #280): a temporarily unreachable homeserver or a
-            // failed `logout()` call must leave this entry exactly as it
-            // was, not silently treat "couldn't revoke" the same as
-            // "revoked".
-            let Some(client) = self.restore_client_for_revocation(&entry.token).await else {
+            // Re-read and revoke through the admitted tombstone's CAS loop,
+            // rather than using this sweep's stale `entry` snapshot. A
+            // concurrent token refresh can resave after admission; the
+            // fenced helper revokes that newest durable pair and records a
+            // revocation tombstone before deletion.
+            if let Err(error) = self.finish_recovery_safe_teardown(&entry.token).await {
                 tracing::warn!(
-                    "could not rebuild a client to revoke an expired persisted session's \
-                     access token; leaving it for the next sweep to retry"
+                    "failed to finish teardown for an expired persisted session; leaving its \
+                     fenced record for a later sweep: {error}"
                 );
-                continue;
-            };
-            // Bounded, unlike `routes::logout`'s equivalent call (which
-            // can afford to `tokio::spawn` it fire-and-forget because
-            // there's a live HTTP response to send regardless): this
-            // runs serially in a background sweep with nothing else
-            // racing it, so an unbounded `await` here would let one
-            // slow/unresponsive homeserver stall every other expired
-            // session behind it in the same sweep (Codex review finding
-            // on #280).
-            match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        "failed to revoke access token for an expired persisted session, \
-                         leaving it for the next sweep to retry: {e}"
-                    );
-                    continue;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "timed out revoking access token for an expired persisted session \
-                         after {RESTORE_TIMEOUT:?}, leaving it for the next sweep to retry"
-                    );
-                    continue;
-                }
-            }
-            // The access token was just revoked above — a subsequent sweep
-            // can no longer retry that step (`restore_client_for_revocation`
-            // will correctly fail to rebuild a client from a now-dead
-            // token, so this entry would otherwise be stuck forever, never
-            // reaching this `remove` call again). Retry the local delete a
-            // few times in-place before giving up, so only a persistently
-            // failing store (not one transient error) leaves an orphaned
-            // record behind (Codex review finding on #280, "remember
-            // successful revocation across delete retries").
-            const MAX_REMOVE_ATTEMPTS: u32 = 3;
-            let mut removed = false;
-            for attempt in 0..MAX_REMOVE_ATTEMPTS {
-                match self.remove(&entry.token, None).await {
-                    Ok(()) => {
-                        removed = true;
-                        break;
-                    }
-                    Err(e) if attempt + 1 < MAX_REMOVE_ATTEMPTS => {
-                        tracing::warn!(
-                            "failed to remove an expired persisted session after revoking \
-                             its access token (attempt {}/{MAX_REMOVE_ATTEMPTS}), retrying: {e}",
-                            attempt + 1
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "failed to remove an expired persisted session after revoking \
-                             its access token; its Matrix session is dead but the local \
-                             record could not be cleaned up and will not be retried by a \
-                             later sweep (the token can no longer be re-revoked) — manual \
-                             cleanup may be needed: {e}"
-                        );
-                    }
-                }
-            }
-            if !removed {
                 continue;
             }
             swept += 1;
