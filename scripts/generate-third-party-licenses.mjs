@@ -266,7 +266,8 @@ function collectNpmLicenses() {
   for (const [reportedLicense, packages] of Object.entries(report)) {
     for (const packageRecord of packages) {
       let foundInstalledPath = false;
-      for (const packageRoot of packageRecord.paths ?? []) {
+      const packageRoots = packageRecord.paths ?? (packageRecord.path ? [packageRecord.path] : []);
+      for (const packageRoot of packageRoots) {
         const manifestPath = path.join(packageRoot, "package.json");
         if (!existsSync(manifestPath)) continue;
         foundInstalledPath = true;
