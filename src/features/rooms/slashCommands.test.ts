@@ -4,7 +4,11 @@ import { filterSlashCommands } from "./composerSuggestions";
 
 describe("staged message-style commands", () => {
   it("stages notice parsing and suggestions without converting it to plain text", () => {
-    expect(parseSlashCommand("/notice hello")).toBeNull();
+    expect(parseSlashCommand("/notice hello")).toEqual({
+      command: "notice",
+      args: ["hello"],
+      disabled: true,
+    });
     expect(filterSlashCommands("notice")).toEqual([]);
     expect(parseSlashCommand("/notice hello", true)).toEqual({
       command: "notice",
@@ -15,7 +19,11 @@ describe("staged message-style commands", () => {
   it.each(["unban", "nick", "ignore", "unignore", "join"])(
     "stages /%s parsing and suggestions",
     (command) => {
-      expect(parseSlashCommand(`/${command} @alice:example.org`)).toBeNull();
+      expect(parseSlashCommand(`/${command} @alice:example.org`)).toEqual({
+        command,
+        args: ["@alice:example.org"],
+        disabled: true,
+      });
       expect(filterSlashCommands(command)).toEqual([]);
       expect(parseSlashCommand(`/${command} @alice:example.org`, true)).toEqual({
         command,
@@ -28,7 +36,11 @@ describe("staged message-style commands", () => {
   it.each(["plain", "shrug", "tableflip"])(
     "keeps /%s literal and out of suggestions while disabled",
     (name) => {
-      expect(parseSlashCommand(`/${name} hello`)).toBeNull();
+      expect(parseSlashCommand(`/${name} hello`)).toEqual({
+        command: name,
+        args: ["hello"],
+        disabled: true,
+      });
       expect(filterSlashCommands(name)).toEqual([]);
       expect(filterSlashCommands(name, true).map((spec) => spec.name)).toEqual([name]);
     },

@@ -483,6 +483,33 @@ describe("Composer", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ body: "/usr/bin/env" }));
   });
 
+  it("preserves a staged command instead of sending it when the rollout is disabled", async () => {
+    const onSubmit = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!disabled-command:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    pasteText(editable, "/nick private display name");
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSlashCommand).toHaveBeenCalledWith({
+      command: "nick",
+      args: ["private", "display", "name"],
+      disabled: true,
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("/nick private display name");
+  });
+
   it("preloads initialHtml in edit mode", async () => {
     render(
       <Composer

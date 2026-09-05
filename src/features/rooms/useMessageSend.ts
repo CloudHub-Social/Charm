@@ -139,6 +139,12 @@ export function useMessageSend({
     stopTyping();
     try {
       if (mutationsBlockedRef?.current) return false;
+      if ("disabled" in parsed) {
+        setCommandFeedback(
+          `/${parsed.command} is unavailable while composer parity is disabled. Your draft was not sent.`,
+        );
+        return false;
+      }
       if ("action" in parsed) {
         if (!composerParityEnabled) return false;
         const { command, args } = parsed;

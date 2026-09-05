@@ -507,6 +507,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const slash =
       mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {
+      if ("disabled" in slash) {
+        // Reserve staged command names across a live kill-switch transition.
+        // The owner shows local feedback; retaining the editor content lets
+        // the user copy or revise it without ever leaking it into the room.
+        onSlashCommand(slash);
+        return;
+      }
       const mentionIds = collectMentionIds(editor);
       onSlashCommand(
         isMessageSendingCommand(slash)

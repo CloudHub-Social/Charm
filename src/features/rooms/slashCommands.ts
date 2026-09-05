@@ -2,6 +2,7 @@ import type { SlashCommand } from "@/lib/matrix";
 
 type MessageStyleCommand = "plain" | "shrug" | "tableflip";
 type LocalActionCommand = "unban" | "nick" | "ignore" | "unignore" | "join";
+type ComposerParityCommand = MessageStyleCommand | LocalActionCommand | "notice";
 
 export interface SlashCommandSpec {
   name: SlashCommand | MessageStyleCommand | LocalActionCommand;
@@ -79,7 +80,12 @@ export type ParsedSlashCommand =
       mentionIds?: string[];
     }
   | { command: MessageStyleCommand; args: string[]; text: string; mentionIds?: string[] }
-  | { command: LocalActionCommand; args: string[]; action: true };
+  | { command: LocalActionCommand; args: string[]; action: true }
+  | {
+      command: ComposerParityCommand;
+      args: string[];
+      disabled: true;
+    };
 
 /**
  * Parses a composer's plain-text body for a leading slash command. Returns
@@ -94,6 +100,18 @@ export function parseSlashCommand(body: string, extended = false): ParsedSlashCo
   if (!body.startsWith("/") || body.startsWith("//")) return null;
 
   const [word, ...rest] = body.slice(1).split(/\s+/);
+  const composerParityCommand = [
+    ...MESSAGE_STYLE_COMMANDS,
+    ...LOCAL_ACTION_COMMANDS,
+    ...STAGED_BACKEND_COMMANDS,
+  ].some((spec) => spec.name === word);
+  if (!extended && composerParityCommand) {
+    return {
+      command: word as ComposerParityCommand,
+      args: rest.filter(Boolean),
+      disabled: true,
+    };
+  }
   const action = extended && LOCAL_ACTION_COMMANDS.find((spec) => spec.name === word);
   if (action) return { command: action.name, args: rest.filter(Boolean), action: true };
   if (extended && (word === "plain" || word === "shrug" || word === "tableflip")) {
@@ -112,6 +130,7 @@ export function parseSlashCommand(body: string, extended = false): ParsedSlashCo
 }
 
 export function isMessageSendingCommand(parsed: ParsedSlashCommand): boolean {
+  if ("disabled" in parsed) return false;
   return parsed.command === "me" || parsed.command === "notice" || "text" in parsed;
 }
 
