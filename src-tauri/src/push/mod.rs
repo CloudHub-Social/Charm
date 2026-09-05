@@ -437,7 +437,10 @@ pub async fn register_push(
                     save_endpoint_record(&persisted_endpoint_path(&app, account_key)?, previous)?;
                 } else {
                     clear_persisted_endpoint(&app, account_key)?;
-                    if let Some(transport) = active_transport(&app) {
+                    // Cleanup must outlive rollout state: a token staged while
+                    // enabled still belongs to the platform after the feature
+                    // flag is switched off.
+                    if let Some(transport) = platform_transport(&app) {
                         let _ = transport.unregister().await;
                     }
                 }
