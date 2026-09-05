@@ -7,7 +7,10 @@ import { LanguageVariant, SyntaxKind } from "typescript/unstable/ast";
 import { createScanner } from "typescript/unstable/ast/scanner";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const checkerRelativePath = path.relative(repositoryRoot, fileURLToPath(import.meta.url));
+const checkerRelativePath = path
+  .relative(repositoryRoot, fileURLToPath(import.meta.url))
+  .split(path.sep)
+  .join("/");
 const errors = [];
 const requiredLicensingFiles = ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"];
 const canonicalLicenseFiles = [
