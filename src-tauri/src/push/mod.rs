@@ -871,7 +871,10 @@ pub(crate) async fn unregister_push_impl(
         if let Err(error) = persisted_endpoint_path(app, account_key)
             .and_then(|path| save_endpoint_record(&path, record))
         {
-            persistence_error = Some(error);
+            // Do not announce or execute opt-out until its tombstone is
+            // durable. Otherwise a restart can accept the stale enabled
+            // record and silently re-register push against the user's choice.
+            return Err(error);
         }
     }
     // Remove the platform endpoint before spending any of the bounded
@@ -1115,6 +1118,7 @@ pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint)
 #[cfg(target_os = "android")]
 pub(crate) async fn handle_transport_unregistered(app: &AppHandle) {
     let state = app.state::<MatrixState>();
+    let _push_guard = state.push_lifecycle_lock.lock().await;
     let Ok(client) = state.require_client().await else {
         return;
     };
