@@ -632,7 +632,10 @@ pub async fn refresh_push_registration(
                 save_endpoint_record(&path, &restored)?;
                 previous = restored;
             } else {
-                if let Some(transport) = active_transport(&app) {
+                // Recovery cleanup must remain available after a rollout is
+                // disabled; otherwise this orphaned platform registration has
+                // no persisted record or UI path left to remove it.
+                if let Some(transport) = platform_transport(&app) {
                     let _ = transport.unregister().await;
                 }
                 clear_persisted_endpoint(&app, &account_key)?;
