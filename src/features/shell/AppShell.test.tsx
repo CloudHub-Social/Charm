@@ -233,7 +233,6 @@ describe("AppShell", () => {
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     const rightPanel = screen.getByText("right-panel");
     expect(rightPanel).toBeInTheDocument();
-    expect(rightPanel.parentElement).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
@@ -270,7 +269,9 @@ describe("AppShell", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     renderShell("!room:example.org", { rightPanel: <div>right-panel</div> });
 
-    expect(screen.getByText("right-panel")).toBeInTheDocument();
+    const rightPanel = screen.getByText("right-panel");
+    expect(rightPanel).toBeInTheDocument();
+    expect(rightPanel.parentElement).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
     expect(screen.getByText("chat-content")).not.toBeVisible();
   });
 
