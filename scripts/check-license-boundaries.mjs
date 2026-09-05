@@ -2,12 +2,40 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
 
 function read(relativePath) {
   return readFileSync(path.join(repositoryRoot, relativePath), "utf8");
+}
+
+function stripPackagingComments(content, relativePath) {
+  const withoutHashCommentLines = content.replace(/^\s*#.*$/gm, "");
+  if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutHashCommentLines;
+
+  const languageVariant = /x$/i.test(relativePath)
+    ? ts.LanguageVariant.JSX
+    : ts.LanguageVariant.Standard;
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    languageVariant,
+    withoutHashCommentLines,
+  );
+  let executableContent = "";
+
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (
+      token !== ts.SyntaxKind.SingleLineCommentTrivia &&
+      token !== ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      executableContent += scanner.getTokenText();
+    }
+  }
+
+  return executableContent;
 }
 
 for (const requiredFile of ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"]) {
@@ -97,9 +125,10 @@ for (const trackedFile of trackedFiles) {
   const isPackagingInput = packagingInputPatterns.some((pattern) => pattern.test(trackedFile));
   if (trackedFile !== "scripts/check-license-boundaries.mjs" && isPackagingInput) {
     const packagingContent = read(trackedFile);
-    const executablePackagingContent = packagingContent.replace(/^\s*#.*$/gm, "");
+    const executablePackagingContent = stripPackagingComments(packagingContent, trackedFile);
     const referencesSableCall =
-      forbiddenSource.test(packagingContent) || sableCallName.test(executablePackagingContent);
+      forbiddenSource.test(executablePackagingContent) ||
+      sableCallName.test(executablePackagingContent);
     if (referencesSableCall) {
       errors.push(`Packaging and build inputs cannot fetch Sable Call: ${trackedFile}`);
     }
