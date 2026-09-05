@@ -2,6 +2,7 @@
   "name": "charm",
   "private": true,
   "version": "0.1.2",
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@11.0.3",
   "scripts": {
@@ -34,7 +35,8 @@
     "docs:features:sync": "node scripts/sync-feature-docs.mjs --write",
     "knip": "knip",
     "tokens:pull": "node scripts/tokens-pull.mjs",
-    "check:observability-ratchet": "node scripts/check-observability-ratchet.mjs"
+    "check:observability-ratchet": "node scripts/check-observability-ratchet.mjs",
+    "license:check": "node scripts/check-license-boundaries.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",

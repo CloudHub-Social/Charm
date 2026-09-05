@@ -197,6 +197,12 @@ jobs:
       - id: frontend_install
         run: pnpm install --frozen-lockfile
 
+      # Licensing files and the Sable Call non-bundling boundary apply to every
+      # deliverable, so verify them even when the changed-path filter skips the
+      # rest of the frontend gate.
+      - name: Check licensing and external-widget boundary
+        run: pnpm license:check
+
       # Unconditional like audit below: it's a cheap grep-based count over
       # both src/ and src-tauri/src/, so it isn't tied to the frontend-path
       # filter and should catch a rust-only PR that quietly removes

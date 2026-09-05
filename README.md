@@ -10,6 +10,18 @@ Tauri IPC, new design language). This is the active `charm` project going forwar
 Charm 2.0 is under active pre-release development — expect breaking changes and
 missing features.
 
+## License
+
+Charm's original source code and documentation are available under the
+[Apache License 2.0](LICENSE). Third-party components keep their own licenses;
+see [LICENSING.md](LICENSING.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for scope and attribution.
+
+Sable Call is not included in Charm or covered by Charm's Apache license. The
+planned calling integration treats it as separately hosted external software
+and communicates with it only through the Matrix Widget API. See the
+[licensing and external-widget boundary](docs-site/src/content/docs/architecture/licensing-boundaries.md).
+
 ## Getting started
 
 ```sh

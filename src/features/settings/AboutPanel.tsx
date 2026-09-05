@@ -4,6 +4,8 @@ import { formatBuildIdForDisplay, getBuildId } from "@/lib/buildId";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const REPO_URL = "https://github.com/CloudHub-Social/Charm";
+const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`;
+const THIRD_PARTY_NOTICES_URL = `${REPO_URL}/blob/main/THIRD_PARTY_NOTICES.md`;
 
 /**
  * Copyable build identifier (Spec 24). Displays a friendlier rendering of
@@ -60,6 +62,32 @@ export function AboutPanel() {
               className="text-sm font-medium text-foreground underline"
             >
               GitHub
+            </a>
+          }
+        />
+        <SettingTile
+          title="License"
+          control={
+            <a
+              href={LICENSE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-foreground underline"
+            >
+              Apache-2.0
+            </a>
+          }
+        />
+        <SettingTile
+          title="Third-party"
+          control={
+            <a
+              href={THIRD_PARTY_NOTICES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-foreground underline"
+            >
+              Notices
             </a>
           }
         />

@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("AboutPanel", () => {
-  it("shows the app version and a link to the source repo", () => {
+  it("shows the app version, source, license, and third-party notices", () => {
     render(<AboutPanel />);
     // Scoped to the <span> (Version row) — the Build row's fallback button
     // renders "{version}-dev" (formatBuildIdForDisplay), not the bare
@@ -24,6 +24,14 @@ describe("AboutPanel", () => {
     expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute(
       "href",
       "https://github.com/CloudHub-Social/Charm",
+    );
+    expect(screen.getByRole("link", { name: "Apache-2.0" })).toHaveAttribute(
+      "href",
+      "https://github.com/CloudHub-Social/Charm/blob/main/LICENSE",
+    );
+    expect(screen.getByRole("link", { name: "Notices" })).toHaveAttribute(
+      "href",
+      "https://github.com/CloudHub-Social/Charm/blob/main/THIRD_PARTY_NOTICES.md",
     );
   });
 
