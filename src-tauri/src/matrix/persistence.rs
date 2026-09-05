@@ -30,6 +30,12 @@ const OAUTH_SESSION_ACCOUNT: &str = "oauth-session";
 /// see [`bookmarks_encryption_key`]'s own doc comment for why bookmarks
 /// can't be encrypted with `PASSPHRASE_ACCOUNT`'s secret.
 const BOOKMARKS_SECRET_ACCOUNT: &str = "bookmarks-encryption-secret";
+static SESSION_CREDENTIAL_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+fn session_credential_lock() -> &'static std::sync::Mutex<()> {
+    SESSION_CREDENTIAL_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
 
 /// Prefix marking a `matrix_store/` subdirectory as a not-yet-adopted temp
 /// store from an in-progress SSO/QR login (see [`temp_store_key`]) rather
@@ -1722,6 +1728,17 @@ pub fn save_session(
     homeserver_url: &str,
     session: &MatrixSession,
 ) -> Result<(), String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    save_session_unlocked(account_key, homeserver_url, session)
+}
+
+fn save_session_unlocked(
+    account_key: &str,
+    homeserver_url: &str,
+    session: &MatrixSession,
+) -> Result<(), String> {
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     let saved = SavedSession {
@@ -1733,6 +1750,13 @@ pub fn save_session(
 }
 
 pub fn load_session(account_key: &str) -> Result<Option<SavedSession>, String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    load_session_unlocked(account_key)
+}
+
+fn load_session_unlocked(account_key: &str) -> Result<Option<SavedSession>, String> {
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.get_password() {
@@ -1750,6 +1774,9 @@ pub fn load_session(account_key: &str) -> Result<Option<SavedSession>, String> {
 /// that account's store (and passphrase) in place for a fast re-login; see
 /// Spec 08 (logout).
 pub fn clear_session(account_key: &str) -> Result<(), String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.delete_credential() {
@@ -1763,6 +1790,17 @@ pub fn save_oauth_session(
     homeserver_url: &str,
     session: &OAuthSession,
 ) -> Result<(), String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    save_oauth_session_unlocked(account_key, homeserver_url, session)
+}
+
+fn save_oauth_session_unlocked(
+    account_key: &str,
+    homeserver_url: &str,
+    session: &OAuthSession,
+) -> Result<(), String> {
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     let saved = SavedOAuthSession::from_oauth_session(homeserver_url, session);
@@ -1771,6 +1809,13 @@ pub fn save_oauth_session(
 }
 
 pub fn load_oauth_session(account_key: &str) -> Result<Option<SavedOAuthSession>, String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    load_oauth_session_unlocked(account_key)
+}
+
+fn load_oauth_session_unlocked(account_key: &str) -> Result<Option<SavedOAuthSession>, String> {
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.get_password() {
@@ -1783,12 +1828,60 @@ pub fn load_oauth_session(account_key: &str) -> Result<Option<SavedOAuthSession>
 }
 
 pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.delete_credential() {
         Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Atomically replaces a Matrix session only when the account still contains
+/// the exact access token the live client last observed as durable.
+pub fn replace_session_if_current(
+    account_key: &str,
+    homeserver_url: &str,
+    expected_access_token: &str,
+    session: &MatrixSession,
+) -> Result<bool, String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(saved) = load_session_unlocked(account_key)? else {
+        return Ok(false);
+    };
+    if saved.session.meta != session.meta
+        || saved.session.tokens.access_token != expected_access_token
+    {
+        return Ok(false);
+    }
+    save_session_unlocked(account_key, homeserver_url, session)?;
+    Ok(true)
+}
+
+/// OAuth counterpart to [`replace_session_if_current`].
+pub fn replace_oauth_session_if_current(
+    account_key: &str,
+    homeserver_url: &str,
+    expected_access_token: &str,
+    session: &OAuthSession,
+) -> Result<bool, String> {
+    let _guard = session_credential_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(saved) = load_oauth_session_unlocked(account_key)? else {
+        return Ok(false);
+    };
+    if saved.user.meta != session.user.meta
+        || saved.user.tokens.access_token != expected_access_token
+    {
+        return Ok(false);
+    }
+    save_oauth_session_unlocked(account_key, homeserver_url, session)?;
+    Ok(true)
 }
 
 /// True if `account_key`'s currently-saved [`MatrixSession`] is the one this
@@ -2541,7 +2634,49 @@ mod tests {
             session_a.tokens.access_token
         );
 
+        let mut rotated = session_a.clone();
+        rotated.tokens.access_token = "rotated-access-token".to_string();
+        rotated.tokens.refresh_token = Some("rotated-refresh-token".to_string());
+        assert!(!replace_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            "stale-access-token",
+            &rotated,
+        )
+        .unwrap());
+        assert_eq!(
+            load_session(&key_a)
+                .unwrap()
+                .expect("stale replacement preserves the durable session")
+                .session
+                .tokens
+                .access_token,
+            session_a.tokens.access_token
+        );
+        assert!(replace_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            &session_a.tokens.access_token,
+            &rotated,
+        )
+        .unwrap());
+        assert_eq!(
+            load_session(&key_a)
+                .unwrap()
+                .expect("current replacement rotates the durable session")
+                .session
+                .tokens,
+            rotated.tokens
+        );
+
         clear_session(&key_a).unwrap();
+        assert!(!replace_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            &rotated.tokens.access_token,
+            &rotated,
+        )
+        .unwrap());
         assert!(load_session(&key_a).unwrap().is_none());
     }
 
@@ -2581,7 +2716,40 @@ mod tests {
             session.user.tokens.access_token
         );
 
+        let mut rotated = session.clone();
+        rotated.user.tokens.access_token = "rotated-oauth-access-token".to_string();
+        rotated.user.tokens.refresh_token = Some("rotated-oauth-refresh-token".to_string());
+        assert!(!replace_oauth_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            "stale-oauth-access-token",
+            &rotated,
+        )
+        .unwrap());
+        assert!(replace_oauth_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            &session.user.tokens.access_token,
+            &rotated,
+        )
+        .unwrap());
+        assert_eq!(
+            load_oauth_session(&key_a)
+                .unwrap()
+                .expect("current replacement rotates the durable OAuth session")
+                .user
+                .tokens,
+            rotated.user.tokens
+        );
+
         clear_oauth_session(&key_a).unwrap();
+        assert!(!replace_oauth_session_if_current(
+            &key_a,
+            "https://example.invalid",
+            &rotated.user.tokens.access_token,
+            &rotated,
+        )
+        .unwrap());
         assert!(load_oauth_session(&key_a).unwrap().is_none());
     }
 

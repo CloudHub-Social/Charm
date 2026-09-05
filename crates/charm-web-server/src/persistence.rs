@@ -66,7 +66,7 @@ use matrix_sdk::ruma::api::error::ErrorKind;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
 
 pub const MASTER_KEY_ENV: &str = "CHARM_WEB_SERVER_MASTER_KEY";
@@ -1657,7 +1657,7 @@ impl PersistenceStore {
                     }
                     continue;
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     // The read above already confirmed the object exists,
                     // so an unconditional overwrite here is a same-object
                     // update, not a resurrection — safe even without
@@ -1893,7 +1893,7 @@ impl PersistenceStore {
                             .to_string(),
                     );
                 }
-                Err(object_store::Error::NotImplemented) => {
+                Err(object_store::Error::NotImplemented { .. }) => {
                     return self
                         .store
                         .put(&path, PutPayload::from(json))
