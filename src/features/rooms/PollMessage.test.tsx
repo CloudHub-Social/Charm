@@ -251,11 +251,7 @@ describe("PollMessage", () => {
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(retryPollEnd).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-removed-end",
-      ),
+      expect(retryPollEnd).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-removed-end"),
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
@@ -273,11 +269,7 @@ describe("PollMessage", () => {
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(retryPollEnd).toHaveBeenCalledWith(
-        "!room:example.org",
-        "$poll",
-        "txn-retried-end",
-      ),
+      expect(retryPollEnd).toHaveBeenCalledWith("!room:example.org", "$poll", "txn-retried-end"),
     );
     expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();

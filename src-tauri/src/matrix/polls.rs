@@ -545,10 +545,7 @@ mod tests {
             .get_custom_value(&poll_end_ack_store_key(&key))
             .await
             .unwrap();
-        assert_eq!(
-            raw.as_deref(),
-            Some("persisted-transaction".as_bytes()),
-        );
+        assert_eq!(raw.as_deref(), Some("persisted-transaction".as_bytes()),);
     }
 
     #[test]
