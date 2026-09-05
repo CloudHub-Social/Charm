@@ -70,10 +70,12 @@ reason that needs to be fast.
 
 ## Tier 4 — Production release _(signing-dependent)_
 
-Triggered by pushing a version tag (`v*`). `release.yml` pins the generated
-release PR's exact merge commit, pushes that tag, and then creates the draft
-release from it. A failed run can therefore leave a tag without a draft; the
-operator must resume or repair that exact tag rather than creating another one.
+Triggered by `release.yml` after the generated stable-version release PR merges.
+That workflow pins the PR's exact merge commit, creates the tag and draft, then
+explicitly dispatches `release-builds.yml` on that tag. Pushing a `v*` tag by
+itself does not start a build. A failed run can therefore leave a tag without a
+draft; the operator must resume or repair that exact tag rather than creating
+another one.
 GitHub generates the draft notes; Knope still prepares the version
 and changelog in the release PR. Uploads never overwrite existing assets: retries
 reuse only byte-identical draft assets, and conflicting drafts require explicit

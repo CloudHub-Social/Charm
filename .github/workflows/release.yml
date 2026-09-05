@@ -42,6 +42,10 @@ jobs:
         run: |
           set -euo pipefail
           version=$(jq -er '.version' package.json)
+          # Android versionCode derivation intentionally accepts stable SemVer
+          # only. Reject prereleases before creating either a tag or a draft so
+          # an unsupported release cannot leave partially published state.
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           tag="v$version"
           git check-ref-format "refs/tags/$tag"
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
@@ -63,9 +67,7 @@ jobs:
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
           else
-            prerelease=()
-            if [[ "$version" == *-* ]]; then prerelease=(--prerelease); fi
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --draft --target "$RELEASE_COMMIT" --title "$tag" --generate-notes "${prerelease[@]}"
+              --draft --target "$RELEASE_COMMIT" --title "$tag" --generate-notes
           fi
           gh workflow run release-builds.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
