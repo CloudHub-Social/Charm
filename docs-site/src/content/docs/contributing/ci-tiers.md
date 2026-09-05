@@ -50,7 +50,9 @@ failure leaves an unpublished draft. Publication is serialized per version tag.
 These workflow paths still require CI and a real release rehearsal; configuration
 alone does not prove successful publication or recovery.
 
-Triggered by pushing a version tag (`v*`). Debug-symbol/release-artifact
+Triggered explicitly on the version tag after the generated release PR creates or
+verifies its draft release. Standalone tag pushes are intentionally unsupported so
+platform builds cannot finish with nowhere safe to publish. Debug-symbol/release-artifact
 upload to Sentry is wired up. Linux, macOS, Windows, and Android jobs publish
 their distributable bundles plus platform-named SPDX JSON SBOMs to the matching
 GitHub release. The Linux job explicitly builds DEB/RPM bundles from the release revision
