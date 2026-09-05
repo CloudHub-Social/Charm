@@ -523,7 +523,7 @@ describe("Composer", () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         body: 'outside 😄\n\nconst mood = ":smile:";',
-        formattedBody: '<p>outside 😄</p><pre><code>const mood = ":smile:";</code></pre>',
+        formattedBody: '<p>outside 😄</p><pre><code>const mood = ":smile:";</code></pre><p></p>',
       }),
     );
   });
