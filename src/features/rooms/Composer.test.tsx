@@ -503,6 +503,31 @@ describe("Composer", () => {
     expect(onSlashCommand).toHaveBeenCalledWith({ command: "me", args: ["👋"] });
   });
 
+  it("preserves shortcode literals in code while expanding surrounding text", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!code-shortcode:example.org"
+        mode="edit"
+        initialHtml={'<p>outside :smile:</p><pre><code>const mood = ":smile:";</code></pre>'}
+        placeholder="Edit message"
+        onSubmit={onSubmit}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Edit message"));
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: 'outside 😄\n\nconst mood = ":smile:";',
+        formattedBody: '<p>outside 😄</p><pre><code>const mood = ":smile:";</code></pre>',
+      }),
+    );
+  });
+
   it("does not submit an empty message on Enter", async () => {
     const onSubmit = vi.fn();
     render(

@@ -58,6 +58,7 @@ export function resolveInlineShortcodesInHtml(html: string): string {
   template.innerHTML = html;
   const walker = document.createTreeWalker(template.content, 4);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement?.closest("code, pre")) continue;
     node.textContent = resolveInlineShortcodes(node.textContent ?? "");
   }
   return template.innerHTML;

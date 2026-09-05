@@ -49,6 +49,14 @@ describe("resolveInlineShortcodes", () => {
       ),
     ).toBe('<p><a href="https://example.org/:smile:/">visit 😄</a></p>');
   });
+
+  it("preserves shortcode literals inside inline and block code", () => {
+    expect(
+      resolveInlineShortcodesInHtml(
+        '<p>outside :smile: <code>:smile:</code></p><pre><code>const mood = ":smile:";</code></pre>',
+      ),
+    ).toBe('<p>outside 😄 <code>:smile:</code></p><pre><code>const mood = ":smile:";</code></pre>');
+  });
 });
 
 describe("filterRoomMembers", () => {

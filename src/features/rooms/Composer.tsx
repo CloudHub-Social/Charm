@@ -1,4 +1,4 @@
-import { Extension } from "@tiptap/core";
+import { Extension, generateText, type JSONContent } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { PluginKey } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
@@ -35,6 +35,24 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
 
 export type ComposerMode = "send" | "edit" | "reply";
+
+function resolveEditorPlainShortcodes(editor: Editor): string {
+  function resolveNode(node: JSONContent, insideCodeBlock = false): JSONContent {
+    const codeBlock = insideCodeBlock || node.type === "codeBlock";
+    const inlineCode = node.marks?.some((mark) => mark.type === "code") ?? false;
+    return {
+      ...node,
+      ...(node.text && !codeBlock && !inlineCode
+        ? { text: resolveInlineShortcodes(node.text) }
+        : {}),
+      ...(node.content
+        ? { content: node.content.map((child) => resolveNode(child, codeBlock)) }
+        : {}),
+    };
+  }
+
+  return generateText(resolveNode(editor.getJSON()), editor.extensionManager.extensions);
+}
 
 interface ComposerProps {
   accountId?: string;
@@ -496,7 +514,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   function submit() {
     if (!editor) return;
-    const rawPlainText = resolveInlineShortcodes(editor.getText()).trim();
+    const rawPlainText = resolveEditorPlainShortcodes(editor).trim();
     if (!rawPlainText) return;
 
     // Slash-command args need each `@mention` resolved to its real Matrix id
