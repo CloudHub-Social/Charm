@@ -263,11 +263,11 @@ export function RecoverySetupCard({
       <Dialog open={repairOpen} onOpenChange={(open) => !repairing && setRepairOpen(open)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete incomplete backup?</DialogTitle>
+            <DialogTitle>Repair incomplete recovery setup?</DialogTitle>
             <DialogDescription>
-              The interrupted setup created a server backup without preserving its usable key. Charm
-              will delete only that incomplete backup and keep your local room keys, so you can
-              retry recovery setup or sign out.
+              Charm deletes a server backup only when it can prove that exact backup belongs to the
+              interrupted attempt. If ownership is ambiguous, Charm preserves the server backup and
+              clears only its local marker so you can restore the backup or sign out.
             </DialogDescription>
           </DialogHeader>
           {repairError && (
@@ -284,7 +284,7 @@ export function RecoverySetupCard({
               onClick={() => repairInterruptedSetup().catch(logAndIgnore)}
               disabled={repairing}
             >
-              {repairing ? "Repairing…" : "Delete incomplete backup"}
+              {repairing ? "Repairing…" : "Repair incomplete setup"}
             </Button>
           </DialogFooter>
         </DialogContent>

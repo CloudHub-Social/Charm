@@ -111,15 +111,13 @@ describe("RecoverySetupCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
     fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
 
-    expect(
-      screen.getByText(/created a server backup without preserving its usable key/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/deletes a server backup only when it can prove/)).toBeInTheDocument();
     expect(repairInterruptedRecoverySetup).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Delete incomplete backup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Repair incomplete setup" }));
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: "Delete incomplete backup" }),
+        screen.queryByRole("button", { name: "Repair incomplete setup" }),
       ).not.toBeInTheDocument(),
     );
   });

@@ -155,10 +155,11 @@ pub async fn pending_summary(
         .open_secret_store(&pending.passphrase)
         .await
         .map_err(|_| "Could not reopen pending recovery. Retry when online.")?;
-    let room_keys_backed_up = client.encryption().backups().are_enabled().await;
     Ok(Some(RecoverySetupSummary {
         recovery_key: store.secret_storage_key(),
-        room_keys_backed_up,
+        // Backup enablement is not proof that the initial room-key upload
+        // completed. Only the final durable result write may claim success.
+        room_keys_backed_up: false,
     }))
 }
 
@@ -318,9 +319,9 @@ pub async fn acknowledge(
     custody.save(None).await
 }
 
-/// Deletes only the unusable backup left by an interrupted setup, then clears
-/// the protected marker so the user can retry setup or sign out. An issued
-/// recovery key is never eligible for this destructive repair path.
+/// Repairs interrupted setup without guessing backup ownership. A known exact
+/// backup is deleted; an ambiguous create response preserves the server backup
+/// and clears only Charm's local marker. Issued keys are never eligible.
 pub async fn repair_interrupted_setup(
     client: &Client,
     custody: &dyn RecoveryCustody,
@@ -328,24 +329,26 @@ pub async fn repair_interrupted_setup(
     let Some(pending) = custody.load().await? else {
         return Err("No interrupted recovery setup needs repair.".into());
     };
-    if pending.has_issued_key()
-        || !pending.server_mutation_started
-        || pending.backup_version.is_none()
-    {
-        return Err("Pending recovery cannot be repaired by deleting its backup.".into());
+    if pending.has_issued_key() || !pending.server_mutation_started {
+        return Err("Pending recovery cannot be repaired safely.".into());
     }
 
     let pending = custody.claim(&pending).await?;
-    if pending.has_issued_key()
-        || !pending.server_mutation_started
-        || pending.backup_version.is_none()
-    {
+    if pending.has_issued_key() || !pending.server_mutation_started {
         let _ = custody.release().await;
         return Err("Pending recovery changed before repair started.".into());
     }
     let operation = async {
+        let Some(expected_version) = pending.backup_version.as_deref() else {
+            // A committed create request with a lost response is inherently
+            // ambiguous: Matrix provides no idempotency key, and the SDK does
+            // not expose the generated key before it receives the response.
+            // Never delete the currently advertised backup on a guess. The
+            // user-confirmed repair clears only Charm's local custody marker,
+            // allowing restore/sign-out while preserving a cross-client backup.
+            return custody.clear_claimed().await;
+        };
         custody.checkpoint().await?;
-        let expected_version = pending.backup_version.as_deref().unwrap();
         match current_backup_version(client).await?.as_deref() {
             Some(current_version) if current_version == expected_version => {
                 delete_backup_version_exact(client, expected_version).await?;
@@ -717,6 +720,38 @@ mod tests {
                 room_keys_backed_up: false,
                 server_mutation_started: true,
                 backup_version: Some("1".into()),
+            })),
+            fail_save: false,
+        };
+
+        repair_interrupted_setup(&client, &custody).await.unwrap();
+
+        assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_create_response_clears_only_local_custody() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server
+            .mock_room_keys_version()
+            .exists()
+            .expect(0)
+            .mount()
+            .await;
+        server
+            .mock_delete_room_keys_version()
+            .ok()
+            .expect(0)
+            .mount()
+            .await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(PendingRecoverySetup {
+                passphrase: "protected interrupted seed".into(),
+                recovery_key: None,
+                room_keys_backed_up: false,
+                server_mutation_started: true,
+                backup_version: None,
             })),
             fail_save: false,
         };
