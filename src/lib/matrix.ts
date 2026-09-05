@@ -1,4 +1,5 @@
 import type { BadgeState } from "@bindings/BadgeState";
+import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 import type { BookmarkEntry } from "@bindings/BookmarkEntry";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { DndSnapshot } from "@bindings/DndSnapshot";
@@ -852,22 +853,53 @@ function isUploadCancellation(error: unknown): boolean {
     : false;
 }
 
-export function sendAttachment(
+function recordingBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read voice recording"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Could not read voice recording"));
+        return;
+      }
+      resolve(reader.result.slice(reader.result.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function sendAttachment(
   roomId: string,
   filePath: string | File,
   txnId: string,
   caption?: string,
   stripExifEnabled = true,
   signal?: AbortSignal,
+  voice?: VoiceMessageMetadata,
 ): Promise<void> {
+  let recording: { mime_type: string; bytes_base64: string } | undefined;
+  if (!isWebBuild() && typeof filePath !== "string") {
+    if (!voice) throw new Error("Native in-memory attachments require recording metadata");
+    if (filePath.size === 0 || filePath.size > 32 * 1024 * 1024)
+      throw new Error("Voice recording exceeds the in-memory upload limit");
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    const bytesBase64 = await recordingBase64(filePath);
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    recording = {
+      mime_type: filePath.type,
+      bytes_base64: bytesBase64,
+    };
+  }
   return invoke(
     "send_attachment",
     {
       roomId,
-      filePath,
+      filePath: recording ? "" : filePath,
       txnId,
       caption,
       stripExifEnabled,
+      ...(voice ? { voice } : {}),
+      ...(recording ? { recording } : {}),
       ...(isWebBuild() ? { signal } : {}),
     },
     { captureOnError: (error) => !isUploadCancellation(error) },
