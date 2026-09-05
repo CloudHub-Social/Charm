@@ -169,6 +169,18 @@
   },
   {
     "default": false,
+    "description": "Browse and search the homeserver's public room directory, then join a result.",
+    "key": "room_directory",
+    "owner": "Day-2 Spec 06 (public room directory)"
+  },
+  {
+    "default": false,
+    "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
+    "key": "crypto_key_files",
+    "owner": "Spec 44 (crypto key backup and import/export)"
+  },
+  {
+    "default": false,
     "description": "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider.",
     "key": "ios_push_notifications",
     "owner": "Spec 11 (push notifications)"

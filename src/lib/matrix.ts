@@ -11,6 +11,8 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { GroupDmAvatarMember } from "@bindings/GroupDmAvatarMember";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
+import type { PublicRoomPage } from "@bindings/PublicRoomPage";
+import type { PublicRoomSummary } from "@bindings/PublicRoomSummary";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
@@ -39,6 +41,8 @@ import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
+import type { RoomKeyExportSummary } from "@bindings/RoomKeyExportSummary";
+import type { RoomKeyImportSummary } from "@bindings/RoomKeyImportSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
 import type { RegistrationEmailChallenge } from "@bindings/RegistrationEmailChallenge";
@@ -672,6 +676,16 @@ export function recoverFromKey(recoveryKey: string): Promise<void> {
   return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
 }
 
+/** Opens a native save picker and exports an SDK-compatible encrypted room-key file. */
+export function exportRoomKeys(passphrase: string): Promise<RoomKeyExportSummary> {
+  return invoke("export_room_keys", { passphrase }, { captureOnError: false });
+}
+
+/** Opens a native file picker and imports an SDK-compatible encrypted room-key file. */
+export function importRoomKeys(passphrase: string): Promise<RoomKeyImportSummary> {
+  return invoke("import_room_keys", { passphrase }, { captureOnError: false });
+}
+
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
   return invoke("accept_verification_request", { otherUserId, flowId });
 }
@@ -958,6 +972,16 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
 export function joinRoom(roomIdOrAlias: string): Promise<JoinedRoom> {
   return invoke("join_room", { roomIdOrAlias });
 }
+
+export function searchPublicRooms(
+  query: string | null,
+  since: string | null = null,
+  limit = 20,
+): Promise<PublicRoomPage> {
+  return invoke("search_public_rooms", { query, since, limit });
+}
+
+export type { PublicRoomPage, PublicRoomSummary };
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });

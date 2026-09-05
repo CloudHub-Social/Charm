@@ -14,6 +14,7 @@ import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySe
 import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents";
 import { resetRoomSendQueueBarrier } from "@/features/rooms/useRoomSendQueueBarrier";
 import { useApnsRefresh } from "@/features/push/useApnsRefresh";
+import { RoomKeyFilesSessionProvider } from "@/features/settings/RoomKeyFilesCard";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -148,18 +149,20 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   }
 
   return (
-    <RoomsScreen
-      currentUserId={session.user_id}
-      deepLinkRoomId={deepLinkRoomId}
-      onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
-      crashRecoveryPromptOpen={crashRecoveryPromptOpen}
-      onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
-      onLoggedOut={() => {
-        // A native invalidation may replace this session before the initiating
-        // settings command settles. Its old callback must not reset a new login.
-        if (sessionRef.current === session) handleLoggedOut();
-      }}
-    />
+    <RoomKeyFilesSessionProvider key={`${session.user_id}:${session.device_id}`}>
+      <RoomsScreen
+        currentUserId={session.user_id}
+        deepLinkRoomId={deepLinkRoomId}
+        onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
+        crashRecoveryPromptOpen={crashRecoveryPromptOpen}
+        onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
+        onLoggedOut={() => {
+          // A native invalidation may replace this session before the initiating
+          // settings command settles. Its old callback must not reset a new login.
+          if (sessionRef.current === session) handleLoggedOut();
+        }}
+      />
+    </RoomKeyFilesSessionProvider>
   );
 }
 
