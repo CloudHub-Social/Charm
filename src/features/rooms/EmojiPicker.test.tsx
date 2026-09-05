@@ -153,7 +153,7 @@ describe("EmojiPicker", () => {
   it("repairs the upstream search reference across lazy mount, search, and clear", async () => {
     const disconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
     const view = render(<EmojiPickerPanel accountId="@alice:example.org" onSelect={vi.fn()} />);
-    const picker = await screen.findByTestId("full-emoji-picker");
+    await screen.findByTestId("full-emoji-picker");
     const input = screen.getByRole("textbox", { name: "Emoji search" });
     const container = input.parentElement!;
     await waitFor(() => expect(input).not.toHaveAttribute("aria-controls"));
