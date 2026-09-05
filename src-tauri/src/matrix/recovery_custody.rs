@@ -393,32 +393,25 @@ pub async fn repair_interrupted_setup(
         let _ = custody.release().await;
         return Err("Pending recovery changed before repair started.".into());
     }
-    // A setup can commit secret storage before its final local result write.
-    // The protected seed is then the usable credential: preserve it for the
-    // ordinary pending-summary path and never disable its backup.
-    match pending_seed_state(client, &pending).await {
-        Ok(PendingSeedState::Usable(_)) => {
-            let _ = custody.release().await;
-            return Err(
-                "Recovery setup already created a usable key. Reopen recovery settings to save it."
-                    .into(),
-            );
-        }
-        Ok(PendingSeedState::Disabled) => {}
-        Ok(PendingSeedState::Replaced) => {
-            let result = custody.clear_claimed().await;
-            let release = custody.release().await;
-            return match (result, release) {
-                (Ok(()), _) => Ok(()),
-                (Err(error), _) => Err(error),
-            };
-        }
-        Err(error) => {
-            let _ = custody.release().await;
-            return Err(error);
-        }
-    }
     let operation = async {
+        // Start this network-dependent preflight only after entering the
+        // renewal loop below. Secret-storage discovery may itself take longer
+        // than one writer lease, and letting the claim expire here would allow
+        // a second repair/setup writer to overlap this one.
+        //
+        // A setup can commit secret storage before its final local result
+        // write. The protected seed is then the usable credential: preserve it
+        // for the ordinary pending-summary path and never disable its backup.
+        match pending_seed_state(client, &pending).await? {
+            PendingSeedState::Usable(_) => {
+                return Err(
+                    "Recovery setup already created a usable key. Reopen recovery settings to save it."
+                        .into(),
+                );
+            }
+            PendingSeedState::Disabled => {}
+            PendingSeedState::Replaced => return custody.clear_claimed().await,
+        }
         // Only matrix-sdk's persisted local key/version pair is authoritative
         // enough to select a remote backup for deletion. If no local backup is
         // enabled (including a create response lost before persistence), do

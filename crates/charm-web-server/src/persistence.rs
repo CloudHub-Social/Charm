@@ -140,6 +140,11 @@ struct PersistedSession {
     /// it while a recovery credential is pending.
     #[serde(default)]
     recovery_teardown_started: bool,
+    /// The exact token pair in this object has been revoked. Once set by a
+    /// conditional write, refresh re-saves may no longer replace it before
+    /// the tombstone is physically deleted.
+    #[serde(default)]
+    recovery_teardown_revoked: bool,
     /// True only while a setup request owns the cross-process mutation slot.
     #[serde(default)]
     recovery_setup_active: bool,
@@ -1357,12 +1362,55 @@ impl PersistenceStore {
     /// retry after a crash: an already-revoked token returns `M_UNKNOWN_TOKEN`,
     /// which [`revoke_matrix_session`] treats as confirmation.
     pub(crate) async fn finish_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
-        let client = self
-            .restore_client_for_revocation(token)
-            .await
-            .ok_or("Could not rebuild the persisted session for revocation.")?;
-        revoke_matrix_session(&client).await?;
-        self.remove(token, None).await
+        let lock = self.token_write_lock(token);
+        let guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if !entry.recovery_teardown_started {
+                return Err("Session teardown was not durably admitted.".into());
+            }
+            if !entry.recovery_teardown_revoked {
+                let homeserver_url = entry.homeserver_url.clone();
+                let session = entry.session.clone();
+                let client = tokio::time::timeout(RESTORE_TIMEOUT, async move {
+                    let client = matrix_sdk::Client::builder()
+                        .homeserver_url(&homeserver_url)
+                        .build()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    client
+                        .matrix_auth()
+                        .restore_session(session, matrix_sdk::store::RoomLoadSettings::default())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok::<_, String>(client)
+                })
+                .await
+                .map_err(|_| {
+                    format!("Rebuilding the persisted session timed out after {RESTORE_TIMEOUT:?}")
+                })??;
+                revoke_matrix_session(&client).await?;
+                entry.recovery_teardown_revoked = true;
+                let path = object_path_for_token(token);
+                let blob = self.encrypt(&entry, &path)?;
+                let json = serde_json::to_vec(&blob)
+                    .map_err(|_| "Could not encode the revoked session tombstone.".to_string())?;
+                match self.update_existing_object(&path, json, version).await {
+                    Ok(_) => {}
+                    Err(object_store::Error::Precondition { .. }) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not fence the revoked session tombstone: {error}"
+                        ));
+                    }
+                }
+            }
+            drop(guard);
+            return self.remove(token, None).await;
+        }
+        Err("Session tokens changed concurrently during revocation; retry teardown.".into())
     }
 
     /// Rebuilds the persisted encrypted client without an initial sync,
@@ -1519,6 +1567,7 @@ impl PersistenceStore {
                 &PersistedSession {
                     pending_recovery: None,
                     recovery_teardown_started: false,
+                    recovery_teardown_revoked: false,
                     recovery_setup_active: false,
                     recovery_setup_claimed_at_ms: None,
                     recovery_setup_owner: None,
@@ -1579,6 +1628,15 @@ impl PersistenceStore {
             // transient error here would leave the old, already-invalidated
             // token on disk with no future call ever retrying the write.
             let existing = self.read_one_with_version_result(token).await?;
+            if existing
+                .as_ref()
+                .is_some_and(|(entry, _)| entry.recovery_teardown_revoked)
+            {
+                tracing::info!(
+                    "skipped a re-save for a persisted session whose teardown token was revoked"
+                );
+                return Ok(());
+            }
             let (last_seen_unix, existing_version) = match &existing {
                 Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
                 // `RetryInitialSave` creating a genuinely new object (nothing
@@ -1620,6 +1678,9 @@ impl PersistenceStore {
                     recovery_teardown_started: existing
                         .as_ref()
                         .is_some_and(|(entry, _)| entry.recovery_teardown_started),
+                    recovery_teardown_revoked: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_teardown_revoked),
                     recovery_setup_active: existing
                         .as_ref()
                         .is_some_and(|(entry, _)| entry.recovery_setup_active),
@@ -2649,6 +2710,7 @@ pub(crate) async fn save_with_last_seen_for_test(
     let entry = PersistedSession {
         pending_recovery: None,
         recovery_teardown_started: false,
+        recovery_teardown_revoked: false,
         recovery_setup_active: false,
         recovery_setup_claimed_at_ms: None,
         recovery_setup_owner: None,
@@ -4089,6 +4151,56 @@ mod tests {
         assert!(store.read_one("tok-finish-teardown").await.is_none());
     }
 
+    #[tokio::test]
+    async fn revoked_teardown_tombstone_cannot_be_replaced_by_a_resave() {
+        let dir = scratch_dir("revoked-teardown-resave");
+        let store = PersistenceStore::new_for_test(&dir, [54u8; 32]);
+        let token = "tok-revoked-teardown";
+        let original = dummy_session("@revoked:example.invalid");
+        store
+            .save(
+                token,
+                "https://example.invalid",
+                &original,
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store.begin_recovery_safe_teardown(token).await.unwrap();
+
+        let (mut tombstone, version) = store
+            .read_one_with_version_result(token)
+            .await
+            .unwrap()
+            .unwrap();
+        tombstone.recovery_teardown_revoked = true;
+        let path = object_path_for_token(token);
+        let blob = store.encrypt(&tombstone, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .update_existing_object(&path, json, version)
+            .await
+            .unwrap();
+
+        let mut refreshed = original;
+        refreshed.tokens.access_token = "replacement-access-token".into();
+        store
+            .save(
+                token,
+                "https://example.invalid",
+                &refreshed,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+
+        let persisted = store.read_one(token).await.unwrap();
+        assert!(persisted.recovery_teardown_revoked);
+        assert_eq!(persisted.session.tokens.access_token, "test-access-token");
+    }
+
     /// A persisted entry whose homeserver can't actually be reached (dead
     /// domain, network down) must drop out to `None` the same way
     /// `restore_all` drops an unrestorable entry rather than propagating the
@@ -4212,6 +4324,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
             recovery_setup_owner: None,
@@ -4236,6 +4349,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
             recovery_setup_owner: None,
@@ -4258,6 +4372,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
             recovery_setup_owner: None,
@@ -5310,6 +5425,7 @@ mod tests {
         let entry = PersistedSession {
             pending_recovery: None,
             recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
             recovery_setup_active: false,
             recovery_setup_claimed_at_ms: None,
             recovery_setup_owner: None,
