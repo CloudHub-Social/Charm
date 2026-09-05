@@ -1014,7 +1014,7 @@ describe("RoomsScreen", () => {
 
     await screen.findByText("space-rail:space:!space:example.org");
     expect(screen.getByRole("button", { name: /chats/i })).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/chat-content:/)).not.toBeVisible();
   });
 
   it("returns to the mobile list when the active room disappears", async () => {
@@ -1041,7 +1041,7 @@ describe("RoomsScreen", () => {
 
     await screen.findByRole("button", { name: "!b:example.org" });
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
-    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/chat-content:/)).not.toBeVisible();
   });
 
   it("does not resync focus when room metadata changes for the same active room", async () => {
