@@ -174,8 +174,21 @@ const bundledAssetPatterns = [
   /^src-tauri\/gen\/android\/app\/src\/main\/(?:assets|res|resources)\//i,
 ];
 const sableCallName = /sable[-_ ]?call/i;
+const narrativeDocument = /\.mdx?$/i;
+const sourceArchiveText =
+  /(?:^|\/)(?:Dockerfile|Containerfile|Makefile|Justfile|Podfile|gradlew)$|\.(?:[cm]?[jt]sx?|rs|py|sh|bash|zsh|fish|ps1|bat|cmd|jsonc?|ya?ml|toml|xml|html?|css|scss|sass|less|svg|astro|vue|svelte|hbs|njk|liquid|graphql|gql|sql|proto|gradle|kts?|java|swift|plist|pbxproj|xcconfig|properties|conf|config|env|lock|txt|snap|fixture)$/i;
 
 for (const trackedFile of trackedFiles) {
+  const isNarrativeDocument = narrativeDocument.test(trackedFile);
+  const archiveContainsForbiddenSource =
+    trackedFile !== "scripts/check-license-boundaries.mjs" &&
+    !isNarrativeDocument &&
+    sourceArchiveText.test(trackedFile) &&
+    forbiddenSource.test(read(trackedFile));
+  if (!isNarrativeDocument && (sableCallName.test(trackedFile) || archiveContainsForbiddenSource)) {
+    errors.push(`Sable Call material cannot be included in source archives: ${trackedFile}`);
+  }
+
   const isBundledAsset = bundledAssetPatterns.some((pattern) => pattern.test(trackedFile));
   if (isBundledAsset) {
     const containsForbiddenSource = forbiddenSource.test(read(trackedFile));

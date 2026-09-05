@@ -99,6 +99,8 @@ function normalizedRepository(value) {
 }
 
 function candidateLicenseFiles(packageRoot, explicitLicenseFile) {
+  if (!existsSync(packageRoot) || !statSync(packageRoot).isDirectory()) return [];
+
   const candidates = new Set();
 
   if (explicitLicenseFile) {

@@ -53,7 +53,8 @@ Charm may integrate with Sable Call only as external software:
    that Sable Call is Apache-licensed or part of Charm.
 
 The CI `license:check` guard preserves the repository side of this boundary by
-rejecting Sable Call dependencies, packaging inputs, and packaged assets.
+rejecting Sable Call dependencies, packaging inputs, packaged assets, and
+non-document material that would be redistributed in release source archives.
 
 ## Widget security and privacy boundary
 
