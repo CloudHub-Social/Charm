@@ -1635,7 +1635,7 @@ async fn discard_unpublished_login(state: &AppState, token: &str) {
         {
             handle.abort();
         }
-        tokio::spawn(async move {
+        let _cleanup = tokio::spawn(async move {
             let _ = session.client.matrix_auth().logout().await;
         });
     }
@@ -2485,9 +2485,11 @@ async fn logout(
         // Teardown is a security boundary, not request-scoped work. Axum may
         // cancel this handler as soon as the initiating tab disconnects; keep
         // local revocation, sync abortion, and persisted-token deletion owned
-        // by a detached task, while still awaiting it during the normal path.
+        // by a detached task. The durable teardown marker above already blocks
+        // later authentication, so a slow homeserver must not delay the logout
+        // response while the bounded revocation attempt finishes.
         let state = state.clone();
-        let cleanup = tokio::spawn(async move {
+        tokio::spawn(async move {
             if let Some(session) = state.sessions.remove(&token).await {
                 let live_crypto = session.persisted_crypto.clone();
                 if let Some(handle) = session
@@ -2532,9 +2534,6 @@ async fn logout(
                 state.sessions.forget_evicted_presence(&token);
             }
         });
-        if let Err(error) = cleanup.await {
-            tracing::warn!("logout cleanup task failed: {error}");
-        }
     }
     // `remove` must be given a cookie matching the *original* cookie's
     // path — `Cookie::from(SESSION_COOKIE)` alone defaults to no path,
