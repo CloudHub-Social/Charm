@@ -1044,42 +1044,35 @@ pub(crate) fn install_session_callbacks(
         let mut expected = save_expected_access_token
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let durable_access_token = match kind {
-            PersistedSessionKind::Matrix => persistence::load_session(&save_account_key)
-                .map_err(callback_error)?
-                .filter(|saved| {
-                    saved.session.meta.user_id == save_user_id
-                        && saved.session.meta.device_id == save_device_id
-                })
-                .map(|saved| saved.session.tokens.access_token),
-            PersistedSessionKind::OAuth => persistence::load_oauth_session(&save_account_key)
-                .map_err(callback_error)?
-                .filter(|saved| {
-                    saved.user.meta.user_id == save_user_id
-                        && saved.user.meta.device_id == save_device_id
-                })
-                .map(|saved| saved.user.tokens.access_token),
-        };
-        if durable_access_token.as_deref() != Some(expected.as_str()) {
-            return Err(callback_error(
-                "refusing to overwrite a removed or superseded persisted session",
-            ));
-        }
-
-        match session {
+        let replaced = match session {
             AuthSession::Matrix(session) if matches!(kind, PersistedSessionKind::Matrix) => {
-                persistence::save_session(&save_account_key, &save_homeserver_url, &session)
-                    .map_err(callback_error)?;
+                persistence::replace_session_if_current(
+                    &save_account_key,
+                    &save_homeserver_url,
+                    expected.as_str(),
+                    &session,
+                )
+                .map_err(callback_error)?
             }
             AuthSession::OAuth(session) if matches!(kind, PersistedSessionKind::OAuth) => {
-                persistence::save_oauth_session(&save_account_key, &save_homeserver_url, &session)
-                    .map_err(callback_error)?;
+                persistence::replace_oauth_session_if_current(
+                    &save_account_key,
+                    &save_homeserver_url,
+                    expected.as_str(),
+                    &session,
+                )
+                .map_err(callback_error)?
             }
             _ => {
                 return Err(callback_error(
                     "the refreshed authentication session kind changed",
                 ));
             }
+        };
+        if !replaced {
+            return Err(callback_error(
+                "refusing to overwrite a removed or superseded persisted session",
+            ));
         }
         *expected = client
             .access_token()
