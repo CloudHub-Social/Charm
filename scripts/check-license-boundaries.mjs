@@ -65,6 +65,7 @@ const dependencySections = [
 const forbiddenSource = /SableClient\/SableCall|@sableclient\/sable-call/i;
 const packagingInputs =
   /^(?:\.github\/workflows\/|scripts\/|src-tauri\/tauri\.conf\.json$|.*(?:package\.json|pnpm-lock\.yaml|Cargo\.toml|Cargo\.lock)$)/;
+const compositeActionInput = /^\.github\/actions\/.+\/action\.ya?ml$/i;
 const containerBuildInputs =
   /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i;
 const bundledAssetRoot =
@@ -91,12 +92,15 @@ for (const trackedFile of trackedFiles) {
 
   if (
     trackedFile !== "scripts/check-license-boundaries.mjs" &&
-    (packagingInputs.test(trackedFile) || containerBuildInputs.test(trackedFile))
+    (packagingInputs.test(trackedFile) ||
+      compositeActionInput.test(trackedFile) ||
+      containerBuildInputs.test(trackedFile))
   ) {
     const packagingContent = read(trackedFile);
     const referencesSableCall =
       forbiddenSource.test(packagingContent) ||
-      (containerBuildInputs.test(trackedFile) && sableCallName.test(packagingContent));
+      ((compositeActionInput.test(trackedFile) || containerBuildInputs.test(trackedFile)) &&
+        sableCallName.test(packagingContent));
     if (referencesSableCall) {
       errors.push(`Packaging and build inputs cannot fetch Sable Call: ${trackedFile}`);
     }
