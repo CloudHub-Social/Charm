@@ -7,7 +7,7 @@ import type { MessageRowLayoutProps } from "./messageRowShared";
 
 const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
-const resendMessage = vi.fn();
+const retryPollEnd = vi.fn();
 const getPendingPollEnd = vi.fn();
 const confirmPollEndSynced = vi.fn();
 const discardFailedMessage = vi.fn();
@@ -25,7 +25,7 @@ vi.mock("@/lib/matrix", async () => {
     ...actual,
     voteOnPoll: (...args: unknown[]) => voteOnPoll(...args),
     endPoll: (...args: unknown[]) => endPoll(...args),
-    resendMessage: (...args: unknown[]) => resendMessage(...args),
+    retryPollEnd: (...args: unknown[]) => retryPollEnd(...args),
     getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
     confirmPollEndSynced: (...args: unknown[]) => confirmPollEndSynced(...args),
     discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
@@ -95,7 +95,7 @@ beforeEach(() => {
   resetAcknowledgedPollClosesForTests();
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
-  resendMessage.mockReset().mockResolvedValue(true);
+  retryPollEnd.mockReset().mockResolvedValue(true);
   getPendingPollEnd.mockReset().mockResolvedValue(null);
   confirmPollEndSynced.mockReset().mockResolvedValue(undefined);
   discardFailedMessage.mockReset().mockResolvedValue(true);
@@ -192,7 +192,7 @@ describe("PollMessage", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled());
     expect(screen.queryByText(/Poll closed/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
-    expect(resendMessage).not.toHaveBeenCalled();
+    expect(retryPollEnd).not.toHaveBeenCalled();
     expect(endPoll).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
     view.rerender(
@@ -244,14 +244,18 @@ describe("PollMessage", () => {
       transaction_id: "txn-removed-end",
       failed: true,
     });
-    resendMessage.mockResolvedValueOnce(false);
+    retryPollEnd.mockResolvedValueOnce(false);
     render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
     const retry = await screen.findByRole("button", { name: "Retry closing poll" });
 
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-removed-end"),
+      expect(retryPollEnd).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-removed-end",
+      ),
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
@@ -269,7 +273,11 @@ describe("PollMessage", () => {
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(resendMessage).toHaveBeenCalledWith("!room:example.org", "txn-retried-end"),
+      expect(retryPollEnd).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-retried-end",
+      ),
     );
     expect(screen.getByRole("button", { name: "Close queued" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
@@ -391,7 +399,9 @@ describe("PollMessage", () => {
   it("keeps a locally acknowledged close locked until the timeline ends", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      getPendingPollEnd.mockResolvedValue(null);
+      getPendingPollEnd
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ transaction_id: "txn-acknowledged-end", failed: false });
       endPoll.mockResolvedValueOnce("txn-acknowledged-end");
       render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
       await act(async () => {});
@@ -410,7 +420,9 @@ describe("PollMessage", () => {
   });
 
   it("keeps an acknowledged close locked across a row remount", async () => {
-    getPendingPollEnd.mockResolvedValue(null);
+    getPendingPollEnd
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ transaction_id: "txn-remounted-end", failed: false });
     endPoll.mockResolvedValueOnce("txn-remounted-end");
     const view = render(<PollMessage message={pollMessage()} roomId="!remount:example.org" own />);
     await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());

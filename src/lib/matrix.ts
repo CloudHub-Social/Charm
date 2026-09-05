@@ -559,6 +559,15 @@ export function endPoll(roomId: string, pollEventId: string): Promise<string> {
   return invokeMatrix("end_poll", { roomId, pollEventId });
 }
 
+/** Retries one failed poll close and preserves its shared mutation lock. */
+export function retryPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_end", { roomId, pollEventId, transactionId });
+}
+
 export interface PendingPollEnd {
   transaction_id: string;
   failed: boolean;

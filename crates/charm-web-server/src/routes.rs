@@ -36,8 +36,8 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
-    confirm_poll_end_synced_impl, create_poll_impl, end_poll_impl, pending_poll_end_impl,
-    vote_on_poll_impl,
+    clear_acknowledged_poll_ends, confirm_poll_end_synced_impl, create_poll_impl, end_poll_impl,
+    pending_poll_end_impl, retry_poll_end_impl, vote_on_poll_impl,
 };
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
@@ -204,6 +204,10 @@ pub fn router(state: AppState) -> Router {
             get(get_pending_poll_end)
                 .post(end_poll)
                 .delete(confirm_poll_end_synced),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/end/{transaction_id}/retry",
+            post(retry_poll_end),
         )
         .route("/api/rooms/{room_id}/reply", post(send_reply))
         .route(
@@ -2473,6 +2477,7 @@ async fn logout(
         // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
             live_crypto = session.persisted_crypto.clone();
+            clear_acknowledged_poll_ends(&session.client).await;
             if let Some(handle) = session
                 .sync_handle
                 .lock()
@@ -2527,6 +2532,7 @@ async fn logout(
             // forward here — this session is being logged out, not restored
             // for continued use.
             if let Some(client) = persistence.restore_client_for_revocation(&token).await {
+                clear_acknowledged_poll_ends(&client).await;
                 tokio::spawn(async move {
                     let _ = client.matrix_auth().logout().await;
                 });
@@ -3637,9 +3643,11 @@ struct CreatePollRequest {
 async fn create_poll(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
     Json(request): Json<CreatePollRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let transaction_id = create_poll_impl(
         &session.client,
@@ -3661,9 +3669,11 @@ struct VoteOnPollRequest {
 async fn vote_on_poll(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, poll_event_id)): Path<(String, String)>,
     Json(request): Json<VoteOnPollRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let transaction_id =
         vote_on_poll_impl(&session.client, &room_id, &poll_event_id, request.answer_id)
@@ -3686,6 +3696,25 @@ async fn end_poll(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(transaction_id))
+}
+
+async fn retry_poll_end(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let retried = retry_poll_end_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(retried))
 }
 
 async fn get_pending_poll_end(

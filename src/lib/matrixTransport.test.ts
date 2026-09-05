@@ -280,6 +280,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "retry_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-end" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end/txn-end/retry",
+      undefined,
+    ],
+    [
       "confirm_poll_end_synced",
       { roomId: "!r:example.org", pollEventId: "$poll" },
       "DELETE",

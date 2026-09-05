@@ -8,7 +8,7 @@ import {
   discardFailedMessage,
   endPoll,
   getPendingPollEnd,
-  resendMessage,
+  retryPollEnd,
   voteOnPoll,
 } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
@@ -101,16 +101,10 @@ export function PollMessage({
       .then(async (pending) => {
         if (!active) return;
         if (!pending) {
-          if (endAcknowledged && endTransactionId !== null && !pollEnded) {
-            // The send queue drops a successful local echo before the sync
-            // timeline necessarily contains the poll end. Keep the admission
-            // lock until that authoritative timeline confirmation arrives.
-            setEnding(true);
-            setEndFailed(false);
-            return;
-          }
+          acknowledgedPollCloses.delete(closeKey);
           setEndTransactionId(null);
           setEnding(false);
+          setEndAcknowledged(false);
           setEndFailed(false);
           setError(null);
           return;
@@ -228,7 +222,7 @@ export function PollMessage({
     setError(null);
     try {
       if (endTransactionId && endFailed) {
-        const retried = await resendMessage(roomId, endTransactionId);
+        const retried = await retryPollEnd(roomId, message.event_id, endTransactionId);
         if (!retried) {
           acknowledgedPollCloses.delete(closeKey);
           setEndTransactionId(null);
