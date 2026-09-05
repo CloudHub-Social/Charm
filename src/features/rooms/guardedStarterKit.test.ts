@@ -13,7 +13,8 @@ describe("staged formatting rules", () => {
       content: "<p>text</p>",
     });
     try {
-      editor.commands.selectAll();
+      if (format === "strike") editor.commands.selectAll();
+      else editor.commands.setTextSelection(2);
       editor.view.dom.dispatchEvent(
         new KeyboardEvent("keydown", { ...shortcut, bubbles: true, cancelable: true }),
       );

@@ -4,8 +4,8 @@
 //! command name + args cross IPC, so this module never has to re-implement
 //! quoting/escaping rules for raw composer text.
 
-use matrix_sdk::ruma::events::{Mentions, room::message::RoomMessageEventContent};
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+use matrix_sdk::ruma::events::{room::message::RoomMessageEventContent, Mentions};
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};

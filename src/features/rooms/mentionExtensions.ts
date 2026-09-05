@@ -40,7 +40,12 @@ export const UserMention = Mention.extend({
   // pills are a more specific node shape and must win before that fallback.
   priority: 1100,
   parseHTML() {
-    return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("@") }];
+    return [
+      {
+        tag: 'a[data-mx-pill][href^="https://matrix.to/#/@"]',
+        getAttrs: parseMentionAnchor("@"),
+      },
+    ];
   },
   // `editor.getText()`'s plain `body` must carry the real Matrix id, not the
   // display label the pill shows — a plain-text client has no other way to
@@ -69,7 +74,12 @@ export const RoomMention = Mention.extend({
   name: "roomMention",
   priority: 1100,
   parseHTML() {
-    return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("!") }];
+    return [
+      {
+        tag: 'a[data-mx-pill][href^="https://matrix.to/#/!"]',
+        getAttrs: parseMentionAnchor("!"),
+      },
+    ];
   },
   renderText({ node }) {
     return node.attrs.id as string;

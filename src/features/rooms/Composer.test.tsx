@@ -121,16 +121,17 @@ describe("Composer", () => {
   );
 
   it.each([
-    ["Spoiler", "span[data-mx-spoiler]"],
-    ["Strikethrough", "s"],
-    ["Code block", "pre"],
+    ["Spoiler", "span[data-mx-spoiler]", '<p><span data-mx-spoiler="true">authored</span></p>'],
+    ["Strikethrough", "s", "<p><s>authored</s></p>"],
+    ["Code block", "pre", "<pre><code>authored</code></pre>"],
   ])(
     "stops active %s formatting on kill switch without stripping the draft",
-    async (label, selector) => {
+    async (label, selector, initialHtml) => {
       flags.composerParity = true;
       const props = {
         roomId: `!kill-${label.replaceAll(" ", "-")}:example.org`,
-        mode: "send" as const,
+        mode: "edit" as const,
+        initialHtml,
         placeholder: "Message",
         onSubmit: vi.fn(),
         onSlashCommand: vi.fn(),
@@ -139,8 +140,6 @@ describe("Composer", () => {
       };
       const view = render(<Composer {...props} />);
       const editable = await screen.findByLabelText("Message");
-      fireEvent.click(screen.getByRole("button", { name: label }));
-      pasteText(editable, "authored", true);
       expect(editable.querySelector(selector)).toHaveTextContent("authored");
       flags.composerParity = false;
       view.rerender(<Composer {...props} />);
