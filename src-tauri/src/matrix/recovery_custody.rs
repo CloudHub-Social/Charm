@@ -343,6 +343,23 @@ pub async fn repair_interrupted_setup(
         let _ = custody.release().await;
         return Err("Pending recovery changed before repair started.".into());
     }
+    // A setup can commit secret storage before its final local result write.
+    // The protected seed is then the usable credential: preserve it for the
+    // ordinary pending-summary path and never disable its backup.
+    match pending_summary(client, custody).await {
+        Ok(Some(_)) => {
+            let _ = custody.release().await;
+            return Err(
+                "Recovery setup already created a usable key. Reopen recovery settings to save it."
+                    .into(),
+            );
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let _ = custody.release().await;
+            return Err(error);
+        }
+    }
     let operation = async {
         // Only matrix-sdk's persisted local key/version pair is authoritative
         // enough to select a remote backup for deletion. If no local backup is

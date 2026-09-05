@@ -137,6 +137,20 @@ export function RecoverySetupCard({
       setSetupError(null);
       void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
     } catch {
+      try {
+        const summary = await getPendingRecoverySetup();
+        if (summary) {
+          setRecoveryKey(summary.recovery_key);
+          setRoomKeysBackedUp(summary.room_keys_backed_up);
+          setRepairAvailable(false);
+          setRepairOpen(false);
+          setSetupOpen(false);
+          setSetupError(null);
+          return;
+        }
+      } catch {
+        // Keep the repair error generic and the protected state untouched.
+      }
       setRepairError(
         "Could not repair the incomplete setup. Protected recovery state was retained; try again when online.",
       );
