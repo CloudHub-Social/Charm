@@ -232,6 +232,20 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
   });
 
+  it("discards a failed local close after another client ends the poll", async () => {
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-failed-end",
+      failed: true,
+    });
+    render(<PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />);
+
+    await waitFor(() =>
+      expect(discardFailedMessage).toHaveBeenCalledWith("!room:example.org", "txn-failed-end"),
+    );
+    expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
+  });
+
   it("preserves the end admission lock across a timeline refresh", async () => {
     let finish!: (transactionId: string) => void;
     endPoll.mockImplementationOnce(

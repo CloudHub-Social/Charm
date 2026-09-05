@@ -50,26 +50,33 @@ export function PollMessage({
     setError(null);
   }, [message.event_id, roomId]);
   useEffect(() => {
-    if (
-      !own ||
-      !message.poll ||
-      message.poll.ended ||
-      !message.event_id.startsWith("$") ||
-      endRequestPending
-    ) {
+    if (!own || !message.poll || !message.event_id.startsWith("$") || endRequestPending) {
       setRestoringEndState(false);
       return;
     }
     let active = true;
     setRestoringEndState(true);
     void getPendingPollEnd(roomId, message.event_id)
-      .then((pending) => {
+      .then(async (pending) => {
         if (!active) return;
         if (!pending) {
           setEndTransactionId(null);
           setEnding(false);
           setEndFailed(false);
           setError(null);
+          return;
+        }
+        if (message.poll?.ended && pending.failed) {
+          try {
+            await discardFailedMessage(roomId, pending.transaction_id);
+            if (!active) return;
+            setEndTransactionId(null);
+            setEnding(false);
+            setEndFailed(false);
+            setError(null);
+          } catch {
+            if (active) setError("The failed poll close could not be discarded.");
+          }
           return;
         }
         setEndTransactionId(pending.transaction_id);
