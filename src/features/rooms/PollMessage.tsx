@@ -23,18 +23,14 @@ interface PollMessageProps {
   rowActions?: MessageRowLayoutProps;
 }
 
-const ACKNOWLEDGED_CLOSE_TTL_MS = 60_000;
-const acknowledgedPollCloses = new Map<string, { transactionId: string; expiresAt: number }>();
+const acknowledgedPollCloses = new Map<string, string>();
 
-function pollCloseKey(roomId: string, eventId: string) {
-  return `${roomId}\u0000${eventId}`;
+function pollCloseKey(accountId: string, roomId: string, eventId: string) {
+  return `${accountId}\u0000${roomId}\u0000${eventId}`;
 }
 
-function acknowledgedPollClose(key: string) {
-  const close = acknowledgedPollCloses.get(key);
-  if (close && close.expiresAt > Date.now()) return close;
-  acknowledgedPollCloses.delete(key);
-  return undefined;
+export function resetAcknowledgedPollClosesForTests() {
+  acknowledgedPollCloses.clear();
 }
 
 export function PollMessage({
@@ -48,7 +44,8 @@ export function PollMessage({
   const poll = message.poll;
   const hasPoll = poll != null;
   const pollEnded = poll?.ended ?? false;
-  const closeKey = pollCloseKey(roomId, message.event_id);
+  const accountId = rowActions?.currentUserId ?? message.sender;
+  const closeKey = pollCloseKey(accountId, roomId, message.event_id);
   // Timeline snapshots are the bounded reconciliation signal for a queued
   // close. Include vote/content changes as well as end/edit flags so a
   // rejection observed alongside an unrelated vote cannot remain hidden.
@@ -67,11 +64,11 @@ export function PollMessage({
   const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    const acknowledged = pollEnded ? undefined : acknowledgedPollClose(closeKey);
+    const acknowledged = pollEnded ? undefined : acknowledgedPollCloses.get(closeKey);
     if (pollEnded) acknowledgedPollCloses.delete(closeKey);
     setEnding(Boolean(acknowledged));
     setEndRequestPending(false);
-    setEndTransactionId(acknowledged?.transactionId ?? null);
+    setEndTransactionId(acknowledged ?? null);
     setEndAcknowledged(Boolean(acknowledged));
     setEndFailed(false);
     setEndRecheck(0);
@@ -127,7 +124,16 @@ export function PollMessage({
         setEndTransactionId(pending.transaction_id);
         setEnding(true);
         setEndFailed(pending.failed);
-        if (pending.failed) setError("The poll could not be ended.");
+        if (pending.failed) {
+          acknowledgedPollCloses.delete(closeKey);
+          setEndAcknowledged(false);
+          setError("The poll could not be ended.");
+        } else {
+          // Once restored, retain the close admission lock even if the send
+          // queue removes its successful echo before /sync reports the end.
+          acknowledgedPollCloses.set(closeKey, pending.transaction_id);
+          setEndAcknowledged(true);
+        }
       })
       .catch(() => {
         // The mutation command still rejects votes while a close is queued.
@@ -139,6 +145,7 @@ export function PollMessage({
       active = false;
     };
   }, [
+    closeKey,
     endRequestPending,
     endAcknowledged,
     endRecheck,
@@ -210,18 +217,12 @@ export function PollMessage({
     try {
       if (endTransactionId && endFailed) {
         await resendMessage(roomId, endTransactionId);
-        acknowledgedPollCloses.set(closeKey, {
-          transactionId: endTransactionId,
-          expiresAt: Date.now() + ACKNOWLEDGED_CLOSE_TTL_MS,
-        });
+        acknowledgedPollCloses.set(closeKey, endTransactionId);
         setEndAcknowledged(true);
         setEndFailed(false);
       } else {
         const transactionId = await endPoll(roomId, message.event_id);
-        acknowledgedPollCloses.set(closeKey, {
-          transactionId,
-          expiresAt: Date.now() + ACKNOWLEDGED_CLOSE_TTL_MS,
-        });
+        acknowledgedPollCloses.set(closeKey, transactionId);
         setEndTransactionId(transactionId);
         setEndAcknowledged(true);
         setEndFailed(false);

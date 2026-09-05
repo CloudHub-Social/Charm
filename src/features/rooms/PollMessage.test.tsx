@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixModule from "@/lib/matrix";
-import { PollMessage } from "./PollMessage";
+import { PollMessage, resetAcknowledgedPollClosesForTests } from "./PollMessage";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
 
@@ -90,6 +90,7 @@ function rowActions(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowL
 }
 
 beforeEach(() => {
+  resetAcknowledgedPollClosesForTests();
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
   endPoll.mockReset().mockResolvedValue("txn-end");
   resendMessage.mockReset().mockResolvedValue(undefined);
@@ -364,6 +365,35 @@ describe("PollMessage", () => {
 
     expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+  });
+
+  it("does not carry an acknowledged close into another account", async () => {
+    getPendingPollEnd.mockResolvedValue(null);
+    endPoll.mockResolvedValueOnce("txn-account-end");
+    const firstAccount = rowActions({ currentUserId: "@alice:example.org" });
+    const view = render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!shared:example.org"
+        own
+        rowActions={firstAccount}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    await waitFor(() => expect(endPoll).toHaveBeenCalledOnce());
+    view.unmount();
+
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!shared:example.org"
+        own
+        rowActions={rowActions({ currentUserId: "@bob:example.org" })}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
   });
 
   it("blocks mutations while a queued close is being restored", async () => {
