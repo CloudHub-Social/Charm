@@ -338,6 +338,7 @@ fn persisted_endpoint_path(
     Ok(dir.join(format!("{account_key}.json")))
 }
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn save_persisted_endpoint(
     app: &AppHandle,
     account_key: &str,
@@ -988,7 +989,7 @@ async fn retry_persisted_push_cleanup(client: &Client, record: &mut PersistedPus
 fn include_staged_previous_cleanup_targets(record: &mut PersistedPushEndpoint) {
     let mut previous = record.previous.take().map(|record| *record);
     while let Some(mut prior) = previous {
-        record.retired.extend(prior.retired.drain(..));
+        record.retired.append(&mut prior.retired);
         record.retired.push(RetiredPusher {
             token: prior.url_or_token,
             app_id: prior.app_id,
