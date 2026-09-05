@@ -23,7 +23,7 @@ use std::sync::{Arc, LazyLock, Weak};
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
-use super::actions::resend_message_impl;
+use super::actions::{discard_failed_message_impl, resend_message_impl};
 use super::send::send_and_capture_transaction_id;
 use super::MatrixState;
 
@@ -36,6 +36,13 @@ const POLL_END_ACK_PREFIX: &[u8] = b"charm.poll-end-ack.v1\0";
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingPollEnd {
     transaction_id: String,
+    failed: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingPollVote {
+    transaction_id: String,
+    answer_id: String,
     failed: bool,
 }
 
@@ -138,6 +145,58 @@ async fn pending_poll_end(
             failed: send_error.is_some(),
         })
     }))
+}
+
+async fn pending_poll_vote(
+    room: &matrix_sdk::Room,
+    poll_id: &EventId,
+) -> Result<Option<PendingPollVote>, String> {
+    let (echoes, _) = room
+        .send_queue()
+        .subscribe()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(echoes.into_iter().find_map(|echo| {
+        let LocalEchoContent::Event {
+            serialized_event,
+            send_error,
+            ..
+        } = echo.content
+        else {
+            return None;
+        };
+        let Ok(AnyMessageLikeEventContent::UnstablePollResponse(content)) =
+            serialized_event.deserialize()
+        else {
+            return None;
+        };
+        if content.relates_to.event_id.as_str() != poll_id.as_str() {
+            return None;
+        }
+        content
+            .poll_response
+            .answers
+            .first()
+            .cloned()
+            .map(|answer_id| PendingPollVote {
+                transaction_id: echo.transaction_id.to_string(),
+                answer_id,
+                failed: send_error.is_some(),
+            })
+    }))
+}
+
+pub async fn pending_poll_vote_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+) -> Result<Option<PendingPollVote>, String> {
+    let room = room_for(client, room_id)?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    pending_poll_vote(&room, &poll_event_id).await
 }
 
 pub async fn pending_poll_end_impl(
@@ -291,6 +350,9 @@ pub async fn vote_on_poll_impl(
     {
         return Err("This poll has a queued close. Wait for it to settle before voting.".into());
     }
+    if pending_poll_vote(&room, &poll_event_id).await?.is_some() {
+        return Err("This poll already has a queued vote. Wait for it to settle first.".into());
+    }
     let content = UnstablePollResponseEventContent::new(vec![answer_id], poll_event_id);
     send_and_capture_transaction_id(
         client,
@@ -314,6 +376,9 @@ pub async fn end_poll_impl(
         pending_poll_end_locked(client, &room, &poll_event_id, &close_key).await?
     {
         return Ok(pending.transaction_id);
+    }
+    if pending_poll_vote(&room, &poll_event_id).await?.is_some() {
+        return Err("This poll has a queued vote. Wait for it to settle before closing.".into());
     }
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
     let transaction_id = send_and_capture_transaction_id(
@@ -363,6 +428,70 @@ pub async fn retry_poll_end_impl(
     Ok(retried)
 }
 
+pub async fn retry_poll_vote_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+    transaction_id: &str,
+) -> Result<bool, String> {
+    let room = room_for(client, room_id)?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    let Some(pending) = pending_poll_vote(&room, &poll_event_id).await? else {
+        return Ok(false);
+    };
+    if pending.transaction_id != transaction_id || !pending.failed {
+        return Ok(false);
+    }
+    resend_message_impl(client, room_id, transaction_id).await
+}
+
+pub async fn discard_poll_vote_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+    transaction_id: &str,
+) -> Result<bool, String> {
+    let room = room_for(client, room_id)?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    let Some(pending) = pending_poll_vote(&room, &poll_event_id).await? else {
+        return Ok(false);
+    };
+    if pending.transaction_id != transaction_id || !pending.failed {
+        return Ok(false);
+    }
+    discard_failed_message_impl(client, room_id, transaction_id).await
+}
+
+pub async fn discard_poll_end_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+    transaction_id: &str,
+) -> Result<bool, String> {
+    let room = room_for(client, room_id)?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
+        return Ok(false);
+    };
+    if pending.transaction_id != transaction_id || !pending.failed {
+        return Ok(false);
+    }
+    let discarded = discard_failed_message_impl(client, room_id, transaction_id).await?;
+    if discarded {
+        clear_acknowledged_poll_end(client, &close_key).await?;
+    }
+    Ok(discarded)
+}
+
 #[tauri::command]
 pub async fn create_poll(
     state: State<'_, MatrixState>,
@@ -405,6 +534,49 @@ pub async fn retry_poll_end(
 ) -> Result<bool, String> {
     let client = state.require_client().await?;
     retry_poll_end_impl(&client, &room_id, &poll_event_id, &transaction_id).await
+}
+
+#[tauri::command]
+pub async fn retry_poll_vote(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+    transaction_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    retry_poll_vote_impl(&client, &room_id, &poll_event_id, &transaction_id).await
+}
+
+#[tauri::command]
+pub async fn discard_poll_vote(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+    transaction_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    discard_poll_vote_impl(&client, &room_id, &poll_event_id, &transaction_id).await
+}
+
+#[tauri::command]
+pub async fn discard_poll_end(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+    transaction_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    discard_poll_end_impl(&client, &room_id, &poll_event_id, &transaction_id).await
+}
+
+#[tauri::command]
+pub async fn get_pending_poll_vote(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+) -> Result<Option<PendingPollVote>, String> {
+    let client = state.require_client().await?;
+    pending_poll_vote_impl(&client, &room_id, &poll_event_id).await
 }
 
 #[tauri::command]
@@ -496,6 +668,40 @@ mod tests {
                 .await
                 .is_err()
         );
+        let (echoes, _) = room.send_queue().subscribe().await.unwrap();
+        assert_eq!(echoes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn offline_vote_blocks_duplicate_votes_and_close_until_reconciled() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!vote:example.org");
+        let poll_id = event_id!("$vote:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        room.send_queue().set_enabled(false);
+
+        vote_on_poll_impl(&client, room_id.as_str(), poll_id.as_str(), "0".into())
+            .await
+            .unwrap();
+        assert!(
+            vote_on_poll_impl(&client, room_id.as_str(), poll_id.as_str(), "1".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            end_poll_impl(&client, room_id.as_str(), poll_id.as_str())
+                .await
+                .is_err()
+        );
+        let pending = pending_poll_vote_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.answer_id, "0");
         let (echoes, _) = room.send_queue().subscribe().await.unwrap();
         assert_eq!(echoes.len(), 1);
     }

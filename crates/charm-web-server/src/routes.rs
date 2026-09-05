@@ -36,8 +36,9 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
-    confirm_poll_end_synced_impl, create_poll_impl, end_poll_impl, pending_poll_end_impl,
-    retry_poll_end_impl, vote_on_poll_impl,
+    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl,
+    discard_poll_vote_impl, end_poll_impl, pending_poll_end_impl, pending_poll_vote_impl,
+    retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
 };
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
@@ -197,7 +198,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/{room_id}/polls", post(create_poll))
         .route(
             "/api/rooms/{room_id}/polls/{poll_event_id}/vote",
-            post(vote_on_poll),
+            get(get_pending_poll_vote).post(vote_on_poll),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/vote/{transaction_id}",
+            delete(discard_poll_vote),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/vote/{transaction_id}/retry",
+            post(retry_poll_vote),
         )
         .route(
             "/api/rooms/{room_id}/polls/{poll_event_id}/end",
@@ -208,6 +217,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/rooms/{room_id}/polls/{poll_event_id}/end/{transaction_id}/retry",
             post(retry_poll_end),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/end/{transaction_id}",
+            delete(discard_poll_end),
         )
         .route("/api/rooms/{room_id}/reply", post(send_reply))
         .route(
@@ -3680,6 +3693,56 @@ async fn vote_on_poll(
     Ok(Json(transaction_id))
 }
 
+async fn get_pending_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let pending = pending_poll_vote_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(pending))
+}
+
+async fn retry_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let retried = retry_poll_vote_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(retried))
+}
+
+async fn discard_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let discarded = discard_poll_vote_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(discarded))
+}
+
 async fn end_poll(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -3713,6 +3776,25 @@ async fn retry_poll_end(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(retried))
+}
+
+async fn discard_poll_end(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let discarded = discard_poll_end_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(discarded))
 }
 
 async fn get_pending_poll_end(

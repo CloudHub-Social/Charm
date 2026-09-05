@@ -6,11 +6,14 @@ import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
 
 const voteOnPoll = vi.fn();
+const getPendingPollVote = vi.fn();
+const retryPollVote = vi.fn();
+const discardPollVote = vi.fn();
 const endPoll = vi.fn();
 const retryPollEnd = vi.fn();
 const getPendingPollEnd = vi.fn();
 const confirmPollEndSynced = vi.fn();
-const discardFailedMessage = vi.fn();
+const discardPollEnd = vi.fn();
 const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
 
 vi.mock("@/features/appearance/useDisplayFormats", () => ({
@@ -24,11 +27,14 @@ vi.mock("@/lib/matrix", async () => {
   return {
     ...actual,
     voteOnPoll: (...args: unknown[]) => voteOnPoll(...args),
+    getPendingPollVote: (...args: unknown[]) => getPendingPollVote(...args),
+    retryPollVote: (...args: unknown[]) => retryPollVote(...args),
+    discardPollVote: (...args: unknown[]) => discardPollVote(...args),
     endPoll: (...args: unknown[]) => endPoll(...args),
     retryPollEnd: (...args: unknown[]) => retryPollEnd(...args),
     getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
     confirmPollEndSynced: (...args: unknown[]) => confirmPollEndSynced(...args),
-    discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
+    discardPollEnd: (...args: unknown[]) => discardPollEnd(...args),
   };
 });
 
@@ -94,11 +100,14 @@ function rowActions(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowL
 beforeEach(() => {
   resetAcknowledgedPollClosesForTests();
   voteOnPoll.mockReset().mockResolvedValue("txn-vote");
+  getPendingPollVote.mockReset().mockResolvedValue(null);
+  retryPollVote.mockReset().mockResolvedValue(true);
+  discardPollVote.mockReset().mockResolvedValue(true);
   endPoll.mockReset().mockResolvedValue("txn-end");
   retryPollEnd.mockReset().mockResolvedValue(true);
   getPendingPollEnd.mockReset().mockResolvedValue(null);
   confirmPollEndSynced.mockReset().mockResolvedValue(undefined);
-  discardFailedMessage.mockReset().mockResolvedValue(true);
+  discardPollEnd.mockReset().mockResolvedValue(true);
 });
 
 describe("PollMessage", () => {
@@ -283,7 +292,11 @@ describe("PollMessage", () => {
     render(<PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />);
 
     await waitFor(() =>
-      expect(discardFailedMessage).toHaveBeenCalledWith("!room:example.org", "txn-failed-end"),
+      expect(discardPollEnd).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-failed-end",
+      ),
     );
     expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
@@ -340,7 +353,11 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: "Retry closing poll" })).toBeEnabled();
     fireEvent.click(discard);
     await waitFor(() =>
-      expect(discardFailedMessage).toHaveBeenCalledWith("!room:example.org", "txn-failed-end"),
+      expect(discardPollEnd).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-failed-end",
+      ),
     );
   });
 
@@ -472,6 +489,44 @@ describe("PollMessage", () => {
     await act(async () => finish(null));
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled();
+  });
+
+  it("restores and retries an asynchronously failed vote", async () => {
+    getPendingPollVote
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-vote", answer_id: "0", failed: true })
+      .mockResolvedValue(null);
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />);
+
+    const retry = await screen.findByRole("button", { name: "Retry vote" });
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(retryPollVote).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-failed-vote",
+      ),
+    );
+  });
+
+  it("discards an asynchronously failed vote through the poll lock", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-failed-vote",
+      answer_id: "1",
+      failed: true,
+    });
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard vote" }));
+
+    await waitFor(() =>
+      expect(discardPollVote).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-failed-vote",
+      ),
+    );
   });
 
   it("does not end a poll while a vote is pending", async () => {

@@ -598,6 +598,27 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         )}/vote`,
         { answer_id: args.answerId },
       );
+    case "get_pending_poll_vote":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote`,
+      );
+    case "retry_poll_vote":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote/${encodeSegment(String(args.transactionId))}/retry`,
+      );
+    case "discard_poll_vote":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote/${encodeSegment(String(args.transactionId))}`,
+      );
     case "end_poll":
       return requestJson<T>(
         "POST",
@@ -611,6 +632,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
           String(args.pollEventId),
         )}/end/${encodeSegment(String(args.transactionId))}/retry`,
+      );
+    case "discard_poll_end":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end/${encodeSegment(String(args.transactionId))}`,
       );
     case "get_pending_poll_end":
       return requestJson<T>(

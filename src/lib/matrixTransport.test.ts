@@ -266,6 +266,27 @@ describe("matrix web transport", () => {
       { answer_id: "0" },
     ],
     [
+      "get_pending_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote",
+      undefined,
+    ],
+    [
+      "retry_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-vote" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote/txn-vote/retry",
+      undefined,
+    ],
+    [
+      "discard_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-vote" },
+      "DELETE",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote/txn-vote",
+      undefined,
+    ],
+    [
       "end_poll",
       { roomId: "!r:example.org", pollEventId: "$poll" },
       "POST",
@@ -284,6 +305,13 @@ describe("matrix web transport", () => {
       { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-end" },
       "POST",
       "/api/rooms/!r%3Aexample.org/polls/%24poll/end/txn-end/retry",
+      undefined,
+    ],
+    [
+      "discard_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-end" },
+      "DELETE",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end/txn-end",
       undefined,
     ],
     [

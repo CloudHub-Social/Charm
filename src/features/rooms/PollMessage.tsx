@@ -5,10 +5,13 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import {
   confirmPollEndSynced,
-  discardFailedMessage,
+  discardPollEnd,
+  discardPollVote,
   endPoll,
   getPendingPollEnd,
+  getPendingPollVote,
   retryPollEnd,
+  retryPollVote,
   voteOnPoll,
 } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
@@ -57,6 +60,10 @@ export function PollMessage({
     own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),
   );
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
+  const [voteTransactionId, setVoteTransactionId] = useState<string | null>(null);
+  const [voteFailed, setVoteFailed] = useState(false);
+  const [restoringVoteState, setRestoringVoteState] = useState(hasPoll);
+  const [voteRecheck, setVoteRecheck] = useState(0);
   const [ending, setEnding] = useState(false);
   const [restoringEndState, setRestoringEndState] = useState(shouldRestoreEnd);
   const [endRequestPending, setEndRequestPending] = useState(false);
@@ -65,6 +72,49 @@ export function PollMessage({
   const [endFailed, setEndFailed] = useState(false);
   const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!hasPoll || !message.event_id.startsWith("$")) {
+      setPendingAnswerId(null);
+      setVoteTransactionId(null);
+      setVoteFailed(false);
+      setRestoringVoteState(false);
+      return;
+    }
+    let active = true;
+    setRestoringVoteState(true);
+    void getPendingPollVote(roomId, message.event_id)
+      .then((pending) => {
+        if (!active) return;
+        if (!pending) {
+          setPendingAnswerId(null);
+          setVoteTransactionId(null);
+          setVoteFailed(false);
+          setError((current) =>
+            current === "Your vote could not be sent." ? null : current,
+          );
+          return;
+        }
+        setPendingAnswerId(pending.answer_id);
+        setVoteTransactionId(pending.transaction_id);
+        setVoteFailed(pending.failed);
+        if (pending.failed) setError("Your vote could not be sent.");
+      })
+      .catch(() => {
+        // Keep the current admission state until a later timeline revision
+        // can reconcile this poll's send queue.
+      })
+      .finally(() => {
+        if (active) setRestoringVoteState(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [hasPoll, message.event_id, pollRevision, roomId, voteRecheck]);
+  useEffect(() => {
+    if (!voteTransactionId || voteFailed) return;
+    const timeout = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);
+    return () => window.clearTimeout(timeout);
+  }, [voteFailed, voteRecheck, voteTransactionId]);
   useEffect(() => {
     const acknowledged = pollEnded ? undefined : acknowledgedPollCloses.get(closeKey);
     if (pollEnded) {
@@ -112,7 +162,7 @@ export function PollMessage({
         if (pollEnded) {
           if (pending.failed) {
             try {
-              await discardFailedMessage(roomId, pending.transaction_id);
+              await discardPollEnd(roomId, message.event_id, pending.transaction_id);
               if (!active) return;
               setError(null);
             } catch {
@@ -188,6 +238,7 @@ export function PollMessage({
       currentPoll.ended ||
       ending ||
       restoringEndState ||
+      restoringVoteState ||
       unsupportedSelectionCount ||
       mutationsDisabled ||
       !hasRealEventId ||
@@ -197,11 +248,55 @@ export function PollMessage({
     setPendingAnswerId(answerId);
     setError(null);
     try {
-      await voteOnPoll(roomId, message.event_id, answerId);
+      const transactionId = await voteOnPoll(roomId, message.event_id, answerId);
+      setVoteTransactionId(transactionId);
+      setVoteFailed(false);
     } catch {
-      setError("Your vote could not be sent.");
-    } finally {
       setPendingAnswerId(null);
+      setVoteTransactionId(null);
+      setError("Your vote could not be sent.");
+    }
+  }
+
+  async function retryVote() {
+    if (!voteTransactionId || !voteFailed) return;
+    setRestoringVoteState(true);
+    try {
+      const retried = await retryPollVote(roomId, message.event_id, voteTransactionId);
+      if (!retried) {
+        setPendingAnswerId(null);
+        setVoteTransactionId(null);
+        setVoteFailed(false);
+        setError("The failed vote is no longer available to retry.");
+        return;
+      }
+      setVoteFailed(false);
+      setError(null);
+      setVoteRecheck((revision) => revision + 1);
+    } catch {
+      setError("Your vote could not be retried.");
+    } finally {
+      setRestoringVoteState(false);
+    }
+  }
+
+  async function abandonVote() {
+    if (!voteTransactionId || !voteFailed) return;
+    setRestoringVoteState(true);
+    try {
+      const discarded = await discardPollVote(roomId, message.event_id, voteTransactionId);
+      if (!discarded) {
+        setVoteRecheck((revision) => revision + 1);
+        return;
+      }
+      setPendingAnswerId(null);
+      setVoteTransactionId(null);
+      setVoteFailed(false);
+      setError(null);
+    } catch {
+      setError("The failed vote could not be discarded.");
+    } finally {
+      setRestoringVoteState(false);
     }
   }
 
@@ -212,6 +307,7 @@ export function PollMessage({
       mutationsDisabled ||
       !hasRealEventId ||
       restoringEndState ||
+      restoringVoteState ||
       endRequestPending ||
       (endTransactionId !== null && !endFailed) ||
       pendingAnswerId !== null
@@ -254,7 +350,11 @@ export function PollMessage({
     if (!endTransactionId || endRequestPending) return;
     setEndRequestPending(true);
     try {
-      await discardFailedMessage(roomId, endTransactionId);
+      const discarded = await discardPollEnd(roomId, message.event_id, endTransactionId);
+      if (!discarded) {
+        setEndRecheck((revision) => revision + 1);
+        return;
+      }
       acknowledgedPollCloses.delete(closeKey);
       setEndTransactionId(null);
       setEndAcknowledged(false);
@@ -334,6 +434,7 @@ export function PollMessage({
                     ended ||
                     ending ||
                     restoringEndState ||
+                    restoringVoteState ||
                     unsupportedSelectionCount ||
                     mutationsDisabled ||
                     !hasRealEventId ||
@@ -393,6 +494,7 @@ export function PollMessage({
                   mutationsDisabled ||
                   !hasRealEventId ||
                   restoringEndState ||
+                  restoringVoteState ||
                   endRequestPending ||
                   (endTransactionId !== null && !endFailed) ||
                   pendingAnswerId !== null
@@ -421,6 +523,27 @@ export function PollMessage({
                   Discard failed close
                 </button>
               )}
+            </div>
+          )}
+          {voteFailed && voteTransactionId && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <p>Your vote failed to send.</p>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                disabled={restoringVoteState}
+                onClick={() => void retryVote()}
+              >
+                Retry vote
+              </button>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                disabled={restoringVoteState}
+                onClick={() => void abandonVote()}
+              >
+                Discard vote
+              </button>
             </div>
           )}
           {unsupportedSelectionCount && !poll.ended && (

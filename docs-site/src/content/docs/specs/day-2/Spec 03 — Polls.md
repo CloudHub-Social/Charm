@@ -85,13 +85,19 @@ A queued close keeps voting disabled until the timeline confirms closure. Retry
 uses the existing transaction rather than creating a second end event. The
 backend also consults the SDK's persistent local echoes to reject votes and
 deduplicate close requests while an end is queued, including after a UI remount.
+Queued vote transaction IDs are restored from those same local echoes, so an
+asynchronous homeserver rejection remains visible and can be retried or discarded
+after a remount or restart. Poll-specific vote and close recovery operations share
+the per-poll mutation lock, preventing one window from discarding an echo while
+another window retries it.
 
 ## API/contract changes
 
 - Additive `poll: PollSummary | null` on `RoomMessageSummary`.
 - New `PollSummary`, `PollAnswerSummary`, and `PollKindSummary` bindings.
 - New `create_poll`, `vote_on_poll`, and `end_poll` commands plus matching
-  authenticated web routes.
+  authenticated web routes, with poll-specific pending-state, retry, discard, and
+  close-confirmation commands for failed-send recovery.
 - The bodyless web poll-end route applies the same allowed-origin validation as
   other authenticated state-changing routes before resolving its session cookie.
 - New default-off `polls` feature flag catalog entry.

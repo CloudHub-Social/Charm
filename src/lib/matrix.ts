@@ -554,6 +554,38 @@ export function voteOnPoll(roomId: string, pollEventId: string, answerId: string
   return invokeMatrix("vote_on_poll", { roomId, pollEventId, answerId });
 }
 
+export interface PendingPollVote {
+  transaction_id: string;
+  answer_id: string;
+  failed: boolean;
+}
+
+/** Returns a queued poll response so failures remain recoverable after remount/restart. */
+export function getPendingPollVote(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollVote | null> {
+  return invokeMatrix("get_pending_poll_vote", { roomId, pollEventId });
+}
+
+/** Retries one asynchronously failed poll response under the poll mutation lock. */
+export function retryPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_vote", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one asynchronously failed poll response under the poll mutation lock. */
+export function discardPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_vote", { roomId, pollEventId, transactionId });
+}
+
 /** Ends an open poll and returns the send-queue transaction id. */
 export function endPoll(roomId: string, pollEventId: string): Promise<string> {
   return invokeMatrix("end_poll", { roomId, pollEventId });
@@ -566,6 +598,15 @@ export function retryPollEnd(
   transactionId: string,
 ): Promise<boolean> {
   return invokeMatrix("retry_poll_end", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one failed poll close without racing a concurrent retry. */
+export function discardPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_end", { roomId, pollEventId, transactionId });
 }
 
 export interface PendingPollEnd {
