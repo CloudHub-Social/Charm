@@ -35,7 +35,7 @@ function parseMentionAnchor(idPrefix: string) {
     } catch {
       return false;
     }
-    if (!id.startsWith(idPrefix)) return false;
+    if (!id.startsWith(idPrefix) || !/^[!@][^:\s]+:[^\s]+$/.test(id)) return false;
     const text = element.textContent ?? "";
     return { id, label: text === id ? null : text.replace(/^[@#]/, "") };
   };

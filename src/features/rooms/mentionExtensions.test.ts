@@ -72,6 +72,17 @@ describe("UserMention", () => {
 
     expect(attrs).toBe(false);
   });
+
+  it("leaves a malformed user pill as an ordinary anchor", () => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", "https://matrix.to/#/%40not-a-user");
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "@not-a-user";
+
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+
+    expect(rules[0]!.getAttrs!(anchor)).toBe(false);
+  });
 });
 
 describe("RoomMention", () => {
