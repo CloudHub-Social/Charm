@@ -44,6 +44,8 @@ jobs:
 
       - name: Match release tag to synchronized application version
         if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           package_version=$(jq -r .version package.json)
@@ -57,6 +59,8 @@ jobs:
             echo "::error::Release tag $GITHUB_REF_NAME does not match application version v$package_version"
             exit 1
           fi
+          previous_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          PREVIOUS_RELEASE_TAG="$previous_release_tag" node scripts/sync-android-version-code.mjs --check
 
   frontend-sourcemaps:
     needs: signing-policy
