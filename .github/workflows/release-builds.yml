@@ -60,9 +60,9 @@ jobs:
             exit 1
           fi
           previous_release_tag=$(
-            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
               jq -r --arg current "$GITHUB_REF_NAME" '
-                [.[]
+                [.[][]
                   | select(.draft == false and .prerelease == false)
                   | select(.tag_name != $current)
                   | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
@@ -1140,11 +1140,13 @@ jobs:
               | jq -c --arg name "$name" '.[] | select(.name == $name)')
             if [ -n "$remote" ]; then
               remote_digest=$(jq -r '.digest // empty' <<<"$remote")
-              if [ -n "$remote_digest" ] && [ "$remote_digest" != "$expected" ]; then
+              if [ -z "$remote_digest" ] || [ "$remote_digest" != "$expected" ]; then
                 case "$name" in
                   charm-release-signing-key.asc)
-                    echo "::error::Existing draft uses a different OpenPGP release key; refusing to mix signing identities. Repair the unpublished draft explicitly or use a new version."
-                    exit 1
+                    if [ -n "$remote_digest" ]; then
+                      echo "::error::Existing draft uses a different OpenPGP release key; refusing to mix signing identities. Repair the unpublished draft explicitly or use a new version."
+                      exit 1
+                    fi
                     ;;
                   *.asc)
                     # Detached OpenPGP signatures include creation-time and
@@ -1152,8 +1154,20 @@ jobs:
                     # signature only after proving it validates the identical
                     # local asset with this release key.
                     signature_dir=$(mktemp -d)
-                    gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                      --pattern "$name" --dir "$signature_dir"
+                    downloaded=false
+                    for attempt in {1..12}; do
+                      if gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                        --pattern "$name" --dir "$signature_dir"; then
+                        downloaded=true
+                        break
+                      fi
+                      echo "Existing draft signature is not downloadable yet (attempt $attempt/12); retrying."
+                      sleep 5
+                    done
+                    if [ "$downloaded" != true ]; then
+                      echo "::error::Existing draft signature $name did not become downloadable"
+                      exit 1
+                    fi
                     export GNUPGHOME="${RUNNER_TEMP}/gnupg"
                     if ! gpg --batch --verify "$signature_dir/$name" "${file%.asc}"; then
                       echo "::error::Existing draft signature does not validate for ${name%.asc}"
@@ -1161,7 +1175,7 @@ jobs:
                     fi
                     cp "$signature_dir/$name" "$file"
                     expected="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
-                    if [ "$remote_digest" != "$expected" ]; then
+                    if [ -n "$remote_digest" ] && [ "$remote_digest" != "$expected" ]; then
                       echo "::error::Downloaded draft signature digest differs for $name"
                       exit 1
                     fi
