@@ -478,13 +478,18 @@ pub async fn register_push(
             // the process exits after set_pusher succeeds, the next launch can
             // still remove this exact pusher before allowing registration.
             let previous = load_persisted_endpoint(&app, account_key);
+            let endpoint_changed = previous.as_ref().is_none_or(|previous| {
+                previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id
+            });
             let mut staged = PersistedPushEndpoint::from(&endpoint);
             staged.staged = true;
             staged.previous = previous.clone().map(Box::new);
             let staged_path = persisted_endpoint_path(&app, account_key)?;
-            if let Err(error) = save_endpoint_record(&staged_path, &staged) {
-                let _ = transport.unregister().await;
-                return Err(error);
+            if endpoint_changed {
+                if let Err(error) = save_endpoint_record(&staged_path, &staged) {
+                    let _ = transport.unregister().await;
+                    return Err(error);
+                }
             }
             match client.pusher().set(pusher, false).await {
                 Ok(()) => {
@@ -502,22 +507,29 @@ pub async fn register_push(
                     }
                     let persisted = save_endpoint_record(&staged_path, &active);
                     if let Err(error) = persisted {
-                        let rollback_complete = finish_remote_push_cleanup(
-                            client.pusher().delete(PusherIds::new(
-                                endpoint.url_or_token.clone(),
-                                endpoint.app_id.clone(),
-                            )),
-                            std::time::Duration::from_secs(5),
-                        )
-                        .await;
-                        if rollback_complete {
-                            if let Some(previous) = previous.as_ref() {
-                                let _ = save_endpoint_record(&staged_path, previous);
-                            } else {
-                                let _ = clear_persisted_endpoint(&app, account_key);
+                        if endpoint_changed {
+                            let rollback_complete = finish_remote_push_cleanup(
+                                client.pusher().delete(PusherIds::new(
+                                    endpoint.url_or_token.clone(),
+                                    endpoint.app_id.clone(),
+                                )),
+                                std::time::Duration::from_secs(5),
+                            )
+                            .await;
+                            if rollback_complete {
+                                if let Some(previous) = previous.as_ref() {
+                                    let _ = save_endpoint_record(&staged_path, previous);
+                                } else {
+                                    let _ = clear_persisted_endpoint(&app, account_key);
+                                }
                             }
+                            let _ = transport.unregister().await;
+                        } else {
+                            *state
+                                .push_transport
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport));
                         }
-                        let _ = transport.unregister().await;
                         PushStatus {
                             transport: endpoint.kind,
                             registered: previous.is_some(),
@@ -547,27 +559,32 @@ pub async fn register_push(
                     }
                 }
                 Err(e) => {
-                    // The OS/distributor already registered this endpoint —
-                    // it's the homeserver call that failed, so roll the
-                    // platform-level registration back too rather than
-                    // leaving a stray registration the user can neither see
-                    // nor clean up (there's nothing in `push_transport` for
-                    // `unregister_push` to act on otherwise).
-                    let _ = transport.unregister().await;
-                    let rollback_complete = finish_remote_push_cleanup(
-                        client.pusher().delete(PusherIds::new(
-                            endpoint.url_or_token.clone(),
-                            endpoint.app_id.clone(),
-                        )),
-                        std::time::Duration::from_secs(5),
-                    )
-                    .await;
-                    if rollback_complete {
-                        if let Some(previous) = previous.as_ref() {
-                            let _ = save_endpoint_record(&staged_path, previous);
-                        } else {
-                            let _ = clear_persisted_endpoint(&app, account_key);
+                    // Roll back only a newly changed endpoint. APNs normally
+                    // returns the same token on repeated registration; deleting
+                    // that pusher here would remove the still-valid previous
+                    // registration merely because its idempotent refresh failed.
+                    if endpoint_changed {
+                        let _ = transport.unregister().await;
+                        let rollback_complete = finish_remote_push_cleanup(
+                            client.pusher().delete(PusherIds::new(
+                                endpoint.url_or_token.clone(),
+                                endpoint.app_id.clone(),
+                            )),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                        if rollback_complete {
+                            if let Some(previous) = previous.as_ref() {
+                                let _ = save_endpoint_record(&staged_path, previous);
+                            } else {
+                                let _ = clear_persisted_endpoint(&app, account_key);
+                            }
                         }
+                    } else {
+                        *state
+                            .push_transport
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport));
                     }
                     PushStatus {
                         transport: endpoint.kind,

@@ -228,6 +228,24 @@ describe("NotificationsPanel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not promise closed-app previews for an active APNs registration", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(
+      await screen.findByText(/iOS closed-app message previews are not available yet/),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/real message preview even when it's closed/),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps turn-off available when a registered device becomes unavailable", async () => {
     const registered: PushStatus = {
       transport: "apns",

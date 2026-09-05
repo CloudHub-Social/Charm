@@ -275,11 +275,13 @@ async fn clear_local_session_locked(
     // removed. Otherwise a failed deletion cannot be retried after local
     // credentials are discarded, and a later reuse of the device token can
     // revive delivery for the signed-out account.
-    crate::push::unregister_push_impl(app, state)
-        .await
-        .map_err(|_| {
-            "Could not disable notifications before sign-out; retry when online.".to_string()
-        })?;
+    if crate::push::unregister_push_impl(app, state).await.is_err() {
+        // Remote and platform cleanup are already best-effort and bounded;
+        // the helper only reports failure when its local retry record could
+        // not be written or removed. Do not trap the account on a broken or
+        // full filesystem when credential teardown can still proceed.
+        tracing::warn!(command = "logout", status = "push_cleanup_record_failed");
+    }
     let tombstone_result = persistence::mark_logout_tombstone(app, &account_key);
     let search_device_id = state
         .require_client()

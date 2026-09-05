@@ -61,8 +61,14 @@ function PushTransportTile() {
           "Background push is not available or enabled for this build. Do not rely on notifications while Charm is closed or suspended."
         ) : (
           <>
-            Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
+            Lets Charm receive background notification delivery when supported. Transport:{" "}
             {TRANSPORT_LABELS[transport]}.
+            {transport === "apns" && (
+              <span className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
+                iOS closed-app message previews are not available yet. Do not rely on previews while
+                Charm is fully closed.
+              </span>
+            )}
             {showAndroidDistributorNotice && (
               <span className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
                 Android push requires a UnifiedPush distributor (for example, ntfy). Install one,
