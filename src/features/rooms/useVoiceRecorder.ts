@@ -179,8 +179,15 @@ export function useVoiceRecorder() {
         if (epoch.current !== attempt || !event.data.size) return;
         bytes += event.data.size;
         if (bytes > MAX_BYTES) {
-          discard();
-          setError("Recording exceeded the size limit. Please record a shorter message.");
+          // Leave the MediaRecorder callback before stopping it. The standard
+          // queues the final dataavailable/stop sequence, and this boundary
+          // avoids asking Safari/WebKit to transition the recorder while it
+          // is still delivering a chunk.
+          queueMicrotask(() => {
+            if (epoch.current !== attempt) return;
+            discard();
+            setError("Recording exceeded the size limit. Please record a shorter message.");
+          });
           return;
         }
         chunks.push(event.data);
