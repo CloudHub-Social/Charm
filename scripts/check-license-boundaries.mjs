@@ -115,6 +115,8 @@ const packagingInputPatterns = [
   /^\.github\/(?:actions|scripts|workflows)\//i,
   /^(?:scripts)\//i,
   /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|Cargo\.toml|Cargo\.lock)$/,
+  /(?:^|\/)pnpm-workspace\.yaml$/,
+  /^\.do\/.+\.ya?ml$/i,
   /^src-tauri\/tauri\.conf\.json$/,
   /(?:^|\/)(?:vite|rollup|astro)\.config\.[cm]?[jt]s$/i,
   /(?:^|\/)(?:build\.rs|Makefile|Justfile)$/i,
