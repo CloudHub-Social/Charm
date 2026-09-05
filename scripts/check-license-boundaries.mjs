@@ -21,23 +21,19 @@ function read(relativePath) {
 }
 
 function stripPackagingComments(content, relativePath) {
-  const withoutCommentLines = content.replace(/^\s*(?:#|\/\/|@?rem\b).*$/gim, "");
-  if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutCommentLines;
-
-  const languageVariant = /x$/i.test(relativePath) ? LanguageVariant.JSX : LanguageVariant.Standard;
-  const scanner = createScanner(false, languageVariant, withoutCommentLines);
-  let executableContent = "";
-
-  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFileToken; token = scanner.scan()) {
-    if (
-      token !== SyntaxKind.SingleLineCommentTrivia &&
-      token !== SyntaxKind.MultiLineCommentTrivia
-    ) {
-      executableContent += scanner.getTokenText();
-    }
+  if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) {
+    return content.replace(/^\s*(?:#|\/\/|@?rem\b).*$/gim, "");
   }
 
-  return executableContent;
+  const languageVariant = /x$/i.test(relativePath) ? LanguageVariant.JSX : LanguageVariant.Standard;
+  const scanner = createScanner(true, languageVariant, content);
+  const executableTokens = [];
+
+  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    executableTokens.push(scanner.getTokenText());
+  }
+
+  return executableTokens.join("");
 }
 
 function requirePackagedFiles(relativePath, destination, requiredFiles) {
