@@ -40,9 +40,11 @@ interrupted result write. This implementation and its regressions await CI.
   session/device-data removal. A protected write failure prevents setup from
   starting. If a crash creates a server backup before its usable key reaches the
   durable snapshot, the resumed flow offers an explicit repair confirmation that
-  deletes only that unusable backup, checkpoints the no-backup state, and preserves
-  custody on any uncertain failure. Backups with an issued recovery key are never
-  eligible for repair. The web deployment must provide encrypted crypto snapshots and an
+  deletes only the exact version recorded by that interrupted attempt. Repair refuses
+  if the server advertises a replacement version, checkpoints the resulting state,
+  and preserves custody on any uncertain failure. Backups with an issued recovery key
+  are never eligible for repair. The web repair POST also enforces the configured
+  origin allowlist before session lookup. The web deployment must provide encrypted crypto snapshots and an
   object backend supporting conditional updates (such as the configured S3 store);
   local-file-only persistence fails closed for setup. Session refresh preserves
   the pending record with compare-and-swap; removed sessions are not resurrected.

@@ -5723,8 +5723,10 @@ async fn acknowledge_recovery_setup(
 
 async fn repair_interrupted_recovery_setup(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let guard = session.recovery_setup_lock.lock().await;
     require_open_recovery_session(&session)?;
@@ -5771,6 +5773,30 @@ async fn repair_interrupted_recovery_setup(
     .map_err(|_| ApiError::bad_request("Recovery repair task failed."))?
     .map_err(ApiError::bad_request)?;
     Ok(([("cache-control", "no-store")], Json(())))
+}
+
+#[cfg(test)]
+mod repair_recovery_origin_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn rejects_a_cross_origin_bodyless_repair_before_session_lookup() {
+        let response = super::router(AppState::default())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/verification/recovery/setup/repair")
+                    .header("origin", "https://attacker.example")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
 }
 
 #[derive(Deserialize)]

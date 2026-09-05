@@ -1,6 +1,10 @@
 //! Pending recovery credentials stay in existing protected storage until acknowledgement.
 
 pub use async_trait::async_trait;
+use matrix_sdk::ruma::api::{
+    client::backup::{delete_backup_version, get_latest_backup_info},
+    error::ErrorKind,
+};
 use matrix_sdk::{encryption::recovery::RecoveryState, Client};
 use rand::{distr::Alphanumeric, RngExt};
 use serde::{Deserialize, Serialize};
@@ -18,6 +22,8 @@ pub struct PendingRecoverySetup {
     room_keys_backed_up: bool,
     #[serde(default)]
     server_mutation_started: bool,
+    #[serde(default)]
+    backup_version: Option<String>,
 }
 
 impl PendingRecoverySetup {
@@ -205,6 +211,7 @@ pub async fn setup_with_custody(
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: false,
+                backup_version: None,
             };
             pending
         }
@@ -221,7 +228,14 @@ pub async fn setup_with_custody(
         custody.save_claimed(&pending).await?;
         if !client.encryption().backups().are_enabled().await {
             match client.encryption().recovery().enable_backup().await {
-                Ok(()) => {}
+                Ok(()) => {
+                    pending.backup_version = Some(
+                        current_backup_version(client)
+                            .await?
+                            .ok_or("The new backup version could not be identified safely.")?,
+                    );
+                    custody.save_claimed(&pending).await?;
+                }
                 Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
                     if resumed_after_server_mutation {
                         // A prior attempt may have created this backup before
@@ -318,26 +332,37 @@ pub async fn repair_interrupted_setup(
     let Some(pending) = custody.load().await? else {
         return Err("No interrupted recovery setup needs repair.".into());
     };
-    if pending.has_issued_key() || !pending.server_mutation_started {
+    if pending.has_issued_key()
+        || !pending.server_mutation_started
+        || pending.backup_version.is_none()
+    {
         return Err("Pending recovery cannot be repaired by deleting its backup.".into());
     }
 
     let pending = custody.claim(&pending).await?;
-    if pending.has_issued_key() || !pending.server_mutation_started {
+    if pending.has_issued_key()
+        || !pending.server_mutation_started
+        || pending.backup_version.is_none()
+    {
         let _ = custody.release().await;
         return Err("Pending recovery changed before repair started.".into());
     }
     let operation = async {
         custody.checkpoint().await?;
-        client
-            .encryption()
-            .backups()
-            .disable_and_delete()
-            .await
-            .map_err(|_| {
-                "Could not delete the incomplete server backup. Protected recovery state was retained."
-                    .to_string()
-            })?;
+        let expected_version = pending.backup_version.as_deref().unwrap();
+        if current_backup_version(client).await?.as_deref() != Some(expected_version) {
+            return Err(
+                "The server backup changed after this setup was interrupted. Protected recovery state was retained; restore the current backup instead."
+                    .to_string(),
+            );
+        }
+        delete_backup_version_exact(client, expected_version).await?;
+        // If this process still has the interrupted version enabled locally,
+        // reset that local state too. Its second version-specific delete is a
+        // harmless no-op; the exact remote deletion above is the authority.
+        if client.encryption().backups().are_enabled().await {
+            let _ = client.encryption().backups().disable().await;
+        }
         // Persist the known no-backup state before releasing the teardown veto.
         // If either write fails, custody stays intact and repair is retryable.
         custody.checkpoint().await?;
@@ -352,6 +377,31 @@ pub async fn repair_interrupted_setup(
             tracing::warn!("Recovery repair admission release failed: {error}");
             Ok(())
         }
+    }
+}
+
+async fn current_backup_version(client: &Client) -> Result<Option<String>, String> {
+    match client
+        .send(get_latest_backup_info::v3::Request::new())
+        .await
+    {
+        Ok(response) => Ok(Some(response.version)),
+        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
+        Err(_) => Err("Could not verify the current server backup. Retry when online.".into()),
+    }
+}
+
+async fn delete_backup_version_exact(client: &Client, version: &str) -> Result<(), String> {
+    match client
+        .send(delete_backup_version::v3::Request::new(version.to_string()))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(()),
+        Err(_) => Err(
+            "Could not delete the incomplete server backup. Protected recovery state was retained."
+                .into(),
+        ),
     }
 }
 
@@ -504,6 +554,7 @@ mod tests {
             recovery_key: Some(ISSUED_KEY.into()),
             room_keys_backed_up: true,
             server_mutation_started: true,
+            backup_version: Some("1".into()),
         }
     }
 
@@ -633,6 +684,7 @@ mod tests {
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: true,
+                backup_version: Some("1".into()),
             })),
             fail_save: false,
         };
@@ -640,6 +692,46 @@ mod tests {
         repair_interrupted_setup(&client, &custody).await.unwrap();
 
         assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn repair_never_deletes_a_replacement_backup() {
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v3/room_keys/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
+                "auth_data": { "public_key": "replacement", "signatures": {} },
+                "count": 0,
+                "etag": "replacement",
+                "version": "2"
+            })))
+            .expect(1)
+            .mount(server.server())
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path_regex(r"/_matrix/client/v3/room_keys/version/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(0)
+            .mount(server.server())
+            .await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(PendingRecoverySetup {
+                passphrase: "protected interrupted seed".into(),
+                recovery_key: None,
+                room_keys_backed_up: false,
+                server_mutation_started: true,
+                backup_version: Some("1".into()),
+            })),
+            fail_save: false,
+        };
+
+        assert!(repair_interrupted_setup(&client, &custody).await.is_err());
+        assert!(custody.load().await.unwrap().is_some());
     }
 
     #[tokio::test]
