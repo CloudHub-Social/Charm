@@ -28,13 +28,13 @@ export function useVoiceRecorder() {
     requestStop: () => void;
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
-  const preparing = useRef<{ stream: MediaStream; context: AudioContext | null } | null>(null);
+  const preparing = useRef<{ stream: MediaStream | null; context: AudioContext } | null>(null);
 
   const releaseCapture = useCallback(() => {
     const pending = preparing.current;
     preparing.current = null;
-    pending?.stream.getTracks().forEach((track) => track.stop());
-    if (pending?.context) void pending.context.close().catch(() => {});
+    pending?.stream?.getTracks().forEach((track) => track.stop());
+    if (pending) void pending.context.close().catch(() => {});
     const capture = active.current;
     active.current = null;
     if (!capture) return;
@@ -131,21 +131,23 @@ export function useVoiceRecorder() {
         throw new Error("unsupported");
       const mimeType = MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
       if (!mimeType) throw new Error("unsupported");
+      // Safari/iOS requires Web Audio activation in the initiating gesture.
+      // Invoke resume before awaiting a potentially interactive permission
+      // prompt; metering is best-effort and must never block MediaRecorder.
+      context = new AudioContext();
+      preparing.current = { stream: null, context };
+      void context.resume().catch(() => {});
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (epoch.current !== attempt) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      // Capture ownership begins before the next await: disposal must stop
-      // the microphone even if the browser never resolves audio resume.
-      preparing.current = { stream, context: null };
-      context = new AudioContext();
-      preparing.current.context = context;
-      await context.resume();
-      if (epoch.current !== attempt) {
-        // The superseding discard/unmount already released these resources.
+      const pending = preparing.current;
+      if (!pending || pending.context !== context) {
+        stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      pending.stream = stream;
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
       context.createMediaStreamSource(stream).connect(analyser);

@@ -270,30 +270,28 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("releases the microphone immediately while audio resume is still pending", async () => {
-    let resume!: () => void;
-    resumeContext.mockImplementationOnce(
+  it("activates Web Audio before awaiting microphone permission", async () => {
+    let grant!: (value: MediaStream) => void;
+    resumeContext.mockImplementationOnce(() => new Promise<void>(() => {}));
+    getUserMedia.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          resume = resolve;
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
         }),
     );
-    const { result, unmount } = renderHook(() => useVoiceRecorder());
+    const { result } = renderHook(() => useVoiceRecorder());
     let starting!: Promise<void>;
-    await act(async () => {
+    act(() => {
       starting = result.current.start();
     });
     expect(resumeContext).toHaveBeenCalledOnce();
     expect(FakeRecorder.instances).toHaveLength(0);
-    unmount();
-    expect(stopTrack).toHaveBeenCalledOnce();
-    expect(closeContext).toHaveBeenCalledOnce();
     await act(async () => {
-      resume();
+      grant(stream);
       await starting;
     });
-    expect(stopTrack).toHaveBeenCalledOnce();
-    expect(FakeRecorder.instances).toHaveLength(0);
+    expect(FakeRecorder.instances).toHaveLength(1);
+    expect(result.current.phase).toBe("recording");
   });
 
   it("shows actionable permission denial without opening capture", async () => {
