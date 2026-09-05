@@ -56,6 +56,8 @@ interrupted result write. This implementation and its regressions await CI.
   If another client makes an issued key definitively stale by replacing secret storage,
   expiry conditionally clears only that exact custody record before teardown; unavailable
   or inconclusive validation remains fail-closed.
+  Interrupted-backup repair retains its distributed lease while working, propagates local
+  disable failures, and resumes safely if its exact remote backup was already deleted.
   Real-account interrupted-setup/restart/restore
   verification remains a release gate; CI regressions cover offline retrieval,
   acknowledgement failure, remount, encrypted storage, token isolation, resave,

@@ -346,25 +346,46 @@ pub async fn repair_interrupted_setup(
     let operation = async {
         custody.checkpoint().await?;
         let expected_version = pending.backup_version.as_deref().unwrap();
-        if current_backup_version(client).await?.as_deref() != Some(expected_version) {
-            return Err(
-                "The server backup changed after this setup was interrupted. Protected recovery state was retained; restore the current backup instead."
-                    .to_string(),
-            );
+        match current_backup_version(client).await?.as_deref() {
+            Some(current_version) if current_version == expected_version => {
+                delete_backup_version_exact(client, expected_version).await?;
+            }
+            // A prior repair attempt may have deleted the exact backup and
+            // then lost its local checkpoint. Resume the remaining local
+            // disable/checkpoint/clear steps instead of trapping custody.
+            None => {}
+            Some(_) => {
+                return Err(
+                    "The server backup changed after this setup was interrupted. Protected recovery state was retained; restore the current backup instead."
+                        .to_string(),
+                );
+            }
         }
-        delete_backup_version_exact(client, expected_version).await?;
         // If this process still has the interrupted version enabled locally,
-        // reset that local state too. Its second version-specific delete is a
-        // harmless no-op; the exact remote deletion above is the authority.
+        // reset that local state too. Failure is not safe to ignore: the
+        // persisted client could otherwise skip backup creation on retry.
         if client.encryption().backups().are_enabled().await {
-            let _ = client.encryption().backups().disable().await;
+            client.encryption().backups().disable().await.map_err(|_| {
+                "Could not disable the incomplete local backup. Protected recovery state was retained."
+                    .to_string()
+            })?;
         }
         // Persist the known no-backup state before releasing the teardown veto.
         // If either write fails, custody stays intact and repair is retryable.
         custody.checkpoint().await?;
         custody.clear_claimed().await
     };
-    let result = operation.await;
+    tokio::pin!(operation);
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                if let Err(error) = custody.renew().await {
+                    break Err(error);
+                }
+            }
+        }
+    };
     let release = custody.release().await;
     match (result, release) {
         (Ok(()), Ok(())) => Ok(()),
@@ -687,6 +708,38 @@ mod tests {
             .mock_delete_room_keys_version()
             .ok()
             .expect(1)
+            .mount()
+            .await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(PendingRecoverySetup {
+                passphrase: "protected interrupted seed".into(),
+                recovery_key: None,
+                room_keys_backed_up: false,
+                server_mutation_started: true,
+                backup_version: Some("1".into()),
+            })),
+            fail_save: false,
+        };
+
+        repair_interrupted_setup(&client, &custody).await.unwrap();
+
+        assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn repair_resumes_after_the_exact_backup_was_already_deleted() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server
+            .mock_room_keys_version()
+            .none()
+            .expect(1)
+            .mount()
+            .await;
+        server
+            .mock_delete_room_keys_version()
+            .ok()
+            .expect(0)
             .mount()
             .await;
         let custody = MemoryCustody {
