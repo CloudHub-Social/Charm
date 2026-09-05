@@ -51,3 +51,14 @@ export function resolveInlineShortcodes(text: string): string {
     return emoji ?? match;
   });
 }
+
+/** Expands shortcodes in rendered text without rewriting link or media attributes. */
+export function resolveInlineShortcodesInHtml(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, 4);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    node.textContent = resolveInlineShortcodes(node.textContent ?? "");
+  }
+  return template.innerHTML;
+}

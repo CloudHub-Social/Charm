@@ -20,7 +20,7 @@ import {
   type RoomMemberOption,
   type RoomOption,
 } from "./composerSuggestions";
-import { resolveInlineShortcodes } from "./emojiShortcodes";
+import { resolveInlineShortcodes, resolveInlineShortcodesInHtml } from "./emojiShortcodes";
 import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
 import { MatrixSpoiler } from "./spoilerExtension";
@@ -538,7 +538,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // unescape it here, once we know it isn't resolving to a real command,
     // so the literal `/` survives instead of being sent as `//`.
     const plainText = unescapeLiteralSlash(rawPlainText);
-    const html = resolveInlineShortcodes(editor.getHTML().replace(/^((?:<[^>]+>)*)\/\//, "$1/"));
+    const html = resolveInlineShortcodesInHtml(
+      editor.getHTML().replace(/^((?:<[^>]+>)*)\/\//, "$1/"),
+    );
 
     const mentionIds = collectMentionIds(editor);
     const content = serializeComposerContent(html, plainText, mentionIds);
