@@ -612,6 +612,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           String(args.pollEventId),
         )}/end`,
       );
+    case "confirm_poll_end_synced":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end`,
+      );
     case "send_reply":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/reply`, {
         in_reply_to_event_id: args.inReplyToEventId,

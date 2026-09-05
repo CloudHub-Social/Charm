@@ -9,6 +9,7 @@ const voteOnPoll = vi.fn();
 const endPoll = vi.fn();
 const resendMessage = vi.fn();
 const getPendingPollEnd = vi.fn();
+const confirmPollEndSynced = vi.fn();
 const discardFailedMessage = vi.fn();
 const displayFormats = vi.hoisted(() => ({ clockFormat: "24h" as "12h" | "24h" }));
 
@@ -26,6 +27,7 @@ vi.mock("@/lib/matrix", async () => {
     endPoll: (...args: unknown[]) => endPoll(...args),
     resendMessage: (...args: unknown[]) => resendMessage(...args),
     getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
+    confirmPollEndSynced: (...args: unknown[]) => confirmPollEndSynced(...args),
     discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   };
 });
@@ -95,6 +97,7 @@ beforeEach(() => {
   endPoll.mockReset().mockResolvedValue("txn-end");
   resendMessage.mockReset().mockResolvedValue(undefined);
   getPendingPollEnd.mockReset().mockResolvedValue(null);
+  confirmPollEndSynced.mockReset().mockResolvedValue(undefined);
   discardFailedMessage.mockReset().mockResolvedValue(true);
 });
 
@@ -194,6 +197,9 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
     view.rerender(
       <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />,
+    );
+    await waitFor(() =>
+      expect(confirmPollEndSynced).toHaveBeenCalledWith("!room:example.org", "$poll"),
     );
     expect(screen.getByText(/Poll closed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();

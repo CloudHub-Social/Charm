@@ -36,7 +36,8 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
-    create_poll_impl, end_poll_impl, pending_poll_end_impl, vote_on_poll_impl,
+    confirm_poll_end_synced_impl, create_poll_impl, end_poll_impl, pending_poll_end_impl,
+    vote_on_poll_impl,
 };
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
@@ -200,7 +201,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/rooms/{room_id}/polls/{poll_event_id}/end",
-            get(get_pending_poll_end).post(end_poll),
+            get(get_pending_poll_end)
+                .post(end_poll)
+                .delete(confirm_poll_end_synced),
         )
         .route("/api/rooms/{room_id}/reply", post(send_reply))
         .route(
@@ -3695,6 +3698,20 @@ async fn get_pending_poll_end(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(transaction_id))
+}
+
+async fn confirm_poll_end_synced(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    confirm_poll_end_synced_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]

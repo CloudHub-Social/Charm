@@ -572,6 +572,11 @@ export function getPendingPollEnd(
   return invokeMatrix("get_pending_poll_end", { roomId, pollEventId });
 }
 
+/** Releases the shared close lock after the synced timeline reports the poll ended. */
+export function confirmPollEndSynced(roomId: string, pollEventId: string): Promise<void> {
+  return invokeMatrix("confirm_poll_end_synced", { roomId, pollEventId });
+}
+
 /** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */
 export function runCommand(
   roomId: string,

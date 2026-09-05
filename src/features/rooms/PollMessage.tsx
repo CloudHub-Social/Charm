@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import {
+  confirmPollEndSynced,
   discardFailedMessage,
   endPoll,
   getPendingPollEnd,
@@ -65,7 +67,12 @@ export function PollMessage({
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const acknowledged = pollEnded ? undefined : acknowledgedPollCloses.get(closeKey);
-    if (pollEnded) acknowledgedPollCloses.delete(closeKey);
+    if (pollEnded) {
+      acknowledgedPollCloses.delete(closeKey);
+      if (own && message.event_id.startsWith("$")) {
+        void confirmPollEndSynced(roomId, message.event_id).catch(logAndIgnore);
+      }
+    }
     setEnding(Boolean(acknowledged));
     setEndRequestPending(false);
     setEndTransactionId(acknowledged ?? null);
@@ -73,7 +80,7 @@ export function PollMessage({
     setEndFailed(false);
     setEndRecheck(0);
     setError(null);
-  }, [closeKey, pollEnded]);
+  }, [closeKey, message.event_id, own, pollEnded, roomId]);
   useEffect(() => {
     if (
       !own ||

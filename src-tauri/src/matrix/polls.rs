@@ -18,6 +18,7 @@ use matrix_sdk::ruma::{EventId, RoomId};
 use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use tauri::{Manager, State};
 
@@ -28,11 +29,18 @@ const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 20;
 static POLL_MUTATION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+static ACKNOWLEDGED_POLL_ENDS: LazyLock<tokio::sync::Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingPollEnd {
     transaction_id: String,
     failed: bool,
+}
+
+fn poll_end_key(client: &Client, room_id: &RoomId, poll_id: &EventId) -> Result<String, String> {
+    let user_id = client.user_id().ok_or("No active Matrix account")?;
+    Ok(format!("{user_id}\0{room_id}\0{poll_id}"))
 }
 
 async fn pending_poll_end(
@@ -72,7 +80,38 @@ pub async fn pending_poll_end_impl(
 ) -> Result<Option<PendingPollEnd>, String> {
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
-    pending_poll_end(&room, &poll_event_id).await
+    if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
+        if !pending.failed {
+            ACKNOWLEDGED_POLL_ENDS.lock().await.insert(
+                poll_end_key(client, room.room_id(), &poll_event_id)?,
+                pending.transaction_id.clone(),
+            );
+        }
+        return Ok(Some(pending));
+    }
+    Ok(ACKNOWLEDGED_POLL_ENDS
+        .lock()
+        .await
+        .get(&poll_end_key(client, room.room_id(), &poll_event_id)?)
+        .cloned()
+        .map(|transaction_id| PendingPollEnd {
+            transaction_id,
+            failed: false,
+        }))
+}
+
+pub async fn confirm_poll_end_synced_impl(
+    client: &Client,
+    room_id: &str,
+    poll_event_id: &str,
+) -> Result<(), String> {
+    let room_id = RoomId::parse(room_id).map_err(|error| error.to_string())?;
+    let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    ACKNOWLEDGED_POLL_ENDS
+        .lock()
+        .await
+        .remove(&poll_end_key(client, &room_id, &poll_event_id)?);
+    Ok(())
 }
 
 pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
@@ -174,7 +213,10 @@ pub async fn vote_on_poll_impl(
     }
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
-    if pending_poll_end(&room, &poll_event_id).await?.is_some() {
+    if pending_poll_end_impl(client, room_id, poll_event_id.as_str())
+        .await?
+        .is_some()
+    {
         return Err("This poll has a queued close. Wait for it to settle before voting.".into());
     }
     let content = UnstablePollResponseEventContent::new(vec![answer_id], poll_event_id);
@@ -194,16 +236,22 @@ pub async fn end_poll_impl(
     let _guard = POLL_MUTATION_LOCK.lock().await;
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
-    if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
+    if let Some(pending) = pending_poll_end_impl(client, room_id, poll_event_id.as_str()).await? {
         return Ok(pending.transaction_id);
     }
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
-    send_and_capture_transaction_id(
+    let transaction_id = send_and_capture_transaction_id(
         client,
         &room,
         AnyMessageLikeEventContent::UnstablePollEnd(content),
     )
-    .await
+    .await?;
+    ACKNOWLEDGED_POLL_ENDS
+        .lock()
+        .await
+        .insert(close_key, transaction_id.clone());
+    Ok(transaction_id)
 }
 
 #[tauri::command]
@@ -249,6 +297,16 @@ pub async fn get_pending_poll_end(
     pending_poll_end_impl(&client, &room_id, &poll_event_id).await
 }
 
+#[tauri::command]
+pub async fn confirm_poll_end_synced(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    poll_event_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    confirm_poll_end_synced_impl(&client, &room_id, &poll_event_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +334,37 @@ mod tests {
         );
         let (echoes, _) = room.send_queue().subscribe().await.unwrap();
         assert_eq!(echoes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn acknowledged_close_is_shared_until_timeline_confirmation() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!shared-poll:example.org");
+        let poll_id = event_id!("$shared-poll:example.org");
+        server.sync_joined_room(&client, room_id).await;
+        ACKNOWLEDGED_POLL_ENDS.lock().await.insert(
+            poll_end_key(&client, room_id, poll_id).unwrap(),
+            "shared-transaction".into(),
+        );
+
+        let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.transaction_id, "shared-transaction");
+        confirm_poll_end_synced_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap();
+        assert!(
+            pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
