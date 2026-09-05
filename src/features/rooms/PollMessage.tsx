@@ -32,6 +32,8 @@ export function PollMessage({
 }: PollMessageProps) {
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
+  const hasPoll = poll !== undefined;
+  const pollEnded = poll?.ended ?? false;
   const shouldRestoreEnd = Boolean(
     own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),
   );
@@ -52,10 +54,10 @@ export function PollMessage({
   useEffect(() => {
     if (
       !own ||
-      !message.poll ||
+      !hasPoll ||
       !message.event_id.startsWith("$") ||
       endRequestPending ||
-      (endTransactionId !== null && !message.poll.ended)
+      (endTransactionId !== null && !pollEnded)
     ) {
       setRestoringEndState(false);
       return;
@@ -72,7 +74,7 @@ export function PollMessage({
           setError(null);
           return;
         }
-        if (message.poll?.ended && pending.failed) {
+        if (pollEnded && pending.failed) {
           try {
             await discardFailedMessage(roomId, pending.transaction_id);
             if (!active) return;
@@ -99,7 +101,7 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [endRequestPending, endTransactionId, message.event_id, message.poll, own, roomId]);
+  }, [endRequestPending, endTransactionId, hasPoll, message.event_id, own, pollEnded, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;
