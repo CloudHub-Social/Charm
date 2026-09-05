@@ -367,6 +367,18 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // was just saved above.
                 let _ = persistence::clear_session(&account_key);
 
+                if let Err(message) = super::auth::install_session_callbacks(
+                    &client,
+                    &account_key,
+                    &homeserver_url,
+                ) {
+                    let _ = app.emit(
+                        "qr_login:progress",
+                        QrLoginProgressEvent::Error { message },
+                    );
+                    return;
+                }
+
                 super::search::delete_for_superseded_client(&app, previous_client.as_ref()).await;
                 super::actions::clear_room_upgrade_queue_barriers().await;
                 *state.client.lock().await = Some(client.clone());
