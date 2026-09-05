@@ -39,6 +39,13 @@ impl PendingRecoverySetup {
     pub fn has_same_issued_key(&self, other: &Self) -> bool {
         self.recovery_key.is_some() && self.recovery_key == other.recovery_key
     }
+
+    pub fn has_same_custody(&self, other: &Self) -> bool {
+        self.passphrase == other.passphrase
+            && self.recovery_key == other.recovery_key
+            && self.room_keys_backed_up == other.room_keys_backed_up
+            && self.server_mutation_started == other.server_mutation_started
+    }
 }
 
 fn secret_storage_error_is_definitively_stale(
@@ -67,6 +74,22 @@ pub async fn issued_key_is_stale(
         Ok(_) => Ok(false),
         Err(error) if secret_storage_error_is_definitively_stale(&error) => Ok(true),
         Err(_) => Err("Could not validate pending recovery. Retry when online.".into()),
+    }
+}
+
+pub async fn pending_recovery_is_replaced(
+    client: &Client,
+    pending: &PendingRecoverySetup,
+) -> Result<bool, String> {
+    if pending.has_issued_key() {
+        return issued_key_is_stale(client, pending).await;
+    }
+    if !pending.server_mutation_started {
+        return Ok(false);
+    }
+    match pending_seed_state(client, pending).await? {
+        PendingSeedState::Replaced => Ok(true),
+        PendingSeedState::Disabled | PendingSeedState::Usable(_) => Ok(false),
     }
 }
 
@@ -300,6 +323,10 @@ pub async fn setup_with_custody(
         let summary = verification::enable_recovery_impl(client, Some(&pending.passphrase))
             .await
             .map_err(repairable_setup_error)?;
+        // Keep the distributed writer lease until the post-SSSS crypto state
+        // is durably snapshotted. A replacement deployment must not fence this
+        // instance in the gap between the remote mutation and persistence.
+        custody.checkpoint().await.map_err(repairable_setup_error)?;
         pending.recovery_key = Some(summary.recovery_key.clone());
         pending.room_keys_backed_up = summary.room_keys_backed_up;
         // If this final write fails, the already-durable seed can reopen SSSS.
@@ -850,13 +877,17 @@ mod tests {
     #[tokio::test]
     async fn repair_clears_only_stale_preissuance_custody_after_replacement() {
         let (_server, client) = client_with_current_recovery_key().await;
+        let pending = PendingRecoverySetup {
+            passphrase: "superseded interrupted seed".into(),
+            recovery_key: None,
+            room_keys_backed_up: false,
+            server_mutation_started: true,
+        };
+        assert!(pending_recovery_is_replaced(&client, &pending)
+            .await
+            .unwrap());
         let custody = MemoryCustody {
-            pending: Mutex::new(Some(PendingRecoverySetup {
-                passphrase: "superseded interrupted seed".into(),
-                recovery_key: None,
-                room_keys_backed_up: false,
-                server_mutation_started: true,
-            })),
+            pending: Mutex::new(Some(pending)),
             fail_save: false,
         };
 

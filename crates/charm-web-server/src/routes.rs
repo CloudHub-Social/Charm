@@ -5873,25 +5873,6 @@ async fn setup_recovery(
     .await
     .map_err(|_| ApiError::bad_request("Recovery setup task failed."))?
     .map_err(ApiError::bad_request)?;
-    if let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
-        &state.persistence,
-        session.client.matrix_auth().session(),
-        session.persisted_crypto.as_ref(),
-        jar.get(SESSION_COOKIE),
-    ) {
-        if persistence
-            .snapshot_crypto_store(
-                cookie.value(),
-                &matrix_session,
-                Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
-            )
-            .await
-            .is_err()
-        {
-            // Never replace an issued recovery credential with a later error.
-            tracing::error!("recovery setup succeeded but durable crypto snapshot failed");
-        }
-    }
     Ok(([("cache-control", "no-store")], Json(summary)))
 }
 

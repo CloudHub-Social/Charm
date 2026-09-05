@@ -789,7 +789,7 @@ impl PersistenceStore {
             .await
     }
 
-    /// Clears a definitively stale issued credential after the live Matrix
+    /// Clears definitively replaced recovery custody after the live Matrix
     /// client has proved it no longer matches the account's current SSSS.
     /// The compare-and-swap identity prevents that validation from deleting
     /// a newer credential written by a concurrent setup request.
@@ -810,7 +810,7 @@ impl PersistenceStore {
             let Some(current) = &entry.pending_recovery else {
                 return Ok(());
             };
-            if !current.has_same_issued_key(stale) {
+            if !current.has_same_custody(stale) {
                 return Err("Pending recovery changed; retry sign out.".into());
             }
             entry.pending_recovery = None;
@@ -2009,12 +2009,12 @@ impl PersistenceStore {
             if let Some(pending) = entry
                 .pending_recovery
                 .as_ref()
-                .filter(|pending| pending.has_issued_key())
+                .filter(|pending| pending.requires_custody())
             {
-                // A valid issued key normally vetoes expiry until acknowledgement.
-                // A key made unusable by another client's secret-storage replacement
-                // can never be acknowledged, so validate it with the encrypted
-                // live/restored client and CAS-clear only that exact stale record.
+                // Valid recovery custody vetoes expiry. Custody made unusable
+                // by another client's secret-storage replacement can never be
+                // completed, so validate it with the encrypted live/restored
+                // client and CAS-clear only that exact stale record.
                 let client = match sessions.get(&entry.token).await {
                     Some(session) => Some(session.client.clone()),
                     None => {
@@ -2028,8 +2028,10 @@ impl PersistenceStore {
                     );
                     continue;
                 };
-                match charm_lib::matrix::recovery_custody::issued_key_is_stale(&client, pending)
-                    .await
+                match charm_lib::matrix::recovery_custody::pending_recovery_is_replaced(
+                    &client, pending,
+                )
+                .await
                 {
                     Ok(true) => {
                         if let Err(error) = self

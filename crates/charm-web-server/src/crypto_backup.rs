@@ -37,6 +37,12 @@ const DOPPLER_DOWNLOAD_URL: &str = "https://api.doppler.com/v3/configs/config/se
 const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 const RETAIN_COMMITTED_GENERATIONS: usize = 3;
 const ACTIVE_WRITER_PATH: &str = "control/active-writer";
+
+fn cas_retry_delay(attempt: usize) -> Duration {
+    let base_ms = 10_u64 << attempt.min(4);
+    let jitter_ms = u64::from(rand::random::<u8>() % 11);
+    Duration::from_millis(base_ms + jitter_ms)
+}
 const WRITER_MUTATION_LEASE_MS: u64 = 120_000;
 const WRITER_ACTIVATION_RETRIES: usize = 150;
 // Only the crypto database is irreplaceable. Room/state/event-cache/media
@@ -198,7 +204,7 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
-        for _ in 0..WRITER_ACTIVATION_RETRIES {
+        for attempt in 0..WRITER_ACTIVATION_RETRIES {
             let current = self.active_writer_fence().await?;
             if current
                 .as_ref()
@@ -218,6 +224,7 @@ impl CryptoBackupStore {
             {
                 return Ok(());
             }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
         Err("timed out waiting for an active recovery mutation before writer handoff".into())
     }
@@ -455,7 +462,7 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
-        for _ in 0..5 {
+        for attempt in 0..5 {
             let current = self
                 .active_writer_fence()
                 .await?
@@ -479,6 +486,7 @@ impl CryptoBackupStore {
             {
                 return Ok(());
             }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
         Err("Crypto writer ownership changed concurrently; retry recovery setup.".into())
     }
@@ -509,7 +517,7 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
-        for _ in 0..5 {
+        for attempt in 0..5 {
             let Some((mut fence, version)) = self.active_writer_fence().await? else {
                 return Ok(());
             };
@@ -524,6 +532,7 @@ impl CryptoBackupStore {
             {
                 return Ok(());
             }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
         Err("Could not release the recovery writer lease; it will expire safely.".into())
     }
