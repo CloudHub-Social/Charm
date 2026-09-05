@@ -548,7 +548,7 @@ describe("Composer", () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         body: "  indented\n\n",
-        formattedBody: "<pre><code>  indented\n\n</code></pre><p></p>",
+        formattedBody: "<pre><code>  indented\n\n</code></pre><p></p><p></p>",
       }),
     );
   });

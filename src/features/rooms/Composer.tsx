@@ -51,7 +51,15 @@ function resolveEditorPlainShortcodes(editor: Editor): string {
     };
   }
 
-  return generateText(resolveNode(editor.getJSON()), editor.extensionManager.extensions);
+  const document = resolveNode(editor.getJSON());
+  const plainText = generateText(document, editor.extensionManager.extensions);
+  const trailingNode = document.content?.at(-1);
+  // TipTap keeps an empty paragraph after a terminal code block so the
+  // cursor can exit it. Remove only that structural block separator; a
+  // broad trim would corrupt whitespace authored inside the code block.
+  return trailingNode?.type === "paragraph" && !trailingNode.content?.length
+    ? plainText.replace(/\n\n$/, "")
+    : plainText;
 }
 
 interface ComposerProps {
