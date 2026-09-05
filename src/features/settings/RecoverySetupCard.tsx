@@ -134,7 +134,7 @@ export function RecoverySetupCard({
       void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
     } catch {
       setRepairError(
-        "Could not delete the incomplete backup. Protected recovery state was retained; try again when online.",
+        "Could not repair the incomplete setup. Protected recovery state was retained; try again when online.",
       );
     } finally {
       setRepairing(false);
@@ -265,9 +265,9 @@ export function RecoverySetupCard({
           <DialogHeader>
             <DialogTitle>Repair incomplete recovery setup?</DialogTitle>
             <DialogDescription>
-              Charm deletes a server backup only when it can prove that exact backup belongs to the
-              interrupted attempt. If ownership is ambiguous, Charm preserves the server backup and
-              clears only its local marker so you can restore the backup or sign out.
+              Charm lets the Matrix SDK delete a server backup only when its protected local key
+              identifies that exact backup. Otherwise Charm preserves the server backup and clears
+              only its local marker so you can restore the backup or sign out.
             </DialogDescription>
           </DialogHeader>
           {repairError && (

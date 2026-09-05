@@ -40,9 +40,9 @@ interrupted result write. This implementation and its regressions await CI.
   session/device-data removal. A protected write failure prevents setup from
   starting. If a crash creates a server backup before its usable key reaches the
   durable snapshot, the resumed flow offers an explicit repair confirmation that
-  deletes only the exact version captured from matrix-sdk's backup-create response for
-  that interrupted attempt. Repair refuses
-  if the server advertises a replacement version, checkpoints the resulting state,
+  lets matrix-sdk delete the backup only when its persisted local key identifies the
+  exact version. If that identity is unavailable, repair preserves the server backup
+  and clears only Charm's local custody marker. Repair checkpoints the resulting state
   and preserves custody on any uncertain failure. Backups with an issued recovery key
   are never eligible for repair. The web repair POST also enforces the configured
   origin allowlist before session lookup. The web deployment must provide encrypted crypto snapshots and an
@@ -57,9 +57,9 @@ interrupted result write. This implementation and its regressions await CI.
   expiry conditionally clears only that exact custody record before teardown; unavailable
   or inconclusive validation remains fail-closed.
   Interrupted-backup repair retains its distributed lease while working, propagates local
-  disable failures, and resumes safely if its exact remote backup was already deleted. If a
-  committed create request lost its response and ownership is ambiguous, repair preserves the
-  server backup and clears only Charm's local marker so restore and sign-out remain available.
+  disable failures, and never chooses a remote backup from a latest-version query. If a committed
+  create request lost its response and local identity is unavailable, repair preserves the server
+  backup and clears only Charm's local marker so restore and sign-out remain available.
   Real-account interrupted-setup/restart/restore
   verification remains a release gate; CI regressions cover offline retrieval,
   acknowledgement failure, remount, encrypted storage, token isolation, resave,

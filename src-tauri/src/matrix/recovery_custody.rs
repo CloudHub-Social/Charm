@@ -1,10 +1,6 @@
 //! Pending recovery credentials stay in existing protected storage until acknowledgement.
 
 pub use async_trait::async_trait;
-use matrix_sdk::ruma::api::{
-    client::backup::{delete_backup_version, get_latest_backup_info},
-    error::ErrorKind,
-};
 use matrix_sdk::{encryption::recovery::RecoveryState, Client};
 use rand::{distr::Alphanumeric, RngExt};
 use serde::{Deserialize, Serialize};
@@ -22,8 +18,6 @@ pub struct PendingRecoverySetup {
     room_keys_backed_up: bool,
     #[serde(default)]
     server_mutation_started: bool,
-    #[serde(default)]
-    backup_version: Option<String>,
 }
 
 impl PendingRecoverySetup {
@@ -212,7 +206,6 @@ pub async fn setup_with_custody(
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: false,
-                backup_version: None,
             };
             pending
         }
@@ -230,8 +223,10 @@ pub async fn setup_with_custody(
         if !client.encryption().backups().are_enabled().await {
             match client.encryption().recovery().enable_backup().await {
                 Ok(()) => {
-                    pending.backup_version = Some(created_backup_version(client).await?);
-                    custody.save_claimed(&pending).await?;
+                    // matrix-sdk durably stores the version returned by the
+                    // create request with the local backup key. Keep custody
+                    // active until the following storage checkpoint instead
+                    // of reaching through a test-only SDK accessor.
                 }
                 Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
                     if resumed_after_server_mutation {
@@ -319,9 +314,10 @@ pub async fn acknowledge(
     custody.save(None).await
 }
 
-/// Repairs interrupted setup without guessing backup ownership. A known exact
-/// backup is deleted; an ambiguous create response preserves the server backup
-/// and clears only Charm's local marker. Issued keys are never eligible.
+/// Repairs interrupted setup without guessing backup ownership. matrix-sdk may
+/// delete a backup only when its persisted local key identifies the exact
+/// version; otherwise Charm preserves the server backup and clears only its
+/// local custody marker. Issued keys are never eligible.
 pub async fn repair_interrupted_setup(
     client: &Client,
     custody: &dyn RecoveryCustody,
@@ -339,34 +335,10 @@ pub async fn repair_interrupted_setup(
         return Err("Pending recovery changed before repair started.".into());
     }
     let operation = async {
-        let Some(expected_version) = pending.backup_version.as_deref() else {
-            // A committed create request with a lost response is inherently
-            // ambiguous: Matrix provides no idempotency key, and the SDK does
-            // not expose the generated key before it receives the response.
-            // Never delete the currently advertised backup on a guess. The
-            // user-confirmed repair clears only Charm's local custody marker,
-            // allowing restore/sign-out while preserving a cross-client backup.
-            return custody.clear_claimed().await;
-        };
-        custody.checkpoint().await?;
-        match current_backup_version(client).await?.as_deref() {
-            Some(current_version) if current_version == expected_version => {
-                delete_backup_version_exact(client, expected_version).await?;
-            }
-            // A prior repair attempt may have deleted the exact backup and
-            // then lost its local checkpoint. Resume the remaining local
-            // disable/checkpoint/clear steps instead of trapping custody.
-            None => {}
-            Some(_) => {
-                return Err(
-                    "The server backup changed after this setup was interrupted. Protected recovery state was retained; restore the current backup instead."
-                        .to_string(),
-                );
-            }
-        }
-        // If this process still has the interrupted version enabled locally,
-        // reset that local state too. Failure is not safe to ignore: the
-        // persisted client could otherwise skip backup creation on retry.
+        // Only matrix-sdk's persisted local key/version pair is authoritative
+        // enough to select a remote backup for deletion. If no local backup is
+        // enabled (including a create response lost before persistence), do
+        // not query and delete whichever version happens to be latest.
         if client.encryption().backups().are_enabled().await {
             client.encryption().backups().disable().await.map_err(|_| {
                 "Could not disable the incomplete local backup. Protected recovery state was retained."
@@ -397,46 +369,6 @@ pub async fn repair_interrupted_setup(
             tracing::warn!("Recovery repair admission release failed: {error}");
             Ok(())
         }
-    }
-}
-
-async fn current_backup_version(client: &Client) -> Result<Option<String>, String> {
-    match client
-        .send(get_latest_backup_info::v3::Request::new())
-        .await
-    {
-        Ok(response) => Ok(Some(response.version)),
-        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
-        Err(_) => Err("Could not verify the current server backup. Retry when online.".into()),
-    }
-}
-
-/// Reads the version saved by matrix-sdk from the create response itself.
-/// Unlike a subsequent latest-version GET, this identity cannot be replaced
-/// by another client between creation and our custody checkpoint.
-async fn created_backup_version(client: &Client) -> Result<String, String> {
-    let olm_machine = client.olm_machine_for_testing().await;
-    let olm_machine = olm_machine
-        .as_ref()
-        .ok_or("The new backup version could not be identified safely.")?;
-    olm_machine
-        .backup_machine()
-        .backup_version()
-        .await
-        .ok_or_else(|| "The new backup version could not be identified safely.".to_string())
-}
-
-async fn delete_backup_version_exact(client: &Client, version: &str) -> Result<(), String> {
-    match client
-        .send(delete_backup_version::v3::Request::new(version.to_string()))
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(()),
-        Err(_) => Err(
-            "Could not delete the incomplete server backup. Protected recovery state was retained."
-                .into(),
-        ),
     }
 }
 
@@ -589,7 +521,6 @@ mod tests {
             recovery_key: Some(ISSUED_KEY.into()),
             room_keys_backed_up: true,
             server_mutation_started: true,
-            backup_version: Some("1".into()),
         }
     }
 
@@ -698,13 +629,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_after_backup_creation_can_delete_the_incomplete_backup() {
+    async fn repair_preserves_a_backup_without_a_live_local_identity() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
         server
             .mock_room_keys_version()
             .exists()
-            .expect(1)
+            .expect(0)
             .mount()
             .await;
         server
@@ -719,7 +650,6 @@ mod tests {
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: true,
-                backup_version: Some("1".into()),
             })),
             fail_save: false,
         };
@@ -751,7 +681,6 @@ mod tests {
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: true,
-                backup_version: None,
             })),
             fail_save: false,
         };
@@ -762,13 +691,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repair_resumes_after_the_exact_backup_was_already_deleted() {
+    async fn repair_does_not_require_a_remote_backup() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
         server
             .mock_room_keys_version()
             .none()
-            .expect(1)
+            .expect(0)
             .mount()
             .await;
         server
@@ -783,7 +712,6 @@ mod tests {
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: true,
-                backup_version: Some("1".into()),
             })),
             fail_save: false,
         };
@@ -794,7 +722,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repair_never_deletes_a_replacement_backup() {
+    async fn repair_never_queries_or_deletes_a_replacement_backup() {
         use wiremock::matchers::{method, path, path_regex};
         use wiremock::{Mock, ResponseTemplate};
 
@@ -809,7 +737,7 @@ mod tests {
                 "etag": "replacement",
                 "version": "2"
             })))
-            .expect(1)
+            .expect(0)
             .mount(server.server())
             .await;
         Mock::given(method("DELETE"))
@@ -824,13 +752,12 @@ mod tests {
                 recovery_key: None,
                 room_keys_backed_up: false,
                 server_mutation_started: true,
-                backup_version: Some("1".into()),
             })),
             fail_save: false,
         };
 
-        assert!(repair_interrupted_setup(&client, &custody).await.is_err());
-        assert!(custody.load().await.unwrap().is_some());
+        repair_interrupted_setup(&client, &custody).await.unwrap();
+        assert!(custody.load().await.unwrap().is_none());
     }
 
     #[tokio::test]
