@@ -615,7 +615,12 @@ mod tests {
     async fn restart_after_backup_creation_can_delete_the_incomplete_backup() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
-        server.mock_room_keys_version().exists().expect(1).mount().await;
+        server
+            .mock_room_keys_version()
+            .exists()
+            .expect(1)
+            .mount()
+            .await;
         server
             .mock_delete_room_keys_version()
             .ok()
