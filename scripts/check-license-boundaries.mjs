@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import { LanguageVariant, SyntaxKind } from "typescript/unstable/ast";
+import { createScanner } from "typescript/unstable/ast/scanner";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkerRelativePath = path.relative(repositoryRoot, fileURLToPath(import.meta.url));
@@ -23,21 +24,14 @@ function stripPackagingComments(content, relativePath) {
   const withoutCommentLines = content.replace(/^\s*(?:#|\/\/|@?rem\b).*$/gim, "");
   if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutCommentLines;
 
-  const languageVariant = /x$/i.test(relativePath)
-    ? (ts.LanguageVariant?.JSX ?? 1)
-    : (ts.LanguageVariant?.Standard ?? 0);
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    false,
-    languageVariant,
-    withoutCommentLines,
-  );
+  const languageVariant = /x$/i.test(relativePath) ? LanguageVariant.JSX : LanguageVariant.Standard;
+  const scanner = createScanner(false, languageVariant, withoutCommentLines);
   let executableContent = "";
 
-  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFileToken; token = scanner.scan()) {
     if (
-      token !== ts.SyntaxKind.SingleLineCommentTrivia &&
-      token !== ts.SyntaxKind.MultiLineCommentTrivia
+      token !== SyntaxKind.SingleLineCommentTrivia &&
+      token !== SyntaxKind.MultiLineCommentTrivia
     ) {
       executableContent += scanner.getTokenText();
     }
