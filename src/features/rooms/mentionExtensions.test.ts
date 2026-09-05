@@ -48,7 +48,10 @@ describe("UserMention", () => {
 
   it("parses its own rendered anchor back into a mention node's attrs", () => {
     const anchor = document.createElement("a");
-    anchor.setAttribute("href", "https://matrix.to/#/%40alice%3Aexample.org");
+    anchor.setAttribute(
+      "href",
+      "https://matrix.to/#/%40alice%3Aexample.org?action=chat&via=example.org",
+    );
     anchor.setAttribute("data-mx-pill", "true");
     anchor.textContent = "@Alice";
 

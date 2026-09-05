@@ -409,7 +409,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           !event.isComposing &&
           !view.composing &&
           mode === "send" &&
-          view.state.doc.textContent.trim().length === 0 &&
+          view.state.doc
+            .textBetween(0, view.state.doc.content.size, "\n", "\uFFFC")
+            .trim().length === 0 &&
           onEditLastMessage?.()
         ) {
           event.preventDefault();

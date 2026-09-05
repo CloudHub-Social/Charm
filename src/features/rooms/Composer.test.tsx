@@ -200,6 +200,39 @@ describe("Composer", () => {
     expect(onEditLastMessage).toHaveBeenCalledOnce();
   });
 
+  it("does not treat a mention-only draft as empty on ArrowUp", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-mention:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.paste(editable, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/html"
+            ? '<p><a data-mx-pill="true" href="https://matrix.to/#/%40alice%3Aexample.org">Alice</a></p>'
+            : type === "text/plain"
+              ? "Alice"
+              : "",
+        types: ["text/html", "text/plain"],
+      },
+    });
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("Alice");
+  });
+
   it.each(["reply", "edit"] as const)(
     "does not replace an empty %s composer on ArrowUp",
     async (mode) => {

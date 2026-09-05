@@ -31,7 +31,7 @@ function parseMentionAnchor(idPrefix: string) {
     if (!href.startsWith(permalinkPrefix)) return false;
     let id: string;
     try {
-      id = decodeURIComponent(href.slice(permalinkPrefix.length));
+      id = decodeURIComponent(href.slice(permalinkPrefix.length).split("?")[0]);
     } catch {
       return false;
     }
