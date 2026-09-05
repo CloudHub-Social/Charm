@@ -545,7 +545,27 @@ describe("PollMessage", () => {
 
     expect(await screen.findByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
     expect(getPendingPollVote).toHaveBeenCalledWith("!room:example.org", "$poll");
+    expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Discard vote" })).toBeInTheDocument();
+  });
+
+  it("retries a transient pending-vote lookup failure while the row stays mounted", async () => {
+    vi.useFakeTimers();
+    getPendingPollVote
+      .mockRejectedValueOnce(new Error("temporary transport failure"))
+      .mockResolvedValueOnce({
+        transaction_id: "txn-restored-vote",
+        answer_id: "0",
+        failed: true,
+      });
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own={false} />);
+
+    await act(async () => Promise.resolve());
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+    expect(getPendingPollVote).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Retry vote" })).toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it("discards a failed vote after another client closes the poll", async () => {

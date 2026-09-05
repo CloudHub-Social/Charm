@@ -85,6 +85,7 @@ export function PollMessage({
       return;
     }
     let active = true;
+    let retryTimer: number | undefined;
     setRestoringVoteState(true);
     void getPendingPollVote(roomId, message.event_id)
       .then(async (pending) => {
@@ -126,14 +127,19 @@ export function PollMessage({
         if (pending.failed) setError("Your vote could not be sent.");
       })
       .catch(() => {
-        // Keep the current admission state until a later timeline revision
-        // can reconcile this poll's send queue.
+        // An idle room may not produce another timeline revision. Keep
+        // retrying the local durable queue lookup until recovery state is
+        // visible again or this row unmounts.
+        if (active) {
+          retryTimer = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);
+        }
       })
       .finally(() => {
         if (active) setRestoringVoteState(false);
       });
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [hasPoll, message.event_id, pollEnded, pollRevision, recoveryOnly, roomId, voteRecheck]);
   useEffect(() => {
@@ -282,7 +288,7 @@ export function PollMessage({
   }
 
   async function retryVote() {
-    if (!voteTransactionId || !voteFailed) return;
+    if (message.redacted || !voteTransactionId || !voteFailed) return;
     setRestoringVoteState(true);
     try {
       const retried = await retryPollVote(roomId, message.event_id, voteTransactionId);
@@ -328,6 +334,7 @@ export function PollMessage({
     if (
       !canEndPoll ||
       ended ||
+      (message.redacted && retryingFailedEnd) ||
       (mutationsDisabled && !retryingFailedEnd) ||
       !hasRealEventId ||
       restoringEndState ||
@@ -402,7 +409,7 @@ export function PollMessage({
         {voteFailed && voteTransactionId && (
           <div className="flex flex-wrap items-center gap-2">
             <p>Your poll vote failed to send.</p>
-            {!pollEnded && (
+            {!pollEnded && !message.redacted && (
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
@@ -425,14 +432,16 @@ export function PollMessage({
         {endFailed && endTransactionId && (
           <div className="flex flex-wrap items-center gap-2">
             <p>Your poll close failed to send.</p>
-            <button
-              type="button"
-              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
-              disabled={endRequestPending}
-              onClick={() => void end()}
-            >
-              Retry close
-            </button>
+            {!message.redacted && (
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                disabled={endRequestPending}
+                onClick={() => void end()}
+              >
+                Retry close
+              </button>
+            )}
             <button
               type="button"
               className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
