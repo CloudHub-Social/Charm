@@ -2482,6 +2482,21 @@ async fn logout(
                 .await
                 .map_err(ApiError::bad_request)?;
         }
+        // Authentication must end before the success response, including
+        // for sessions without a durable teardown marker. Slow custody work
+        // remains protected by the session lock below, but cannot leave the
+        // old cookie usable while detached cleanup is waiting for that lock.
+        let live_session = state.sessions.invalidate_for_logout(&token).await;
+        if let Some(session) = &live_session {
+            if let Some(handle) = session
+                .sync_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                handle.abort();
+            }
+        }
         // Teardown is a security boundary, not request-scoped work. Axum may
         // cancel this handler as soon as the initiating tab disconnects; keep
         // local revocation, sync abortion, and persisted-token deletion owned
@@ -2490,16 +2505,9 @@ async fn logout(
         // response while the bounded revocation attempt finishes.
         let state = state.clone();
         let _cleanup = tokio::spawn(async move {
-            if let Some(session) = state.sessions.remove(&token).await {
+            if let Some(session) = live_session {
+                let _recovery_guard = session.recovery_setup_lock.lock().await;
                 let live_crypto = session.persisted_crypto.clone();
-                if let Some(handle) = session
-                    .sync_handle
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                {
-                    handle.abort();
-                }
                 let revoked = crate::persistence::revoke_matrix_session(&session.client).await;
                 if let Some(persistence) = &state.persistence {
                     let durable_token_exists = persistence

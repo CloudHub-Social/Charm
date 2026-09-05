@@ -1306,6 +1306,18 @@ impl SessionStore {
         self.remove_matching(token, None).await
     }
 
+    /// Immediately invalidates an explicit browser logout before its HTTP
+    /// response returns. Recovery setup may still own its per-session lock,
+    /// so the caller must wait on that lock in detached cleanup before
+    /// revoking the homeserver token or deleting custody-bearing storage.
+    pub async fn invalidate_for_logout(&self, token: &str) -> Option<Arc<Session>> {
+        let session = self.inner.write().await.remove(token);
+        if let Some(session) = &session {
+            self.finalize_live_removal(session);
+        }
+        session
+    }
+
     pub async fn remove_if_current(
         &self,
         token: &str,
@@ -1340,33 +1352,35 @@ impl SessionStore {
                 return None;
             }
             let session = sessions.remove(token);
-            if let Some(session) = &session {
-                session
-                    .session_closed
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             session
         };
         if let Some(removed) = &session {
-            // `remove` is the permanent-session boundary used by explicit
-            // logout, cross-instance revocation, and expiry. Keep encrypted
-            // search-index deletion here so none of those callers can leave
-            // decrypted message content orphaned on local disk. Idle eviction
-            // deliberately uses `sweep_idle` instead and preserves the index
-            // for a later persisted-session restore.
-            // Own the slow teardown independently of the caller. In
-            // particular, an HTTP request disappearing while a WebSocket send
-            // is backpressured must not strand decrypted state or skip the
-            // invalidation event.
-            let removed = Arc::clone(removed);
-            tokio::spawn(async move {
-                let _send_guard = removed.socket_send_lock.write().await;
-                let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
-                delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
-            });
+            self.finalize_live_removal(removed);
         }
 
         session
+    }
+
+    fn finalize_live_removal(&self, removed: &Arc<Session>) {
+        removed
+            .session_closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        // `remove` is the permanent-session boundary used by explicit
+        // logout, cross-instance revocation, and expiry. Keep encrypted
+        // search-index deletion here so none of those callers can leave
+        // decrypted message content orphaned on local disk. Idle eviction
+        // deliberately uses `sweep_idle` instead and preserves the index
+        // for a later persisted-session restore.
+        // Own the slow teardown independently of the caller. In
+        // particular, an HTTP request disappearing while a WebSocket send
+        // is backpressured must not strand decrypted state or skip the
+        // invalidation event.
+        let removed = Arc::clone(removed);
+        tokio::spawn(async move {
+            let _send_guard = removed.socket_send_lock.write().await;
+            let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
+            delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
+        });
     }
 
     /// Stable snapshot of the currently-live sessions for graceful process
@@ -1676,6 +1690,31 @@ mod tests {
             .await
             .expect("detached teardown completed")
             .expect("session invalidation event");
+    }
+
+    #[tokio::test]
+    async fn explicit_logout_invalidates_before_recovery_cleanup_can_finish() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@logout-boundary:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let recovery_guard = session.recovery_setup_lock.lock().await;
+
+        let removed = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            store.invalidate_for_logout(&token),
+        )
+        .await
+        .expect("logout invalidation must not wait for recovery cleanup")
+        .expect("removed session");
+        assert!(Arc::ptr_eq(&removed, &session));
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(store.get(&token).await.is_none());
+
+        drop(recovery_guard);
     }
 
     #[tokio::test]

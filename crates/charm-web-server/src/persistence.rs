@@ -798,6 +798,16 @@ impl PersistenceStore {
         token: &str,
         stale: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
     ) -> Result<(), String> {
+        self.discard_stale_pending_recovery_at(token, stale, unix_time_ms())
+            .await
+    }
+
+    async fn discard_stale_pending_recovery_at(
+        &self,
+        token: &str,
+        stale: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        now_ms: u64,
+    ) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         for _ in 0..5 {
@@ -805,7 +815,15 @@ impl PersistenceStore {
                 return Ok(());
             };
             if entry.recovery_setup_active {
-                return Err("Recovery setup is completing; retry sign out.".into());
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+                if lease_live {
+                    return Err("Recovery setup is completing; retry sign out.".into());
+                }
+                entry.recovery_setup_active = false;
+                entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
             }
             let Some(current) = &entry.pending_recovery else {
                 return Ok(());
@@ -3229,6 +3247,64 @@ mod tests {
             .unwrap();
         store
             .begin_recovery_safe_teardown("stale-key-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_issued_cleanup_recovers_an_expired_setup_lease() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[81u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "expired-stale-key-token",
+                "https://example.invalid",
+                &dummy_session("@expired-stale:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                "crashed-owner",
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(store
+            .discard_stale_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                1_000 + RECOVERY_SETUP_LEASE_MS - 1,
+            )
+            .await
+            .is_err());
+        store
+            .discard_stale_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                1_000 + RECOVERY_SETUP_LEASE_MS,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("expired-stale-key-token")
             .await
             .unwrap();
     }
