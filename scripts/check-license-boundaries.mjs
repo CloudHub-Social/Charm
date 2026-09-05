@@ -128,6 +128,9 @@ const serverDockerfile = stripPackagingComments(
   read("crates/charm-web-server/Dockerfile"),
   "crates/charm-web-server/Dockerfile",
 );
+if (!serverDockerfile.includes("COPY LICENSE ./LICENSE")) {
+  errors.push("The companion-server builder must provide LICENSE to the license generator.");
+}
 if (
   !serverDockerfile.includes(
     "node scripts/generate-third-party-licenses.mjs --cargo --output /tmp/THIRD_PARTY_LICENSES.txt",
