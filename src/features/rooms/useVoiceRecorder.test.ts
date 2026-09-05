@@ -237,6 +237,52 @@ describe("useVoiceRecorder", () => {
     expect(result.current.error).toBe("Microphone access is ready. Hold again to record.");
   });
 
+  it("honors a quick release through the stop function from the idle render", async () => {
+    let grant!: (value: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useVoiceRecorder());
+    const stopFromIdleRender = result.current.stop;
+    let starting!: Promise<void>;
+    act(() => {
+      starting = result.current.start();
+      stopFromIdleRender();
+    });
+
+    await act(async () => {
+      grant(stream);
+      await starting;
+    });
+
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("records with a fallback waveform when AudioContext construction fails", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        constructor() {
+          throw new Error("audio context unavailable");
+        }
+      },
+    );
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => result.current.start());
+    expect(result.current.phase).toBe("recording");
+    act(() => vi.advanceTimersByTime(300));
+    await act(async () => result.current.stop());
+
+    expect(result.current.phase).toBe("preview");
+    expect(result.current.preview?.metadata.waveform).toEqual([0, 0, 0]);
+  });
+
   it("releases a stream granted after unmount", async () => {
     let grant!: (value: MediaStream) => void;
     getUserMedia.mockImplementationOnce(

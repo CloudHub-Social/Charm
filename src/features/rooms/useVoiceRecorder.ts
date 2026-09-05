@@ -22,20 +22,23 @@ export function useVoiceRecorder() {
   const active = useRef<{
     recorder: MediaRecorder;
     stream: MediaStream;
-    context: AudioContext;
+    context: AudioContext | null;
     timer: ReturnType<typeof setInterval>;
     durationTimer: ReturnType<typeof setTimeout>;
     requestStop: () => void;
   } | null>(null);
   const previewUrl = useRef<string | null>(null);
-  const preparing = useRef<{ stream: MediaStream | null; context: AudioContext } | null>(null);
+  const preparing = useRef<{
+    stream: MediaStream | null;
+    context: AudioContext | null;
+  } | null>(null);
   const stopRequestedDuringPermission = useRef(false);
 
   const releaseCapture = useCallback(() => {
     const pending = preparing.current;
     preparing.current = null;
     pending?.stream?.getTracks().forEach((track) => track.stop());
-    if (pending) void pending.context.close().catch(() => {});
+    if (pending?.context) void pending.context.close().catch(() => {});
     const capture = active.current;
     active.current = null;
     if (!capture) return;
@@ -43,7 +46,7 @@ export function useVoiceRecorder() {
     clearTimeout(capture.durationTimer);
     capture.stream.getTracks().forEach((track) => track.stop());
     if (capture.recorder.state !== "inactive") capture.recorder.stop();
-    void capture.context.close().catch(() => {});
+    if (capture.context) void capture.context.close().catch(() => {});
   }, []);
 
   const clearResources = useCallback(() => {
@@ -116,7 +119,7 @@ export function useVoiceRecorder() {
   function stop() {
     if (active.current) {
       active.current.requestStop();
-    } else if (phase === "requesting") {
+    } else if (preparing.current || phase === "requesting") {
       // Releasing a mobile hold must not invalidate the in-flight permission
       // result. A denial still needs to reach the user; a grant is released
       // immediately with an actionable prompt to hold again.
@@ -139,9 +142,15 @@ export function useVoiceRecorder() {
       // Safari/iOS requires Web Audio activation in the initiating gesture.
       // Invoke resume before awaiting a potentially interactive permission
       // prompt; metering is best-effort and must never block MediaRecorder.
-      context = new AudioContext();
+      try {
+        context = new AudioContext();
+        void context.resume().catch(() => {});
+      } catch {
+        // Metering is best-effort. MediaRecorder can still capture and emit
+        // a valid voice message when Web Audio is unavailable or exhausted.
+        context = null;
+      }
       preparing.current = { stream: null, context };
-      void context.resume().catch(() => {});
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (epoch.current !== attempt) {
         stream.getTracks().forEach((track) => track.stop());
@@ -160,13 +169,23 @@ export function useVoiceRecorder() {
         setError("Microphone access is ready. Hold again to record.");
         return;
       }
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 256;
-      context.createMediaStreamSource(stream).connect(analyser);
+      let analyser: AnalyserNode | null = null;
+      if (context) {
+        try {
+          analyser = context.createAnalyser();
+          analyser.fftSize = 256;
+          context.createMediaStreamSource(stream).connect(analyser);
+        } catch {
+          void context.close().catch(() => {});
+          context = null;
+          pending.context = null;
+          analyser = null;
+        }
+      }
       const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 64_000 });
       const chunks: Blob[] = [];
       const amplitudes: number[] = [];
-      const samples = new Float32Array(analyser.fftSize);
+      const samples = new Float32Array(analyser?.fftSize ?? 1);
       let startedAt = 0;
       let stoppedAt: number | null = null;
       function requestStop(requestedAt = performance.now()) {
@@ -234,11 +253,10 @@ export function useVoiceRecorder() {
       };
       const timer = setInterval(() => {
         if (epoch.current !== attempt) return;
-        analyser.getFloatTimeDomainData(samples);
-        const amplitude = Math.min(
-          1,
-          Math.max(0, ...Array.from(samples, (sample) => Math.abs(sample))),
-        );
+        analyser?.getFloatTimeDomainData(samples);
+        const amplitude = analyser
+          ? Math.min(1, Math.max(0, ...Array.from(samples, (sample) => Math.abs(sample))))
+          : 0;
         if (amplitudes.length < 6000) amplitudes.push(Number.isFinite(amplitude) ? amplitude : 0);
         setLevel(Number.isFinite(amplitude) ? amplitude : 0);
         const elapsed = Math.round(performance.now() - startedAt);
