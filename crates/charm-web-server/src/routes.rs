@@ -26,8 +26,7 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{
     DiscoverHomeserverResponse, LoginRequest, RegisterRequest, RegistrationAuthResponse,
 };
-use charm_lib::matrix::commands::run_command_impl;
-use charm_lib::matrix::commands::SlashCommand;
+use charm_lib::matrix::commands::{require_command_feature, run_command_impl, SlashCommand};
 use charm_lib::matrix::devices::{
     delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
     list_devices_impl,
@@ -3894,6 +3893,8 @@ async fn run_command(
     Path(room_id): Path<String>,
     Json(request): Json<RunCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_command_feature(request.command, state.composer_parity_enabled)
+        .map_err(ApiError::bad_request)?;
     let session = require_session(&state, &jar).await?;
     let result = run_command_impl(
         &session.client,

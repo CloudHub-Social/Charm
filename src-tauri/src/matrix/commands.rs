@@ -9,7 +9,7 @@ use matrix_sdk::ruma::events::{room::message::RoomMessageEventContent, Mentions}
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 use super::MatrixState;
@@ -104,12 +104,23 @@ fn add_mentions(
     Ok(content.add_mentions(Mentions::with_user_ids(user_ids)))
 }
 
+pub fn require_command_feature(
+    command: SlashCommand,
+    composer_parity_enabled: bool,
+) -> Result<(), String> {
+    if command == SlashCommand::Notice && !composer_parity_enabled {
+        return Err("Composer parity is disabled".to_string());
+    }
+    Ok(())
+}
+
 /// Runs a resolved slash command against `room_id`. `args` is the
 /// whitespace-split remainder of the command line after the `/word` (e.g.
 /// `/kick @bob:example.org spamming` -> `args = ["@bob:example.org",
 /// "spamming"]`); each arm below documents which positions it reads.
 #[tauri::command]
 pub async fn run_command(
+    app: tauri::AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     command: SlashCommand,
@@ -117,6 +128,13 @@ pub async fn run_command(
     in_reply_to_event_id: Option<String>,
     mention_ids: Option<Vec<String>>,
 ) -> Result<CommandResult, String> {
+    let composer_parity_enabled = app.path().app_data_dir().is_ok_and(|directory| {
+        crate::feature_flags::flag(
+            &directory,
+            crate::feature_flags::FeatureFlagKey::ComposerParity,
+        )
+    });
+    require_command_feature(command, composer_parity_enabled)?;
     let client = state.require_client().await?;
     run_command_impl(
         &client,
@@ -351,5 +369,12 @@ mod tests {
         .unwrap();
         assert_eq!(json["status"], "permission_denied");
         assert_eq!(json["message"], "nope");
+    }
+
+    #[test]
+    fn notice_requires_composer_parity_at_command_boundaries() {
+        assert!(require_command_feature(SlashCommand::Notice, false).is_err());
+        assert!(require_command_feature(SlashCommand::Notice, true).is_ok());
+        assert!(require_command_feature(SlashCommand::Me, false).is_ok());
     }
 }
