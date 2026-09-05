@@ -528,6 +528,31 @@ describe("Composer", () => {
     );
   });
 
+  it("preserves significant outer whitespace in a code-block plain fallback", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        roomId="!code-whitespace:example.org"
+        mode="edit"
+        initialHtml={"<pre><code>  indented\n\n</code></pre>"}
+        placeholder="Edit message"
+        onSubmit={onSubmit}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Edit message"));
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: "  indented\n\n",
+        formattedBody: "<pre><code>  indented\n\n</code></pre><p></p>",
+      }),
+    );
+  });
+
   it("does not submit an empty message on Enter", async () => {
     const onSubmit = vi.fn();
     render(

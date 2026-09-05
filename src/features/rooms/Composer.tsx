@@ -514,8 +514,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   function submit() {
     if (!editor) return;
-    const rawPlainText = resolveEditorPlainShortcodes(editor).trim();
-    if (!rawPlainText) return;
+    const rawPlainText = resolveEditorPlainShortcodes(editor);
+    if (!rawPlainText.trim()) return;
 
     // Slash-command args need each `@mention` resolved to its real Matrix id
     // (`@alice:example.org`), independently of the pill's display label.
