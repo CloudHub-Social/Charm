@@ -4060,6 +4060,7 @@ mod tests {
         let store = PersistenceStore::new_for_test(&dir, [53u8; 32]);
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
+        server.mock_versions().ok().expect(1).mount().await;
         server.mock_logout().ok().expect(1).mount().await;
         let session = client.matrix_auth().session().expect("mock client session");
         store
