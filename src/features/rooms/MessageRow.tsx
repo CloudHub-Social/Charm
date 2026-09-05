@@ -132,8 +132,8 @@ export function MessageRow(props: MessageRowProps) {
     }
   })();
 
-  if (!message.poll) return fallbackRow;
-  if (pollsEnabled) {
+  if (!message.poll && !message.redacted) return fallbackRow;
+  if (pollsEnabled && message.poll) {
     return (
       <PollMessage
         message={message}

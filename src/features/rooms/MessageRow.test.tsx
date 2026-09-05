@@ -42,7 +42,12 @@ beforeEach(() => {
   mockUseFlag.mockReturnValue(true);
 });
 
-function renderRow(messageLayout: MessageLayout, body = "hello", edited = false) {
+function renderRow(
+  messageLayout: MessageLayout,
+  body = "hello",
+  edited = false,
+  overrides: Partial<MatrixModule.RoomMessageSummary> = {},
+) {
   const store = createStore();
   store.set(messageLayoutAtom, messageLayout);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -56,6 +61,7 @@ function renderRow(messageLayout: MessageLayout, body = "hello", edited = false)
             sender_display_name: "Bob",
             body,
             edited,
+            ...overrides,
           })}
           roomId="!room:localhost"
           own={false}
@@ -189,6 +195,14 @@ describe("MessageRow dispatcher", () => {
       expect(getPendingPollEnd).toHaveBeenCalledWith("!room:localhost", "$poll");
     },
   );
+
+  it("mounts poll recovery for a redacted event whose poll summary is gone", async () => {
+    renderRow("bubble", "", false, { event_id: "$redacted-poll", redacted: true, poll: null });
+
+    await waitFor(() =>
+      expect(getPendingPollVote).toHaveBeenCalledWith("!room:localhost", "$redacted-poll"),
+    );
+  });
 });
 
 describe("MessageRow link previews (Spec 29)", () => {

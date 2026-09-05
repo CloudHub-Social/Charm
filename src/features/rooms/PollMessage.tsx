@@ -59,7 +59,9 @@ export function PollMessage({
   const pollRevision = `${message.event_id}:${JSON.stringify(poll)}`;
   const lastEndStateRevision = useRef<string | null>(null);
   const shouldRestoreEnd = Boolean(
-    own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),
+    own &&
+      (recoveryOnly || (message.poll && !message.poll.ended)) &&
+      message.event_id.startsWith("$"),
   );
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [voteTransactionId, setVoteTransactionId] = useState<string | null>(null);
@@ -75,7 +77,7 @@ export function PollMessage({
   const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!hasPoll || !message.event_id.startsWith("$")) {
+    if ((!hasPoll && !recoveryOnly) || !message.event_id.startsWith("$")) {
       setPendingAnswerId(null);
       setVoteTransactionId(null);
       setVoteFailed(false);
@@ -85,7 +87,7 @@ export function PollMessage({
     let active = true;
     setRestoringVoteState(true);
     void getPendingPollVote(roomId, message.event_id)
-      .then((pending) => {
+      .then(async (pending) => {
         if (!active) return;
         if (!pending) {
           setPendingAnswerId(null);
@@ -94,6 +96,30 @@ export function PollMessage({
           setError((current) =>
             current === "Your vote could not be sent." ? null : current,
           );
+          return;
+        }
+        // A response to an already-ended poll can never become valid. Do
+        // not offer a retry that would send a stale relation after another
+        // client closed the poll; release the durable queue lock instead.
+        if (pollEnded && pending.failed) {
+          try {
+            const discarded = await discardPollVote(
+              roomId,
+              message.event_id,
+              pending.transaction_id,
+            );
+            if (!active) return;
+            if (!discarded) {
+              setVoteRecheck((revision) => revision + 1);
+              return;
+            }
+            setPendingAnswerId(null);
+            setVoteTransactionId(null);
+            setVoteFailed(false);
+            setError(null);
+          } catch {
+            if (active) setError("The failed vote could not be discarded.");
+          }
           return;
         }
         setPendingAnswerId(pending.answer_id);
@@ -111,7 +137,15 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [hasPoll, message.event_id, pollRevision, roomId, voteRecheck]);
+  }, [
+    hasPoll,
+    message.event_id,
+    pollEnded,
+    pollRevision,
+    recoveryOnly,
+    roomId,
+    voteRecheck,
+  ]);
   useEffect(() => {
     if (!voteTransactionId || voteFailed) return;
     const timeout = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);
@@ -136,7 +170,7 @@ export function PollMessage({
   useEffect(() => {
     if (
       !own ||
-      !hasPoll ||
+      (!hasPoll && !recoveryOnly) ||
       !message.event_id.startsWith("$") ||
       endRequestPending ||
       (endTransactionId !== null &&
@@ -213,6 +247,7 @@ export function PollMessage({
     own,
     pollEnded,
     pollRevision,
+    recoveryOnly,
     roomId,
   ]);
   useEffect(() => {
@@ -220,15 +255,10 @@ export function PollMessage({
     const timeout = window.setTimeout(() => setEndRecheck((revision) => revision + 1), 2_000);
     return () => window.clearTimeout(timeout);
   }, [endFailed, endRecheck, endRequestPending, endTransactionId, pollEnded]);
-  if (!poll) return null;
-  const currentPoll = poll;
-  const unsupportedSelectionCount = poll.max_selections !== 1;
-  const ended = poll.ended;
-
   const hasRealEventId = message.event_id.startsWith("$");
   const canEndPoll = own;
-  const showResults = poll.kind === "disclosed" || ended;
-  const totalVotes = poll.answers.reduce((sum, answer) => sum + answer.votes, 0);
+  const ended = poll?.ended ?? false;
+  const unsupportedSelectionCount = poll?.max_selections !== 1;
 
   function getActionsHandle() {
     if (!rowActions) return undefined;
@@ -237,7 +267,8 @@ export function PollMessage({
 
   async function vote(answerId: string) {
     if (
-      currentPoll.ended ||
+      !poll ||
+      poll.ended ||
       ending ||
       restoringEndState ||
       restoringVoteState ||
@@ -381,14 +412,16 @@ export function PollMessage({
         {voteFailed && voteTransactionId && (
           <div className="flex flex-wrap items-center gap-2">
             <p>Your poll vote failed to send.</p>
-            <button
-              type="button"
-              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
-              disabled={restoringVoteState}
-              onClick={() => void retryVote()}
-            >
-              Retry vote
-            </button>
+            {!pollEnded && (
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                disabled={restoringVoteState}
+                onClick={() => void retryVote()}
+              >
+                Retry vote
+              </button>
+            )}
             <button
               type="button"
               className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
@@ -428,6 +461,10 @@ export function PollMessage({
       </section>
     );
   }
+
+  if (!poll) return null;
+  const showResults = poll.kind === "disclosed" || ended;
+  const totalVotes = poll.answers.reduce((sum, answer) => sum + answer.votes, 0);
 
   return (
     <div

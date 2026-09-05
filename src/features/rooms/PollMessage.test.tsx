@@ -549,6 +549,50 @@ describe("PollMessage", () => {
     expect(screen.queryByRole("heading", { name: "Lunch?" })).not.toBeInTheDocument();
   });
 
+  it("restores a failed vote after its poll start was redacted", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-redacted-vote",
+      answer_id: "0",
+      failed: true,
+    });
+    render(
+      <PollMessage
+        message={{ ...pollMessage(), poll: null, redacted: true }}
+        roomId="!room:example.org"
+        own={false}
+        recoveryOnly
+      />,
+    );
+
+    expect(await screen.findByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
+    expect(getPendingPollVote).toHaveBeenCalledWith("!room:example.org", "$poll");
+    expect(screen.getByRole("button", { name: "Discard vote" })).toBeInTheDocument();
+  });
+
+  it("discards a failed vote after another client closes the poll", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-ended-vote",
+      answer_id: "0",
+      failed: true,
+    });
+    render(
+      <PollMessage
+        message={pollMessage({ ended: true })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(discardPollVote).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-ended-vote",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
+  });
+
   it("does not end a poll while a vote is pending", async () => {
     let finish!: () => void;
     voteOnPoll.mockImplementationOnce(
