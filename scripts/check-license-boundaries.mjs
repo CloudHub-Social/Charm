@@ -13,7 +13,7 @@ function read(relativePath) {
 }
 
 function stripPackagingComments(content, relativePath) {
-  const withoutCommentLines = content.replace(/^\s*(?:#|\/\/).*$/gm, "");
+  const withoutCommentLines = content.replace(/^\s*(?:#|\/\/|@?rem\b).*$/gim, "");
   if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutCommentLines;
 
   const languageVariant = /x$/i.test(relativePath)
@@ -118,6 +118,8 @@ const packagingInputPatterns = [
   /^src-tauri\/tauri\.conf\.json$/,
   /(?:^|\/)(?:vite|rollup|astro)\.config\.[cm]?[jt]s$/i,
   /(?:^|\/)(?:build\.rs|Makefile|Justfile)$/i,
+  /(?:^|\/)gradlew(?:\.bat)?$/i,
+  /(?:^|\/)gradle\/wrapper\/gradle-wrapper\.properties$/i,
   /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i,
   /^src-tauri\/gen\/apple\/(?:Podfile|project\.yml|.+\.xcodeproj\/project\.pbxproj)$/i,
   /^src-tauri\/gen\/android\/(?:(?:.+\/)?(?:build|settings)\.gradle(?:\.kts)?|gradle\.properties|buildSrc\/src\/.+\.(?:java|kt|kts))$/i,
