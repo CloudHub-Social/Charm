@@ -1025,7 +1025,10 @@ async fn timeline_item_to_summary(
                 _ => PollKindSummary::Custom,
             };
             let ended = result.end_time.is_some();
-            let disclose_votes = ended || !matches!(&kind, PollKindSummary::Undisclosed);
+            // Unknown poll kinds are forward-compatible extensions; do not assume
+            // that their voting visibility matches disclosed polls. Fail closed
+            // until the poll ends unless the server explicitly says disclosed.
+            let disclose_votes = ended || matches!(&kind, PollKindSummary::Disclosed);
             let answers = result
                 .answers
                 .into_iter()
