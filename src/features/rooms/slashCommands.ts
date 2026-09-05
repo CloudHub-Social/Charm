@@ -121,6 +121,10 @@ export function parseSlashCommand(body: string, extended = false): ParsedSlashCo
       text: body.slice(word.length + 1).replace(/^\s/, ""),
     };
   }
+  if (extended && word === "notice") {
+    const text = body.slice(word.length + 1).replace(/^\s/, "");
+    return { command: word, args: text ? [text] : [] };
+  }
   const spec = [...SLASH_COMMANDS, ...(extended ? STAGED_BACKEND_COMMANDS : [])].find(
     (c) => c.name === word,
   );

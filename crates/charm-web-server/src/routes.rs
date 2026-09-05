@@ -3893,9 +3893,9 @@ async fn run_command(
     Path(room_id): Path<String>,
     Json(request): Json<RunCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
     require_command_feature(request.command, state.composer_parity_enabled)
         .map_err(ApiError::bad_request)?;
-    let session = require_session(&state, &jar).await?;
     let result = run_command_impl(
         &session.client,
         &room_id,

@@ -54,4 +54,11 @@ describe("staged message-style commands", () => {
     });
     expect(parseSlashCommand("//plain hello", true)).toBeNull();
   });
+
+  it("preserves hard breaks and repeated whitespace in notices", () => {
+    expect(parseSlashCommand("/notice first  line\nsecond line", true)).toEqual({
+      command: "notice",
+      args: ["first  line\nsecond line"],
+    });
+  });
 });
