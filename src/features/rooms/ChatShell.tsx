@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
+import { ChevronDown, MessageCircle, Paperclip, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
@@ -60,6 +60,7 @@ import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 import { PollComposerControls } from "./PollComposerControls";
 import { PollRecoveryTray } from "./PollRecoveryTray";
+import { ComposerSendButton } from "./ComposerSendButton";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -1146,18 +1147,11 @@ export function ChatShell({
               Disabled while there's no text to send — this composer has no
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
-            <button
-              type="button"
-              aria-label="Send"
-              onClick={() => composerRef.current?.submit()}
+            <ComposerSendButton
+              mobile={mobile}
               disabled={isComposerEmpty}
-              className={cn(
-                "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
-                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-              )}
-            >
-              <Send size={16} />
-            </button>
+              onClick={() => composerRef.current?.submit()}
+            />
           </div>
           {voiceRecordingEnabled && !roomMutationsBlocked && (
             <VoiceRecorder
