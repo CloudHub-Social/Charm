@@ -140,6 +140,71 @@ describe("useVoiceRecorder", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("discards active capture when the app window loses focus", async () => {
+    const { result } = renderHook(() => useVoiceRecorder());
+    await act(async () => result.current.start());
+    await act(async () => window.dispatchEvent(new Event("blur")));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toContain("background");
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("defers permission-sheet blur and discards if Charm remains unfocused", async () => {
+    let grant!: (value: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { result } = renderHook(() => useVoiceRecorder());
+    let starting!: Promise<void>;
+    act(() => {
+      starting = result.current.start();
+    });
+    expect(result.current.phase).toBe("requesting");
+    act(() => window.dispatchEvent(new Event("blur")));
+
+    await act(async () => {
+      grant(stream);
+      await starting;
+    });
+    focus.mockRestore();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.error).toContain("background");
+  });
+
+  it("does not treat a refocused microphone permission sheet as backgrounding", async () => {
+    let grant!: (value: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useVoiceRecorder());
+    let starting!: Promise<void>;
+    act(() => {
+      starting = result.current.start();
+    });
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    await act(async () => {
+      grant(stream);
+      await starting;
+    });
+    expect(result.current.phase).toBe("recording");
+    expect(FakeRecorder.instances).toHaveLength(1);
+    expect(stopTrack).not.toHaveBeenCalled();
+  });
+
   it("rejects overlong capture even when interval callbacks never ran", async () => {
     const { result } = renderHook(() => useVoiceRecorder());
     await act(async () => result.current.start());

@@ -33,6 +33,7 @@ export function useVoiceRecorder() {
     context: AudioContext | null;
   } | null>(null);
   const stopRequestedDuringPermission = useRef(false);
+  const windowBlurredDuringPermission = useRef(false);
 
   const releaseCapture = useCallback(() => {
     const pending = preparing.current;
@@ -52,6 +53,7 @@ export function useVoiceRecorder() {
   const clearResources = useCallback(() => {
     epoch.current += 1;
     stopRequestedDuringPermission.current = false;
+    windowBlurredDuringPermission.current = false;
     releaseCapture();
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
     previewUrl.current = null;
@@ -91,11 +93,29 @@ export function useVoiceRecorder() {
     function visibilityChanged() {
       if (document.hidden) abandonBackgroundCapture();
     }
+    function windowBlurred() {
+      // Native microphone permission sheets can blur the webview while the
+      // request is pending. Defer that case until getUserMedia settles, then
+      // discard only if the app is still unfocused. Once recording starts,
+      // any blur means capture must stop immediately.
+      if (phase === "requesting") {
+        windowBlurredDuringPermission.current = true;
+        return;
+      }
+      abandonBackgroundCapture();
+    }
+    function windowFocused() {
+      windowBlurredDuringPermission.current = false;
+    }
     document.addEventListener("visibilitychange", visibilityChanged);
     window.addEventListener("pagehide", abandonBackgroundCapture);
+    window.addEventListener("blur", windowBlurred);
+    window.addEventListener("focus", windowFocused);
     return () => {
       document.removeEventListener("visibilitychange", visibilityChanged);
       window.removeEventListener("pagehide", abandonBackgroundCapture);
+      window.removeEventListener("blur", windowBlurred);
+      window.removeEventListener("focus", windowFocused);
     };
   }, [phase, clearResources]);
 
@@ -162,6 +182,14 @@ export function useVoiceRecorder() {
         return;
       }
       pending.stream = stream;
+      if (windowBlurredDuringPermission.current && !document.hasFocus()) {
+        windowBlurredDuringPermission.current = false;
+        releaseCapture();
+        setPhase("idle");
+        setError("Recording was discarded when Charm went into the background.");
+        return;
+      }
+      windowBlurredDuringPermission.current = false;
       if (stopRequestedDuringPermission.current) {
         stopRequestedDuringPermission.current = false;
         releaseCapture();
