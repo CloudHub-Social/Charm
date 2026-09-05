@@ -62,8 +62,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.1.2
-        CFBundleVersion: "0.1.2"
+        CFBundleShortVersionString: 0.1.3
+        CFBundleVersion: "0.1.3"
         # Spec 11: lets the app receive remote (APNs) notifications,
         # including while backgrounded, and run the Notification Service
         # Extension that mutates content before display.
