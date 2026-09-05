@@ -76,7 +76,7 @@ jobs:
           # the workspace can alter src-tauri's build/resolution: the root
           # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
           # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
-          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
+          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(generate-third-party-licenses\.mjs|license-texts/)|\.github/workflows/quality-checks\.yml$)'
           # The Synapse/Dex/MAS integration jobs additionally mount and execute
           # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
@@ -92,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/(tokens-pull|review-envelope-contract\.test)\.mjs$|\.github/workflows/(quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses)\.mjs|license-texts/)|\.github/workflows/(quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -196,6 +196,12 @@ jobs:
 
       - id: frontend_install
         run: pnpm install --frozen-lockfile
+
+      # Licensing files and the Sable Call non-bundling boundary apply to every
+      # deliverable, so verify them even when the changed-path filter skips the
+      # rest of the frontend gate.
+      - name: Check licensing and external-widget boundary
+        run: pnpm license:check
 
       # Unconditional like audit below: it's a cheap grep-based count over
       # both src/ and src-tauri/src/, so it isn't tied to the frontend-path

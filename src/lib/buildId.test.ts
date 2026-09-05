@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../../package.json";
-import { formatBuildIdForDisplay, getBuildId } from "./buildId";
+import { formatBuildIdForDisplay, getBuildId, getBuildSourceRef } from "./buildId";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -37,5 +37,18 @@ describe("formatBuildIdForDisplay", () => {
 
   it("falls back to appending -dev for a malformed id it can't parse", () => {
     expect(formatBuildIdForDisplay("not-a-build-id+???")).toBe("not-a-build-id+???-dev");
+  });
+});
+
+describe("getBuildSourceRef", () => {
+  it.each(["0.4.2+a1b2c3d", "0.4.2+pr187.a1b2c3d", "0.4.2+nightly.a1b2c3d"])(
+    "extracts the immutable source SHA from %s",
+    (buildId) => {
+      expect(getBuildSourceRef(buildId)).toBe("a1b2c3d");
+    },
+  );
+
+  it("falls back to main when a local build has no source SHA", () => {
+    expect(getBuildSourceRef("0.4.2")).toBe("main");
   });
 });
