@@ -171,8 +171,10 @@ define_feature_flag_keys!(
         JumpToDate,
         /// Spec 31 admin-triggered room upgrades and tombstoned-room handling.
         RoomUpgrades,
-        /// Day-2 Spec 03 inline poll creation, voting, result display, and ending.
+        /// Day-2 Spec 03 creation, voting, and creator-only closure of polls.
         Polls,
+        /// Spec 44 encrypted manual megolm key-file import and export.
+        CryptoKeyFiles,
         /// Spec 47 appearance customization and display preferences.
         AppearanceParity,
     }
@@ -212,6 +214,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::Polls => false,
+            FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
         }
     }
@@ -305,7 +308,10 @@ impl FeatureFlagKey {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
             FeatureFlagKey::Polls => {
-                "Create, vote on, display, and end Matrix polls in the room timeline."
+                "Create, vote in, and display Matrix polls, with creator-only poll closure."
+            }
+            FeatureFlagKey::CryptoKeyFiles => {
+                "Import or export standard passphrase-encrypted Matrix room-key files."
             }
             FeatureFlagKey::AppearanceParity => {
                 "Customize appearance and display preferences, including clock and date formats."
@@ -356,6 +362,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
+            FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
@@ -393,6 +400,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::Polls => "polls",
+            FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }

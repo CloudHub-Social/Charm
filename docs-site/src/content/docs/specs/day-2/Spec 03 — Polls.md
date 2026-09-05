@@ -22,8 +22,7 @@ MSC3381 is still an accepted but unstable proposal, so the wire events are
 `org.matrix.msc3381.poll.end`, with `org.matrix.msc1767.text` fallbacks. Charm
 renders disclosed live tallies, keeps undisclosed totals hidden until close,
 shows the current user's selected option, and allows the poll creator to end an
-open poll. Room moderators with permission to redact other users' events can
-also close stale or abusive polls. Poll cards retain reaction, copy, redact,
+open poll. Poll cards retain reaction, copy, redact,
 report, pin, bookmark, link, and source actions. Reply, Forward, text Edit, and
 Edit history remain hidden because their current backend paths accept only
 `m.room.message`, not poll-start events. Poll content edited by another Matrix
@@ -66,9 +65,8 @@ timeline.
 - Voting: clicking an option sends `m.poll.response`; re-clicking a different
   option resends response (last response per user wins, per protocol semantics —
   confirm against current MSC3381 text before implementing tie-break rules).
-- Ending: the poll creator or a moderator allowed to redact other users can send
-  the poll-end event to close voting; UI then locks further votes and shows final
-  tallies.
+- Ending: only the poll creator can send the poll-end event to close voting; UI
+  then locks further votes and shows final tallies.
 
 ## Data flow
 
@@ -103,7 +101,7 @@ deduplicate close requests while an end is queued, including after a UI remount.
 - Rust CI covers poll validation and Ruma content construction, including
   single-selection semantics and duplicate/too-few option rejection.
 - Frontend CI covers disclosed and undisclosed rendering, vote submission,
-  creator/moderator ending, case-insensitive creation-form validation, standard
+  creator-only ending, case-insensitive creation-form validation, standard
   supported message actions, unsupported-action gating, edited-state disclosure,
   feature-disabled edit gating, and both web transport routes.
 - Cross-client owner acceptance remains useful after enabling the flag: create a

@@ -77,7 +77,7 @@ export function PollMessage({
   const ended = poll.ended;
 
   const hasRealEventId = message.event_id.startsWith("$");
-  const canEndPoll = own || (rowActions?.canRedact ?? false);
+  const canEndPoll = own;
   const showResults = poll.kind === "disclosed" || ended;
   const totalVotes = poll.answers.reduce((sum, answer) => sum + answer.votes, 0);
 

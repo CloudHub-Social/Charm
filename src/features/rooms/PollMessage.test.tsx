@@ -385,7 +385,7 @@ describe("PollMessage", () => {
     await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));
   });
 
-  it("lets a moderator end another user's poll", async () => {
+  it("does not let a moderator end another user's poll", () => {
     render(
       <PollMessage
         message={pollMessage()}
@@ -394,10 +394,7 @@ describe("PollMessage", () => {
         rowActions={rowActions({ canRedact: true })}
       />,
     );
-    const endButton = screen.getByRole("button", { name: "End poll" });
-    await waitFor(() => expect(endButton).toBeEnabled());
-    fireEvent.click(endButton);
-
-    await waitFor(() => expect(endPoll).toHaveBeenCalledWith("!room:example.org", "$poll"));
+    expect(screen.queryByRole("button", { name: "End poll" })).not.toBeInTheDocument();
+    expect(endPoll).not.toHaveBeenCalled();
   });
 });
