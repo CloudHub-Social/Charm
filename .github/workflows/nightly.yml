@@ -253,10 +253,10 @@ jobs:
           echo "$MACOS_CERT_P12" | base64 -D > cert.p12
           security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security find-certificate -a -p "$keychain" > signing-cert.pem
+          signing_cert="$RUNNER_TEMP/nightly-signing-cert.pem"
+          security find-certificate -a -p "$keychain" > "$signing_cert"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
-            -k /Library/Keychains/System.keychain signing-cert.pem
-          rm -f signing-cert.pem
+            -k /Library/Keychains/System.keychain "$signing_cert"
           IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           rm -f cert.p12
@@ -324,6 +324,21 @@ jobs:
         run: |
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri build
+
+      - name: Remove nightly macOS signing identity
+        if: always() && env.HAS_MACOS_CERT == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/nightly-signing.keychain-db"
+          signing_cert="$RUNNER_TEMP/nightly-signing-cert.pem"
+          if [ -e "$signing_cert" ]; then
+            sudo security remove-trusted-cert -d "$signing_cert" || true
+            rm -f -- "$signing_cert"
+          fi
+          if [ -e "$keychain" ]; then
+            security lock-keychain "$keychain"
+            security delete-keychain "$keychain"
+          fi
 
       - name: Resolve Cargo target directory
         id: cargo-target
@@ -535,6 +550,16 @@ jobs:
           SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+
+      - name: Remove imported Windows signing identity
+        if: always() && env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_CERT_THUMBPRINT" -DeleteKey
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-signing.json"
+          if (Test-Path $configPath) { Remove-Item -LiteralPath $configPath }
 
       - name: Resolve Windows debug-file directory
         id: windows-debug-files
@@ -1064,6 +1089,10 @@ jobs:
           # env: block above — see the macOS job's Build step comment.
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri android build --target aarch64 --ci
+
+      - name: Remove imported Android signing material
+        if: always() && env.HAS_ANDROID_KEYSTORE == 'true'
+        run: rm -f -- "$RUNNER_TEMP/nightly-signing.keystore"
 
       # The Gradle plugin (Build step above) already uploads Proguard mapping
       # + native symbols when SENTRY_ANDROID_UPLOAD is true; this separate
