@@ -47,7 +47,9 @@ for (const enabled of [false, true]) {
       await expect(composer).toHaveText("keep this draft");
       await expect(page.getByText("Editing message", { exact: true })).toHaveCount(0);
 
-      await composer.fill("");
+      await composer.press("Control+A");
+      await composer.press("Backspace");
+      await expect(composer).toHaveText("");
       await composer.press("ArrowUp");
       if (enabled) {
         await expect(page.getByText("Editing message", { exact: true })).toBeVisible();
@@ -82,7 +84,9 @@ for (const enabled of [false, true]) {
             { exact: true },
           ),
         ).toBeVisible();
-        await expect(page.getByText("/plain <b>literal markup</b>", { exact: true })).toHaveCount(0);
+        await expect(
+          page.locator('[id^="message-"]').filter({ hasText: "/plain <b>literal markup</b>" }),
+        ).toHaveCount(0);
       }
       await expect(page.getByText(/sending…/)).toHaveCount(0);
     });
