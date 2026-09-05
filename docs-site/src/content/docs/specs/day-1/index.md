@@ -77,7 +77,7 @@ here.
 | 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
 | 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
-| 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **In progress** | Restore exists through Spec 25; first-time backup setup is in progress, while encrypted room-key files remain |
+| 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **In progress** | Restore exists through Spec 25; first-time backup setup and encrypted room-key files are implemented behind separate default-off flags |
 | 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **In progress** | Desktop and companion registration UIA, bounded password recovery/resend, flow discovery, advertised token login, and server-owned browser provider SSO are implemented; real-provider live verification remains |
 | 46 | [Notification granularity and email pushers](/specs/day-1/spec-46--notification-rule-granularity-and-email-pushers/) | **Planned** | No matching merged implementation found |
 | 47 | [Appearance and display parity](/specs/day-1/spec-47--appearance-and-display-parity/) | **Planned** | No matching merged implementation found |

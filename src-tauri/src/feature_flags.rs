@@ -173,6 +173,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 44 first-time secret storage and server-side room-key backup setup.
         CryptoBackupSetup,
+        /// Spec 44 encrypted manual megolm key-file import and export.
+        CryptoKeyFiles,
         /// Spec 47 appearance customization and display preferences.
         AppearanceParity,
     }
@@ -212,6 +214,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::CryptoBackupSetup => false,
+            FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
         }
     }
@@ -307,6 +310,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoBackupSetup => {
                 "Set up Matrix secret storage and server-side encrypted room-key backup."
             }
+            FeatureFlagKey::CryptoKeyFiles => {
+                "Import or export standard passphrase-encrypted Matrix room-key files."
+            }
             FeatureFlagKey::AppearanceParity => {
                 "Customize appearance and display preferences, including clock and date formats."
             }
@@ -356,6 +362,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::CryptoBackupSetup => "Spec 44 (crypto key backup and import/export)",
+            FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
@@ -393,6 +400,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::CryptoBackupSetup => "crypto_backup_setup",
+            FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
