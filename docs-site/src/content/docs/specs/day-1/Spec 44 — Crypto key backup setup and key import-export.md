@@ -55,7 +55,10 @@ interrupted result write. This implementation and its regressions await CI.
   admission as logout and will not remove a session while recovery custody is pending.
   If another client makes an issued key definitively stale by replacing secret storage,
   expiry conditionally clears only that exact custody record before teardown; unavailable
-  or inconclusive validation remains fail-closed.
+  or inconclusive validation remains fail-closed. Once teardown is admitted, the encrypted
+  session tombstone retains its Matrix tokens until homeserver revocation (or an
+  `M_UNKNOWN_TOKEN` response) is confirmed, so a crash or transient outage cannot orphan a
+  still-valid token.
   Interrupted-backup repair retains its distributed lease while working, propagates local
   disable failures, and never chooses a remote backup from a latest-version query. If a committed
   create request lost its response and local identity is unavailable, repair preserves the server

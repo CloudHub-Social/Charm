@@ -62,6 +62,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
@@ -98,6 +99,27 @@ const SESSIONS_PREFIX: &str = "sessions";
 const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const SNAPSHOT_READY_ATTEMPTS: usize = 5;
 const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Confirms that a Matrix session is revoked before its last durable token
+/// copy may be deleted. `M_UNKNOWN_TOKEN` is also confirmation: a previous
+/// attempt may have reached the homeserver and crashed before local cleanup.
+pub(crate) async fn revoke_matrix_session(client: &matrix_sdk::Client) -> Result<(), String> {
+    match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error))
+            if matches!(
+                error.client_api_error_kind(),
+                Some(ErrorKind::UnknownToken(_))
+            ) =>
+        {
+            Ok(())
+        }
+        Ok(Err(error)) => Err(format!("Could not revoke the Matrix session: {error}")),
+        Err(_) => Err(format!(
+            "Matrix session revocation timed out after {RESTORE_TIMEOUT:?}"
+        )),
+    }
+}
 const RECOVERY_SETUP_LEASE_MS: u64 = 5 * 60 * 1000;
 
 fn unix_time_ms() -> u64 {
@@ -474,6 +496,19 @@ impl PersistenceStore {
             .await?
             .ok_or("The persisted session is no longer available.")?;
         Ok(entry.pending_recovery)
+    }
+
+    /// Logout-specific custody read. A live session whose initial persistence
+    /// write failed has no object, which means it has no durable recovery
+    /// credential to veto teardown. Storage errors remain fail-closed.
+    pub async fn pending_recovery_for_teardown(
+        &self,
+        token: &str,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        Ok(self
+            .read_one_with_version_result(token)
+            .await?
+            .and_then(|(entry, _)| entry.pending_recovery))
     }
 
     pub async fn save_pending_recovery(
@@ -1115,6 +1150,13 @@ impl PersistenceStore {
             .is_some_and(|(entry, _)| !entry.recovery_teardown_started))
     }
 
+    /// Includes teardown tombstones. Logout uses this only to distinguish a
+    /// durable token that must be retained for a revocation retry from a live
+    /// session whose initial persistence write never succeeded.
+    pub(crate) async fn has_persisted_object(&self, token: &str) -> Result<bool, String> {
+        Ok(self.read_one_with_version_result(token).await?.is_some())
+    }
+
     /// Cheap, no-`Client`-required check for whether `token`'s persisted
     /// session is already past `max_age` — a single object-store read, not
     /// a homeserver round trip. Called from `routes::require_session`
@@ -1204,7 +1246,7 @@ impl PersistenceStore {
         let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
             let entry = self.read_one(token).await?;
             if entry.recovery_teardown_started {
-                if let Err(error) = self.remove(token, None).await {
+                if let Err(error) = self.finish_recovery_safe_teardown(token).await {
                     tracing::warn!("failed to finish teardown for persisted session: {error}");
                 }
                 return None;
@@ -1295,11 +1337,24 @@ impl PersistenceStore {
         }
     }
 
+    /// Completes a previously admitted teardown without deleting the only
+    /// durable token copy before homeserver revocation is confirmed. Safe to
+    /// retry after a crash: an already-revoked token returns `M_UNKNOWN_TOKEN`,
+    /// which [`revoke_matrix_session`] treats as confirmation.
+    pub(crate) async fn finish_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
+        let client = self
+            .restore_client_for_revocation(token)
+            .await
+            .ok_or("Could not rebuild the persisted session for revocation.")?;
+        revoke_matrix_session(&client).await?;
+        self.remove(token, None).await
+    }
+
     /// Rebuilds the persisted encrypted client without an initial sync,
     /// solely to validate recovery custody before automatic expiry. Unlike
     /// the revoke-only client above, this must open the original crypto store
     /// because secret-storage validation depends on that identity.
-    async fn restore_client_for_recovery_validation(
+    pub(crate) async fn restore_client_for_recovery_validation(
         &self,
         token: &str,
     ) -> Option<matrix_sdk::Client> {
@@ -2198,14 +2253,19 @@ impl PersistenceStore {
         let now = now_unix();
         let max_age_secs = max_age.as_secs();
         let entries = self.read_all().await;
-        for entry in entries
+        let teardown_tokens = entries
             .iter()
             .filter(|entry| entry.recovery_teardown_started)
-        {
-            if let Err(error) = self.remove(&entry.token, None).await {
-                tracing::warn!("failed to finish startup teardown for persisted session: {error}");
-            }
-        }
+            .map(|entry| entry.token.clone());
+        futures_util::stream::iter(teardown_tokens)
+            .for_each_concurrent(Some(8), |token| async move {
+                if let Err(error) = self.finish_recovery_safe_teardown(&token).await {
+                    tracing::warn!(
+                        "failed to finish startup teardown for persisted session: {error}"
+                    );
+                }
+            })
+            .await;
         let entries = entries.into_iter().filter(|entry| {
             if entry.recovery_teardown_started {
                 return false;
@@ -2628,6 +2688,18 @@ mod tests {
                 refresh_token: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn teardown_custody_read_allows_a_never_persisted_live_session() {
+        let dir = scratch_dir("teardown-custody-missing");
+        let store = PersistenceStore::new_for_test(&dir, [74u8; 32]);
+
+        assert!(store
+            .pending_recovery_for_teardown("never-saved")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -3888,7 +3960,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_by_token_finishes_a_teardown_tombstone_instead_of_restoring_it() {
+    async fn restore_by_token_retains_a_teardown_tombstone_when_revocation_fails() {
         let dir = scratch_dir("restore-teardown-tombstone");
         let store = PersistenceStore::new_for_test(&dir, [51u8; 32]);
         store
@@ -3907,7 +3979,39 @@ mod tests {
             .unwrap();
 
         assert!(store.restore_by_token("tok-teardown", None).await.is_none());
-        assert!(store.read_one("tok-teardown").await.is_none());
+        assert!(store.read_one("tok-teardown").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn confirmed_revocation_removes_a_teardown_tombstone() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let dir = scratch_dir("finish-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [53u8; 32]);
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_logout().ok().expect(1).mount().await;
+        let session = client.matrix_auth().session().expect("mock client session");
+        store
+            .save(
+                "tok-finish-teardown",
+                &server.uri(),
+                &session,
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-finish-teardown")
+            .await
+            .unwrap();
+
+        store
+            .finish_recovery_safe_teardown("tok-finish-teardown")
+            .await
+            .unwrap();
+        assert!(store.read_one("tok-finish-teardown").await.is_none());
     }
 
     /// A persisted entry whose homeserver can't actually be reached (dead
@@ -5014,7 +5118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_all_finishes_teardown_tombstones_before_startup_restore() {
+    async fn restore_all_retains_unconfirmed_teardown_tombstones() {
         let dir = scratch_dir("restore-all-teardown-tombstone");
         let store = PersistenceStore::new_for_test(&dir, [52u8; 32]);
         store
@@ -5036,7 +5140,7 @@ mod tests {
             .restore_all(std::time::Duration::from_secs(30 * 24 * 60 * 60))
             .await;
         assert!(restored.is_empty());
-        assert!(store.read_one("tok-teardown-all").await.is_none());
+        assert!(store.read_one("tok-teardown-all").await.is_some());
     }
 
     #[tokio::test]
