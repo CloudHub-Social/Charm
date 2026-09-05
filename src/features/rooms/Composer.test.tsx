@@ -177,6 +177,29 @@ describe("Composer", () => {
     expect(editable).toHaveTextContent("draft");
   });
 
+  it("edits on ArrowUp when an empty block format changed the document shape", async () => {
+    flags.composerParity = true;
+    const onEditLastMessage = vi.fn(() => true);
+    render(
+      <Composer
+        roomId="!arrow-up-blockquote:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        onEditLastMessage={onEditLastMessage}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message");
+    fireEvent.click(screen.getByRole("button", { name: "Block quote" }));
+    expect(editable.querySelector("blockquote")).toBeInTheDocument();
+
+    fireEvent.keyDown(editable, { key: "ArrowUp" });
+    expect(onEditLastMessage).toHaveBeenCalledOnce();
+  });
+
   it.each(["reply", "edit"] as const)(
     "does not replace an empty %s composer on ArrowUp",
     async (mode) => {

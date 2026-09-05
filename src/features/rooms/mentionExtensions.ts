@@ -55,6 +55,7 @@ export const UserMention = Mention.extend({
         // ProseMirror clipboard parsing, which previously collapsed a pasted
         // pill to its display label before slash-command dispatch.
         tag: "a[data-mx-pill]",
+        priority: 1200,
         getAttrs: parseMentionAnchor("@"),
       },
     ];
@@ -89,6 +90,7 @@ export const RoomMention = Mention.extend({
     return [
       {
         tag: "a[data-mx-pill]",
+        priority: 1200,
         getAttrs: parseMentionAnchor("!"),
       },
     ];

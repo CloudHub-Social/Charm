@@ -409,9 +409,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           !event.isComposing &&
           !view.composing &&
           mode === "send" &&
-          view.state.doc.childCount === 1 &&
-          view.state.doc.firstChild?.type.name === "paragraph" &&
-          view.state.doc.firstChild.content.size === 0 &&
+          view.state.doc.textContent.trim().length === 0 &&
           onEditLastMessage?.()
         ) {
           event.preventDefault();
