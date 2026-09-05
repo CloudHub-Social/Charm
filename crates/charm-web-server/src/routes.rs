@@ -5808,6 +5808,8 @@ async fn setup_recovery(
     if !state.crypto_backup_setup_enabled {
         return Err(ApiError::not_found("recovery setup is not enabled"));
     }
+    charm_lib::matrix::verification::validate_recovery_passphrase(request.passphrase.as_deref())
+        .map_err(ApiError::bad_request)?;
     let guard = Arc::clone(&session.recovery_setup_lock).lock_owned().await;
     require_open_recovery_session(&session)?;
     // Never mutate server-side recovery from a legacy in-memory-only session.

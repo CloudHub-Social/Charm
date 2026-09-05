@@ -234,7 +234,7 @@ pub fn recovery_status_impl(client: &Client) -> RecoveryStatusSummary {
 const MIN_RECOVERY_PASSPHRASE_CHARS: usize = 8;
 const MAX_RECOVERY_PASSPHRASE_BYTES: usize = 1024;
 
-pub(crate) fn validate_recovery_passphrase(passphrase: Option<&str>) -> Result<(), String> {
+pub fn validate_recovery_passphrase(passphrase: Option<&str>) -> Result<(), String> {
     let Some(passphrase) = passphrase else {
         return Ok(());
     };
