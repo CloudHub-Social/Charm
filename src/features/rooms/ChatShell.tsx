@@ -33,6 +33,7 @@ import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import {
   attachmentUploadPayload,
+  handleAttachmentDragOver,
   hasDraggedFiles,
   useAttachmentUploads,
 } from "./useAttachmentUploads";
@@ -665,11 +666,6 @@ export function ChatShell({
     setFileDragActive(true);
   }
 
-  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
-  }
-
   function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
     if (!mediaSendPolishEnabled) return;
     event.preventDefault();
@@ -701,7 +697,7 @@ export function ChatShell({
       data-testid="chat-shell"
       className="relative flex min-w-0 flex-1 flex-col"
       onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
+      onDragOver={handleAttachmentDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >

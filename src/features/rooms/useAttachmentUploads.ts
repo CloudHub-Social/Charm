@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type RefObject } from "react";
 import { stripExifOnUploadAtom } from "@/features/appearance/atoms";
 import { useFlag } from "@/featureFlags";
 import {
@@ -23,6 +23,11 @@ export function attachmentUploadPayload(file: File & { path?: string }): string 
 
 export function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
   return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
+}
+
+export function handleAttachmentDragOver(event: DragEvent<HTMLDivElement>) {
+  event.preventDefault();
+  if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
 }
 
 function formatMebibytes(bytes: number): string {
