@@ -52,6 +52,12 @@ spike), so the platform groundwork exists.
 
 ## Data flow
 
+Native recordings cross JSON IPC as bounded base64, not a JSON integer array;
+Rust rejects oversized encoded input before decoding and validates decoded size
+before upload. Mobile hold/slide gestures follow the viewport independently of
+the mobile-chat redesign flag. The elapsed clock starts immediately before
+MediaRecorder starts. Regression verification runs in GitHub Actions.
+
 Recording/encoding happens in the webview (frontend); the resulting blob is handed
 to Spec 02's existing attachment-send command with the voice-message content
 markers and waveform data attached. No new media-cache or fetch work — playback of
@@ -61,6 +67,60 @@ messages (small enhancement, note if the current `AudioPlayer` doesn't show a
 waveform for voice messages).
 
 ## API/contract changes
+
+### Implementation boundary
+
+The pinned matrix-sdk 0.18.0 provides `AttachmentInfo::Voice(BaseAudioInfo)`.
+Its attachment send path constructs the voice marker and audio details from that
+variant; use it rather than constructing a second upload/send implementation.
+`BaseAudioInfo::waveform` accepts normalized floating-point amplitudes in `[0, 1]`;
+the SDK converts these into the Matrix wire representation. Duration and waveform
+must both be supplied for the SDK's audio-details block.
+
+The current native command takes a filesystem path, whereas browser recording
+produces a `Blob` with no trusted path. Extend the existing attachment boundary
+to accept a bounded recording payload and metadata, without granting arbitrary
+filesystem write access or persisting microphone data merely to bridge the two.
+The web companion should accept the same metadata alongside its existing
+multipart upload. Both transports must validate audio MIME, finite normalized
+waveform samples, duration, and payload size before starting the upload; reuse
+the current room authorization, transaction ID, progress, cancellation, and
+encrypted-room handling. Ordinary attachment behavior must remain unchanged.
+
+Recording must stop and release microphone tracks, timers, audio nodes, and
+preview object URLs on discard, room/account change, flag disable, and unmount.
+A late permission response must release its stream if the recording attempt is
+no longer current. Preview is local-only until explicit send. Microphone samples,
+filenames, and recorded content must not enter logs or telemetry.
+
+The implementation branch now has bounded MediaRecorder capture, local native
+audio-control preview, explicit send/discard, desktop start/stop and mobile
+hold/slide-to-discard controls. The composer mounts the recorder behind the
+default-off `voice_recording` flag and keys it by account and room. Recording
+metadata travels through the existing native and web attachment transports;
+failed sends retain the local preview for retry. The current live visualization
+is a microphone-level meter, not yet the required waveform history.
+
+Added unit coverage for permission denial, late permission and audio-resume
+responses, size/duration limits, preview disposal, stale recorder events, mobile
+pointer cancellation, explicit send, and native/web transport metadata. A CI
+browser test uses Chromium's synthetic microphone with the real MediaRecorder
+to exercise capture, local preview, and discard without physical microphone
+access. Recording envelopes and waveform fields are explicitly redacted from
+structured diagnostics.
+
+Apple permission prompts explicitly describe voice recording. macOS includes
+the audio-input entitlement and a microphone usage description using
+[Tauri's bundle configuration](https://v2.tauri.app/distribute/macos-application-bundle/)
+and [Apple's media-capture requirements](https://developer.apple.com/documentation/bundleresources/requesting-authorization-for-media-capture-on-macos).
+Native CSP allows `blob:` only in `media-src` for local preview; the browser
+regression applies that directive and waits for playable media metadata. These
+configuration checks do not prove that a signed macOS/iOS app can capture audio.
+
+This is implementation progress, not acceptance: passing CI, waveform UI,
+platform permission checks, and real-device/cross-client
+interoperability remain outstanding. Synthetic-microphone tests do not replace
+device permission or codec interoperability checks.
 
 - Reuse Spec 02's `send_attachment` if it can carry the extra voice-message content
   markers + waveform; if not, a small extension or a dedicated
@@ -87,6 +147,10 @@ waveform for voice messages).
 - **Opus/Ogg encoding target**: matches the Matrix ecosystem norm for voice
   messages so cross-client rendering works; a non-standard codec would play in
   Charm but show as a generic file elsewhere.
+
+Capture is discarded on page hiding/backgrounding. A capture whose elapsed duration
+exceeds ten minutes is rejected rather than published with clamped metadata, including
+when interval callbacks were delayed or suspended.
 
 ## What I'd revisit as this grows
 

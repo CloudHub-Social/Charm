@@ -5073,6 +5073,7 @@ async fn send_attachment(
     let mut data: Option<Vec<u8>> = None;
     let mut caption = None;
     let mut strip_exif_enabled = false;
+    let mut voice: Option<charm_lib::matrix::send::VoiceMessageMetadata> = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -5110,6 +5111,27 @@ async fn send_attachment(
                     .map_err(|e| ApiError::bad_request(e.to_string()))?
                     == "true";
             }
+            Some("voice") => {
+                if voice.is_some() {
+                    return Err(ApiError::bad_request("duplicate voice metadata"));
+                }
+                let mut field = field;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field
+                    .chunk()
+                    .await
+                    .map_err(|_| ApiError::bad_request("invalid voice metadata"))?
+                {
+                    if bytes.len().saturating_add(chunk.len()) > 4096 {
+                        return Err(ApiError::bad_request("voice metadata is too large"));
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                voice = Some(
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| ApiError::bad_request("invalid voice metadata"))?,
+                );
+            }
             _ => {}
         }
     }
@@ -5143,7 +5165,13 @@ async fn send_attachment(
         data
     };
     let total_bytes = data.len() as u64;
-    let info = attachment_info_for(&mime, &data, total_bytes);
+    let info = match voice.as_ref() {
+        Some(metadata) => {
+            charm_lib::matrix::send::voice_attachment_info(&mime, total_bytes, metadata)
+                .map_err(ApiError::bad_request)?
+        }
+        None => attachment_info_for(&mime, &data, total_bytes),
+    };
 
     let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
     let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);

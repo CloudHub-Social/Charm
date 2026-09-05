@@ -24,7 +24,7 @@
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' asset: http://asset.localhost data:",
-        "media-src": "'self' asset: http://asset.localhost",
+        "media-src": "'self' asset: http://asset.localhost blob:",
         "font-src": "'self'"
       },
       "assetProtocol": {
@@ -49,6 +49,9 @@
       "../LICENSING.md",
       "../THIRD_PARTY_NOTICES.md"
     ],
+    "macOS": {
+      "entitlements": "Entitlements.plist"
+    },
     "android": {
       "versionCode": 1003
     },
