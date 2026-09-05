@@ -48,12 +48,12 @@ describe("UserMention", () => {
 
   it("parses its own rendered anchor back into a mention node's attrs", () => {
     const anchor = document.createElement("a");
-    anchor.setAttribute("href", "https://matrix.to/#/@alice:example.org");
+    anchor.setAttribute("href", "https://matrix.to/#/%40alice%3Aexample.org");
     anchor.setAttribute("data-mx-pill", "true");
     anchor.textContent = "@Alice";
 
     const rules = UserMention.config.parseHTML!.call({} as never)!;
-    const attrs = rules[0]!.getAttrs!(anchor);
+    const attrs = rules[1]!.getAttrs!(anchor);
 
     expect(attrs).toEqual({ id: "@alice:example.org", label: "Alice" });
   });

@@ -91,7 +91,7 @@ describe("Composer", () => {
         clipboardData: {
           getData: (type: string) =>
             type === "text/html"
-              ? `<p>/${command} <a data-mx-pill="true" href="https://matrix.to/#/@alice:example.org">Alice</a></p>`
+              ? `<p>/${command} <a data-mx-pill="true" href="https://matrix.to/#/%40alice%3Aexample.org">Alice</a></p>`
               : type === "text/plain"
                 ? `/${command} Alice`
                 : "",

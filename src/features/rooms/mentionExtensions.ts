@@ -27,7 +27,14 @@ function parseMentionAnchor(idPrefix: string) {
   return (element: HTMLElement | string) => {
     if (typeof element === "string") return false;
     const href = element.getAttribute("href") ?? "";
-    const id = href.replace("https://matrix.to/#/", "");
+    const permalinkPrefix = "https://matrix.to/#/";
+    if (!href.startsWith(permalinkPrefix)) return false;
+    let id: string;
+    try {
+      id = decodeURIComponent(href.slice(permalinkPrefix.length));
+    } catch {
+      return false;
+    }
     if (!id.startsWith(idPrefix)) return false;
     const text = element.textContent ?? "";
     return { id, label: text === id ? null : text.replace(/^[@#]/, "") };
@@ -43,6 +50,10 @@ export const UserMention = Mention.extend({
     return [
       {
         tag: 'a[data-mx-pill][href^="https://matrix.to/#/@"]',
+        getAttrs: parseMentionAnchor("@"),
+      },
+      {
+        tag: 'a[data-mx-pill][href^="https://matrix.to/#/%40"]',
         getAttrs: parseMentionAnchor("@"),
       },
     ];
@@ -77,6 +88,10 @@ export const RoomMention = Mention.extend({
     return [
       {
         tag: 'a[data-mx-pill][href^="https://matrix.to/#/!"]',
+        getAttrs: parseMentionAnchor("!"),
+      },
+      {
+        tag: 'a[data-mx-pill][href^="https://matrix.to/#/%21"]',
         getAttrs: parseMentionAnchor("!"),
       },
     ];
