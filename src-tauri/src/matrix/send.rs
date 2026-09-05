@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Instant;
 
+use base64::Engine;
 use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
@@ -15,6 +16,81 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use ts_rs::TS;
+
+/// Recorder metadata shared by native IPC and web multipart attachments.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct VoiceMessageMetadata {
+    pub duration_ms: u32,
+    pub waveform: Vec<f32>,
+}
+
+/// In-memory microphone recording; never interpreted as a filesystem path.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedAudioUpload {
+    pub mime_type: String,
+    pub bytes_base64: String,
+}
+
+pub const MAX_VOICE_RECORDING_UPLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
+fn decode_recording(encoded: &str) -> Result<Vec<u8>, String> {
+    let encoded_limit = MAX_VOICE_RECORDING_UPLOAD_BYTES.div_ceil(3) * 4;
+    if encoded.len() as u64 > encoded_limit {
+        return Err("voice recording exceeds the in-memory upload limit".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "invalid recording encoding".to_string())?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_VOICE_RECORDING_UPLOAD_BYTES {
+        return Err("voice recording exceeds the in-memory upload limit".to_string());
+    }
+    Ok(bytes)
+}
+
+/// Validate recorder metadata before the existing encrypted upload. Errors
+/// deliberately omit microphone samples and other caller-provided values.
+pub fn voice_attachment_info(
+    mime: &mime::Mime,
+    size_bytes: u64,
+    metadata: &VoiceMessageMetadata,
+) -> Result<AttachmentInfo, String> {
+    if mime.type_() != mime::AUDIO {
+        return Err("voice recording must use an audio media type".to_string());
+    }
+    if size_bytes == 0 || size_bytes > MAX_VOICE_RECORDING_UPLOAD_BYTES {
+        return Err("voice recording size is outside the supported range".to_string());
+    }
+    if metadata.duration_ms == 0 || metadata.duration_ms > 600_000 {
+        return Err(
+            "voice recording duration must be positive and at most ten minutes".to_string(),
+        );
+    }
+    if metadata.waveform.is_empty()
+        || metadata.waveform.len() > 120
+        || metadata
+            .waveform
+            .iter()
+            .any(|sample| !sample.is_finite() || !(0.0..=1.0).contains(sample))
+    {
+        return Err("voice recording waveform is invalid".to_string());
+    }
+    Ok(AttachmentInfo::Voice(
+        matrix_sdk::attachment::BaseAudioInfo {
+            duration: Some(std::time::Duration::from_millis(
+                metadata.duration_ms.into(),
+            )),
+            size: Some(
+                size_bytes
+                    .try_into()
+                    .map_err(|_| "voice recording is too large".to_string())?,
+            ),
+            waveform: Some(metadata.waveform.clone()),
+        },
+    ))
+}
 
 /// Rotation/flip implied by an EXIF `Orientation` tag (values 2-8; 1 is
 /// already upright and needs no transform). `image`'s decoders don't apply
@@ -697,6 +773,8 @@ pub async fn send_attachment(
     caption: Option<String>,
     txn_id: String,
     strip_exif_enabled: bool,
+    voice: Option<VoiceMessageMetadata>,
+    recording: Option<RecordedAudioUpload>,
 ) -> Result<(), String> {
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let operation_id = ipc_operation_id(&request);
@@ -773,31 +851,57 @@ pub async fn send_attachment(
             .ok_or_else(|| format!("room {room_id} not found"))?;
         drop(_send_guard);
 
-        let path = Path::new(&file_path);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| "file_path has no filename component".to_string())?
-            .to_string();
+        let (filename, mime, data) = if let Some(recording) = recording {
+            if !file_path.is_empty() {
+                return Err(
+                    "recording and filesystem attachment are mutually exclusive".to_string()
+                );
+            }
+            let metadata = voice
+                .as_ref()
+                .ok_or_else(|| "recording metadata is required".to_string())?;
+            let mime: mime::Mime = recording
+                .mime_type
+                .parse()
+                .map_err(|_| "invalid recording media type".to_string())?;
+            let bytes = decode_recording(&recording.bytes_base64)?;
+            voice_attachment_info(&mime, bytes.len() as u64, metadata)?;
+            let extension = match mime.subtype().as_str() {
+                "ogg" => "ogg",
+                "webm" => "webm",
+                "mp4" => "m4a",
+                "wav" | "wave" | "x-wav" => "wav",
+                _ => return Err("unsupported recording audio format".to_string()),
+            };
+            (format!("Voice message.{extension}"), mime, bytes)
+        } else {
+            let path = Path::new(&file_path);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| "file_path has no filename component".to_string())?
+                .to_string();
 
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|e| e.to_string())?;
-        // `is_file()` follows symlinks and reflects the *target's* file type, so
-        // this also rejects a symlink pointed at a device/pipe/proc special file
-        // masquerading as an attachment, not just directories.
-        if !metadata.is_file() {
-            return Err("file_path does not refer to a regular file".to_string());
-        }
-        if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
-            return Err(format!(
-                "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
-                metadata.len()
-            ));
-        }
+            let metadata = tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| e.to_string())?;
+            // `is_file()` follows symlinks and reflects the *target's* file type, so
+            // this also rejects a symlink pointed at a device/pipe/proc special file
+            // masquerading as an attachment, not just directories.
+            if !metadata.is_file() {
+                return Err("file_path does not refer to a regular file".to_string());
+            }
+            if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
+                return Err(format!(
+                    "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
+                    metadata.len()
+                ));
+            }
 
-        let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
+            let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (filename, mime, data)
+        };
         // Best-effort: an unstrippable image (animated GIF/WebP, or one that
         // fails to decode) sends with its original bytes rather than failing
         // the whole upload — see `strip_exif`'s doc comment for why.
@@ -825,7 +929,10 @@ pub async fn send_attachment(
         let txn_id_string = txn_id.clone();
         let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = txn_id.into();
 
-        let info = attachment_info_for(&mime, &data, total_bytes);
+        let info = match voice.as_ref() {
+            Some(metadata) => voice_attachment_info(&mime, total_bytes, metadata)?,
+            None => attachment_info_for(&mime, &data, total_bytes),
+        };
 
         let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
         if let Some(caption) = caption {
@@ -1106,6 +1213,67 @@ mod tests {
     use matrix_sdk::ruma::room_id;
 
     use super::*;
+
+    #[test]
+    fn recording_base64_is_bounded_and_validated() {
+        assert_eq!(decode_recording("AQID").unwrap(), vec![1, 2, 3]);
+        assert!(decode_recording("").is_err());
+        assert!(decode_recording("not base64!").is_err());
+        let too_large = "A".repeat((MAX_VOICE_RECORDING_UPLOAD_BYTES.div_ceil(3) * 4 + 1) as usize);
+        assert!(decode_recording(&too_large).is_err());
+    }
+
+    #[test]
+    fn voice_metadata_preserves_duration_and_normalized_waveform() {
+        let metadata = VoiceMessageMetadata {
+            duration_ms: 1250,
+            waveform: vec![0.0, 0.5, 1.0],
+        };
+        let info =
+            voice_attachment_info(&"audio/ogg; codecs=opus".parse().unwrap(), 1024, &metadata)
+                .unwrap();
+        let AttachmentInfo::Voice(info) = info else {
+            panic!("expected SDK voice path");
+        };
+        assert_eq!(info.duration, Some(std::time::Duration::from_millis(1250)));
+        assert_eq!(info.waveform, Some(metadata.waveform));
+    }
+
+    #[test]
+    fn voice_metadata_rejects_invalid_waveforms() {
+        let mime = "audio/ogg".parse().unwrap();
+        for waveform in [
+            vec![],
+            vec![0.0; 121],
+            vec![-0.1],
+            vec![1.1],
+            vec![f32::NAN],
+            vec![f32::INFINITY],
+        ] {
+            let metadata = VoiceMessageMetadata {
+                duration_ms: 1000,
+                waveform,
+            };
+            assert!(voice_attachment_info(&mime, 1024, &metadata).is_err());
+        }
+    }
+
+    #[test]
+    fn voice_metadata_rejects_non_audio_and_out_of_range_duration_or_size() {
+        let mime = "audio/ogg".parse().unwrap();
+        let mut metadata = VoiceMessageMetadata {
+            duration_ms: 1000,
+            waveform: vec![0.5],
+        };
+        assert!(voice_attachment_info(&mime::IMAGE_PNG, 1024, &metadata).is_err());
+        for size in [0, MAX_VOICE_RECORDING_UPLOAD_BYTES + 1] {
+            assert!(voice_attachment_info(&mime, size, &metadata).is_err());
+        }
+        for duration in [0, 600_001] {
+            metadata.duration_ms = duration;
+            assert!(voice_attachment_info(&mime, 1024, &metadata).is_err());
+        }
+    }
 
     #[test]
     fn room_barrier_cancels_only_uploads_from_that_room() {

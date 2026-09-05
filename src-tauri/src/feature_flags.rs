@@ -173,6 +173,8 @@ define_feature_flag_keys!(
         RoomUpgrades,
         /// Spec 43 extended composer formatting and command controls.
         ComposerParity,
+        /// Spec 41 microphone capture, local preview, and voice attachments.
+        VoiceRecording,
         /// Day-2 Spec 06 searchable public-room directory and join flow.
         RoomDirectory,
         /// Spec 44 encrypted manual megolm key-file import and export.
@@ -216,6 +218,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => false,
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::ComposerParity => false,
+            FeatureFlagKey::VoiceRecording => false,
             FeatureFlagKey::RoomDirectory => false,
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
@@ -311,6 +314,7 @@ impl FeatureFlagKey {
                 "Upgrade rooms to the homeserver's recommended version and guide members to the replacement room."
             }
             FeatureFlagKey::ComposerParity => "Use extended composer formatting and command controls.",
+            FeatureFlagKey::VoiceRecording => "Record, preview, and send voice messages from the composer.",
             FeatureFlagKey::RoomDirectory => {
                 "Browse and search the homeserver's public room directory, then join a result."
             }
@@ -366,6 +370,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "Day-2 Spec 11 (jump to date)",
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::ComposerParity => "Spec 43 (composer parity)",
+            FeatureFlagKey::VoiceRecording => "Spec 41 (voice message recording)",
             FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
@@ -405,6 +410,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::JumpToDate => "jump_to_date",
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::ComposerParity => "composer_parity",
+            FeatureFlagKey::VoiceRecording => "voice_recording",
             FeatureFlagKey::RoomDirectory => "room_directory",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",

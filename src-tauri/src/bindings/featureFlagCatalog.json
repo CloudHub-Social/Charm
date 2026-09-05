@@ -175,6 +175,12 @@
   },
   {
     "default": false,
+    "description": "Record, preview, and send voice messages from the composer.",
+    "key": "voice_recording",
+    "owner": "Spec 41 (voice message recording)"
+  },
+  {
+    "default": false,
     "description": "Browse and search the homeserver's public room directory, then join a result.",
     "key": "room_directory",
     "owner": "Day-2 Spec 06 (public room directory)"
