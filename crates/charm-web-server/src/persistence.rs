@@ -487,6 +487,35 @@ impl PersistenceStore {
         self.crypto_backup.is_some()
     }
 
+    async fn update_existing_object(
+        &self,
+        path: &ObjectPath,
+        json: Vec<u8>,
+        version: object_store::UpdateVersion,
+    ) -> Result<(), object_store::Error> {
+        let options = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        match self
+            .store
+            .put_opts(path, PutPayload::from(json.clone()), options)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(object_store::Error::NotImplemented) => {
+                // LocalFileSystem, used for local development and these
+                // single-process tests, has no conditional writes. The
+                // per-token lock still preserves its in-process ordering.
+                self.store
+                    .put(path, PutPayload::from(json))
+                    .await
+                    .map(|_| ())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn pending_recovery(
         &self,
         token: &str,
@@ -539,15 +568,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json =
                 serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not atomically persist protected recovery.".into()),
@@ -583,15 +604,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode protected recovery result.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not atomically persist protected recovery.".into()),
@@ -623,15 +636,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode protected recovery cleanup.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not atomically clear protected recovery.".into()),
@@ -692,15 +697,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json =
                 serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(selected),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not atomically claim protected recovery.".into()),
@@ -742,15 +739,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode protected recovery renewal.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not renew recovery setup admission.".into()),
@@ -781,15 +770,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode protected recovery release.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not release recovery setup admission.".into()),
@@ -839,15 +820,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode stale recovery cleanup.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not clear stale protected recovery.".into()),
@@ -893,15 +866,7 @@ impl PersistenceStore {
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
                 .map_err(|_| "Could not encode the session teardown marker.")?;
-            let options = object_store::PutOptions {
-                mode: object_store::PutMode::Update(version),
-                ..Default::default()
-            };
-            match self
-                .store
-                .put_opts(&path, PutPayload::from(json), options)
-                .await
-            {
+            match self.update_existing_object(&path, json, version).await {
                 Ok(_) => return Ok(()),
                 Err(object_store::Error::Precondition { .. }) => continue,
                 Err(_) => return Err("Could not safely begin session teardown.".into()),

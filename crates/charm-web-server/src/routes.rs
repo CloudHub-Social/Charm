@@ -5979,9 +5979,11 @@ mod recovery_setup_route_tests {
 
 async fn recover_from_key(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     Json(request): Json<RecoverFromKeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let token = jar
         .get(SESSION_COOKIE)
         .map(|cookie| cookie.value().to_string())

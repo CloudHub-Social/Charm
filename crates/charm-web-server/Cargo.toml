@@ -60,6 +60,7 @@ reqwest = { version = "0.13", features = ["json", "cookies"] }
 rusqlite = { version = "0.37", features = ["backup"] }
 
 [dev-dependencies]
+matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # Pinned to match the version axum/tungstenite already pull in transitively
 # (see Cargo.lock) so the dev-only WebSocket test client doesn't drag in a
 # second, differently-versioned copy of tokio-tungstenite.

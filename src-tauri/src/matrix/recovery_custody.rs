@@ -70,6 +70,38 @@ pub async fn issued_key_is_stale(
     }
 }
 
+enum PendingSeedState {
+    Disabled,
+    Usable(RecoverySetupSummary),
+    Replaced,
+}
+
+async fn pending_seed_state(
+    client: &Client,
+    pending: &PendingRecoverySetup,
+) -> Result<PendingSeedState, String> {
+    let storage = client.encryption().secret_storage();
+    if !storage
+        .is_enabled()
+        .await
+        .map_err(|_| "Could not read recovery state.")?
+    {
+        return Ok(PendingSeedState::Disabled);
+    }
+    match storage.open_secret_store(&pending.passphrase).await {
+        Ok(store) => Ok(PendingSeedState::Usable(RecoverySetupSummary {
+            recovery_key: store.secret_storage_key(),
+            // Backup enablement is not proof that the initial room-key upload
+            // completed. Only the final durable result write may claim success.
+            room_keys_backed_up: false,
+        })),
+        Err(error) if secret_storage_error_is_definitively_stale(&error) => {
+            Ok(PendingSeedState::Replaced)
+        }
+        Err(_) => Err("Could not reopen pending recovery. Retry when online.".into()),
+    }
+}
+
 impl std::fmt::Debug for PendingRecoverySetup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PendingRecoverySetup([REDACTED])")
@@ -143,25 +175,16 @@ pub async fn pending_summary(
             room_keys_backed_up: pending.room_keys_backed_up,
         }));
     }
-    if !storage
-        .is_enabled()
-        .await
-        .map_err(|_| "Could not read recovery state.")?
-    {
-        return Ok(None);
-    }
     // The seed was committed BEFORE SDK enable. This also recovers a key when
     // the process died between server-side enablement and the local result save.
-    let store = storage
-        .open_secret_store(&pending.passphrase)
-        .await
-        .map_err(|_| "Could not reopen pending recovery. Retry when online.")?;
-    Ok(Some(RecoverySetupSummary {
-        recovery_key: store.secret_storage_key(),
-        // Backup enablement is not proof that the initial room-key upload
-        // completed. Only the final durable result write may claim success.
-        room_keys_backed_up: false,
-    }))
+    match pending_seed_state(client, &pending).await? {
+        PendingSeedState::Disabled => Ok(None),
+        PendingSeedState::Usable(summary) => Ok(Some(summary)),
+        PendingSeedState::Replaced => Err(
+            "Pending recovery no longer matches the account's current secret storage. Restart recovery setup."
+                .into(),
+        ),
+    }
 }
 
 pub async fn setup_with_custody(
@@ -346,15 +369,23 @@ pub async fn repair_interrupted_setup(
     // A setup can commit secret storage before its final local result write.
     // The protected seed is then the usable credential: preserve it for the
     // ordinary pending-summary path and never disable its backup.
-    match pending_summary(client, custody).await {
-        Ok(Some(_)) => {
+    match pending_seed_state(client, &pending).await {
+        Ok(PendingSeedState::Usable(_)) => {
             let _ = custody.release().await;
             return Err(
                 "Recovery setup already created a usable key. Reopen recovery settings to save it."
                     .into(),
             );
         }
-        Ok(None) => {}
+        Ok(PendingSeedState::Disabled) => {}
+        Ok(PendingSeedState::Replaced) => {
+            let result = custody.clear_claimed().await;
+            let release = custody.release().await;
+            return match (result, release) {
+                (Ok(()), _) => Ok(()),
+                (Err(error), _) => Err(error),
+            };
+        }
         Err(error) => {
             let _ = custody.release().await;
             return Err(error);
@@ -516,6 +547,8 @@ mod tests {
         test_utils::mocks::MatrixMockServer,
     };
     use std::sync::Mutex;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, ResponseTemplate};
 
     const ISSUED_KEY: &str = "EsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd";
 
@@ -578,6 +611,19 @@ mod tests {
             .mount()
             .await;
         (server, client)
+    }
+
+    async fn mock_disabled_secret_storage(server: &MatrixMockServer) {
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/_matrix/client/v3/user/.+/account_data/m\.secret_storage\.default_key",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "No default secret storage key"
+            })))
+            .mount(server.server())
+            .await;
     }
 
     #[tokio::test]
@@ -658,6 +704,7 @@ mod tests {
     async fn repair_preserves_a_backup_without_a_live_local_identity() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
+        mock_disabled_secret_storage(&server).await;
         server
             .mock_room_keys_version()
             .exists()
@@ -667,7 +714,7 @@ mod tests {
         server
             .mock_delete_room_keys_version()
             .ok()
-            .expect(1)
+            .expect(0)
             .mount()
             .await;
         let custody = MemoryCustody {
@@ -689,6 +736,7 @@ mod tests {
     async fn ambiguous_create_response_clears_only_local_custody() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
+        mock_disabled_secret_storage(&server).await;
         server
             .mock_room_keys_version()
             .exists()
@@ -720,6 +768,7 @@ mod tests {
     async fn repair_does_not_require_a_remote_backup() {
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
+        mock_disabled_secret_storage(&server).await;
         server
             .mock_room_keys_version()
             .none()
@@ -749,11 +798,11 @@ mod tests {
 
     #[tokio::test]
     async fn repair_never_queries_or_deletes_a_replacement_backup() {
-        use wiremock::matchers::{method, path, path_regex};
-        use wiremock::{Mock, ResponseTemplate};
+        use wiremock::matchers::path;
 
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
+        mock_disabled_secret_storage(&server).await;
         Mock::given(method("GET"))
             .and(path("/_matrix/client/v3/room_keys/version"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -796,6 +845,24 @@ mod tests {
 
         assert!(repair_interrupted_setup(&client, &custody).await.is_err());
         assert!(custody.load().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn repair_clears_only_stale_preissuance_custody_after_replacement() {
+        let (_server, client) = client_with_current_recovery_key().await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(PendingRecoverySetup {
+                passphrase: "superseded interrupted seed".into(),
+                recovery_key: None,
+                room_keys_backed_up: false,
+                server_mutation_started: true,
+            })),
+            fail_save: false,
+        };
+
+        repair_interrupted_setup(&client, &custody).await.unwrap();
+
+        assert!(custody.load().await.unwrap().is_none());
     }
 
     #[tokio::test]
