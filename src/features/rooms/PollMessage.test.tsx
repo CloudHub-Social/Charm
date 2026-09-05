@@ -351,6 +351,21 @@ describe("PollMessage", () => {
     }
   });
 
+  it("keeps an acknowledged close locked across a row remount", async () => {
+    getPendingPollEnd.mockResolvedValue(null);
+    endPoll.mockResolvedValueOnce("txn-remounted-end");
+    const view = render(<PollMessage message={pollMessage()} roomId="!remount:example.org" own />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "End poll" }));
+    await waitFor(() => expect(endPoll).toHaveBeenCalledOnce());
+    view.unmount();
+
+    render(<PollMessage message={pollMessage()} roomId="!remount:example.org" own />);
+
+    expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
+  });
+
   it("blocks mutations while a queued close is being restored", async () => {
     let finish!: (pending: null) => void;
     getPendingPollEnd.mockImplementationOnce(

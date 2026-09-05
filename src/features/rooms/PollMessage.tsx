@@ -23,6 +23,20 @@ interface PollMessageProps {
   rowActions?: MessageRowLayoutProps;
 }
 
+const ACKNOWLEDGED_CLOSE_TTL_MS = 60_000;
+const acknowledgedPollCloses = new Map<string, { transactionId: string; expiresAt: number }>();
+
+function pollCloseKey(roomId: string, eventId: string) {
+  return `${roomId}\u0000${eventId}`;
+}
+
+function acknowledgedPollClose(key: string) {
+  const close = acknowledgedPollCloses.get(key);
+  if (close && close.expiresAt > Date.now()) return close;
+  acknowledgedPollCloses.delete(key);
+  return undefined;
+}
+
 export function PollMessage({
   message,
   roomId,
@@ -34,6 +48,7 @@ export function PollMessage({
   const poll = message.poll;
   const hasPoll = poll != null;
   const pollEnded = poll?.ended ?? false;
+  const closeKey = pollCloseKey(roomId, message.event_id);
   // Timeline snapshots are the bounded reconciliation signal for a queued
   // close. Include vote/content changes as well as end/edit flags so a
   // rejection observed alongside an unrelated vote cannot remain hidden.
@@ -52,14 +67,16 @@ export function PollMessage({
   const [endRecheck, setEndRecheck] = useState(0);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    setEnding(false);
+    const acknowledged = pollEnded ? undefined : acknowledgedPollClose(closeKey);
+    if (pollEnded) acknowledgedPollCloses.delete(closeKey);
+    setEnding(Boolean(acknowledged));
     setEndRequestPending(false);
-    setEndTransactionId(null);
-    setEndAcknowledged(false);
+    setEndTransactionId(acknowledged?.transactionId ?? null);
+    setEndAcknowledged(Boolean(acknowledged));
     setEndFailed(false);
     setEndRecheck(0);
     setError(null);
-  }, [message.event_id, roomId]);
+  }, [closeKey, pollEnded]);
   useEffect(() => {
     if (
       !own ||
@@ -193,10 +210,18 @@ export function PollMessage({
     try {
       if (endTransactionId && endFailed) {
         await resendMessage(roomId, endTransactionId);
+        acknowledgedPollCloses.set(closeKey, {
+          transactionId: endTransactionId,
+          expiresAt: Date.now() + ACKNOWLEDGED_CLOSE_TTL_MS,
+        });
         setEndAcknowledged(true);
         setEndFailed(false);
       } else {
         const transactionId = await endPoll(roomId, message.event_id);
+        acknowledgedPollCloses.set(closeKey, {
+          transactionId,
+          expiresAt: Date.now() + ACKNOWLEDGED_CLOSE_TTL_MS,
+        });
         setEndTransactionId(transactionId);
         setEndAcknowledged(true);
         setEndFailed(false);
@@ -214,6 +239,7 @@ export function PollMessage({
     setEndRequestPending(true);
     try {
       await discardFailedMessage(roomId, endTransactionId);
+      acknowledgedPollCloses.delete(closeKey);
       setEndTransactionId(null);
       setEndAcknowledged(false);
       setEndFailed(false);
