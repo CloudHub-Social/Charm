@@ -1422,6 +1422,13 @@ impl SessionStore {
                 return true;
             };
             if session.has_open_connection()
+                // An initial save can fail while the live client still owns
+                // the only Matrix access token. Evicting that client would
+                // make a later browser logout unable to revoke the token and
+                // would also discard the retry path that this flag protects.
+                || session
+                    .awaiting_initial_persistence
+                    .load(std::sync::atomic::Ordering::Acquire)
                 || session.has_pending_verification_events()
                 || session.has_unpersisted_encrypted_room()
                 || session.idle_for() < idle_timeout
@@ -2030,6 +2037,25 @@ mod tests {
             "a session with a live WebSocket connection must never be evicted, no matter how \
              long ago its last HTTP request was"
         );
+        assert!(store.get(&token).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unpersisted_session_keeps_its_revocable_client_until_initial_save_succeeds() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+        let token = store
+            .create(dummy_session("@unpersisted:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 10);
+        session
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(evicted.is_empty());
         assert!(store.get(&token).await.is_some());
     }
 
