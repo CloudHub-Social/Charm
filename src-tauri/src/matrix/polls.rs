@@ -19,18 +19,19 @@ use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Weak};
 use tauri::{Manager, State};
+use tokio::sync::Mutex;
 
 use super::send::send_and_capture_transaction_id;
 use super::MatrixState;
 
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 20;
-static POLL_MUTATION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(()));
-static ACKNOWLEDGED_POLL_ENDS: LazyLock<tokio::sync::Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+static POLL_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACKNOWLEDGED_POLL_ENDS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingPollEnd {
@@ -41,6 +42,26 @@ pub struct PendingPollEnd {
 fn poll_end_key(client: &Client, room_id: &RoomId, poll_id: &EventId) -> Result<String, String> {
     let user_id = client.user_id().ok_or("No active Matrix account")?;
     Ok(format!("{user_id}\0{room_id}\0{poll_id}"))
+}
+
+async fn poll_mutation_lock(key: &str) -> Arc<Mutex<()>> {
+    let mut locks = POLL_MUTATION_LOCKS.lock().await;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key.to_owned(), Arc::downgrade(&lock));
+    lock
+}
+
+async fn reconcile_acknowledged_poll_end(key: &str, pending: &PendingPollEnd) {
+    let mut acknowledged = ACKNOWLEDGED_POLL_ENDS.lock().await;
+    if pending.failed {
+        acknowledged.remove(key);
+    } else {
+        acknowledged.insert(key.to_owned(), pending.transaction_id.clone());
+    }
 }
 
 async fn pending_poll_end(
@@ -80,19 +101,15 @@ pub async fn pending_poll_end_impl(
 ) -> Result<Option<PendingPollEnd>, String> {
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
     if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
-        if !pending.failed {
-            ACKNOWLEDGED_POLL_ENDS.lock().await.insert(
-                poll_end_key(client, room.room_id(), &poll_event_id)?,
-                pending.transaction_id.clone(),
-            );
-        }
+        reconcile_acknowledged_poll_end(&close_key, &pending).await;
         return Ok(Some(pending));
     }
     Ok(ACKNOWLEDGED_POLL_ENDS
         .lock()
         .await
-        .get(&poll_end_key(client, room.room_id(), &poll_event_id)?)
+        .get(&close_key)
         .cloned()
         .map(|transaction_id| PendingPollEnd {
             transaction_id,
@@ -207,12 +224,14 @@ pub async fn vote_on_poll_impl(
     poll_event_id: &str,
     answer_id: String,
 ) -> Result<String, String> {
-    let _guard = POLL_MUTATION_LOCK.lock().await;
     if answer_id.is_empty() || answer_id.len() > 4096 {
         return Err("Poll answer id is empty or too long".to_string());
     }
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
     if pending_poll_end_impl(client, room_id, poll_event_id.as_str())
         .await?
         .is_some()
@@ -233,13 +252,14 @@ pub async fn end_poll_impl(
     room_id: &str,
     poll_event_id: &str,
 ) -> Result<String, String> {
-    let _guard = POLL_MUTATION_LOCK.lock().await;
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
+    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
     if let Some(pending) = pending_poll_end_impl(client, room_id, poll_event_id.as_str()).await? {
         return Ok(pending.transaction_id);
     }
-    let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
     let transaction_id = send_and_capture_transaction_id(
         client,
@@ -310,6 +330,44 @@ pub async fn confirm_poll_end_synced(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mutation_locks_are_shared_per_poll_without_serializing_other_polls() {
+        let first = poll_mutation_lock("@alice:example.org\0!room:example.org\0$first").await;
+        let same = poll_mutation_lock("@alice:example.org\0!room:example.org\0$first").await;
+        let other = poll_mutation_lock("@alice:example.org\0!room:example.org\0$other").await;
+
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[tokio::test]
+    async fn failed_close_clears_the_acknowledged_fallback() {
+        let key = "@failed:example.org\0!failed:example.org\0$failed";
+        let acknowledged = PendingPollEnd {
+            transaction_id: "close-transaction".into(),
+            failed: false,
+        };
+        reconcile_acknowledged_poll_end(key, &acknowledged).await;
+        assert_eq!(
+            ACKNOWLEDGED_POLL_ENDS
+                .lock()
+                .await
+                .get(key)
+                .map(String::as_str),
+            Some("close-transaction")
+        );
+
+        reconcile_acknowledged_poll_end(
+            key,
+            &PendingPollEnd {
+                transaction_id: "close-transaction".into(),
+                failed: true,
+            },
+        )
+        .await;
+        assert!(!ACKNOWLEDGED_POLL_ENDS.lock().await.contains_key(key));
+    }
 
     #[tokio::test]
     async fn offline_close_is_deduplicated_and_blocks_later_votes() {
