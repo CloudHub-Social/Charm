@@ -302,7 +302,12 @@ pub async fn confirm_poll_end_synced_impl(
     let close_key = poll_end_key(client, &room_id, &poll_event_id)?;
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
-    clear_acknowledged_poll_end(client, &close_key).await
+    // Keep the durable close fence after this renderer observes the end.
+    // Another tab or process can still hold a stale open-poll snapshot; if
+    // one renderer deleted shared state here, that stale renderer could
+    // admit an ignored vote or duplicate close. The tombstone is removed
+    // only when a failed close is explicitly discarded before it succeeds.
+    Ok(())
 }
 
 pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
@@ -538,9 +543,15 @@ pub async fn discard_poll_end_impl(
     if pending.transaction_id != transaction_id || !pending.failed {
         return Ok(false);
     }
+    // Clear the acknowledgement first. If this write fails, retain the
+    // failed echo so a later discard can retry; aborting first could leave a
+    // healthy-looking acknowledgement with no echo and no recovery action.
+    clear_acknowledged_poll_end(client, &close_key).await?;
     let discarded = discard_failed_message_impl(client, room_id, transaction_id).await?;
-    if discarded {
-        clear_acknowledged_poll_end(client, &close_key).await?;
+    if !discarded {
+        // The SDK may have advanced the echo between the read and abort.
+        // Restore the fence until a timeline proves that close settled.
+        set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
     }
     Ok(discarded)
 }
@@ -807,7 +818,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acknowledged_close_is_shared_until_timeline_confirmation() {
+    async fn acknowledged_close_remains_shared_after_one_timeline_confirms() {
         use matrix_sdk::ruma::{event_id, room_id};
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         let server = MatrixMockServer::new().await;
@@ -829,12 +840,12 @@ mod tests {
         confirm_poll_end_synced_impl(&client, room_id.as_str(), poll_id.as_str())
             .await
             .unwrap();
-        assert!(
-            pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.transaction_id, "shared-transaction");
+        assert!(!pending.failed);
     }
 
     #[tokio::test]

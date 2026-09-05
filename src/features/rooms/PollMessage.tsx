@@ -255,6 +255,7 @@ export function PollMessage({
     closeKey,
     endRequestPending,
     endAcknowledged,
+    endFailed,
     endRecheck,
     endTransactionId,
     hasPoll,

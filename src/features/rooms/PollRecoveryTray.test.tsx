@@ -62,4 +62,26 @@ describe("PollRecoveryTray", () => {
     await waitFor(() => expect(getPendingPollRelations).toHaveBeenCalledOnce());
     expect(screen.getByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
   });
+
+  it("does not show the previous room's recovery actions after changing rooms", async () => {
+    getPendingPollRelations.mockImplementation((roomId: string) =>
+      roomId === "!first:example.org"
+        ? Promise.resolve([
+            {
+              poll_event_id: "$first-poll",
+              transaction_id: "txn-first",
+              kind: "vote",
+              answer_id: "0",
+              failed: true,
+            },
+          ])
+        : new Promise(() => {}),
+    );
+    const view = render(<PollRecoveryTray key="!first:example.org" roomId="!first:example.org" />);
+    expect(await screen.findByRole("button", { name: "Discard" })).toBeInTheDocument();
+
+    view.rerender(<PollRecoveryTray key="!second:example.org" roomId="!second:example.org" />);
+
+    expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument();
+  });
 });

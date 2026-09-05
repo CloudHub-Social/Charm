@@ -81,10 +81,13 @@ send queue and transaction-ID capture path as ordinary messages. The web routes
 call those same Rust implementation functions, so desktop and web do not maintain
 parallel protocol logic.
 
-A queued close keeps voting disabled until the timeline confirms closure. Retry
-uses the existing transaction rather than creating a second end event. The
-backend also consults the SDK's persistent local echoes to reject votes and
-deduplicate close requests while an end is queued, including after a UI remount.
+A queued close keeps voting disabled through timeline confirmation. Its durable
+close fence remains after one renderer observes the end so a stale tab cannot
+admit an ignored vote or duplicate close; only explicitly discarding a failed
+close removes that fence. Retry uses the existing transaction rather than
+creating a second end event. The backend also consults the SDK's persistent local
+echoes to reject votes and deduplicate close requests while an end is queued,
+including after a UI remount.
 Queued vote transaction IDs are restored from those same local echoes, so an
 asynchronous homeserver rejection remains visible and can be retried or discarded
 after a remount or restart. Poll-specific vote and close recovery operations share
