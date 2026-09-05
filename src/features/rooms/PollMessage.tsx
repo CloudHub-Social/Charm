@@ -33,7 +33,7 @@ export function PollMessage({
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
   const shouldRestoreEnd = Boolean(
-    message.poll && !message.poll.ended && message.event_id.startsWith("$"),
+    own && message.poll && !message.poll.ended && message.event_id.startsWith("$"),
   );
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
@@ -50,7 +50,13 @@ export function PollMessage({
     setError(null);
   }, [message.event_id, roomId]);
   useEffect(() => {
-    if (!message.poll || message.poll.ended || !message.event_id.startsWith("$")) {
+    if (
+      !own ||
+      !message.poll ||
+      message.poll.ended ||
+      !message.event_id.startsWith("$") ||
+      endRequestPending
+    ) {
       setRestoringEndState(false);
       return;
     }
@@ -58,7 +64,14 @@ export function PollMessage({
     setRestoringEndState(true);
     void getPendingPollEnd(roomId, message.event_id)
       .then((pending) => {
-        if (!active || !pending) return;
+        if (!active) return;
+        if (!pending) {
+          setEndTransactionId(null);
+          setEnding(false);
+          setEndFailed(false);
+          setError(null);
+          return;
+        }
         setEndTransactionId(pending.transaction_id);
         setEnding(true);
         setEndFailed(pending.failed);
@@ -73,7 +86,7 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [message.event_id, message.poll, roomId]);
+  }, [endRequestPending, message.event_id, message.poll, own, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;

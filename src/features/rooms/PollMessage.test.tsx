@@ -210,6 +210,28 @@ describe("PollMessage", () => {
     expect(getPendingPollEnd).toHaveBeenCalledWith("!restored-room:example.org", "$poll");
   });
 
+  it("does not restore creator-only close state for another user's poll", () => {
+    render(<PollMessage message={pollMessage()} roomId="!other-room:example.org" own={false} />);
+
+    expect(getPendingPollEnd).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+  });
+
+  it("clears restored close state when another renderer discards it", async () => {
+    getPendingPollEnd
+      .mockResolvedValueOnce({ transaction_id: "txn-failed-end", failed: true })
+      .mockResolvedValueOnce(null);
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    expect(await screen.findByRole("button", { name: "Retry closing poll" })).toBeEnabled();
+
+    view.rerender(
+      <PollMessage message={pollMessage({ edited: true })} roomId="!room:example.org" own />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+  });
+
   it("preserves the end admission lock across a timeline refresh", async () => {
     let finish!: (transactionId: string) => void;
     endPoll.mockImplementationOnce(
