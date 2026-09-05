@@ -71,11 +71,19 @@ for (const enabled of [false, true]) {
       const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
       await composer.fill("/plain <b>literal markup</b>");
       await composer.press("Enter");
-      await expect(
-        page.getByText(enabled ? "<b>literal markup</b>" : "/plain <b>literal markup</b>", {
-          exact: true,
-        }),
-      ).toBeVisible();
+      if (enabled) {
+        await expect(page.getByText("<b>literal markup</b>", { exact: true })).toBeVisible();
+        await expect(composer).toHaveText("");
+      } else {
+        await expect(composer).toHaveText("/plain <b>literal markup</b>");
+        await expect(
+          page.getByText(
+            "/plain is unavailable while composer parity is disabled. Your draft was not sent.",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(page.getByText("/plain <b>literal markup</b>", { exact: true })).toHaveCount(0);
+      }
       await expect(page.getByText(/sending…/)).toHaveCount(0);
     });
 
