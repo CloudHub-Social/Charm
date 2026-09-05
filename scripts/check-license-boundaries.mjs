@@ -63,13 +63,15 @@ const dependencySections = [
   "optionalDependencies",
 ];
 const forbiddenSource = /SableClient\/SableCall|@sableclient\/sable-call/i;
-const packagingInputs =
-  /^(?:\.github\/workflows\/|src-tauri\/tauri\.conf\.json$|.*(?:package\.json|pnpm-lock\.yaml|Cargo\.toml|Cargo\.lock)$)/;
-const workflowInput = /^\.github\/workflows\/.+\.ya?ml$/i;
-const packagingScript = /^(?:scripts|\.github\/scripts)\//;
-const compositeActionInput = /^\.github\/actions\/.+\/action\.ya?ml$/i;
-const containerBuildInputs =
-  /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i;
+const packagingInputPatterns = [
+  /^\.github\/(?:actions|scripts|workflows)\//i,
+  /^(?:scripts)\//i,
+  /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|Cargo\.toml|Cargo\.lock)$/,
+  /^src-tauri\/tauri\.conf\.json$/,
+  /(?:^|\/)(?:vite|rollup|astro)\.config\.[cm]?[jt]s$/i,
+  /(?:^|\/)(?:build\.rs|Makefile|Justfile)$/i,
+  /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i,
+];
 const bundledAssetRoot =
   /^(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i;
 const sableCallName = /sable[-_ ]?call/i;
@@ -92,23 +94,12 @@ for (const trackedFile of trackedFiles) {
     }
   }
 
-  if (
-    trackedFile !== "scripts/check-license-boundaries.mjs" &&
-    (packagingInputs.test(trackedFile) ||
-      packagingScript.test(trackedFile) ||
-      compositeActionInput.test(trackedFile) ||
-      containerBuildInputs.test(trackedFile))
-  ) {
+  const isPackagingInput = packagingInputPatterns.some((pattern) => pattern.test(trackedFile));
+  if (trackedFile !== "scripts/check-license-boundaries.mjs" && isPackagingInput) {
     const packagingContent = read(trackedFile);
     const executablePackagingContent = packagingContent.replace(/^\s*#.*$/gm, "");
-    const plainNamePackagingInput =
-      workflowInput.test(trackedFile) ||
-      packagingScript.test(trackedFile) ||
-      compositeActionInput.test(trackedFile) ||
-      containerBuildInputs.test(trackedFile);
     const referencesSableCall =
-      forbiddenSource.test(packagingContent) ||
-      (plainNamePackagingInput && sableCallName.test(executablePackagingContent));
+      forbiddenSource.test(packagingContent) || sableCallName.test(executablePackagingContent);
     if (referencesSableCall) {
       errors.push(`Packaging and build inputs cannot fetch Sable Call: ${trackedFile}`);
     }
