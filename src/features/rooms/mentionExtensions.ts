@@ -22,8 +22,7 @@ function isValidMatrixId(id: string, sigil: string): boolean {
   const localpart = id.slice(1, separator);
   const serverName = id.slice(separator + 1);
   const invalidLocalpart = Array.from(localpart).some(
-    (character) =>
-      character === ":" || /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
+    (character) => character === ":" || /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
   );
   if (!serverName || invalidLocalpart) return false;
   try {
