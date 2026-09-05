@@ -19,14 +19,14 @@ for (const requiredFile of ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NO
 for (const manifestPath of ["package.json", "docs-site/package.json"]) {
   const manifest = JSON.parse(read(manifestPath));
   if (manifest.license !== "Apache-2.0") {
-    errors.push(`${manifestPath} must declare license \"Apache-2.0\".`);
+    errors.push(`${manifestPath} must declare license "Apache-2.0".`);
   }
 }
 
 for (const manifestPath of ["src-tauri/Cargo.toml", "crates/charm-web-server/Cargo.toml"]) {
   const packageSection = read(manifestPath).split(/^\[dependencies\]$/m, 1)[0];
   if (!/^license\s*=\s*"Apache-2\.0"\s*$/m.test(packageSection)) {
-    errors.push(`${manifestPath} must declare license = \"Apache-2.0\" in [package].`);
+    errors.push(`${manifestPath} must declare license = "Apache-2.0" in [package].`);
   }
 }
 
@@ -98,4 +98,4 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log("License files and external Sable Call boundary are intact.");
+process.stdout.write("License files and external Sable Call boundary are intact.\n");
