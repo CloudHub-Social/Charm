@@ -40,7 +40,8 @@ interrupted result write. This implementation and its regressions await CI.
   session/device-data removal. A protected write failure prevents setup from
   starting. If a crash creates a server backup before its usable key reaches the
   durable snapshot, the resumed flow offers an explicit repair confirmation that
-  deletes only the exact version recorded by that interrupted attempt. Repair refuses
+  deletes only the exact version captured from matrix-sdk's backup-create response for
+  that interrupted attempt. Repair refuses
   if the server advertises a replacement version, checkpoints the resulting state,
   and preserves custody on any uncertain failure. Backups with an issued recovery key
   are never eligible for repair. The web repair POST also enforces the configured

@@ -229,11 +229,7 @@ pub async fn setup_with_custody(
         if !client.encryption().backups().are_enabled().await {
             match client.encryption().recovery().enable_backup().await {
                 Ok(()) => {
-                    pending.backup_version = Some(
-                        current_backup_version(client)
-                            .await?
-                            .ok_or("The new backup version could not be identified safely.")?,
-                    );
+                    pending.backup_version = Some(created_backup_version(client).await?);
                     custody.save_claimed(&pending).await?;
                 }
                 Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
@@ -389,6 +385,21 @@ async fn current_backup_version(client: &Client) -> Result<Option<String>, Strin
         Err(error) if error.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
         Err(_) => Err("Could not verify the current server backup. Retry when online.".into()),
     }
+}
+
+/// Reads the version saved by matrix-sdk from the create response itself.
+/// Unlike a subsequent latest-version GET, this identity cannot be replaced
+/// by another client between creation and our custody checkpoint.
+async fn created_backup_version(client: &Client) -> Result<String, String> {
+    let olm_machine = client.olm_machine_for_testing().await;
+    let olm_machine = olm_machine
+        .as_ref()
+        .ok_or("The new backup version could not be identified safely.")?;
+    olm_machine
+        .backup_machine()
+        .backup_version()
+        .await
+        .ok_or_else(|| "The new backup version could not be identified safely.".to_string())
 }
 
 async fn delete_backup_version_exact(client: &Client, version: &str) -> Result<(), String> {
