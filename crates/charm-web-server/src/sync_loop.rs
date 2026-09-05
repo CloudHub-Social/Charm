@@ -1777,8 +1777,8 @@ mod tests {
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
                 .await
-                .expect("session invalidation event should be published promptly")
-                .unwrap(),
+                .expect("session invalidation event timed out")
+                .expect("session invalidation event sender closed"),
             ServerEvent::SessionInvalidated(())
         ));
     }

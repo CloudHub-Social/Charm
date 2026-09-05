@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-08-14T14:54:37.457Z",
+  "generatedAt": "2026-09-04T16:26:42.102Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 48,
     "follow-up": 2,
-    "in-progress": 4,
-    "planned": 23
+    "in-progress": 6,
+    "planned": 21
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 496,
+      "title": "feat(voice): add guarded recording and local preview",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/496",
+      "detail": "Day-1 Spec 41 · ready for review"
+    },
     {
       "type": "pull-request",
       "number": 470,
@@ -43,13 +50,6 @@
       "number": 419,
       "title": "Spec 28: add durable search indexing reconciliation checkpoints",
       "url": "https://github.com/CloudHub-Social/Charm/issues/419",
-      "detail": ""
-    },
-    {
-      "type": "issue",
-      "number": 434,
-      "title": "Spec 28: avoid blocking the web async runtime on the search-index mutex",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/434",
       "detail": ""
     }
   ],
@@ -139,8 +139,8 @@
       "counts": {
         "shipped": 20,
         "follow-up": 1,
-        "in-progress": 1,
-        "planned": 14
+        "in-progress": 3,
+        "planned": 12
       }
     },
     {
@@ -913,13 +913,6 @@
           "labels": []
         },
         {
-          "number": 434,
-          "title": "Spec 28: avoid blocking the web async runtime on the search-index mutex",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/434",
-          "updatedAt": "2026-08-06T05:59:21Z",
-          "labels": []
-        },
-        {
           "number": 433,
           "title": "Spec 28: optimize ignored-sender search reconciliation",
           "url": "https://github.com/CloudHub-Social/Charm/issues/433",
@@ -941,13 +934,6 @@
           "title": "Spec 28: cover web message-search transport serialization",
           "url": "https://github.com/CloudHub-Social/Charm/issues/427",
           "updatedAt": "2026-08-05T21:48:34Z",
-          "labels": []
-        },
-        {
-          "number": 426,
-          "title": "Spec 28: keep successful room leave authoritative when local search purge fails",
-          "url": "https://github.com/CloudHub-Social/Charm/issues/426",
-          "updatedAt": "2026-08-05T21:48:21Z",
           "labels": []
         },
         {
@@ -1395,8 +1381,17 @@
       "number": 41,
       "title": "Voice message recording",
       "route": "/specs/day-1/spec-41--voice-message-recording/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 496,
+          "title": "feat(voice): add guarded recording and local preview",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/496",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-09-04T16:21:04Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1442,7 +1437,7 @@
       "number": 44,
       "title": "Crypto key backup setup and key import/export",
       "route": "/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": []
     },
@@ -1822,7 +1817,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/468",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-08-14T12:06:27Z"
+          "updatedAt": "2026-09-04T16:03:51Z"
         }
       ],
       "issues": []
@@ -1870,7 +1865,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/470",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-08-14T14:54:33Z"
+          "updatedAt": "2026-09-04T16:19:33Z"
         }
       ],
       "issues": []

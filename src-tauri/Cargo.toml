@@ -74,6 +74,7 @@ tauri-plugin-log = "2"
 log = "0.4.33"
 tracing-appender = "0.2.5"
 aes-gcm = "0.11.0"
+tempfile = "3"
 exif = { version = "0.6", package = "kamadak-exif" }
 
 
