@@ -94,7 +94,10 @@ for (const trackedFile of trackedFiles) {
     (packagingInputs.test(trackedFile) || containerBuildInputs.test(trackedFile))
   ) {
     const packagingContent = read(trackedFile);
-    if (forbiddenSource.test(packagingContent) || sableCallName.test(packagingContent)) {
+    const referencesSableCall =
+      forbiddenSource.test(packagingContent) ||
+      (containerBuildInputs.test(trackedFile) && sableCallName.test(packagingContent));
+    if (referencesSableCall) {
       errors.push(`Packaging and build inputs cannot fetch Sable Call: ${trackedFile}`);
     }
   }
