@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LanguageVariant, SyntaxKind } from "typescript/unstable/ast";
+import { LanguageVariant } from "typescript/unstable/ast";
 import { createScanner } from "typescript/unstable/ast/scanner";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,7 +30,12 @@ function stripPackagingComments(content, relativePath) {
   const scanner = createScanner(true, languageVariant, content);
   const executableTokens = [];
 
-  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFile; token = scanner.scan()) {
+  while (scanner.getTokenEnd() < content.length) {
+    const previousEnd = scanner.getTokenEnd();
+    scanner.scan();
+    if (scanner.getTokenEnd() <= previousEnd) {
+      throw new Error(`TypeScript scanner made no progress while reading ${relativePath}.`);
+    }
     executableTokens.push(scanner.getTokenText());
   }
 
