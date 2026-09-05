@@ -50,7 +50,13 @@ export function PollMessage({
     setError(null);
   }, [message.event_id, roomId]);
   useEffect(() => {
-    if (!own || !message.poll || !message.event_id.startsWith("$") || endRequestPending) {
+    if (
+      !own ||
+      !message.poll ||
+      !message.event_id.startsWith("$") ||
+      endRequestPending ||
+      (endTransactionId !== null && !message.poll.ended)
+    ) {
       setRestoringEndState(false);
       return;
     }
@@ -93,7 +99,7 @@ export function PollMessage({
     return () => {
       active = false;
     };
-  }, [endRequestPending, message.event_id, message.poll, own, roomId]);
+  }, [endRequestPending, endTransactionId, message.event_id, message.poll, own, roomId]);
   if (!poll) return null;
   const currentPoll = poll;
   const unsupportedSelectionCount = poll.max_selections !== 1;

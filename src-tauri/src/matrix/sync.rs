@@ -673,8 +673,8 @@ mod unopened_poll_notification_tests {
                     "kind": "m.poll.disclosed",
                     "max_selections": 1,
                     "answers": [
-                        {"id": "a", "m.text": [{"body": "Pizza", "mimetype": "text/plain"}]},
-                        {"id": "b", "m.text": [{"body": "Tacos", "mimetype": "text/plain"}]}
+                        {"m.id": "a", "m.text": [{"body": "Pizza", "mimetype": "text/plain"}]},
+                        {"m.id": "b", "m.text": [{"body": "Tacos", "mimetype": "text/plain"}]}
                     ]
                 }
             }
