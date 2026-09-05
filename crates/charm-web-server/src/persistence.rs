@@ -918,6 +918,38 @@ impl PersistenceStore {
         backup.require_active_writer().await
     }
 
+    pub async fn acquire_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.acquire_recovery_mutation(owner).await
+    }
+
+    pub async fn renew_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.renew_recovery_mutation(owner).await
+    }
+
+    pub async fn require_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.require_recovery_mutation(owner).await
+    }
+
+    pub async fn release_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.release_recovery_mutation(owner).await
+    }
+
     pub async fn snapshot_crypto_store(
         &self,
         token: &str,

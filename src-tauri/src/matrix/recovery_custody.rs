@@ -11,6 +11,13 @@ use super::secret_store::{SecretEntry, SecretStoreError};
 use super::verification::{self, RecoverySetupSummary};
 use super::{persistence, MatrixState};
 
+const REPAIR_REQUIRED_GUIDANCE: &str =
+    "Protected recovery state was retained; repair the interrupted setup before signing out.";
+
+fn repairable_setup_error(message: impl AsRef<str>) -> String {
+    format!("{} {REPAIR_REQUIRED_GUIDANCE}", message.as_ref())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingRecoverySetup {
     passphrase: String,
@@ -237,9 +244,10 @@ pub async fn setup_with_custody(
                         // pre-existing backup and destroying its custody.
                         return Err(
                             "An interrupted recovery setup may have created the existing backup. \
-                             Protected recovery state was retained; finish or repair recovery \
-                             before signing out."
-                                .into(),
+                             Finish recovery or repair the interrupted setup."
+                                .to_string()
+                                + " "
+                                + REPAIR_REQUIRED_GUIDANCE,
                         );
                     }
                     // This attempt observed BackupExists without changing the
@@ -258,16 +266,17 @@ pub async fn setup_with_custody(
                     );
                 }
                 Err(_) => {
-                    return Err(
-                        "Could not enable a new backup. Restore an existing backup if one exists."
-                            .into(),
-                    );
+                    return Err(repairable_setup_error(
+                        "Could not enable a new backup. Restore an existing backup if one exists.",
+                    ));
                 }
             }
         }
         // Preserve the newly generated backup private key before creating SSSS.
-        custody.checkpoint().await?;
-        let summary = verification::enable_recovery_impl(client, Some(&pending.passphrase)).await?;
+        custody.checkpoint().await.map_err(repairable_setup_error)?;
+        let summary = verification::enable_recovery_impl(client, Some(&pending.passphrase))
+            .await
+            .map_err(repairable_setup_error)?;
         pending.recovery_key = Some(summary.recovery_key.clone());
         pending.room_keys_backed_up = summary.room_keys_backed_up;
         // If this final write fails, the already-durable seed can reopen SSSS.

@@ -102,7 +102,7 @@ describe("RecoverySetupCard", () => {
   it("requires confirmation before deleting an incomplete backup", async () => {
     setupRecovery.mockRejectedValue(
       new Error(
-        "An interrupted recovery setup may have created the existing backup. Protected recovery state was retained; finish or repair recovery before signing out.",
+        "Could not create secret storage. Protected recovery state was retained; repair the interrupted setup before signing out.",
       ),
     );
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);

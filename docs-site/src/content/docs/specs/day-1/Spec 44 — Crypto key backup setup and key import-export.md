@@ -44,7 +44,11 @@ interrupted result write. This implementation and its regressions await CI.
   exact version. If that identity is unavailable, repair preserves the server backup
   and clears only Charm's local custody marker. Repair checkpoints the resulting state
   and preserves custody on any uncertain failure. Backups with an issued recovery key
-  are never eligible for repair. The web repair POST also enforces the configured
+  are never eligible for repair. Every post-mutation failure exposes the same repair
+  confirmation instead of relying on one SDK error string. Web setup and repair hold a
+  renewable, compare-and-swap writer lease across the Matrix mutation and its durable
+  checkpoint; a replacement deployment waits for that lease before taking the snapshot
+  writer fence. The web repair POST also enforces the configured
   origin allowlist before session lookup. The web deployment must provide encrypted crypto snapshots and an
   object backend supporting conditional updates (such as the configured S3 store);
   local-file-only persistence fails closed for setup. Session refresh preserves

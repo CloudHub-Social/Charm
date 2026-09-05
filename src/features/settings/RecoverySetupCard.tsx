@@ -112,7 +112,11 @@ export function RecoverySetupCard({
       setSetupError(setupFailureGuidance(error));
       const message =
         error instanceof Error ? error.message : typeof error === "string" ? error : "";
-      setRepairAvailable(message.includes("interrupted recovery setup may have created"));
+      setRepairAvailable(
+        message.includes(
+          "Protected recovery state was retained; repair the interrupted setup before signing out.",
+        ),
+      );
     } finally {
       setPassphrase("");
       setConfirmation("");

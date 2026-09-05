@@ -5543,13 +5543,19 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
         &self,
         pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
     ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
-        self.persistence
-            .claim_pending_recovery(
-                self.token,
-                pending,
-                self.owner.ok_or("Recovery setup has no request owner.")?,
-            )
-            .await
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        let claimed = self
+            .persistence
+            .claim_pending_recovery(self.token, pending, owner)
+            .await?;
+        if let Err(error) = self.persistence.acquire_recovery_writer_lease(owner).await {
+            let _ = self
+                .persistence
+                .release_pending_recovery_claim(self.token, owner)
+                .await;
+            return Err(error);
+        }
+        Ok(claimed)
     }
     async fn save_claimed(
         &self,
@@ -5572,19 +5578,19 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             .await
     }
     async fn release(&self) -> Result<(), String> {
-        self.persistence
-            .release_pending_recovery_claim(
-                self.token,
-                self.owner.ok_or("Recovery setup has no request owner.")?,
-            )
-            .await
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        let writer_release = self.persistence.release_recovery_writer_lease(owner).await;
+        let custody_release = self
+            .persistence
+            .release_pending_recovery_claim(self.token, owner)
+            .await;
+        writer_release.and(custody_release)
     }
     async fn renew(&self) -> Result<(), String> {
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        self.persistence.renew_recovery_writer_lease(owner).await?;
         self.persistence
-            .renew_pending_recovery_claim(
-                self.token,
-                self.owner.ok_or("Recovery setup has no request owner.")?,
-            )
+            .renew_pending_recovery_claim(self.token, owner)
             .await
     }
     async fn checkpoint(&self) -> Result<(), String> {
@@ -5600,7 +5606,11 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
         {
             return Err("Session closed during recovery setup.".into());
         }
-        self.persistence.require_active_crypto_writer().await?;
+        self.persistence
+            .require_recovery_writer_lease(
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await?;
         let matrix_session = self
             .session
             .client
@@ -5622,7 +5632,11 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
         // The writer fence can change while the snapshot is uploading. A
         // superseded writer deliberately skips its commit, so recheck before
         // allowing recovery setup to mutate server-side secret storage.
-        self.persistence.require_active_crypto_writer().await
+        self.persistence
+            .require_recovery_writer_lease(
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
     }
 }
 
