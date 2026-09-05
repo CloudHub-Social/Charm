@@ -191,7 +191,15 @@ pub async fn pending_summary(
             Err(error) if secret_storage_error_is_definitively_stale(&error) => {
                 return Err("Pending recovery no longer matches the account's current secret storage. Restart recovery setup.".into());
             }
-            Err(_) => return Err("Could not validate pending recovery. Retry when online.".into()),
+            // The issued key is already encrypted in account-bound local
+            // custody. A transient/offline lookup must not hide that only
+            // copy after restart; acknowledgement below still performs a
+            // mandatory live validation before clearing custody.
+            Err(_) => {
+                tracing::warn!(
+                    "showing a locally protected issued recovery key while live validation is unavailable"
+                );
+            }
         }
         return Ok(Some(RecoverySetupSummary {
             recovery_key: recovery_key.clone(),
@@ -364,6 +372,22 @@ pub async fn acknowledge(
     recovery_key: String,
 ) -> Result<(), String> {
     let recovery_key = Zeroizing::new(recovery_key);
+    if let Some(pending) = custody.load().await? {
+        if let Some(issued_key) = &pending.recovery_key {
+            if issued_key != recovery_key.as_str() {
+                return Err(
+                    "Pending recovery changed. Save the current key before acknowledging.".into(),
+                );
+            }
+            match issued_key_is_stale(client, &pending).await {
+                Ok(false) => return custody.save(None).await,
+                Ok(true) => {
+                    return Err("Pending recovery no longer matches the account's current secret storage. Restart recovery setup.".into());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
     let Some(summary) = pending_summary(client, custody).await? else {
         return Ok(());
     };
@@ -646,6 +670,19 @@ mod tests {
             .await;
     }
 
+    async fn mock_unavailable_secret_storage(server: &MatrixMockServer) {
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/_matrix/client/v3/user/.+/account_data/m\.secret_storage\.default_key",
+            ))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "errcode": "M_UNKNOWN",
+                "error": "temporarily unavailable"
+            })))
+            .mount(server.server())
+            .await;
+    }
+
     #[tokio::test]
     async fn issued_key_is_revalidated_and_only_matching_acknowledgement_removes_it() {
         let (_server, client) = client_with_current_recovery_key().await;
@@ -673,6 +710,30 @@ mod tests {
             .await
             .unwrap();
         assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn issued_key_reopens_when_validation_is_offline_but_cannot_be_acknowledged() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        mock_unavailable_secret_storage(&server).await;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(pending())),
+            fail_save: false,
+        };
+
+        assert_eq!(
+            pending_summary(&client, &custody)
+                .await
+                .unwrap()
+                .unwrap()
+                .recovery_key,
+            ISSUED_KEY
+        );
+        assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
+            .await
+            .is_err());
+        assert!(custody.load().await.unwrap().is_some());
     }
 
     #[tokio::test]
