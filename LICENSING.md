@@ -15,7 +15,8 @@ that third-party components are original Charm work.
 Apache-2.0 applies only to material for which the Charm project has the right
 to grant that license. Dependencies, fonts, generated artifacts, embedded
 platform components, and other third-party material remain subject to their
-own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), the lockfiles,
+own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), the generated
+`THIRD_PARTY_LICENSES.txt` included in distribution artifacts, the lockfiles,
 and the signed SPDX SBOMs attached to releases.
 
 The Apache license does not grant permission to use project or contributor

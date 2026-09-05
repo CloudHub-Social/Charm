@@ -6,8 +6,9 @@ description: What Charm's Apache-2.0 license covers and how external AGPL widget
 Charm's original source code and documentation are licensed under Apache-2.0.
 That license does not relicense dependencies, fonts, operating-system
 components, hosted services, or other third-party works. The root
-`LICENSING.md`, `THIRD_PARTY_NOTICES.md`, lockfiles, and release SBOMs describe
-the corresponding inventories and notices.
+`LICENSING.md`, `THIRD_PARTY_NOTICES.md`, build-generated
+`THIRD_PARTY_LICENSES.txt`, lockfiles, and release SBOMs describe the
+corresponding inventories and notices.
 
 This page is an architectural and release policy, not legal advice. It is
 load-bearing for Spec 49 (widgets), Spec 02 (calling), and any App Store build.
@@ -115,8 +116,9 @@ on Charm files cannot substitute for those rights.
 ## Verification checklist
 
 - `license:check` passes in GitHub Actions.
-- Release artifacts and source archives contain Charm's `LICENSE`, `NOTICE`,
-  and third-party notices.
+- Release artifacts contain Charm's `LICENSE`, `NOTICE`, third-party notice
+  index, and build-generated dependency license texts. Source archives contain
+  the committed root license and notice files.
 - Artifact inspection finds no Sable Call bundle, asset, dependency, container,
   or offline cache.
 - Integration tests exercise denied capabilities, origin mismatch, account

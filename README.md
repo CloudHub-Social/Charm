@@ -15,7 +15,8 @@ missing features.
 Charm's original source code and documentation are available under the
 [Apache License 2.0](LICENSE). Third-party components keep their own licenses;
 see [LICENSING.md](LICENSING.md) and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for scope and attribution.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for scope and attribution;
+distribution builds also embed a resolved `THIRD_PARTY_LICENSES.txt` inventory.
 
 Sable Call is not included in Charm or covered by Charm's Apache license. The
 planned calling integration treats it as separately hosted external software

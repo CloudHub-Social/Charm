@@ -7,6 +7,7 @@ import ts from "typescript";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
 const requiredLicensingFiles = ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"];
+const generatedThirdPartyLicenses = "THIRD_PARTY_LICENSES.txt";
 
 function read(relativePath) {
   return readFileSync(path.join(repositoryRoot, relativePath), "utf8");
@@ -39,10 +40,10 @@ function stripPackagingComments(content, relativePath) {
   return executableContent;
 }
 
-function requirePackagedLicensingFiles(relativePath, destination) {
+function requirePackagedFiles(relativePath, destination, requiredFiles) {
   const packagingLines = stripPackagingComments(read(relativePath), relativePath).split("\n");
 
-  for (const requiredFile of requiredLicensingFiles) {
+  for (const requiredFile of requiredFiles) {
     const isPackaged = packagingLines.some(
       (line) =>
         /\b(?:copy|cp|install)\b/i.test(line) &&
@@ -61,13 +62,50 @@ for (const requiredFile of requiredLicensingFiles) {
   }
 }
 
-requirePackagedLicensingFiles(".github/actions/build-web-worker/action.yml", "dist/");
-requirePackagedLicensingFiles("crates/charm-web-server/Dockerfile", "/usr/share/doc/charm/");
+requirePackagedFiles(
+  ".github/actions/build-web-worker/action.yml",
+  "dist/",
+  requiredLicensingFiles,
+);
+requirePackagedFiles("crates/charm-web-server/Dockerfile", "/usr/share/doc/charm/", [
+  ...requiredLicensingFiles,
+  generatedThirdPartyLicenses,
+]);
 
 for (const manifestPath of ["package.json", "docs-site/package.json"]) {
   const manifest = JSON.parse(read(manifestPath));
   if (manifest.license !== "Apache-2.0") {
     errors.push(`${manifestPath} must declare license "Apache-2.0".`);
+  }
+}
+
+const rootManifest = JSON.parse(read("package.json"));
+const requiredScripts = {
+  build: "tsc && vite build && pnpm license:bundle:npm",
+  "build:web": "tsc && vite build --mode web && pnpm license:bundle:npm",
+  "build:tauri": "tsc && vite build && pnpm license:bundle:tauri",
+  "license:bundle:npm":
+    "node scripts/generate-third-party-licenses.mjs --npm --copy-project-licenses --output dist/THIRD_PARTY_LICENSES.txt",
+  "license:bundle:tauri":
+    "node scripts/generate-third-party-licenses.mjs --npm --cargo --copy-project-licenses --output dist/THIRD_PARTY_LICENSES.txt",
+};
+for (const [scriptName, expectedCommand] of Object.entries(requiredScripts)) {
+  if (rootManifest.scripts?.[scriptName] !== expectedCommand) {
+    errors.push(`package.json scripts.${scriptName} must generate the expected license bundle.`);
+  }
+}
+
+const docsManifest = JSON.parse(read("docs-site/package.json"));
+const requiredDocsScripts = {
+  build: "astro build && node scripts/generate-site-graph-loader.mjs && pnpm license:bundle:npm",
+  "license:bundle:npm":
+    "node ../scripts/generate-third-party-licenses.mjs --npm --npm-directory docs-site --copy-project-licenses --output docs-site/dist/THIRD_PARTY_LICENSES.txt",
+};
+for (const [scriptName, expectedCommand] of Object.entries(requiredDocsScripts)) {
+  if (docsManifest.scripts?.[scriptName] !== expectedCommand) {
+    errors.push(
+      `docs-site/package.json scripts.${scriptName} must generate the expected license bundle.`,
+    );
   }
 }
 
@@ -79,6 +117,12 @@ for (const manifestPath of ["src-tauri/Cargo.toml", "crates/charm-web-server/Car
 }
 
 const tauriConfig = JSON.parse(read("src-tauri/tauri.conf.json"));
+if (tauriConfig.build?.beforeBuildCommand !== "pnpm build:tauri") {
+  errors.push("src-tauri/tauri.conf.json must generate npm and Cargo licenses before bundling.");
+}
+if (tauriConfig.build?.frontendDist !== "../dist") {
+  errors.push("src-tauri/tauri.conf.json must bundle the generated dist license inventory.");
+}
 if (tauriConfig.bundle?.license !== "Apache-2.0") {
   errors.push('src-tauri/tauri.conf.json must declare bundle.license "Apache-2.0".');
 }
@@ -92,6 +136,18 @@ for (const noticePath of ["../NOTICE", "../LICENSING.md", "../THIRD_PARTY_NOTICE
 }
 if (/sable[-_ ]?call/i.test(JSON.stringify(tauriConfig.bundle))) {
   errors.push("src-tauri/tauri.conf.json bundle configuration cannot reference Sable Call.");
+}
+
+const serverDockerfile = stripPackagingComments(
+  read("crates/charm-web-server/Dockerfile"),
+  "crates/charm-web-server/Dockerfile",
+);
+if (
+  !serverDockerfile.includes(
+    "node scripts/generate-third-party-licenses.mjs --cargo --output /tmp/THIRD_PARTY_LICENSES.txt",
+  )
+) {
+  errors.push("The companion-server image must generate its locked Cargo license bundle.");
 }
 
 const trackedFilesResult = spawnSync("git", ["ls-files", "-z"], {

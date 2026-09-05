@@ -5,11 +5,17 @@ are not relicensed under Charm's Apache-2.0 license. Their own license files
 and notices control.
 
 The lockfiles are the canonical dependency inventory for a source revision.
+Distribution builds generate `THIRD_PARTY_LICENSES.txt` from the installed pnpm
+graph and Cargo's locked external-crate graph. That file reproduces the resolved
+packages' available license, notice, copying, and copyright files and is
+included in web, Tauri, documentation-site, and companion-server artifacts.
+Generation fails when a resolved dependency does not provide a distributable
+license text.
+
 Each published release also includes signed, platform-named SPDX JSON software
 bills of materials. As the README explains, those SBOMs describe the
-lockfile-pinned source revision and are not yet an exhaustive inventory of
-every packaged binary or platform-resolved transitive dependency. Completing
-and reviewing that inventory is a release gate, not a claim made by this file.
+lockfile-pinned source revision and complement rather than replace the bundled
+license texts.
 
 Representative directly bundled frontend dependencies include:
 
@@ -24,7 +30,7 @@ Representative directly bundled frontend dependencies include:
 | Gradle wrapper scripts                   | Apache-2.0                               |
 
 This short table is an attribution index, not a replacement for the lockfiles,
-license texts, or release SBOMs.
+generated `THIRD_PARTY_LICENSES.txt`, or release SBOMs.
 
 ## External software: Sable Call
 

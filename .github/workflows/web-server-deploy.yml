@@ -32,6 +32,7 @@ on:
       - "NOTICE"
       - "LICENSING.md"
       - "THIRD_PARTY_NOTICES.md"
+      - "scripts/generate-third-party-licenses.mjs"
       - ".do/app.yaml"
       - ".github/workflows/web-server-deploy.yml"
   workflow_dispatch:
