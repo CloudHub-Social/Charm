@@ -298,6 +298,28 @@ describe("PollMessage", () => {
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
   });
 
+  it("keeps discard recovery available when cleaning up an ended poll fails", async () => {
+    getPendingPollEnd.mockResolvedValueOnce({
+      transaction_id: "txn-failed-end",
+      failed: true,
+    });
+    discardPollEnd.mockRejectedValueOnce(new Error("temporary transport failure"));
+    render(
+      <PollMessage
+        message={pollMessage({ ended: true })}
+        roomId="!room:example.org"
+        own
+        recoveryOnly
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The failed poll close could not be discarded.",
+    );
+    expect(screen.queryByRole("button", { name: "Retry close" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard close" })).toBeInTheDocument();
+  });
+
   it("does not retain a successful queued close after the timeline ended", async () => {
     getPendingPollEnd
       .mockResolvedValueOnce({ transaction_id: "txn-synced-end", failed: false })

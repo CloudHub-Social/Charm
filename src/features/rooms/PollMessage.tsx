@@ -199,7 +199,13 @@ export function PollMessage({
               if (!active) return;
               setError(null);
             } catch {
-              if (active) setError("The failed poll close could not be discarded.");
+              if (active) {
+                setEndTransactionId(pending.transaction_id);
+                setEnding(false);
+                setEndAcknowledged(false);
+                setEndFailed(true);
+                setError("The failed poll close could not be discarded.");
+              }
               return;
             }
           }
@@ -439,7 +445,7 @@ export function PollMessage({
         {endFailed && endTransactionId && (
           <div className="flex flex-wrap items-center gap-2">
             <p>Your poll close failed to send.</p>
-            {!message.redacted && (
+            {!pollEnded && !message.redacted && (
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
