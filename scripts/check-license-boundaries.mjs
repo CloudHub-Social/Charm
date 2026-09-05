@@ -30,7 +30,7 @@ function stripPackagingComments(content, relativePath) {
   const scanner = createScanner(true, languageVariant, content);
   const executableTokens = [];
 
-  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+  for (let token = scanner.scan(); token !== SyntaxKind.EndOfFile; token = scanner.scan()) {
     executableTokens.push(scanner.getTokenText());
   }
 
