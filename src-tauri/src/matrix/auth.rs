@@ -17,7 +17,7 @@ use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::{ClientSecret, UInt};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
-use matrix_sdk::Client;
+use matrix_sdk::{AuthSession, Client, SessionTokens};
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -500,6 +500,7 @@ pub async fn login(
         client
             .matrix_auth()
             .login_username(&request.username, &request.password)
+            .request_refresh_token()
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -612,6 +613,8 @@ pub async fn login(
         // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
         // present at a time.
         let _ = persistence::clear_oauth_session(&account_key);
+
+        install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
         let response = LoginResponse {
             user_id: session.meta.user_id.to_string(),
@@ -747,6 +750,8 @@ pub async fn try_restore_session(
             continue;
         }
 
+        install_session_callbacks(&client, &account_key, &saved.homeserver_url)?;
+
         let response = LoginResponse {
             user_id: saved.session.meta.user_id.to_string(),
             device_id: saved.session.meta.device_id.to_string(),
@@ -791,6 +796,8 @@ async fn restore_oauth_session(
         user_id: session_meta.user_id.to_string(),
         device_id: session_meta.device_id.to_string(),
     };
+
+    install_session_callbacks(&client, account_key, &homeserver_url)?;
 
     // Enforces the single-account invariant this function's caller documents:
     // only one session kind should be present at a time. Guards against
@@ -934,11 +941,148 @@ pub(crate) async fn build_client_with_store_passphrase(
 ) -> Result<Client, String> {
     Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
+        .handle_refresh_tokens()
         .with_encryption_settings(client_encryption_settings())
         .sqlite_store(store_path, Some(passphrase))
         .build()
         .await
         .map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Copy)]
+enum PersistedSessionKind {
+    Matrix,
+    OAuth,
+}
+
+fn callback_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(std::io::Error::other(message.into()))
+}
+
+/// Keeps refresh-token rotations durable without allowing a stopped or logged-out
+/// client to recreate or overwrite the account's current keychain session.
+pub(crate) fn install_session_callbacks(
+    client: &Client,
+    account_key: &str,
+    homeserver_url: &str,
+) -> Result<(), String> {
+    let initial_session = client.session().ok_or_else(|| {
+        "cannot persist refresh tokens without an authenticated session".to_string()
+    })?;
+    let kind = match &initial_session {
+        AuthSession::Matrix(_) => PersistedSessionKind::Matrix,
+        AuthSession::OAuth(_) => PersistedSessionKind::OAuth,
+        _ => return Err("unsupported authentication session kind".to_string()),
+    };
+    let expected_user_id = initial_session.meta().user_id.to_owned();
+    let expected_device_id = initial_session.meta().device_id.to_owned();
+    let expected_access_token = std::sync::Arc::new(std::sync::Mutex::new(
+        initial_session.access_token().to_owned(),
+    ));
+
+    let reload_account_key = account_key.to_owned();
+    let reload_expected_access_token = expected_access_token.clone();
+    let reload_user_id = expected_user_id.clone();
+    let reload_device_id = expected_device_id.clone();
+    let reload =
+        move |_client: Client| -> Result<SessionTokens, Box<dyn std::error::Error + Send + Sync>> {
+            let tokens = match kind {
+                PersistedSessionKind::Matrix => {
+                    let saved = persistence::load_session(&reload_account_key)
+                        .map_err(callback_error)?
+                        .ok_or_else(|| {
+                            callback_error("the persisted Matrix session was removed")
+                        })?;
+                    if saved.session.meta.user_id != reload_user_id
+                        || saved.session.meta.device_id != reload_device_id
+                    {
+                        return Err(callback_error(
+                            "the persisted Matrix session was superseded",
+                        ));
+                    }
+                    SessionTokens {
+                        access_token: saved.session.tokens.access_token,
+                        refresh_token: saved.session.tokens.refresh_token,
+                    }
+                }
+                PersistedSessionKind::OAuth => {
+                    let saved = persistence::load_oauth_session(&reload_account_key)
+                        .map_err(callback_error)?
+                        .ok_or_else(|| callback_error("the persisted OAuth session was removed"))?;
+                    if saved.user.meta.user_id != reload_user_id
+                        || saved.user.meta.device_id != reload_device_id
+                    {
+                        return Err(callback_error("the persisted OAuth session was superseded"));
+                    }
+                    SessionTokens {
+                        access_token: saved.user.tokens.access_token,
+                        refresh_token: saved.user.tokens.refresh_token,
+                    }
+                }
+            };
+            *reload_expected_access_token
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = tokens.access_token.clone();
+            Ok(tokens)
+        };
+
+    let save_account_key = account_key.to_owned();
+    let save_homeserver_url = homeserver_url.to_owned();
+    let save_expected_access_token = expected_access_token;
+    let save_user_id = expected_user_id;
+    let save_device_id = expected_device_id;
+    let save = move |client: Client| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let session = client
+            .session()
+            .ok_or_else(|| callback_error("the refreshed client has no authenticated session"))?;
+        if session.meta().user_id != save_user_id || session.meta().device_id != save_device_id {
+            return Err(callback_error(
+                "the refreshed client session identity changed",
+            ));
+        }
+
+        let mut expected = save_expected_access_token
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let replaced = match session {
+            AuthSession::Matrix(session) if matches!(kind, PersistedSessionKind::Matrix) => {
+                persistence::replace_session_if_current(
+                    &save_account_key,
+                    &save_homeserver_url,
+                    expected.as_str(),
+                    &session,
+                )
+                .map_err(callback_error)?
+            }
+            AuthSession::OAuth(session) if matches!(kind, PersistedSessionKind::OAuth) => {
+                persistence::replace_oauth_session_if_current(
+                    &save_account_key,
+                    &save_homeserver_url,
+                    expected.as_str(),
+                    &session,
+                )
+                .map_err(callback_error)?
+            }
+            _ => {
+                return Err(callback_error(
+                    "the refreshed authentication session kind changed",
+                ));
+            }
+        };
+        if !replaced {
+            return Err(callback_error(
+                "refusing to overwrite a removed or superseded persisted session",
+            ));
+        }
+        *expected = client
+            .access_token()
+            .ok_or_else(|| callback_error("the refreshed session has no access token"))?;
+        Ok(())
+    };
+
+    client
+        .set_session_callbacks(Box::new(reload), Box::new(save))
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn build_persisted_client_with_store_passphrase(
@@ -1151,6 +1295,8 @@ async fn finish_registration(
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -2724,6 +2870,7 @@ pub async fn login_with_token(
                 .matrix_auth()
                 .login_token(&token)
                 .initial_device_display_name("Charm")
+                .request_refresh_token()
                 .send(),
         )
         .await,
@@ -3038,6 +3185,7 @@ fn registration_request(
     let mut register_request = register::v3::Request::new();
     register_request.username = Some(request.username.clone());
     register_request.password = Some(request.password.clone());
+    register_request.refresh_token = true;
     register_request.auth = auth;
     register_request
 }
@@ -3246,6 +3394,7 @@ pub async fn register_with_dummy_auth(
     let mut register_request = register::v3::Request::new();
     register_request.username = Some(username.to_owned());
     register_request.password = Some(password.to_owned());
+    register_request.refresh_token = true;
 
     if let Err(e) = client
         .matrix_auth()
@@ -4465,6 +4614,8 @@ pub async fn complete_sso_login(
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
 
+    install_session_callbacks(&client, &account_key, &homeserver_url)?;
+
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
         device_id: session.meta.device_id.to_string(),
@@ -4540,6 +4691,7 @@ pub async fn complete_sso_login_with_callback(
         .matrix_auth()
         .login_with_sso_callback(UrlOrQuery::Url(url))
         .map_err(|e| e.to_string())?
+        .request_refresh_token()
         .await
         .map_err(|e| e.to_string())?;
 

@@ -43,6 +43,10 @@ async fn register_with_dummy_auth_creates_a_working_session() {
         .session()
         .expect("a session is set on the client after registration");
     assert_eq!(session.meta.user_id.localpart(), username);
+    assert!(
+        session.tokens.refresh_token.is_some(),
+        "registration requests a refresh token for durable native sessions"
+    );
 
     // Prove the session is actually usable, not just present.
     client
