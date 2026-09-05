@@ -285,6 +285,31 @@ fn spawn_idle_session_sweeper(
             }
             tracing::info!("evicting {} idle session(s)", evicted.len());
             for (token, session) in evicted {
+                let initial_save_never_landed = session
+                    .awaiting_initial_persistence
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if initial_save_never_landed {
+                    // After SessionStore's bounded retry grace, there is no
+                    // durable token to restore later. Revoke the live token
+                    // before dropping the only client that still owns it.
+                    if let Err(error) =
+                        charm_web_server::persistence::revoke_matrix_session(&session.client).await
+                    {
+                        tracing::warn!(
+                            "failed to revoke never-persisted idle session before eviction: {error}"
+                        );
+                    }
+                    let live_crypto = session
+                        .persisted_crypto
+                        .as_ref()
+                        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                    if let Err(error) = persistence.remove(&token, live_crypto).await {
+                        tracing::warn!(
+                            "failed to remove never-persisted idle session storage: {error}"
+                        );
+                    }
+                    continue;
+                }
                 // `sweep_idle` already aborted this session's sync loop
                 // synchronously, before it ever returned this list — see
                 // that function's doc comment for why the abort itself

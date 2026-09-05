@@ -1421,14 +1421,17 @@ impl SessionStore {
             let Ok(_recovery) = session.recovery_setup_lock.try_lock() else {
                 return true;
             };
+            let retrying_initial_save = session
+                .awaiting_initial_persistence
+                .load(std::sync::atomic::Ordering::Acquire)
+                && session.idle_for() < idle_timeout.saturating_mul(2);
             if session.has_open_connection()
                 // An initial save can fail while the live client still owns
                 // the only Matrix access token. Evicting that client would
                 // make a later browser logout unable to revoke the token and
-                // would also discard the retry path that this flag protects.
-                || session
-                    .awaiting_initial_persistence
-                    .load(std::sync::atomic::Ordering::Acquire)
+                // discard the retry path. Bound that grace to twice the idle
+                // timeout; the sweeper then revokes instead of persisting it.
+                || retrying_initial_save
                 || session.has_pending_verification_events()
                 || session.has_unpersisted_encrypted_room()
                 || session.idle_for() < idle_timeout
@@ -2041,14 +2044,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unpersisted_session_keeps_its_revocable_client_until_initial_save_succeeds() {
+    async fn an_unpersisted_session_gets_a_bounded_retry_window_before_eviction() {
         let store = SessionStore::new();
         let idle_timeout = std::time::Duration::from_secs(60);
         let token = store
             .create(dummy_session("@unpersisted:example.org").await)
             .await;
         let session = store.get(&token).await.unwrap();
-        backdate(&session, idle_timeout * 10);
+        backdate(&session, idle_timeout + idle_timeout / 2);
         session
             .awaiting_initial_persistence
             .store(true, std::sync::atomic::Ordering::Release);
@@ -2057,6 +2060,12 @@ mod tests {
 
         assert!(evicted.is_empty());
         assert!(store.get(&token).await.is_some());
+
+        backdate(&session, idle_timeout * 3);
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0, token);
+        assert!(store.get(&token).await.is_none());
     }
 
     #[tokio::test]

@@ -103,7 +103,7 @@ const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::fro
 /// Confirms that a Matrix session is revoked before its last durable token
 /// copy may be deleted. `M_UNKNOWN_TOKEN` is also confirmation: a previous
 /// attempt may have reached the homeserver and crashed before local cleanup.
-pub(crate) async fn revoke_matrix_session(client: &matrix_sdk::Client) -> Result<(), String> {
+pub async fn revoke_matrix_session(client: &matrix_sdk::Client) -> Result<(), String> {
     match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(error))
