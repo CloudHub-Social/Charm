@@ -39,6 +39,8 @@ import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
+import type { RoomKeyExportSummary } from "@bindings/RoomKeyExportSummary";
+import type { RoomKeyImportSummary } from "@bindings/RoomKeyImportSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
 import type { RegistrationEmailChallenge } from "@bindings/RegistrationEmailChallenge";
@@ -670,6 +672,16 @@ export function recoveryStatus(): Promise<RecoveryStatusSummary> {
 // matches `recovery_key`/`recoveryKey` field names.
 export function recoverFromKey(recoveryKey: string): Promise<void> {
   return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
+}
+
+/** Opens a native save picker and exports an SDK-compatible encrypted room-key file. */
+export function exportRoomKeys(passphrase: string): Promise<RoomKeyExportSummary> {
+  return invoke("export_room_keys", { passphrase }, { captureOnError: false });
+}
+
+/** Opens a native file picker and imports an SDK-compatible encrypted room-key file. */
+export function importRoomKeys(passphrase: string): Promise<RoomKeyImportSummary> {
+  return invoke("import_room_keys", { passphrase }, { captureOnError: false });
 }
 
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
