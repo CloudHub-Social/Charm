@@ -1565,6 +1565,7 @@ pub fn run() {
             matrix::spaces::list_manageable_space_children,
             matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
+            matrix::room_directory::search_public_rooms,
             matrix::spaces::knock_room,
             matrix::spaces::create_space,
             matrix::spaces::set_space_parent,
