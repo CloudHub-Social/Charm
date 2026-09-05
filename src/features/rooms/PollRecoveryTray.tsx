@@ -3,8 +3,6 @@ import {
   discardPollEnd,
   discardPollVote,
   getPendingPollRelations,
-  retryPollEnd,
-  retryPollVote,
   type PendingPollRelation,
   type RoomMessageSummary,
 } from "@/lib/matrix";
@@ -15,7 +13,7 @@ interface PollRecoveryTrayProps {
 }
 
 export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayProps) {
-  const [relations, setRelations] = useState<PendingPollRelation[]>([]);
+  const [pendingRelations, setPendingRelations] = useState<PendingPollRelation[]>([]);
   const [busyTransactionId, setBusyTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeRoomId = useRef(roomId);
@@ -24,20 +22,23 @@ export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayPro
     () => new Set(loadedMessages.map((message) => message.event_id)),
     [loadedMessages],
   );
-  const refresh = useCallback(async () => {
+  const loadRelations = useCallback(async () => {
     const pending = await getPendingPollRelations(roomId);
-    if (activeRoomId.current !== roomId) return;
-    setRelations(
-      pending.filter((relation) => relation.failed && !loadedEventIds.has(relation.poll_event_id)),
-    );
-  }, [loadedEventIds, roomId]);
+    if (activeRoomId.current !== roomId) return null;
+    return pending.filter((relation) => relation.failed);
+  }, [roomId]);
+  const relations = useMemo(
+    () => pendingRelations.filter((relation) => !loadedEventIds.has(relation.poll_event_id)),
+    [loadedEventIds, pendingRelations],
+  );
 
   useEffect(() => {
     let active = true;
     let retryTimer: number | undefined;
     const load = async () => {
       try {
-        await refresh();
+        const pending = await loadRelations();
+        if (active && pending) setPendingRelations(pending);
       } catch {
         // The durable queue remains authoritative; retry while this room is open.
       } finally {
@@ -49,26 +50,21 @@ export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayPro
       active = false;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [refresh]);
+  }, [loadRelations]);
 
-  async function mutate(relation: PendingPollRelation, action: "retry" | "discard") {
+  async function discard(relation: PendingPollRelation) {
     setBusyTransactionId(relation.transaction_id);
     setError(null);
     try {
       const changed =
         relation.kind === "vote"
-          ? action === "retry"
-            ? await retryPollVote(roomId, relation.poll_event_id, relation.transaction_id)
-            : await discardPollVote(roomId, relation.poll_event_id, relation.transaction_id)
-          : action === "retry"
-            ? await retryPollEnd(roomId, relation.poll_event_id, relation.transaction_id)
-            : await discardPollEnd(roomId, relation.poll_event_id, relation.transaction_id);
+          ? await discardPollVote(roomId, relation.poll_event_id, relation.transaction_id)
+          : await discardPollEnd(roomId, relation.poll_event_id, relation.transaction_id);
       if (!changed) setError("That failed poll action was already handled elsewhere.");
-      await refresh();
+      const pending = await loadRelations();
+      if (pending) setPendingRelations(pending);
     } catch {
-      setError(
-        `The failed poll ${relation.kind} could not be ${action === "retry" ? "retried" : "discarded"}.`,
-      );
+      setError(`The failed poll ${relation.kind} could not be discarded.`);
     } finally {
       setBusyTransactionId(null);
     }
@@ -91,15 +87,7 @@ export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayPro
             <button
               type="button"
               disabled={busy}
-              onClick={() => void mutate(relation, "retry")}
-              className="rounded bg-primary-solid px-2.5 py-1 text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void mutate(relation, "discard")}
+              onClick={() => void discard(relation)}
               className="rounded px-2.5 py-1 text-muted-foreground hover:bg-accent disabled:opacity-50"
             >
               Discard

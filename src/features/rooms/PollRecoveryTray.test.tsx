@@ -3,25 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PollRecoveryTray } from "./PollRecoveryTray";
 
 const getPendingPollRelations = vi.fn();
-const retryPollVote = vi.fn();
 const discardPollVote = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getPendingPollRelations: (...args: unknown[]) => getPendingPollRelations(...args),
-  retryPollVote: (...args: unknown[]) => retryPollVote(...args),
   discardPollVote: (...args: unknown[]) => discardPollVote(...args),
-  retryPollEnd: vi.fn(),
   discardPollEnd: vi.fn(),
 }));
 
 describe("PollRecoveryTray", () => {
   beforeEach(() => {
     getPendingPollRelations.mockReset().mockResolvedValue([]);
-    retryPollVote.mockReset().mockResolvedValue(true);
     discardPollVote.mockReset().mockResolvedValue(true);
   });
 
-  it("recovers a failed vote whose poll target is not loaded", async () => {
+  it("offers only discard when a failed vote's target is not loaded", async () => {
     getPendingPollRelations
       .mockResolvedValueOnce([
         {
@@ -35,10 +31,16 @@ describe("PollRecoveryTray", () => {
       .mockResolvedValue([]);
     render(<PollRecoveryTray roomId="!room:example.org" loadedMessages={[]} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: "Discard" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
 
     await waitFor(() =>
-      expect(retryPollVote).toHaveBeenCalledWith("!room:example.org", "$unloaded-poll", "txn-vote"),
+      expect(discardPollVote).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$unloaded-poll",
+        "txn-vote",
+      ),
     );
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument(),
@@ -64,5 +66,29 @@ describe("PollRecoveryTray", () => {
 
     await waitFor(() => expect(getPendingPollRelations).toHaveBeenCalledOnce());
     expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument();
+  });
+
+  it("filters timeline changes without restarting the room polling loop", async () => {
+    getPendingPollRelations.mockResolvedValue([
+      {
+        poll_event_id: "$newly-loaded-poll",
+        transaction_id: "txn-vote",
+        kind: "vote",
+        answer_id: "0",
+        failed: true,
+      },
+    ]);
+    const view = render(<PollRecoveryTray roomId="!room:example.org" loadedMessages={[]} />);
+    expect(await screen.findByRole("button", { name: "Discard" })).toBeInTheDocument();
+
+    view.rerender(
+      <PollRecoveryTray
+        roomId="!room:example.org"
+        loadedMessages={[{ event_id: "$newly-loaded-poll" }]}
+      />,
+    );
+
+    expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument();
+    expect(getPendingPollRelations).toHaveBeenCalledOnce();
   });
 });
