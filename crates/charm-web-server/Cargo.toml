@@ -23,13 +23,13 @@ tokio = { version = "1.52.3", features = [
   "fs",
 ] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 # For session_cookie()'s explicit Max-Age (routes.rs) — already pulled in
 # transitively via axum-extra's `cookie` feature; declared directly here
 # since routes.rs names it, not just axum-extra internals.
 time = "0.3"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "cors"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -45,8 +45,8 @@ futures-util = "0.3.32"
 mime = "0.3"
 mime_guess = "2"
 image = "0.25"
-aes-gcm = "0.10"
-base64 = "0.22"
+aes-gcm = "0.11"
+base64 = "0.23"
 eyeball = "0.8.8"
 sha2 = "0.11.0"
 tokio-util = { version = "0.7", features = ["io"] }
@@ -54,7 +54,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 # dev/tests (unchanged on-disk layout), `AmazonS3` (against DO Spaces'
 # S3-compatible endpoint, same as this repo's sccache config) in production,
 # where the deploy target has no persistent volume to write a plain file to.
-object_store = { version = "0.11", features = ["aws"] }
+object_store = { version = "0.14", features = ["aws"] }
 sentry-tower = { version = "0.49.1", features = ["axum", "axum-matched-path", "http"] }
 reqwest = { version = "0.13", features = ["json", "cookies"] }
 rusqlite = { version = "0.37", features = ["backup"] }
