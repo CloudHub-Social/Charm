@@ -115,17 +115,22 @@ export function PollMessage({
           setError(null);
           return;
         }
-        if (pollEnded && pending.failed) {
-          try {
-            await discardFailedMessage(roomId, pending.transaction_id);
-            if (!active) return;
-            setEndTransactionId(null);
-            setEnding(false);
-            setEndFailed(false);
-            setError(null);
-          } catch {
-            if (active) setError("The failed poll close could not be discarded.");
+        if (pollEnded) {
+          if (pending.failed) {
+            try {
+              await discardFailedMessage(roomId, pending.transaction_id);
+              if (!active) return;
+              setError(null);
+            } catch {
+              if (active) setError("The failed poll close could not be discarded.");
+              return;
+            }
           }
+          acknowledgedPollCloses.delete(closeKey);
+          setEndTransactionId(null);
+          setEnding(false);
+          setEndAcknowledged(false);
+          setEndFailed(false);
           return;
         }
         setEndTransactionId(pending.transaction_id);

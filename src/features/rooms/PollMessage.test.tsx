@@ -253,6 +253,21 @@ describe("PollMessage", () => {
     expect(screen.queryByRole("button", { name: "Retry closing poll" })).not.toBeInTheDocument();
   });
 
+  it("does not retain a successful queued close after the timeline ended", async () => {
+    getPendingPollEnd
+      .mockResolvedValueOnce({ transaction_id: "txn-synced-end", failed: false })
+      .mockResolvedValueOnce(null);
+    const view = render(
+      <PollMessage message={pollMessage({ ended: true })} roomId="!room:example.org" own />,
+    );
+    await waitFor(() => expect(getPendingPollEnd).toHaveBeenCalledOnce());
+    view.unmount();
+
+    render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "End poll" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Close queued" })).not.toBeInTheDocument();
+  });
+
   it("preserves the end admission lock across a timeline refresh", async () => {
     let finish!: (transactionId: string) => void;
     endPoll.mockImplementationOnce(
