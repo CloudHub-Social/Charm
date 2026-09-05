@@ -94,6 +94,16 @@ describe("UserMention", () => {
     expect(rules[0]!.getAttrs!(anchor)).toEqual({ id: "@alice?work:example.org", label: "Alice" });
   });
 
+  it("strips permalink parameters after a legacy raw user id containing a question mark", () => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", "https://matrix.to/#/@alice?work:example.org?action=chat");
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "@Alice";
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+
+    expect(rules[0]!.getAttrs!(anchor)).toEqual({ id: "@alice?work:example.org", label: "Alice" });
+  });
+
   it.each([
     "https://matrix.to/#/@alice:example.org/path",
     "https://matrix.to/#/@alice:example.org:",

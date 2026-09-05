@@ -63,8 +63,15 @@ function parseMentionAnchor(idPrefix: string) {
     const permalinkPrefix = "https://matrix.to/#/";
     if (!href.startsWith(permalinkPrefix)) return false;
     const fragment = href.slice(permalinkPrefix.length);
+    const rawServerSeparator = fragment.indexOf(":", 1);
+    const parameterSeparator = fragment.indexOf(
+      "?",
+      rawServerSeparator >= 0 ? rawServerSeparator + 1 : 0,
+    );
+    const withoutParameters =
+      parameterSeparator >= 0 ? fragment.slice(0, parameterSeparator) : fragment;
     let id = "";
-    for (const candidate of [fragment, fragment.split("?")[0]]) {
+    for (const candidate of [fragment, withoutParameters]) {
       try {
         const decoded = decodeURIComponent(candidate);
         if (isValidMatrixId(decoded, idPrefix)) {
@@ -79,6 +86,12 @@ function parseMentionAnchor(idPrefix: string) {
     const text = element.textContent ?? "";
     return { id, label: text === id ? null : text.replace(/^[@#]/, "") };
   };
+}
+
+function encodeMatrixIdForPermalink(id: string): string {
+  // `encodeURIComponent` deliberately leaves `!` unescaped, but Matrix
+  // permalinks use an encoded sigil consistently for both user and room IDs.
+  return encodeURIComponent(id).replaceAll("!", "%21");
 }
 
 export const UserMention = Mention.extend({
@@ -112,7 +125,7 @@ export const UserMention = Mention.extend({
     return [
       "a",
       mergeAttributes(HTMLAttributes, {
-        href: `https://matrix.to/#/${encodeURIComponent(id)}`,
+        href: `https://matrix.to/#/${encodeMatrixIdForPermalink(id)}`,
         "data-mx-pill": "true",
       }),
       pillText("@", node.attrs.label as string | null, id),
@@ -143,7 +156,7 @@ export const RoomMention = Mention.extend({
     return [
       "a",
       mergeAttributes(HTMLAttributes, {
-        href: `https://matrix.to/#/${encodeURIComponent(id)}`,
+        href: `https://matrix.to/#/${encodeMatrixIdForPermalink(id)}`,
         "data-mx-pill": "true",
       }),
       pillText("#", node.attrs.label as string | null, id),

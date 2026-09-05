@@ -53,12 +53,21 @@ function resolveEditorPlainShortcodes(editor: Editor): string {
 
   const document = resolveNode(editor.getJSON());
   const plainText = generateText(document, editor.extensionManager.extensions);
-  const trailingNode = document.content?.at(-1);
-  // TipTap keeps an empty paragraph after a terminal code block so the
-  // cursor can exit it. Remove only that structural block separator; a
-  // broad trim would corrupt whitespace authored inside the code block.
-  return trailingNode?.type === "paragraph" && !trailingNode.content?.length
-    ? plainText.replace(/\n\n$/, "")
+  const blocks = document.content ?? [];
+  const trailingEmptyParagraphs = [...blocks]
+    .reverse()
+    .findIndex((node) => node.type !== "paragraph" || node.content?.length);
+  const structuralParagraphCount =
+    trailingEmptyParagraphs === -1 ? blocks.length : trailingEmptyParagraphs;
+  const precedingBlock = blocks.at(-(structuralParagraphCount + 1));
+  // TipTap keeps empty paragraphs after a terminal code block so the cursor
+  // can exit it. `generateText` adds a block separator for each one; remove
+  // only those structural separators, never whitespace inside the code.
+  const structuralSuffix = "\n\n".repeat(structuralParagraphCount);
+  return structuralSuffix &&
+    precedingBlock?.type === "codeBlock" &&
+    plainText.endsWith(structuralSuffix)
+    ? plainText.slice(0, -structuralSuffix.length)
     : plainText;
 }
 
