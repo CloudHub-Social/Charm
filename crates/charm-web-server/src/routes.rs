@@ -49,6 +49,7 @@ use charm_lib::matrix::room_admin::{
     set_room_name_impl, set_room_power_level_thresholds_impl, set_room_topic_impl,
     unban_member_impl, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
 };
+use charm_lib::matrix::room_directory::{search_public_rooms_impl, PublicRoomPage};
 use charm_lib::matrix::rooms::{
     accept_invite_impl, decline_invite_impl, resolve_alias, set_room_favourite_impl,
     set_room_low_priority_impl, set_room_manual_order_impl, set_room_marked_unread_impl,
@@ -148,6 +149,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/search/messages", post(search_messages))
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
+        .route("/api/rooms/directory/search", post(search_public_rooms))
         .route("/api/rooms/knock", post(knock_room))
         .route("/api/rooms/create-space", post(create_space))
         .route("/api/rooms/{room_id}", get(get_room_details))
@@ -3406,6 +3408,26 @@ async fn list_manageable_space_children(
 #[derive(Debug, Deserialize)]
 struct JoinRoomRequest {
     room_id_or_alias: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchPublicRoomsRequest {
+    query: Option<String>,
+    since: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn search_public_rooms(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<SearchPublicRoomsRequest>,
+) -> Result<Json<PublicRoomPage>, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let page =
+        search_public_rooms_impl(&session.client, request.query, request.since, request.limit)
+            .await
+            .map_err(ApiError::bad_gateway)?;
+    Ok(Json(page))
 }
 
 async fn join_room(
@@ -6936,6 +6958,13 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: None,
+        }
+    }
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: message.into(),
             kind: None,
         }

@@ -249,6 +249,13 @@ describe("matrix web transport", () => {
       { room_id_or_alias: "#space-room:example.org" },
     ],
     [
+      "search_public_rooms",
+      { query: "matrix", since: "page-2", limit: 12 },
+      "POST",
+      "/api/rooms/directory/search",
+      { query: "matrix", since: "page-2", limit: 12 },
+    ],
+    [
       "knock_room",
       { roomIdOrAlias: "!knock:example.org", reason: "please" },
       "POST",
