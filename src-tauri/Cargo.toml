@@ -89,7 +89,7 @@ keyring = { version = "3", features = ["apple-native"] }
 # SableClient's MIT-licensed Tauri notification plugin supplies the supported
 # Swift mobile-plugin bridge for APNs registration. Pin the audited revision so
 # an upstream force-push or API change cannot silently alter release builds.
-tauri-plugin-notifications = { git = "https://github.com/SableClient/tauri-plugin-notifications.git", rev = "758156fd9b1cbc99c83062194a2a59c411b5907f", default-features = false, features = ["push-notifications"] }
+tauri-plugin-notifications = { git = "https://github.com/Just-Insane/tauri-plugin-notifications.git", rev = "1e0e9ee7464a553d891598bf4376d444b05bed3c", default-features = false, features = ["push-notifications"] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 tauri-plugin-notification = "2"
