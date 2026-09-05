@@ -158,6 +158,12 @@ Add as environment secrets: `MACOS_CERT_P12` (contents of `cert.p12.b64`),
 `MACOS_CERT_PASSWORD` (the password used above), `MACOS_CERT_NAME` (the
 cert's common name, exactly as it appears in Keychain Access).
 
+For stable releases, use an Apple-issued Developer ID Application certificate
+in `release-signing`, not the self-signed nightly identity. Also add `APPLE_ID`,
+`APPLE_PASSWORD` (an app-specific password), and `APPLE_TEAM_ID`; Tauri uses
+them to submit and staple the notarization ticket before the release workflow
+accepts the app and disk image.
+
 **Windows nightly** — use a self-signed test identity from PowerShell:
 
 ```powershell

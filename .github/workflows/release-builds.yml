@@ -262,6 +262,7 @@ jobs:
     if: ${{ !inputs.verify_platform_signing }}
     name: Apple debug files
     runs-on: macos-latest
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release-signing' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,6 +292,43 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
+      - name: Import stable macOS signing certificate
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD MACOS_CERT_NAME APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::release-signing environment secret $name is required for a stable macOS build"
+              exit 1
+            fi
+          done
+          keychain="$RUNNER_TEMP/release-signing.keychain-db"
+          keychain_password=$(uuidgen)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 -D > "$RUNNER_TEMP/release-cert.p12"
+          security import "$RUNNER_TEMP/release-cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
+          security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
+          rm -f "$RUNNER_TEMP/release-cert.p12"
+          identity_name=$(printf '%s' "$MACOS_CERT_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          echo "::add-mask::$identity_name"
+          available_identities=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^[[:space:]]*[0-9]*)[[:space:]]*[A-F0-9]*[[:space:]]*"\(.*\)"$/\1/p')
+          if [ -z "$identity_name" ] || ! grep -qxF "$identity_name" <<< "$available_identities"; then
+            echo "::error::MACOS_CERT_NAME does not match an imported code-signing identity"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$identity_name" >> "$GITHUB_ENV"
+
       - name: Build Tauri macOS app with release debuginfo
         env:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
@@ -302,6 +340,9 @@ jobs:
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri build
