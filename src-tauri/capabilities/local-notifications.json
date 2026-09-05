@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-notifications",
+  "description": "Official notification plugin permissions on targets that install it; iOS uses Rust notification commands instead",
+  "windows": ["main"],
+  "platforms": ["macOS", "windows", "linux", "android"],
+  "permissions": [
+    "notification:default",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify"
+  ]
+}

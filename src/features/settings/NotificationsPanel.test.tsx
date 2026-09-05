@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { makeRoomSummary } from "@/features/rooms/testFixtures";
 import { renderWithProviders } from "@/test/renderWithProviders";
+import type { PushStatus } from "@/lib/matrix";
 
 const getNotificationSettings = vi.fn();
 const listRooms = vi.fn();
@@ -16,7 +17,7 @@ const getPushStatus = vi.fn();
 const onPushStatus = vi.fn();
 const registerPush = vi.fn();
 const unregisterPush = vi.fn();
-const requestPermission = vi.fn();
+const requestNotificationPermission = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getNotificationSettings: (...args: unknown[]) => getNotificationSettings(...args),
@@ -31,10 +32,7 @@ vi.mock("@/lib/matrix", () => ({
   onPushStatus: (...args: unknown[]) => onPushStatus(...args),
   registerPush: (...args: unknown[]) => registerPush(...args),
   unregisterPush: (...args: unknown[]) => unregisterPush(...args),
-}));
-
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  requestPermission: (...args: unknown[]) => requestPermission(...args),
+  requestNotificationPermission: (...args: unknown[]) => requestNotificationPermission(...args),
 }));
 
 beforeEach(() => {
@@ -64,7 +62,7 @@ beforeEach(() => {
     endpoint_present: false,
   });
   unregisterPush.mockReset().mockResolvedValue(undefined);
-  requestPermission.mockReset().mockResolvedValue("granted");
+  requestNotificationPermission.mockReset().mockResolvedValue("granted");
 });
 
 describe("NotificationsPanel", () => {
@@ -202,13 +200,71 @@ describe("NotificationsPanel", () => {
 
     expect(
       await screen.findByText(
-        "Not available on this platform — desktop relies on the always-on sync loop instead.",
+        "Background push is not available or enabled for this build. Do not rely on notifications while Charm is closed or suspended.",
       ),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Turn on push notifications" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/requires a UnifiedPush distributor/)).not.toBeInTheDocument();
+  });
+
+  it("can unregister a persisted APNs registration while new registrations are disabled", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: false,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off push notifications" }));
+
+    await waitFor(() => expect(unregisterPush).toHaveBeenCalledTimes(1));
+    expect(registerPush).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Turn on push notifications" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not promise closed-app previews for an active APNs registration", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(
+      await screen.findByText(/iOS closed-app message previews are not available yet/),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/real message preview even when it's closed/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps turn-off available when a registered device becomes unavailable", async () => {
+    const registered: PushStatus = {
+      transport: "apns",
+      registered: true,
+      endpoint_present: true,
+      last_error: null,
+      available: true,
+    };
+    getPushStatus.mockResolvedValue(registered);
+    renderWithProviders(<NotificationsPanel />);
+    await screen.findByRole("button", { name: "Turn off push notifications" });
+
+    const notify = onPushStatus.mock.calls[0][0] as (status: PushStatus) => void;
+    act(() => notify({ ...registered, available: false }));
+
+    expect(await screen.findByText(/New push registrations are disabled/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off push notifications" }));
+    await waitFor(() => expect(unregisterPush).toHaveBeenCalledTimes(1));
+    expect(registerPush).not.toHaveBeenCalled();
   });
 
   it("suggests installing a UnifiedPush distributor when Android push registration fails", async () => {
@@ -271,7 +327,7 @@ describe("NotificationsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
 
-    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(requestNotificationPermission).toHaveBeenCalled());
     await waitFor(() => expect(registerPush).toHaveBeenCalled());
   });
 
@@ -283,12 +339,12 @@ describe("NotificationsPanel", () => {
       last_error: null,
       available: true,
     });
-    requestPermission.mockResolvedValue("denied");
+    requestNotificationPermission.mockResolvedValue("denied");
     renderWithProviders(<NotificationsPanel />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
 
-    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(requestNotificationPermission).toHaveBeenCalled());
     // Give the denied-permission branch a turn to (not) call registerPush.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(registerPush).not.toHaveBeenCalled();

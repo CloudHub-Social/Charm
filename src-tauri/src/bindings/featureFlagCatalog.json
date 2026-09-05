@@ -181,6 +181,12 @@
   },
   {
     "default": false,
+    "description": "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider.",
+    "key": "ios_push_notifications",
+    "owner": "Spec 11 (push notifications)"
+  },
+  {
+    "default": false,
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"

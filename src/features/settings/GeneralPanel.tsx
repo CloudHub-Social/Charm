@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { Button } from "@/components/ui/button";
+import { isNotificationPermissionGranted, requestNotificationPermission } from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const NOTIFICATION_PERMISSION_QUERY_KEY = ["settings", "notification-permission"];
@@ -14,11 +14,11 @@ export function GeneralPanel() {
   const queryClient = useQueryClient();
   const { data: notificationsGranted } = useQuery({
     queryKey: NOTIFICATION_PERMISSION_QUERY_KEY,
-    queryFn: isPermissionGranted,
+    queryFn: isNotificationPermissionGranted,
   });
 
-  const requestNotificationPermission = useMutation({
-    mutationFn: () => requestPermission(),
+  const requestPermissionMutation = useMutation({
+    mutationFn: requestNotificationPermission,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: NOTIFICATION_PERMISSION_QUERY_KEY }),
   });
 
@@ -36,8 +36,8 @@ export function GeneralPanel() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => requestNotificationPermission.mutate()}
-                disabled={requestNotificationPermission.isPending}
+                onClick={() => requestPermissionMutation.mutate()}
+                disabled={requestPermissionMutation.isPending}
               >
                 Enable
               </Button>

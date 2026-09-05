@@ -5,7 +5,8 @@
     "message_pinning",
     "presence_privacy_controls",
     "user_profile_cards",
-    "crypto_key_files"
+    "crypto_key_files",
+    "ios_push_notifications"
   ],
   "features": [
     {
