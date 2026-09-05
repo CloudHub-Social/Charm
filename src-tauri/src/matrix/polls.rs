@@ -31,8 +31,7 @@ const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 20;
 static POLL_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static ACKNOWLEDGED_POLL_ENDS: LazyLock<Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+const POLL_END_ACK_PREFIX: &[u8] = b"charm.poll-end-ack.v1\0";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingPollEnd {
@@ -46,15 +45,46 @@ fn poll_end_key(client: &Client, room_id: &RoomId, poll_id: &EventId) -> Result<
     Ok(format!("{user_id}\0{device_id}\0{room_id}\0{poll_id}"))
 }
 
-pub async fn clear_acknowledged_poll_ends(client: &Client) {
-    let (Some(user_id), Some(device_id)) = (client.user_id(), client.device_id()) else {
-        return;
-    };
-    let prefix = format!("{user_id}\0{device_id}\0");
-    ACKNOWLEDGED_POLL_ENDS
-        .lock()
+fn poll_end_ack_store_key(key: &str) -> Vec<u8> {
+    [POLL_END_ACK_PREFIX, key.as_bytes()].concat()
+}
+
+async fn acknowledged_poll_end(client: &Client, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = client
+        .state_store()
+        .get_custom_value(&poll_end_ack_store_key(key))
         .await
-        .retain(|key, _| !key.starts_with(&prefix));
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    String::from_utf8(value)
+        .map(Some)
+        .map_err(|_| "Persisted poll-close acknowledgement is invalid UTF-8".to_string())
+}
+
+async fn set_acknowledged_poll_end(
+    client: &Client,
+    key: &str,
+    transaction_id: &str,
+) -> Result<(), String> {
+    client
+        .state_store()
+        .set_custom_value_no_read(
+            &poll_end_ack_store_key(key),
+            transaction_id.as_bytes().to_vec(),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn clear_acknowledged_poll_end(client: &Client, key: &str) -> Result<(), String> {
+    client
+        .state_store()
+        .remove_custom_value(&poll_end_ack_store_key(key))
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 async fn poll_mutation_lock(key: &str) -> Arc<Mutex<()>> {
@@ -68,12 +98,15 @@ async fn poll_mutation_lock(key: &str) -> Arc<Mutex<()>> {
     lock
 }
 
-async fn reconcile_acknowledged_poll_end(key: &str, pending: &PendingPollEnd) {
-    let mut acknowledged = ACKNOWLEDGED_POLL_ENDS.lock().await;
+async fn reconcile_acknowledged_poll_end(
+    client: &Client,
+    key: &str,
+    pending: &PendingPollEnd,
+) -> Result<(), String> {
     if pending.failed {
-        acknowledged.remove(key);
+        clear_acknowledged_poll_end(client, key).await
     } else {
-        acknowledged.insert(key.to_owned(), pending.transaction_id.clone());
+        set_acknowledged_poll_end(client, key, &pending.transaction_id).await
     }
 }
 
@@ -115,15 +148,23 @@ pub async fn pending_poll_end_impl(
     let room = room_for(client, room_id)?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
     let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    pending_poll_end_locked(client, &room, &poll_event_id, &close_key).await
+}
+
+async fn pending_poll_end_locked(
+    client: &Client,
+    room: &matrix_sdk::Room,
+    poll_event_id: &EventId,
+    close_key: &str,
+) -> Result<Option<PendingPollEnd>, String> {
     if let Some(pending) = pending_poll_end(&room, &poll_event_id).await? {
-        reconcile_acknowledged_poll_end(&close_key, &pending).await;
+        reconcile_acknowledged_poll_end(client, close_key, &pending).await?;
         return Ok(Some(pending));
     }
-    Ok(ACKNOWLEDGED_POLL_ENDS
-        .lock()
-        .await
-        .get(&close_key)
-        .cloned()
+    Ok(acknowledged_poll_end(client, close_key)
+        .await?
         .map(|transaction_id| PendingPollEnd {
             transaction_id,
             failed: false,
@@ -137,11 +178,10 @@ pub async fn confirm_poll_end_synced_impl(
 ) -> Result<(), String> {
     let room_id = RoomId::parse(room_id).map_err(|error| error.to_string())?;
     let poll_event_id = EventId::parse(poll_event_id).map_err(|error| error.to_string())?;
-    ACKNOWLEDGED_POLL_ENDS
-        .lock()
-        .await
-        .remove(&poll_end_key(client, &room_id, &poll_event_id)?);
-    Ok(())
+    let close_key = poll_end_key(client, &room_id, &poll_event_id)?;
+    let mutation_lock = poll_mutation_lock(&close_key).await;
+    let _guard = mutation_lock.lock().await;
+    clear_acknowledged_poll_end(client, &close_key).await
 }
 
 pub(super) fn notifications_enabled(app: &tauri::AppHandle) -> bool {
@@ -245,7 +285,7 @@ pub async fn vote_on_poll_impl(
     let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
-    if pending_poll_end_impl(client, room_id, poll_event_id.as_str())
+    if pending_poll_end_locked(client, &room, &poll_event_id, &close_key)
         .await?
         .is_some()
     {
@@ -270,7 +310,9 @@ pub async fn end_poll_impl(
     let close_key = poll_end_key(client, room.room_id(), &poll_event_id)?;
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
-    if let Some(pending) = pending_poll_end_impl(client, room_id, poll_event_id.as_str()).await? {
+    if let Some(pending) =
+        pending_poll_end_locked(client, &room, &poll_event_id, &close_key).await?
+    {
         return Ok(pending.transaction_id);
     }
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
@@ -280,10 +322,7 @@ pub async fn end_poll_impl(
         AnyMessageLikeEventContent::UnstablePollEnd(content),
     )
     .await?;
-    ACKNOWLEDGED_POLL_ENDS
-        .lock()
-        .await
-        .insert(close_key, transaction_id.clone());
+    set_acknowledged_poll_end(client, &close_key, &transaction_id).await?;
     Ok(transaction_id)
 }
 
@@ -299,18 +338,21 @@ pub async fn retry_poll_end_impl(
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
     let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
-        ACKNOWLEDGED_POLL_ENDS.lock().await.remove(&close_key);
+        clear_acknowledged_poll_end(client, &close_key).await?;
         return Ok(false);
     };
     if pending.transaction_id != transaction_id || !pending.failed {
         return Ok(false);
     }
+    // Persist the mutation lock before retrying. The SDK may remove a sent
+    // echo before the next timeline sync; a process crash in that interval
+    // must still leave voting and duplicate closes disabled after restart.
+    set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
     let retried = resend_message_impl(client, room_id, transaction_id).await?;
-    let mut acknowledged = ACKNOWLEDGED_POLL_ENDS.lock().await;
     if retried {
-        acknowledged.insert(close_key, transaction_id.to_owned());
+        set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
     } else {
-        acknowledged.remove(&close_key);
+        clear_acknowledged_poll_end(client, &close_key).await?;
     }
     Ok(retried)
 }
@@ -395,30 +437,36 @@ mod tests {
 
     #[tokio::test]
     async fn failed_close_clears_the_acknowledged_fallback() {
-        let key = "@failed:example.org\0!failed:example.org\0$failed";
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let key = "@failed:example.org\0TESTDEVICE\0!failed:example.org\0$failed";
         let acknowledged = PendingPollEnd {
             transaction_id: "close-transaction".into(),
             failed: false,
         };
-        reconcile_acknowledged_poll_end(key, &acknowledged).await;
+        reconcile_acknowledged_poll_end(&client, key, &acknowledged)
+            .await
+            .unwrap();
         assert_eq!(
-            ACKNOWLEDGED_POLL_ENDS
-                .lock()
+            acknowledged_poll_end(&client, key)
                 .await
-                .get(key)
-                .map(String::as_str),
-            Some("close-transaction")
+                .unwrap()
+                .as_deref(),
+            Some("close-transaction"),
         );
 
         reconcile_acknowledged_poll_end(
+            &client,
             key,
             &PendingPollEnd {
                 transaction_id: "close-transaction".into(),
                 failed: true,
             },
         )
-        .await;
-        assert!(!ACKNOWLEDGED_POLL_ENDS.lock().await.contains_key(key));
+        .await
+        .unwrap();
+        assert!(acknowledged_poll_end(&client, key).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -456,10 +504,10 @@ mod tests {
         let room_id = room_id!("!shared-poll:example.org");
         let poll_id = event_id!("$shared-poll:example.org");
         server.sync_joined_room(&client, room_id).await;
-        ACKNOWLEDGED_POLL_ENDS.lock().await.insert(
-            poll_end_key(&client, room_id, poll_id).unwrap(),
-            "shared-transaction".into(),
-        );
+        let close_key = poll_end_key(&client, room_id, poll_id).unwrap();
+        set_acknowledged_poll_end(&client, &close_key, "shared-transaction")
+            .await
+            .unwrap();
 
         let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
             .await
@@ -478,7 +526,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_cleanup_is_scoped_to_the_current_device() {
+    async fn acknowledged_close_is_stored_in_the_matrix_state_store() {
         use matrix_sdk::ruma::{event_id, room_id};
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         let server = MatrixMockServer::new().await;
@@ -487,26 +535,20 @@ mod tests {
         let room_id = room_id!("!logout-poll:example.org");
         let poll_id = event_id!("$logout-poll:example.org");
         server.sync_joined_room(&client, room_id).await;
-        let current_key = poll_end_key(&client, room_id, poll_id).unwrap();
-        let other_device_key = format!(
-            "{}\0OTHER-DEVICE\0{room_id}\0{poll_id}",
-            client.user_id().unwrap()
-        );
-        let mut acknowledged = ACKNOWLEDGED_POLL_ENDS.lock().await;
-        acknowledged.insert(current_key.clone(), "current-transaction".into());
-        acknowledged.insert(other_device_key.clone(), "other-transaction".into());
-        drop(acknowledged);
+        let key = poll_end_key(&client, room_id, poll_id).unwrap();
+        set_acknowledged_poll_end(&client, &key, "persisted-transaction")
+            .await
+            .unwrap();
 
-        clear_acknowledged_poll_ends(&client).await;
-
-        let acknowledged = ACKNOWLEDGED_POLL_ENDS.lock().await;
-        assert!(!acknowledged.contains_key(&current_key));
+        let raw = client
+            .state_store()
+            .get_custom_value(&poll_end_ack_store_key(&key))
+            .await
+            .unwrap();
         assert_eq!(
-            acknowledged.get(&other_device_key).map(String::as_str),
-            Some("other-transaction")
+            raw.as_deref(),
+            Some("persisted-transaction".as_bytes()),
         );
-        drop(acknowledged);
-        ACKNOWLEDGED_POLL_ENDS.lock().await.remove(&other_device_key);
     }
 
     #[test]
