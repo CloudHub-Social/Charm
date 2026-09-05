@@ -1775,7 +1775,10 @@ mod tests {
         assert!(sessions.get(&token).await.is_none());
         assert!(closed.load(std::sync::atomic::Ordering::Acquire));
         assert!(matches!(
-            events.try_recv().unwrap(),
+            tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+                .await
+                .expect("session invalidation event timed out")
+                .expect("session invalidation event sender closed"),
             ServerEvent::SessionInvalidated(())
         ));
     }

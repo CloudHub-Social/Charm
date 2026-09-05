@@ -175,6 +175,18 @@
   },
   {
     "default": false,
+    "description": "Browse and search the homeserver's public room directory, then join a result.",
+    "key": "room_directory",
+    "owner": "Day-2 Spec 06 (public room directory)"
+  },
+  {
+    "default": false,
+    "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
+    "key": "crypto_key_files",
+    "owner": "Spec 44 (crypto key backup and import/export)"
+  },
+  {
+    "default": false,
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"
