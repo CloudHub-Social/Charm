@@ -403,7 +403,6 @@ pub async fn retry_poll_end_impl(
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
     let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
-        clear_acknowledged_poll_end(client, &close_key).await?;
         return Ok(false);
     };
     if pending.transaction_id != transaction_id || !pending.failed {
@@ -413,17 +412,9 @@ pub async fn retry_poll_end_impl(
     // echo before the next timeline sync; a process crash in that interval
     // must still leave voting and duplicate closes disabled after restart.
     set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
-    let retried = match resend_message_impl(client, room_id, transaction_id).await {
-        Ok(retried) => retried,
-        Err(error) => {
-            clear_acknowledged_poll_end(client, &close_key).await?;
-            return Err(error);
-        }
-    };
+    let retried = resend_message_impl(client, room_id, transaction_id).await?;
     if retried {
         set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
-    } else {
-        clear_acknowledged_poll_end(client, &close_key).await?;
     }
     Ok(retried)
 }
@@ -645,6 +636,38 @@ mod tests {
         .await
         .unwrap();
         assert!(acknowledged_poll_end(&client, key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_retry_echo_keeps_the_acknowledged_close_fence() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!missing-retry:example.org");
+        let poll_id = event_id!("$poll:example.org");
+        server.sync_joined_room(&client, room_id).await;
+        let key = poll_end_key(&client, room_id, poll_id).unwrap();
+        set_acknowledged_poll_end(&client, &key, "missing-transaction")
+            .await
+            .unwrap();
+
+        assert!(!retry_poll_end_impl(
+            &client,
+            room_id.as_str(),
+            poll_id.as_str(),
+            "missing-transaction",
+        )
+        .await
+        .unwrap());
+        assert_eq!(
+            acknowledged_poll_end(&client, &key)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("missing-transaction")
+        );
     }
 
     #[tokio::test]
