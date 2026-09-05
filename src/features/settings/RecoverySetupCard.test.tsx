@@ -147,9 +147,7 @@ describe("RecoverySetupCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
     fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
 
-    expect(
-      await screen.findByRole("button", { name: "Repair interrupted setup" }),
-    ).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Repair interrupted setup" })).toBeEnabled();
   });
 
   it("requires local cross-signing keys before setup", () => {
