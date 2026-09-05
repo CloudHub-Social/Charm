@@ -51,7 +51,7 @@ media: MediaContent | null,
  * MSC3381 poll state already aggregated by matrix-sdk-ui. `None` for
  * ordinary messages and unsupported message-like event types.
  */
-poll: PollSummary | null, 
+poll: PollSummary | null,
 /**
  * `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
  * signal for "this is the undecrypted placeholder", set server-side.
