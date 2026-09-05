@@ -23,7 +23,9 @@ vi.mock("emoji-picker-react", () => ({
       data-skin-tones-disabled={String(props.skinTonesDisabled ?? false)}
       data-custom-names={(props.customEmojis ?? []).flatMap((emoji) => emoji.names).join(",")}
     >
-      <input aria-label="Emoji search" aria-controls="epr-search-id" />
+      <div className="epr-search-container">
+        <input aria-label="Emoji search" aria-controls="epr-search-id" />
+      </div>
       <div className="epr-body" data-testid="emoji-results" />
       <button
         type="button"
@@ -87,8 +89,8 @@ describe("EmojiPicker", () => {
     expect(picker).toHaveAttribute("data-theme", "light");
     const search = screen.getByRole("textbox", { name: "Emoji search" });
     const results = screen.getByTestId("emoji-results");
-    expect(search.getAttribute("aria-controls")).toBe(results.id);
-    expect(results.id).not.toBe("");
+    await waitFor(() => expect(search).not.toHaveAttribute("aria-controls"));
+    expect(results).not.toHaveAttribute("id");
     expect(picker).toHaveAttribute("data-style", "native");
     expect(picker).toHaveAttribute("data-suggestions", "undefined");
     expect(picker.getAttribute("data-categories")?.split(",")).not.toContain("suggested");
