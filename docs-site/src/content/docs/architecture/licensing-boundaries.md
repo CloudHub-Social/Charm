@@ -118,8 +118,9 @@ on Charm files cannot substitute for those rights.
 
 - `license:check` passes in GitHub Actions.
 - Release artifacts contain Charm's `LICENSE`, `NOTICE`, third-party notice
-  index, and build-generated dependency license texts. Source archives contain
-  the committed root license and notice files.
+  index, and build-generated dependency license texts. The independently built
+  documentation-site artifact carries the same files for its resolved graph.
+  Source archives contain the committed root license and notice files.
 - Artifact inspection finds no Sable Call bundle, asset, dependency, container,
   or offline cache.
 - Integration tests exercise denied capabilities, origin mismatch, account

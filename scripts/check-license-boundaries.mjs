@@ -7,6 +7,11 @@ import ts from "typescript";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
 const requiredLicensingFiles = ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"];
+const canonicalLicenseFiles = [
+  "scripts/license-texts/MPL-2.0.txt",
+  "scripts/license-texts/GPL-3.0.txt",
+  "scripts/license-texts/LGPL-3.0-or-later.txt",
+];
 const generatedThirdPartyLicenses = "THIRD_PARTY_LICENSES.txt";
 
 function read(relativePath) {
@@ -61,6 +66,11 @@ for (const requiredFile of requiredLicensingFiles) {
     errors.push(`Missing required licensing file: ${requiredFile}`);
   }
 }
+for (const canonicalLicenseFile of canonicalLicenseFiles) {
+  if (!existsSync(path.join(repositoryRoot, canonicalLicenseFile))) {
+    errors.push(`Missing canonical dependency license text: ${canonicalLicenseFile}`);
+  }
+}
 
 requirePackagedFiles(
   ".github/actions/build-web-worker/action.yml",
@@ -92,6 +102,20 @@ const requiredScripts = {
 for (const [scriptName, expectedCommand] of Object.entries(requiredScripts)) {
   if (rootManifest.scripts?.[scriptName] !== expectedCommand) {
     errors.push(`package.json scripts.${scriptName} must generate the expected license bundle.`);
+  }
+}
+
+const docsManifest = JSON.parse(read("docs-site/package.json"));
+const requiredDocsScripts = {
+  build: "astro build && node scripts/generate-site-graph-loader.mjs && pnpm license:bundle:npm",
+  "license:bundle:npm":
+    "node ../scripts/generate-third-party-licenses.mjs --npm --npm-directory docs-site --copy-project-licenses --output docs-site/dist/THIRD_PARTY_LICENSES.txt",
+};
+for (const [scriptName, expectedCommand] of Object.entries(requiredDocsScripts)) {
+  if (docsManifest.scripts?.[scriptName] !== expectedCommand) {
+    errors.push(
+      `docs-site/package.json scripts.${scriptName} must generate the expected license bundle.`,
+    );
   }
 }
 
@@ -130,6 +154,9 @@ const serverDockerfile = stripPackagingComments(
 );
 if (!serverDockerfile.includes("COPY LICENSE ./LICENSE")) {
   errors.push("The companion-server builder must provide LICENSE to the license generator.");
+}
+if (!serverDockerfile.includes("COPY scripts/license-texts ./scripts/license-texts")) {
+  errors.push("The companion-server builder must provide canonical dependency license texts.");
 }
 if (
   !serverDockerfile.includes(

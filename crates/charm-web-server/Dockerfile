@@ -18,6 +18,7 @@ COPY LICENSE ./LICENSE
 COPY crates/charm-web-server ./crates/charm-web-server
 COPY src-tauri ./src-tauri
 COPY scripts/generate-third-party-licenses.mjs ./scripts/generate-third-party-licenses.mjs
+COPY scripts/license-texts ./scripts/license-texts
 
 RUN cargo build --release -p charm-web-server \
     && node scripts/generate-third-party-licenses.mjs --cargo --output /tmp/THIRD_PARTY_LICENSES.txt

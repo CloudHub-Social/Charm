@@ -17,11 +17,23 @@ on:
     branches: [main]
     paths:
       - "docs-site/**"
+      - "scripts/generate-third-party-licenses.mjs"
+      - "scripts/license-texts/**"
+      - "LICENSE"
+      - "NOTICE"
+      - "LICENSING.md"
+      - "THIRD_PARTY_NOTICES.md"
       - ".github/workflows/docs-deploy.yml"
       - "CHANGELOG.md"
   pull_request:
     paths:
       - "docs-site/**"
+      - "scripts/generate-third-party-licenses.mjs"
+      - "scripts/license-texts/**"
+      - "LICENSE"
+      - "NOTICE"
+      - "LICENSING.md"
+      - "THIRD_PARTY_NOTICES.md"
       - ".github/workflows/docs-deploy.yml"
   workflow_run:
     workflows: [Release]

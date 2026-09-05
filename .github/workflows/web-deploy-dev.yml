@@ -37,6 +37,7 @@ on:
       - "LICENSING.md"
       - "THIRD_PARTY_NOTICES.md"
       - "scripts/generate-third-party-licenses.mjs"
+      - "scripts/license-texts/**"
       - ".github/actions/build-web-worker/**"
       - ".github/workflows/web-deploy-dev.yml"
   workflow_dispatch:

@@ -8,9 +8,9 @@ The lockfiles are the canonical dependency inventory for a source revision.
 Distribution builds generate `THIRD_PARTY_LICENSES.txt` from the installed pnpm
 graph and Cargo's locked external-crate graph. That file reproduces the resolved
 packages' available license, notice, copying, and copyright files and is
-included in web, Tauri, and companion-server artifacts.
+included in web, Tauri, documentation-site, and companion-server artifacts.
 When a split package omits a standalone file, generation uses a same-repository
-license file or supported canonical SPDX text with that package's attribution.
+license file or supported canonical license text with that package's attribution.
 It fails when none of those sources can resolve the declared license.
 
 Each published release also includes signed, platform-named SPDX JSON software
@@ -32,6 +32,13 @@ Representative directly bundled frontend dependencies include:
 
 This short table is an attribution index, not a replacement for the lockfiles,
 generated `THIRD_PARTY_LICENSES.txt`, or release SBOMs.
+
+Canonical fallback texts stored under `scripts/license-texts/` come from the
+[SPDX MPL-2.0 text](https://spdx.org/licenses/MPL-2.0) and the Free Software
+Foundation's [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html) and
+[LGPLv3](https://www.gnu.org/licenses/lgpl-3.0.html) publications. They cover
+resolved packages that declare those licenses but omit the terms from a split
+platform package; package-provided terms remain preferred.
 
 ## External software: Sable Call
 

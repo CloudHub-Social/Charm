@@ -17,17 +17,28 @@ const includeNpm = args.includes("--npm");
 const includeCargo = args.includes("--cargo");
 const copyProjectLicenses = args.includes("--copy-project-licenses");
 const outputFlag = args.indexOf("--output");
+const npmDirectoryFlag = args.indexOf("--npm-directory");
 
-if ((!includeNpm && !includeCargo) || outputFlag === -1 || !args[outputFlag + 1]) {
+if (
+  (!includeNpm && !includeCargo) ||
+  outputFlag === -1 ||
+  !args[outputFlag + 1] ||
+  (npmDirectoryFlag !== -1 && !args[npmDirectoryFlag + 1])
+) {
   console.error(
-    "Usage: node scripts/generate-third-party-licenses.mjs (--npm | --cargo)+ [--copy-project-licenses] --output <path>",
+    "Usage: node scripts/generate-third-party-licenses.mjs (--npm | --cargo)+ [--npm-directory <path>] [--copy-project-licenses] --output <path>",
   );
   process.exit(1);
 }
 
 const outputPath = path.resolve(repositoryRoot, args[outputFlag + 1]);
+const npmDirectory = path.resolve(
+  repositoryRoot,
+  npmDirectoryFlag === -1 ? "." : args[npmDirectoryFlag + 1],
+);
 const licenseFilename =
   /^(?:licen[cs]e|copying|notice|copyright|authors?|contributors?|patents?)(?:$|[._-])/i;
+const licenseTermsFilename = /(?:^|\/)(?:licen[cs]e|copying)(?:$|[._-])|^(?:licen[cs]es?)\//i;
 const entries = new Map();
 const errors = [];
 const mitLicenseText = `MIT License
@@ -61,10 +72,10 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.`;
 
-function commandJson(command, commandArgs) {
+function commandJson(command, commandArgs, cwd = repositoryRoot) {
   const executable = process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
   const result = spawnSync(executable, commandArgs, {
-    cwd: repositoryRoot,
+    cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -179,6 +190,31 @@ function canonicalLicenseFiles(entry) {
         name: "SPDX-Apache-2.0.txt",
         content: readFileSync(path.join(repositoryRoot, "LICENSE"), "utf8").trimEnd(),
       });
+    } else if (licenseId === "MPL-2.0") {
+      files.push({
+        name: "SPDX-MPL-2.0.txt",
+        content: `Canonical SPDX text: https://spdx.org/licenses/MPL-2.0\n\n${readFileSync(
+          path.join(repositoryRoot, "scripts/license-texts/MPL-2.0.txt"),
+          "utf8",
+        ).trimEnd()}`,
+      });
+    } else if (licenseId === "LGPL-3.0-or-later") {
+      files.push(
+        {
+          name: "GNU-GPL-3.0.txt",
+          content: `Canonical GNU text: https://www.gnu.org/licenses/gpl-3.0.txt\n\n${readFileSync(
+            path.join(repositoryRoot, "scripts/license-texts/GPL-3.0.txt"),
+            "utf8",
+          ).trimEnd()}`,
+        },
+        {
+          name: "GNU-LGPL-3.0-or-later.txt",
+          content: `Canonical GNU text: https://www.gnu.org/licenses/lgpl-3.0.txt\n\n${readFileSync(
+            path.join(repositoryRoot, "scripts/license-texts/LGPL-3.0-or-later.txt"),
+            "utf8",
+          ).trimEnd()}`,
+        },
+      );
     } else {
       return [];
     }
@@ -191,27 +227,32 @@ function resolveMissingLicenseFiles() {
   const allEntries = [...entries.values()];
 
   for (const entry of allEntries) {
-    if (entry.files.length > 0) continue;
+    if (entry.files.some(({ name }) => licenseTermsFilename.test(name))) continue;
     const repositoryDonor = entry.repository
       ? allEntries.find(
           (candidate) =>
             candidate !== entry &&
             candidate.repository === entry.repository &&
             candidate.license === entry.license &&
-            candidate.files.length > 0,
+            candidate.files.some(({ name }) => licenseTermsFilename.test(name)),
         )
       : undefined;
 
     if (repositoryDonor) {
-      entry.files = repositoryDonor.files.map(({ name, content }) => ({
-        name: `repository-license-from-${repositoryDonor.name}/${name}`,
-        content,
-      }));
+      entry.files.push(
+        ...repositoryDonor.files
+          .filter(({ name }) => licenseTermsFilename.test(name))
+          .map(({ name, content }) => ({
+            name: `repository-license-from-${repositoryDonor.name}/${name}`,
+            content,
+          })),
+      );
       continue;
     }
 
-    entry.files = canonicalLicenseFiles(entry);
-    if (entry.files.length === 0) {
+    const canonicalFiles = canonicalLicenseFiles(entry);
+    entry.files.push(...canonicalFiles);
+    if (canonicalFiles.length === 0) {
       errors.push(
         `${entry.ecosystem} dependency ${entry.name}@${entry.version} has no package, repository, or supported canonical license text for ${entry.license}.`,
       );
@@ -220,7 +261,7 @@ function resolveMissingLicenseFiles() {
 }
 
 function collectNpmLicenses() {
-  const report = commandJson("pnpm", ["licenses", "list", "--json"]);
+  const report = commandJson("pnpm", ["licenses", "list", "--json"], npmDirectory);
 
   for (const [reportedLicense, packages] of Object.entries(report)) {
     for (const packageRecord of packages) {
@@ -323,7 +364,7 @@ const output = [
   "Generated deterministically from the installed pnpm dependency graph and/or",
   "Cargo.lock-resolved external crates. Package license, notice, copying, and copyright files",
   "are included below. When a split package omits them, the generator uses a same-repository",
-  "license file or supported canonical SPDX text with package attribution. Charm does not",
+  "license file or supported canonical license text with package attribution. Charm does not",
   "relicense these works.",
   "",
   ...sections,
