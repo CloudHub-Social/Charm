@@ -11,8 +11,9 @@ real product scope but are sequenced after the primary daily-driver foundation.
 Numbering is independent of [Day-1](/specs/day-1/).
 
 **Status audited 2026-07-14:** no matching merged or open implementation pull
-request was found for the then-existing Day-2 specs. Spec 12
-(Bookmarks and saved messages) has since shipped — see its own spec for the PR.
+request was found for the then-existing Day-2 specs. Polls, message pinning,
+jump-to-date, and bookmarks have since shipped — see their own specs for the
+implementation boundaries.
 This statement is about implementation, not design readiness: several specs
 already contain a settled architecture and detailed acceptance criteria.
 
@@ -20,7 +21,7 @@ already contain a settled architecture and detailed acceptance criteria.
 |---|---|---|---|
 | 01 | [Threads](/specs/day-2/spec-01--threads/) | **Planned** | Large timeline and navigation surface |
 | 02 | [Voice and video calling](/specs/day-2/spec-02--native-voice-and-video-calling/) | **Planned** | Architecture is settled on the Sable Call Matrix widget; depends on Day-1 Spec 49 widget support and the Spec 13 permission foundation |
-| 03 | [Polls](/specs/day-2/spec-03--polls/) | **Planned** | Matrix poll events and aggregation UI |
+| 03 | [Polls](/specs/day-2/spec-03--polls/) | **Shipped** | SDK-owned MSC3381 aggregation with thin create/vote/end commands |
 | 04 | [Message pinning](/specs/day-2/spec-04--message-pinning/) | **Shipped** | Shared room pins, distinct from private bookmarks |
 | 05 | [Custom emoji and sticker packs](/specs/day-2/spec-05--custom-emoji-and-sticker-packs/) | **Planned** | Pack consumption before authoring tools |
 | 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **In progress** | Own-homeserver public-room search, pagination, and join UI in PR #470 behind `room_directory` |

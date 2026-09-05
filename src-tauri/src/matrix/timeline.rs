@@ -280,6 +280,37 @@ pub enum SendState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum PollKindSummary {
+    Disclosed,
+    Undisclosed,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PollAnswerSummary {
+    pub id: String,
+    pub text: String,
+    #[ts(type = "number")]
+    pub votes: u32,
+    pub selected_by_me: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct PollSummary {
+    pub question: String,
+    pub kind: PollKindSummary,
+    #[ts(type = "number")]
+    pub max_selections: u64,
+    pub answers: Vec<PollAnswerSummary>,
+    pub ended: bool,
+    pub edited: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
 pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
@@ -322,6 +353,9 @@ pub struct RoomMessageSummary {
     /// how the frontend turns this into an actual displayable/downloadable
     /// local path.
     pub media: Option<MediaContent>,
+    /// MSC3381 poll state already aggregated by matrix-sdk-ui. `None` for
+    /// ordinary messages and unsupported message-like event types.
+    pub poll: Option<PollSummary>,
     /// `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
     /// signal for "this is the undecrypted placeholder", set server-side.
     /// Never derive this by comparing `body` against the placeholder text: a
@@ -820,6 +854,25 @@ async fn resolve_avatar_path_cached(
 /// Maps one `EventTimelineItem` to a `RoomMessageSummary`, keeping the DTO
 /// shape Spec 02/03 established stable. See the module-level doc for the
 /// per-field mapping rationale.
+fn visible_poll_votes(disclose: bool, count: usize) -> u32 {
+    if disclose {
+        u32::try_from(count).unwrap_or(u32::MAX)
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod poll_visibility_tests {
+    use super::visible_poll_votes;
+
+    #[test]
+    fn undisclosed_poll_counts_are_redacted_before_dto_serialization() {
+        assert_eq!(visible_poll_votes(false, 7), 0);
+        assert_eq!(visible_poll_votes(true, 7), 7);
+    }
+}
+
 async fn timeline_item_to_summary(
     item: &EventTimelineItem,
     own_user_id: Option<&UserId>,
@@ -932,6 +985,7 @@ async fn timeline_item_to_summary(
         reactions: Vec::new(),
         in_reply_to: None,
         media: None,
+        poll: None,
         is_undecrypted: false,
     };
 
@@ -961,14 +1015,60 @@ async fn timeline_item_to_summary(
             is_undecrypted: true,
             ..base
         }),
-        // Stickers/polls/live-locations/custom message-likes aren't part of
-        // this DTO shape yet — out of scope for a like-for-like engine swap
-        // (see Spec 14's non-goals) — dropped the same way the hand-rolled
-        // fold silently ignored any event type it didn't recognize.
-        MsgLikeKind::Sticker(_)
-        | MsgLikeKind::Poll(_)
-        | MsgLikeKind::Other(_)
-        | MsgLikeKind::LiveLocation(_) => None,
+        MsgLikeKind::Poll(poll) => {
+            use matrix_sdk::ruma::events::poll::start::PollKind;
+
+            let result = poll.results();
+            let kind = match result.kind {
+                PollKind::Disclosed => PollKindSummary::Disclosed,
+                PollKind::Undisclosed => PollKindSummary::Undisclosed,
+                _ => PollKindSummary::Custom,
+            };
+            let ended = result.end_time.is_some();
+            // Unknown poll kinds are forward-compatible extensions; do not assume
+            // that their voting visibility matches disclosed polls. Fail closed
+            // until the poll ends unless the server explicitly says disclosed.
+            let disclose_votes = ended || matches!(&kind, PollKindSummary::Disclosed);
+            let answers = result
+                .answers
+                .into_iter()
+                .map(|answer| {
+                    let voters = result.votes.get(&answer.id);
+                    PollAnswerSummary {
+                        id: answer.id,
+                        text: answer.text,
+                        votes: visible_poll_votes(
+                            disclose_votes,
+                            voters.map(|voters| voters.len()).unwrap_or_default(),
+                        ),
+                        selected_by_me: own_user_id.is_some_and(|own_user_id| {
+                            voters.is_some_and(|voters| {
+                                voters.iter().any(|voter| voter == own_user_id.as_str())
+                            })
+                        }),
+                    }
+                })
+                .collect();
+            Some(RoomMessageSummary {
+                body: poll
+                    .fallback_text()
+                    .unwrap_or_else(|| format!("Poll: {}", result.question)),
+                reactions,
+                in_reply_to,
+                poll: Some(PollSummary {
+                    question: result.question,
+                    kind,
+                    max_selections: result.max_selections,
+                    answers,
+                    ended,
+                    edited: result.has_been_edited,
+                }),
+                ..base
+            })
+        }
+        // Stickers/live-locations/custom message-likes aren't part of this
+        // DTO shape yet and remain filtered like the pre-Timeline fold.
+        MsgLikeKind::Sticker(_) | MsgLikeKind::Other(_) | MsgLikeKind::LiveLocation(_) => None,
     }
 }
 
@@ -1061,6 +1161,7 @@ mod notification_dedup_tests {
             transaction_id: None,
             send_state: SendState::Sent,
             media: None,
+            poll: None,
             is_undecrypted: false,
         }
     }
@@ -1337,6 +1438,9 @@ async fn maybe_notify_new_message(
     {
         return;
     }
+    if message.poll.is_some() && !super::polls::notifications_enabled(app) {
+        return;
+    }
 
     let Some(room) = client.get_room(room_id) else {
         return;
@@ -1370,15 +1474,17 @@ async fn fetch_message_mentions(
         .load_or_fetch_event(&parsed_event_id, None)
         .await
         .ok()?;
-    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
-        original.kind.raw().deserialize().ok()?;
-    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
-        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
-    ) = deserialized
-    else {
-        return None;
-    };
-    msg.as_original()?.content.mentions.clone()
+    #[derive(serde::Deserialize)]
+    struct ContentMentions {
+        #[serde(rename = "m.mentions")]
+        mentions: Option<matrix_sdk::ruma::events::Mentions>,
+    }
+    original
+        .kind
+        .raw()
+        .get_field::<ContentMentions>("content")
+        .ok()?
+        .and_then(|content| content.mentions)
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

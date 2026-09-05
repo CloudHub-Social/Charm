@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
+import { ChevronDown, MessageCircle, Paperclip, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
@@ -33,6 +33,7 @@ import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import {
   attachmentUploadPayload,
+  handleAttachmentDragOver,
   hasDraggedFiles,
   useAttachmentUploads,
 } from "./useAttachmentUploads";
@@ -58,6 +59,9 @@ import { useRoomTombstone } from "./useRoomTombstone";
 import type { ChatShellProps } from "./ChatShellProps";
 import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
+import { PollComposerControls } from "./PollComposerControls";
+import { PollRecoveryTray } from "./PollRecoveryTray";
+import { ComposerSendButton } from "./ComposerSendButton";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -662,11 +666,6 @@ export function ChatShell({
     setFileDragActive(true);
   }
 
-  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
-  }
-
   function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
     if (!mediaSendPolishEnabled) return;
     event.preventDefault();
@@ -698,7 +697,7 @@ export function ChatShell({
       data-testid="chat-shell"
       className="relative flex min-w-0 flex-1 flex-col"
       onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
+      onDragOver={handleAttachmentDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
@@ -980,6 +979,8 @@ export function ChatShell({
         </div>
       )}
 
+      <PollRecoveryTray key={room.room_id} roomId={room.room_id} />
+
       <UploadTray
         uploads={uploads}
         onDismiss={dismissUpload}
@@ -1091,6 +1092,13 @@ export function ChatShell({
             >
               <Paperclip size={18} />
             </button>
+            <PollComposerControls
+              key={roomId}
+              roomId={roomId}
+              mode={composerMode}
+              mobile={mobile}
+              mutationsBlocked={roomMutationsBlocked}
+            />
             <Composer
               accountId={currentUserId}
               key={`${room.room_id}-${editingEventId ?? "new"}`}
@@ -1135,18 +1143,11 @@ export function ChatShell({
               Disabled while there's no text to send — this composer has no
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
-            <button
-              type="button"
-              aria-label="Send"
-              onClick={() => composerRef.current?.submit()}
+            <ComposerSendButton
+              mobile={mobile}
               disabled={isComposerEmpty}
-              className={cn(
-                "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
-                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-              )}
-            >
-              <Send size={16} />
-            </button>
+              onClick={() => composerRef.current?.submit()}
+            />
           </div>
           {voiceRecordingEnabled && !roomMutationsBlocked && (
             <VoiceRecorder

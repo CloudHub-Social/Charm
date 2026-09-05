@@ -446,7 +446,6 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-
     let result = clear_local_session_locked(
         &app,
         &state,

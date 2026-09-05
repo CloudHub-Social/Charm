@@ -35,6 +35,11 @@ use charm_lib::matrix::devices::{
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
+use charm_lib::matrix::polls::{
+    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl,
+    discard_poll_vote_impl, end_poll_impl, pending_poll_end_impl, pending_poll_vote_impl,
+    pending_poll_relations_impl, retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
+};
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
     get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
@@ -190,6 +195,37 @@ pub fn router(state: AppState) -> Router {
         )
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
+        .route("/api/rooms/{room_id}/polls", post(create_poll))
+        .route(
+            "/api/rooms/{room_id}/poll-relations/pending",
+            get(get_pending_poll_relations),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/vote",
+            get(get_pending_poll_vote).post(vote_on_poll),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/vote/{transaction_id}",
+            delete(discard_poll_vote),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/vote/{transaction_id}/retry",
+            post(retry_poll_vote),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/end",
+            get(get_pending_poll_end)
+                .post(end_poll)
+                .delete(confirm_poll_end_synced),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/end/{transaction_id}/retry",
+            post(retry_poll_end),
+        )
+        .route(
+            "/api/rooms/{room_id}/polls/{poll_event_id}/end/{transaction_id}",
+            delete(discard_poll_end),
+        )
         .route("/api/rooms/{room_id}/reply", post(send_reply))
         .route(
             "/api/rooms/{room_id}/events/{event_id}/edit",
@@ -3613,6 +3649,197 @@ async fn send_message(
 }
 
 #[derive(Debug, Deserialize)]
+struct CreatePollRequest {
+    question: String,
+    options: Vec<String>,
+    disclosed: bool,
+}
+
+async fn create_poll(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(room_id): Path<String>,
+    Json(request): Json<CreatePollRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let transaction_id = create_poll_impl(
+        &session.client,
+        &room_id,
+        request.question,
+        request.options,
+        request.disclosed,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(transaction_id))
+}
+
+#[derive(Debug, Deserialize)]
+struct VoteOnPollRequest {
+    answer_id: String,
+}
+
+async fn vote_on_poll(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+    Json(request): Json<VoteOnPollRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let transaction_id =
+        vote_on_poll_impl(&session.client, &room_id, &poll_event_id, request.answer_id)
+            .await
+            .map_err(ApiError::bad_request)?;
+    Ok(Json(transaction_id))
+}
+
+async fn get_pending_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let pending = pending_poll_vote_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(pending))
+}
+
+async fn get_pending_poll_relations(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let pending = pending_poll_relations_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(pending))
+}
+
+async fn retry_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let retried = retry_poll_vote_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(retried))
+}
+
+async fn discard_poll_vote(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let discarded = discard_poll_vote_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(discarded))
+}
+
+async fn end_poll(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Zero-body POSTs are CORS-simple requests, so validate the caller's
+    // origin before accepting the authenticated session cookie.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let transaction_id = end_poll_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(transaction_id))
+}
+
+async fn retry_poll_end(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let retried = retry_poll_end_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(retried))
+}
+
+async fn discard_poll_end(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id, transaction_id)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let discarded = discard_poll_end_impl(
+        &session.client,
+        &room_id,
+        &poll_event_id,
+        &transaction_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(discarded))
+}
+
+async fn get_pending_poll_end(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let transaction_id = pending_poll_end_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(transaction_id))
+}
+
+async fn confirm_poll_end_synced(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, poll_event_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    confirm_poll_end_synced_impl(&session.client, &room_id, &poll_event_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
 struct ReplyRequest {
     in_reply_to_event_id: String,
     body: String,
@@ -3843,10 +4070,10 @@ async fn resend_message(
     // without this check.
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    resend_message_impl(&session.client, &room_id, &transaction_id)
+    let retried = resend_message_impl(&session.client, &room_id, &transaction_id)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(retried))
 }
 
 async fn discard_failed_message(

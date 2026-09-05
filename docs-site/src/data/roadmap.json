@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-04T16:26:42.102Z",
+  "generatedAt": "2026-09-05T13:58:24.522Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 48,
-    "follow-up": 2,
-    "in-progress": 6,
+    "follow-up": 3,
+    "in-progress": 5,
     "planned": 21
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 496,
-      "title": "feat(voice): add guarded recording and local preview",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/496",
-      "detail": "Day-1 Spec 41 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 470,
@@ -30,6 +23,13 @@
       "title": "feat(rooms): add Matrix polls",
       "url": "https://github.com/CloudHub-Social/Charm/pull/468",
       "detail": "Day-2 Spec 03 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 496,
+      "title": "feat(voice): add guarded recording and local preview",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/496",
+      "detail": "Day-1 Spec 41 · ready for review"
     },
     {
       "type": "issue",
@@ -165,8 +165,8 @@
       ],
       "counts": {
         "shipped": 3,
-        "follow-up": 0,
-        "in-progress": 2,
+        "follow-up": 1,
+        "in-progress": 1,
         "planned": 9
       }
     }
@@ -1389,7 +1389,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/496",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-09-04T16:21:04Z"
+          "updatedAt": "2026-09-05T13:15:45Z"
         }
       ],
       "issues": []
@@ -1809,7 +1809,7 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 468,
@@ -1817,7 +1817,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/468",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-09-04T16:03:51Z"
+          "updatedAt": "2026-09-05T13:53:49Z"
         }
       ],
       "issues": []
@@ -1865,7 +1865,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/470",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-09-04T16:19:33Z"
+          "updatedAt": "2026-09-05T13:57:57Z"
         }
       ],
       "issues": []

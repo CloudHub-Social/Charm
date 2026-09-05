@@ -196,6 +196,8 @@ export function DiscordMessageRow({
               ref={(el) => registerActionsRef(rowKey, el)}
               accountId={currentUserId ?? ""}
               isOwn={own}
+              canEdit={own && !message.poll}
+              canReply={!message.poll}
               canRedact={canRedact}
               canPin={canPin}
               isPinned={isPinned}
@@ -218,7 +220,7 @@ export function DiscordMessageRow({
               isBookmarked={isBookmarked}
               onResend={onResend}
               onDiscard={onDiscard}
-              onForward={onForward}
+              onForward={message.poll ? undefined : onForward}
               onViewSource={onViewSource}
               onReport={onReport}
               isRedacted={message.redacted}

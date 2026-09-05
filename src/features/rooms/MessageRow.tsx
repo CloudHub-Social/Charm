@@ -1,4 +1,5 @@
 import { useAtomValue } from "jotai";
+import { useFlag } from "@/featureFlags";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { BubbleMessageRow } from "./BubbleMessageRow";
@@ -6,6 +7,7 @@ import { DiscordMessageRow } from "./DiscordMessageRow";
 import { IrcMessageRow } from "./IrcMessageRow";
 import { messageRowKey, type MessageRowLayoutProps } from "./messageRowShared";
 import type { MessageActionsHandle } from "./MessageActions";
+import { PollMessage } from "./PollMessage";
 
 export { messageRowKey } from "./messageRowShared";
 
@@ -83,6 +85,7 @@ interface MessageRowProps {
  */
 export function MessageRow(props: MessageRowProps) {
   const messageLayout = useAtomValue(messageLayoutAtom);
+  const pollsEnabled = useFlag("polls");
   const { message, mutationsDisabled = false, ...rowProps } = props;
 
   const isPending = message.send_state.state === "pending";
@@ -117,13 +120,41 @@ export function MessageRow(props: MessageRowProps) {
     rowKey,
   };
 
-  switch (messageLayout) {
-    case "discord":
-      return <DiscordMessageRow {...layoutProps} />;
-    case "irc":
-      return <IrcMessageRow {...layoutProps} />;
-    case "bubble":
-    default:
-      return <BubbleMessageRow {...layoutProps} />;
+  const fallbackRow = (() => {
+    switch (messageLayout) {
+      case "discord":
+        return <DiscordMessageRow {...layoutProps} />;
+      case "irc":
+        return <IrcMessageRow {...layoutProps} />;
+      case "bubble":
+      default:
+        return <BubbleMessageRow {...layoutProps} />;
+    }
+  })();
+
+  if (!message.poll && !message.redacted) return fallbackRow;
+  if (pollsEnabled && message.poll) {
+    return (
+      <PollMessage
+        message={message}
+        roomId={props.roomId}
+        own={props.own}
+        mutationsDisabled={mutationsDisabled}
+        rowActions={layoutProps}
+      />
+    );
   }
+  return (
+    <>
+      {fallbackRow}
+      <PollMessage
+        message={message}
+        roomId={props.roomId}
+        own={props.own}
+        mutationsDisabled={mutationsDisabled}
+        rowActions={layoutProps}
+        recoveryOnly
+      />
+    </>
+  );
 }

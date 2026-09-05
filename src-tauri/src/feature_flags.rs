@@ -175,6 +175,8 @@ define_feature_flag_keys!(
         VoiceRecording,
         /// Day-2 Spec 06 searchable public-room directory and join flow.
         RoomDirectory,
+        /// Day-2 Spec 03 creation, voting, and creator-only closure of polls.
+        Polls,
         /// Spec 44 encrypted manual megolm key-file import and export.
         CryptoKeyFiles,
         /// Spec 47 appearance customization and display preferences.
@@ -217,6 +219,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => false,
             FeatureFlagKey::VoiceRecording => false,
             FeatureFlagKey::RoomDirectory => false,
+            FeatureFlagKey::Polls => false,
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::AppearanceParity => false,
         }
@@ -314,6 +317,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomDirectory => {
                 "Browse and search the homeserver's public room directory, then join a result."
             }
+            FeatureFlagKey::Polls => {
+                "Create, vote in, and display Matrix polls, with creator-only poll closure."
+            }
             FeatureFlagKey::CryptoKeyFiles => {
                 "Import or export standard passphrase-encrypted Matrix room-key files."
             }
@@ -367,6 +373,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => "Spec 31 (room upgrades)",
             FeatureFlagKey::VoiceRecording => "Spec 41 (voice message recording)",
             FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
+            FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
@@ -406,6 +413,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomUpgrades => "room_upgrades",
             FeatureFlagKey::VoiceRecording => "voice_recording",
             FeatureFlagKey::RoomDirectory => "room_directory",
+            FeatureFlagKey::Polls => "polls",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
         }

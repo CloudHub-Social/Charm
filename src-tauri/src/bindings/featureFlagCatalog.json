@@ -181,6 +181,12 @@
   },
   {
     "default": false,
+    "description": "Create, vote in, and display Matrix polls, with creator-only poll closure.",
+    "key": "polls",
+    "owner": "Day-2 Spec 03 (polls)"
+  },
+  {
+    "default": false,
     "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
     "key": "crypto_key_files",
     "owner": "Spec 44 (crypto key backup and import/export)"

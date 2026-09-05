@@ -867,15 +867,15 @@ mod room_send_queue_barrier_tests {
 /// equivalent. Uses matrix-rust-sdk's own send-queue retry primitive
 /// (`SendHandle::unwedge`) rather than re-composing and re-sending new
 /// content, so this is the same local echo retried in place, not a
-/// duplicate. A no-op from the caller's perspective if the transaction id no
-/// longer has a pending local echo (e.g. it was already discarded, or a
-/// stale/duplicate `resend` fired after a previous one already succeeded).
+/// duplicate. Returns whether the transaction id still identified a pending
+/// local echo that was actually unwedgeable. `false` means it was already
+/// discarded or a stale/duplicate `resend` raced a previous success.
 #[tauri::command]
 pub async fn resend_message(
     state: State<'_, MatrixState>,
     room_id: String,
     transaction_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let client = state.require_client().await?;
     resend_message_impl(&client, &room_id, &transaction_id).await
 }
@@ -885,7 +885,7 @@ pub async fn resend_message_impl(
     client: &Client,
     room_id: &str,
     transaction_id: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
     if ROOM_UPGRADE_BARRIER_ROOMS
@@ -896,7 +896,7 @@ pub async fn resend_message_impl(
         return Err("This room is read-only while its current state is verified.".to_string());
     }
     let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     // The SDK's send-queue loop disables a room's queue after *any* send
     // error (recoverable or not — see its own "Disable the queue for this
@@ -906,7 +906,11 @@ pub async fn resend_message_impl(
     // actually reads from, so without this Resend would silently do
     // nothing.
     room.send_queue().set_enabled(true);
-    send_handle.unwedge().await.map_err(|e| e.to_string())
+    send_handle
+        .unwedge()
+        .await
+        .map(|_| true)
+        .map_err(|e| e.to_string())
 }
 
 /// Discards a failed message local echo — Charm 1.0's `onDeleteFailedSend`
@@ -1746,9 +1750,13 @@ mod resend_discard_tests {
 
         let mut updates = client.send_queue().subscribe();
 
-        resend_message_impl(&client, room_id.as_str(), transaction_id.as_str())
+        let retried = resend_message_impl(&client, room_id.as_str(), transaction_id.as_str())
             .await
             .expect("unwedging a failed local echo should succeed");
+        assert!(
+            retried,
+            "the failed local echo should have been found and unwedgeable"
+        );
 
         // Confirm the retried send actually reaches the mocked "sent" outcome
         // for the same transaction id, not just that `unwedge()` returned Ok.
@@ -1793,7 +1801,7 @@ mod resend_discard_tests {
         // failure to surface.
         assert_eq!(
             resend_message_impl(&client, room_id.as_str(), bogus_txn_id).await,
-            Ok(())
+            Ok(false)
         );
         assert_eq!(
             discard_failed_message_impl(&client, room_id.as_str(), bogus_txn_id).await,

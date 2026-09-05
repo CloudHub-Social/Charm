@@ -110,6 +110,26 @@
       "maxDiffPixels": 1500
     },
     {
+      "slug": "polls",
+      "title": "Polls",
+      "summary": "Create single-choice Matrix polls, vote in the timeline, follow disclosed results, and close polls when the decision is complete.",
+      "status": "preview",
+      "spec": "Day-2 Spec 03",
+      "specLinks": [
+        {
+          "label": "Day-2 Spec 03",
+          "href": "/specs/day-2/spec-03--polls/"
+        }
+      ],
+      "flag": "polls",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-polls",
+        "alt": "Charm conversation showing a disclosed poll and the create-poll dialog",
+        "caption": "Playwright renders live poll totals and opens the composer flow from a complete room timeline."
+      }
+    },
+    {
       "slug": "message-search",
       "title": "Encrypted local message search",
       "summary": "Find decrypted messages in the current room or across joined rooms without sending the query to the homeserver.",

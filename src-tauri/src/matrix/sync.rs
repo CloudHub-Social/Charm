@@ -486,10 +486,11 @@ async fn notify_unopened_room_messages(
     client: &Client,
     response: &matrix_sdk::sync::SyncResponse,
 ) {
-    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+    use matrix_sdk::ruma::events::AnySyncTimelineEvent;
 
     let state = app.state::<MatrixState>();
     let own_user_id = client.user_id();
+    let poll_notifications_enabled = super::polls::notifications_enabled(app);
 
     for (room_id, update) in &response.rooms.joined {
         if state.is_timeline_open(room_id).await {
@@ -500,43 +501,37 @@ async fn notify_unopened_room_messages(
         };
 
         for raw_event in &update.timeline.events {
+            #[derive(serde::Deserialize)]
+            struct ContentMentions {
+                #[serde(rename = "m.mentions")]
+                mentions: Option<matrix_sdk::ruma::events::Mentions>,
+            }
+            let mentions = raw_event
+                .raw()
+                .get_field::<ContentMentions>("content")
+                .ok()
+                .flatten()
+                .and_then(|content| content.mentions);
             let deserialize_result: Result<AnySyncTimelineEvent, _> = raw_event.raw().deserialize();
             let Ok(deserialized) = deserialize_result else {
                 continue;
             };
-            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
-                deserialized
+            let Some(original) =
+                unopened_notification_content(deserialized, poll_notifications_enabled, mentions)
             else {
                 continue;
-            };
-            let Some(original) = msg.as_original() else {
-                continue; // a redaction of an earlier event, not a new message
             };
             if own_user_id.is_some_and(|me| me == original.sender) {
                 continue;
             }
-            // An edit: also an original `m.room.message`, carrying an
-            // `m.replace` relation to the event it edits. The opened-room
-            // path (matrix-sdk-ui's `Timeline`) collapses these onto the
-            // existing item rather than treating them as a new message; this
-            // unopened-room path has no such collapsing; so skip them here
-            // too, or editing an old message would notify with the edit's
-            // fallback body as if it were freshly sent.
-            if matches!(
-                original.content.relates_to,
-                Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(_))
-            ) {
-                continue;
-            }
-
             let sender_display_name = room
                 .get_member_no_sync(&original.sender)
                 .await
                 .ok()
                 .flatten()
                 .and_then(|member| member.display_name().map(ToOwned::to_owned));
-            let body = original.content.body().to_string();
-            let mentions = original.content.mentions.clone();
+            let body = original.body;
+            let mentions = original.mentions;
 
             shell::maybe_send_notification(
                 app,
@@ -552,6 +547,151 @@ async fn notify_unopened_room_messages(
             )
             .await;
         }
+    }
+}
+
+struct UnopenedNotificationContent {
+    event_id: matrix_sdk::ruma::OwnedEventId,
+    sender: matrix_sdk::ruma::OwnedUserId,
+    body: String,
+    mentions: Option<matrix_sdk::ruma::events::Mentions>,
+}
+
+fn unopened_notification_content(
+    event: matrix_sdk::ruma::events::AnySyncTimelineEvent,
+    polls_enabled: bool,
+    fallback_mentions: Option<matrix_sdk::ruma::events::Mentions>,
+) -> Option<UnopenedNotificationContent> {
+    use matrix_sdk::ruma::events::poll::unstable_start::UnstablePollStartEventContent;
+    use matrix_sdk::ruma::events::room::message::Relation;
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+    let AnySyncTimelineEvent::MessageLike(event) = event else {
+        return None;
+    };
+    // Ruma parses both poll formats. Redactions, edits, responses, and ends
+    // are updates to an existing item, never new-message notifications.
+    match event {
+        AnySyncMessageLikeEvent::RoomMessage(event) => {
+            let original = event.as_original()?;
+            if matches!(original.content.relates_to, Some(Relation::Replacement(_))) {
+                return None;
+            }
+            Some(UnopenedNotificationContent {
+                event_id: original.event_id.clone(),
+                sender: original.sender.clone(),
+                body: original.content.body().to_owned(),
+                mentions: original.content.mentions.clone(),
+            })
+        }
+        AnySyncMessageLikeEvent::UnstablePollStart(event) if polls_enabled => {
+            let original = event.as_original()?;
+            let UnstablePollStartEventContent::New(content) = &original.content else {
+                return None;
+            };
+            Some(UnopenedNotificationContent {
+                event_id: original.event_id.clone(),
+                sender: original.sender.clone(),
+                body: format!("Poll: {}", content.poll_start.question.text),
+                mentions: fallback_mentions,
+            })
+        }
+        // matrix-sdk-ui 0.18 does not yet aggregate stable m.poll.start into a
+        // renderable timeline item. Do not notify for an event the user cannot
+        // see after opening the room; enable this arm with stable rendering.
+        AnySyncMessageLikeEvent::PollStart(_) => None,
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod unopened_poll_notification_tests {
+    #[test]
+    fn poll_start_notifies_but_replacement_does_not() {
+        let content = serde_json::json!({
+            "org.matrix.msc1767.text": "Lunch?",
+            "org.matrix.msc3381.poll.start": {
+                "question": {"org.matrix.msc1767.text": "Lunch?"},
+                "kind": "org.matrix.msc3381.poll.disclosed",
+                "max_selections": 1,
+                "answers": [
+                    {"id": "a", "org.matrix.msc1767.text": "Pizza"},
+                    {"id": "b", "org.matrix.msc1767.text": "Tacos"}
+                ]
+            }
+        });
+        let mut event = serde_json::json!({
+            "type": "org.matrix.msc3381.poll.start",
+            "event_id": "$poll", "sender": "@alice:example.org",
+            "origin_server_ts": 1, "content": content
+        });
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            false,
+            None,
+        )
+        .is_none());
+        let mentions = serde_json::from_value(serde_json::json!({
+            "user_ids": ["@bob:example.org"]
+        }))
+        .unwrap();
+        let notification = super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            true,
+            Some(mentions),
+        )
+        .unwrap();
+        assert_eq!(notification.body, "Poll: Lunch?");
+        assert_eq!(notification.event_id.as_str(), "$poll");
+        assert_eq!(notification.sender.as_str(), "@alice:example.org");
+        assert!(notification.mentions.is_some());
+
+        event["content"]["org.matrix.msc1767.text"] =
+            serde_json::json!("Poll: Lunch?\nPizza\nTacos");
+        let notification = super::unopened_notification_content(
+            serde_json::from_value(event.clone()).unwrap(),
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(notification.body, "Poll: Lunch?");
+        event["content"]["m.new_content"] = content;
+        event["content"]["m.relates_to"] = serde_json::json!({
+            "rel_type": "m.replace", "event_id": "$original"
+        });
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event).unwrap(),
+            true,
+            None,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn stable_poll_start_does_not_notify_until_the_timeline_can_render_it() {
+        let event = serde_json::json!({
+            "type": "m.poll.start",
+            "event_id": "$stable-poll",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1,
+            "content": {
+                "m.text": [{"body": "Lunch?", "mimetype": "text/plain"}],
+                "m.poll": {
+                    "question": {"m.text": [{"body": "Lunch?", "mimetype": "text/plain"}]},
+                    "kind": "m.poll.disclosed",
+                    "max_selections": 1,
+                    "answers": [
+                        {"m.id": "a", "m.text": [{"body": "Pizza", "mimetype": "text/plain"}]},
+                        {"m.id": "b", "m.text": [{"body": "Tacos", "mimetype": "text/plain"}]}
+                    ]
+                }
+            }
+        });
+        assert!(super::unopened_notification_content(
+            serde_json::from_value(event).unwrap(),
+            true,
+            None,
+        )
+        .is_none());
     }
 }
 

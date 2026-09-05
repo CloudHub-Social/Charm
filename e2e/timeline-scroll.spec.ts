@@ -32,6 +32,7 @@ function makeMessage(i: number, overrides: Record<string, unknown> = {}) {
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    poll: null,
     is_undecrypted: false,
     ...overrides,
   };
