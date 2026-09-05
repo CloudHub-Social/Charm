@@ -124,6 +124,7 @@ export function RecoverySetupCard({
       const message =
         error instanceof Error ? error.message : typeof error === "string" ? error : "";
       setRepairAvailable(
+        message.includes(REPLACED_PENDING_RECOVERY_ERROR) ||
         message.includes(
           "Protected recovery state was retained; repair the interrupted setup before signing out.",
         ),

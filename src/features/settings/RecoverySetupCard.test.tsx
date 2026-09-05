@@ -136,6 +136,22 @@ describe("RecoverySetupCard", () => {
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
   });
 
+  it("offers repair when setup discovers that pending recovery was replaced", async () => {
+    setupRecovery.mockRejectedValue(
+      new Error(
+        "Pending recovery no longer matches the account's current secret storage. Restart recovery setup.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set up recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Repair interrupted setup" }),
+    ).toBeEnabled();
+  });
+
   it("requires local cross-signing keys before setup", () => {
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady={false} recoveryDisabled />);
 
