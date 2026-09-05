@@ -6,14 +6,15 @@ import ts from "typescript";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
+const requiredLicensingFiles = ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"];
 
 function read(relativePath) {
   return readFileSync(path.join(repositoryRoot, relativePath), "utf8");
 }
 
 function stripPackagingComments(content, relativePath) {
-  const withoutHashCommentLines = content.replace(/^\s*#.*$/gm, "");
-  if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutHashCommentLines;
+  const withoutCommentLines = content.replace(/^\s*(?:#|\/\/).*$/gm, "");
+  if (!/\.[cm]?[jt]sx?$/i.test(relativePath)) return withoutCommentLines;
 
   const languageVariant = /x$/i.test(relativePath)
     ? ts.LanguageVariant.JSX
@@ -22,7 +23,7 @@ function stripPackagingComments(content, relativePath) {
     ts.ScriptTarget.Latest,
     false,
     languageVariant,
-    withoutHashCommentLines,
+    withoutCommentLines,
   );
   let executableContent = "";
 
@@ -38,11 +39,30 @@ function stripPackagingComments(content, relativePath) {
   return executableContent;
 }
 
-for (const requiredFile of ["LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"]) {
+function requirePackagedLicensingFiles(relativePath, destination) {
+  const packagingLines = stripPackagingComments(read(relativePath), relativePath).split("\n");
+
+  for (const requiredFile of requiredLicensingFiles) {
+    const isPackaged = packagingLines.some(
+      (line) =>
+        /\b(?:copy|cp|install)\b/i.test(line) &&
+        line.includes(requiredFile) &&
+        line.includes(destination),
+    );
+    if (!isPackaged) {
+      errors.push(`${relativePath} must package ${requiredFile} into ${destination}.`);
+    }
+  }
+}
+
+for (const requiredFile of requiredLicensingFiles) {
   if (!existsSync(path.join(repositoryRoot, requiredFile))) {
     errors.push(`Missing required licensing file: ${requiredFile}`);
   }
 }
+
+requirePackagedLicensingFiles(".github/actions/build-web-worker/action.yml", "dist/");
+requirePackagedLicensingFiles("crates/charm-web-server/Dockerfile", "/usr/share/doc/charm/");
 
 for (const manifestPath of ["package.json", "docs-site/package.json"]) {
   const manifest = JSON.parse(read(manifestPath));
@@ -99,6 +119,8 @@ const packagingInputPatterns = [
   /(?:^|\/)(?:vite|rollup|astro)\.config\.[cm]?[jt]s$/i,
   /(?:^|\/)(?:build\.rs|Makefile|Justfile)$/i,
   /(?:^|\/)(?:(?:Dockerfile|Containerfile)(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml|docker-bake\.(?:hcl|json))$/i,
+  /^src-tauri\/gen\/apple\/(?:Podfile|project\.yml|.+\.xcodeproj\/project\.pbxproj)$/i,
+  /^src-tauri\/gen\/android\/(?:(?:.+\/)?(?:build|settings)\.gradle(?:\.kts)?|gradle\.properties|buildSrc\/src\/.+\.(?:java|kt|kts))$/i,
 ];
 const bundledAssetPatterns = [
   /(?:^|\/)(?:public|src\/assets|src-tauri\/resources|vendor|third[_-]party|embedded)\//i,
@@ -109,8 +131,11 @@ const sableCallName = /sable[-_ ]?call/i;
 
 for (const trackedFile of trackedFiles) {
   const isBundledAsset = bundledAssetPatterns.some((pattern) => pattern.test(trackedFile));
-  if (isBundledAsset && sableCallName.test(trackedFile)) {
-    errors.push(`Sable Call material cannot be stored in a packaged asset path: ${trackedFile}`);
+  if (isBundledAsset) {
+    const containsForbiddenSource = forbiddenSource.test(read(trackedFile));
+    if (sableCallName.test(trackedFile) || containsForbiddenSource) {
+      errors.push(`Sable Call material cannot be stored in a packaged asset: ${trackedFile}`);
+    }
   }
 
   if (trackedFile.endsWith("package.json")) {

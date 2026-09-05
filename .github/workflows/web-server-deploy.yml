@@ -28,6 +28,10 @@ on:
       - "src-tauri/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "LICENSE"
+      - "NOTICE"
+      - "LICENSING.md"
+      - "THIRD_PARTY_NOTICES.md"
       - ".do/app.yaml"
       - ".github/workflows/web-server-deploy.yml"
   workflow_dispatch:
