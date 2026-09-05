@@ -29,7 +29,7 @@ describe("PollRecoveryTray", () => {
         },
       ])
       .mockResolvedValue([]);
-    render(<PollRecoveryTray roomId="!room:example.org" loadedMessages={[]} />);
+    render(<PollRecoveryTray roomId="!room:example.org" />);
 
     expect(await screen.findByRole("button", { name: "Discard" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
@@ -47,7 +47,7 @@ describe("PollRecoveryTray", () => {
     );
   });
 
-  it("leaves recovery to the loaded poll row when its target is visible", async () => {
+  it("keeps recovery available when its poll row may be virtualized", async () => {
     getPendingPollRelations.mockResolvedValue([
       {
         poll_event_id: "$loaded-poll",
@@ -57,38 +57,9 @@ describe("PollRecoveryTray", () => {
         failed: true,
       },
     ]);
-    render(
-      <PollRecoveryTray
-        roomId="!room:example.org"
-        loadedMessages={[{ event_id: "$loaded-poll" }]}
-      />,
-    );
+    render(<PollRecoveryTray roomId="!room:example.org" />);
 
     await waitFor(() => expect(getPendingPollRelations).toHaveBeenCalledOnce());
-    expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument();
-  });
-
-  it("filters timeline changes without restarting the room polling loop", async () => {
-    getPendingPollRelations.mockResolvedValue([
-      {
-        poll_event_id: "$newly-loaded-poll",
-        transaction_id: "txn-vote",
-        kind: "vote",
-        answer_id: "0",
-        failed: true,
-      },
-    ]);
-    const view = render(<PollRecoveryTray roomId="!room:example.org" loadedMessages={[]} />);
-    expect(await screen.findByRole("button", { name: "Discard" })).toBeInTheDocument();
-
-    view.rerender(
-      <PollRecoveryTray
-        roomId="!room:example.org"
-        loadedMessages={[{ event_id: "$newly-loaded-poll" }]}
-      />,
-    );
-
-    expect(screen.queryByRole("region", { name: "Poll send recovery" })).not.toBeInTheDocument();
-    expect(getPendingPollRelations).toHaveBeenCalledOnce();
+    expect(screen.getByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
   });
 });

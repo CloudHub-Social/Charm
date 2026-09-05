@@ -1,36 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   discardPollEnd,
   discardPollVote,
   getPendingPollRelations,
   type PendingPollRelation,
-  type RoomMessageSummary,
 } from "@/lib/matrix";
 
 interface PollRecoveryTrayProps {
   roomId: string;
-  loadedMessages: readonly Pick<RoomMessageSummary, "event_id">[];
 }
 
-export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayProps) {
-  const [pendingRelations, setPendingRelations] = useState<PendingPollRelation[]>([]);
+export function PollRecoveryTray({ roomId }: PollRecoveryTrayProps) {
+  const [relations, setRelations] = useState<PendingPollRelation[]>([]);
   const [busyTransactionId, setBusyTransactionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeRoomId = useRef(roomId);
   activeRoomId.current = roomId;
-  const loadedEventIds = useMemo(
-    () => new Set(loadedMessages.map((message) => message.event_id)),
-    [loadedMessages],
-  );
   const loadRelations = useCallback(async () => {
     const pending = await getPendingPollRelations(roomId);
     if (activeRoomId.current !== roomId) return null;
     return pending.filter((relation) => relation.failed);
   }, [roomId]);
-  const relations = useMemo(
-    () => pendingRelations.filter((relation) => !loadedEventIds.has(relation.poll_event_id)),
-    [loadedEventIds, pendingRelations],
-  );
 
   useEffect(() => {
     let active = true;
@@ -38,7 +28,7 @@ export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayPro
     const load = async () => {
       try {
         const pending = await loadRelations();
-        if (active && pending) setPendingRelations(pending);
+        if (active && pending) setRelations(pending);
       } catch {
         // The durable queue remains authoritative; retry while this room is open.
       } finally {
@@ -62,7 +52,7 @@ export function PollRecoveryTray({ roomId, loadedMessages }: PollRecoveryTrayPro
           : await discardPollEnd(roomId, relation.poll_event_id, relation.transaction_id);
       if (!changed) setError("That failed poll action was already handled elsewhere.");
       const pending = await loadRelations();
-      if (pending) setPendingRelations(pending);
+      if (pending) setRelations(pending);
     } catch {
       setError(`The failed poll ${relation.kind} could not be discarded.`);
     } finally {

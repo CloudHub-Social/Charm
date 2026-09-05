@@ -979,7 +979,7 @@ export function ChatShell({
         </div>
       )}
 
-      <PollRecoveryTray roomId={room.room_id} loadedMessages={messages} />
+      <PollRecoveryTray roomId={room.room_id} />
 
       <UploadTray
         uploads={uploads}
