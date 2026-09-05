@@ -11,6 +11,8 @@ import { makeMessageSummary } from "./testFixtures";
 
 const getUrlPreview = vi.fn();
 const getRoomDetails = vi.fn();
+const getPendingPollVote = vi.fn();
+const getPendingPollEnd = vi.fn();
 const mockUseFlag = vi.hoisted(() => vi.fn((flag: string) => flag.length > 0));
 
 vi.mock("@/lib/matrix", async () => {
@@ -19,6 +21,8 @@ vi.mock("@/lib/matrix", async () => {
     ...actual,
     getUrlPreview: (...args: unknown[]) => getUrlPreview(...args),
     getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
+    getPendingPollVote: (...args: unknown[]) => getPendingPollVote(...args),
+    getPendingPollEnd: (...args: unknown[]) => getPendingPollEnd(...args),
   };
 });
 
@@ -33,6 +37,8 @@ vi.mock("@/featureFlags", async () => {
 beforeEach(() => {
   getUrlPreview.mockReset();
   getRoomDetails.mockReset();
+  getPendingPollVote.mockReset().mockResolvedValue(null);
+  getPendingPollEnd.mockReset().mockResolvedValue(null);
   mockUseFlag.mockReturnValue(true);
 });
 
@@ -177,6 +183,10 @@ describe("MessageRow dispatcher", () => {
       expect(screen.queryByText("Reply")).not.toBeInTheDocument();
       expect(screen.queryByText("Forward")).not.toBeInTheDocument();
       expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(getPendingPollVote).toHaveBeenCalledWith("!room:localhost", "$poll"),
+      );
+      expect(getPendingPollEnd).toHaveBeenCalledWith("!room:localhost", "$poll");
     },
   );
 });

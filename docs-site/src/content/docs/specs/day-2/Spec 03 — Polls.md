@@ -89,7 +89,9 @@ Queued vote transaction IDs are restored from those same local echoes, so an
 asynchronous homeserver rejection remains visible and can be retried or discarded
 after a remount or restart. Poll-specific vote and close recovery operations share
 the per-poll mutation lock, preventing one window from discarding an echo while
-another window retries it.
+another window retries it. Disabling the rollout hides creation and ordinary poll
+interaction, but a recovery-only controller remains mounted behind the fallback
+event row so an outstanding failed relation can still be retried or discarded.
 
 ## API/contract changes
 

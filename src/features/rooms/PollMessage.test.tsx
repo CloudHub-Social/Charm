@@ -529,6 +529,26 @@ describe("PollMessage", () => {
     );
   });
 
+  it("shows only recovery controls when ordinary poll UI is killed", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-disabled-vote",
+      answer_id: "0",
+      failed: true,
+    });
+    render(
+      <PollMessage
+        message={pollMessage()}
+        roomId="!room:example.org"
+        own={false}
+        recoveryOnly
+      />,
+    );
+
+    expect(await screen.findByRole("region", { name: "Poll send recovery" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry vote" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Lunch?" })).not.toBeInTheDocument();
+  });
+
   it("does not end a poll while a vote is pending", async () => {
     let finish!: () => void;
     voteOnPoll.mockImplementationOnce(

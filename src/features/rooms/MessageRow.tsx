@@ -120,7 +120,20 @@ export function MessageRow(props: MessageRowProps) {
     rowKey,
   };
 
-  if (pollsEnabled && message.poll) {
+  const fallbackRow = (() => {
+    switch (messageLayout) {
+      case "discord":
+        return <DiscordMessageRow {...layoutProps} />;
+      case "irc":
+        return <IrcMessageRow {...layoutProps} />;
+      case "bubble":
+      default:
+        return <BubbleMessageRow {...layoutProps} />;
+    }
+  })();
+
+  if (!message.poll) return fallbackRow;
+  if (pollsEnabled) {
     return (
       <PollMessage
         message={message}
@@ -131,14 +144,17 @@ export function MessageRow(props: MessageRowProps) {
       />
     );
   }
-
-  switch (messageLayout) {
-    case "discord":
-      return <DiscordMessageRow {...layoutProps} />;
-    case "irc":
-      return <IrcMessageRow {...layoutProps} />;
-    case "bubble":
-    default:
-      return <BubbleMessageRow {...layoutProps} />;
-  }
+  return (
+    <>
+      {fallbackRow}
+      <PollMessage
+        message={message}
+        roomId={props.roomId}
+        own={props.own}
+        mutationsDisabled={mutationsDisabled}
+        rowActions={layoutProps}
+        recoveryOnly
+      />
+    </>
+  );
 }

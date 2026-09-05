@@ -26,6 +26,7 @@ interface PollMessageProps {
   own: boolean;
   mutationsDisabled?: boolean;
   rowActions?: MessageRowLayoutProps;
+  recoveryOnly?: boolean;
 }
 
 const acknowledgedPollCloses = new Map<string, string>();
@@ -44,6 +45,7 @@ export function PollMessage({
   own,
   mutationsDisabled = false,
   rowActions,
+  recoveryOnly = false,
 }: PollMessageProps) {
   const { clockFormat } = useDisplayFormats();
   const poll = message.poll;
@@ -301,10 +303,11 @@ export function PollMessage({
   }
 
   async function end() {
+    const retryingFailedEnd = endTransactionId !== null && endFailed;
     if (
       !canEndPoll ||
       ended ||
-      mutationsDisabled ||
+      (mutationsDisabled && !retryingFailedEnd) ||
       !hasRealEventId ||
       restoringEndState ||
       restoringVoteState ||
@@ -366,6 +369,64 @@ export function PollMessage({
     } finally {
       setEndRequestPending(false);
     }
+  }
+
+  if (recoveryOnly) {
+    if (!voteFailed && !endFailed && !error) return null;
+    return (
+      <section
+        aria-label="Poll send recovery"
+        className="mx-4 mb-2 rounded-lg border border-destructive/40 bg-card p-3 text-xs"
+      >
+        {voteFailed && voteTransactionId && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p>Your poll vote failed to send.</p>
+            <button
+              type="button"
+              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+              disabled={restoringVoteState}
+              onClick={() => void retryVote()}
+            >
+              Retry vote
+            </button>
+            <button
+              type="button"
+              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+              disabled={restoringVoteState}
+              onClick={() => void abandonVote()}
+            >
+              Discard vote
+            </button>
+          </div>
+        )}
+        {endFailed && endTransactionId && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p>Your poll close failed to send.</p>
+            <button
+              type="button"
+              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+              disabled={endRequestPending}
+              onClick={() => void end()}
+            >
+              Retry close
+            </button>
+            <button
+              type="button"
+              className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+              disabled={endRequestPending}
+              onClick={() => void abandonEnd()}
+            >
+              Discard close
+            </button>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="mt-1 text-destructive">
+            {error}
+          </p>
+        )}
+      </section>
+    );
   }
 
   return (
