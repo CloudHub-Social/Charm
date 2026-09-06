@@ -39,7 +39,7 @@ validate_xcode() {
   [[ -n ${DEVELOPER_DIR:-} ]] || fail "DEVELOPER_DIR must point to Xcode 27"
   [[ -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ]] || fail "DEVELOPER_DIR is not an Xcode developer directory: $DEVELOPER_DIR"
   local version
-  version=$("$DEVELOPER_DIR/usr/bin/xcodebuild" -version | awk '/^Xcode / { print $2; exit }')
+  version=$("$DEVELOPER_DIR/usr/bin/xcodebuild" -version | awk '/^Xcode / { version = $2 } END { print version }')
   [[ $version == 27.* ]] || fail "Xcode 27 is required; found ${version:-unknown}"
 }
 

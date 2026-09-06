@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           current_developer_dir=$(xcode-select -p)
-          current_version=$(xcodebuild -version | awk '/^Xcode / { print $2; exit }')
+          current_version=$(xcodebuild -version | awk '/^Xcode / { version = $2 } END { print version }')
           if [[ "$current_version" == 27.* ]]; then
             developer_dir="$current_developer_dir"
           else
@@ -80,7 +80,7 @@ jobs:
           fi
           export DEVELOPER_DIR="$developer_dir"
           xcodebuild -version | tee .xcode-version.txt
-          xcode_version=$(xcodebuild -version | awk '/^Xcode / { print $2; exit }')
+          xcode_version=$(xcodebuild -version | awk '/^Xcode / { version = $2 } END { print version }')
           [[ "$xcode_version" == 27.* ]] || { echo "::error::selected Xcode is $xcode_version, not 27.x"; exit 1; }
           echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
 
