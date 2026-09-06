@@ -315,7 +315,14 @@ export function PollMessage({
   }
 
   async function retryVote() {
-    if (message.redacted || !voteTransactionId || !voteFailed) return;
+    if (
+      message.redacted ||
+      !voteTransactionId ||
+      !voteFailed ||
+      !pendingAnswerId ||
+      !pollAnswerIds.has(pendingAnswerId)
+    )
+      return;
     setRestoringVoteState(true);
     try {
       const retried = await retryPollVote(roomId, message.event_id, voteTransactionId);
@@ -436,16 +443,19 @@ export function PollMessage({
         {voteFailed && voteTransactionId && (
           <div className="flex flex-wrap items-center gap-2">
             <p>Your poll vote failed to send.</p>
-            {!pollEnded && !message.redacted && (
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
-                disabled={restoringVoteState}
-                onClick={() => void retryVote()}
-              >
-                Retry vote
-              </button>
-            )}
+            {!pollEnded &&
+              !message.redacted &&
+              pendingAnswerId !== null &&
+              pollAnswerIds.has(pendingAnswerId) && (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                  disabled={restoringVoteState}
+                  onClick={() => void retryVote()}
+                >
+                  Retry vote
+                </button>
+              )}
             <button
               type="button"
               className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
@@ -665,16 +675,19 @@ export function PollMessage({
           {voteFailed && voteTransactionId && (
             <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
               <p>Your vote failed to send.</p>
-              {!pollEnded && !message.redacted && (
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
-                  disabled={restoringVoteState}
-                  onClick={() => void retryVote()}
-                >
-                  Retry vote
-                </button>
-              )}
+              {!pollEnded &&
+                !message.redacted &&
+                pendingAnswerId !== null &&
+                pollAnswerIds.has(pendingAnswerId) && (
+                  <button
+                    type="button"
+                    className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                    disabled={restoringVoteState}
+                    onClick={() => void retryVote()}
+                  >
+                    Retry vote
+                  </button>
+                )}
               <button
                 type="button"
                 className="rounded-md px-2 py-1 font-medium text-foreground hover:bg-accent disabled:opacity-50"

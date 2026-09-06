@@ -667,6 +667,28 @@ describe("PollMessage", () => {
     expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
   });
 
+  it("does not offer retry when cleanup of an edited-away answer fails", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-removed-answer",
+      answer_id: "1",
+      failed: true,
+    });
+    discardPollVote.mockRejectedValueOnce(new Error("temporary transport failure"));
+    render(
+      <PollMessage
+        message={pollMessage({
+          answers: [{ id: "0", text: "Pizza", votes: 2, selected_by_me: false }],
+          edited: true,
+        })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Discard vote" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
+  });
+
   it("retries a transient pending-close lookup failure while the row stays mounted", async () => {
     vi.useFakeTimers();
     getPendingPollEnd

@@ -34,6 +34,7 @@ const MAX_OPTIONS: usize = 20;
 static POLL_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const POLL_END_ACK_PREFIX: &[u8] = b"charm.poll-end-ack.v1\0";
+const POLL_END_PROVISIONAL_TRANSACTION_ID: &str = "__charm_poll_end_provisional_v1__";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingPollEnd {
@@ -289,9 +290,32 @@ async fn pending_poll_end_locked(
     Ok(acknowledged_poll_end(client, close_key)
         .await?
         .map(|transaction_id| PendingPollEnd {
+            failed: transaction_id == POLL_END_PROVISIONAL_TRANSACTION_ID,
             transaction_id,
-            failed: false,
         }))
+}
+
+async fn queue_poll_end_locked(
+    client: &Client,
+    room: &matrix_sdk::Room,
+    poll_event_id: &EventId,
+    close_key: &str,
+) -> Result<String, String> {
+    // Install a durable admission fence before handing the relation to the
+    // SDK. If the process exits after queue admission but before we observe
+    // the generated transaction id, restart recovery can reconcile the real
+    // echo; if admission never occurred, the provisional entry is exposed as
+    // failed so the creator can retry or discard it explicitly.
+    set_acknowledged_poll_end(client, close_key, POLL_END_PROVISIONAL_TRANSACTION_ID).await?;
+    let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id.to_owned());
+    let transaction_id = send_and_capture_transaction_id(
+        client,
+        room,
+        AnyMessageLikeEventContent::UnstablePollEnd(content),
+    )
+    .await?;
+    set_acknowledged_poll_end(client, close_key, &transaction_id).await?;
+    Ok(transaction_id)
 }
 
 async fn require_owned_live_poll(
@@ -482,15 +506,7 @@ pub async fn end_poll_impl(
         return Err("This poll has a queued vote. Wait for it to settle before closing.".into());
     }
     require_owned_live_poll(client, &room, &poll_event_id).await?;
-    let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
-    let transaction_id = send_and_capture_transaction_id(
-        client,
-        &room,
-        AnyMessageLikeEventContent::UnstablePollEnd(content),
-    )
-    .await?;
-    set_acknowledged_poll_end(client, &close_key, &transaction_id).await?;
-    Ok(transaction_id)
+    queue_poll_end_locked(client, &room, &poll_event_id, &close_key).await
 }
 
 pub async fn retry_poll_end_impl(
@@ -505,6 +521,14 @@ pub async fn retry_poll_end_impl(
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
     let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
+        if transaction_id == POLL_END_PROVISIONAL_TRANSACTION_ID
+            && acknowledged_poll_end(client, &close_key).await?.as_deref()
+                == Some(POLL_END_PROVISIONAL_TRANSACTION_ID)
+        {
+            require_owned_live_poll(client, &room, &poll_event_id).await?;
+            queue_poll_end_locked(client, &room, &poll_event_id, &close_key).await?;
+            return Ok(true);
+        }
         // The SDK can remove a failed echo between the UI presenting Retry
         // and this command acquiring the mutation lock. With no echo left to
         // retry, the acknowledgement no longer protects an active close and
@@ -586,6 +610,13 @@ pub async fn discard_poll_end_impl(
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
     let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
+        if transaction_id == POLL_END_PROVISIONAL_TRANSACTION_ID
+            && acknowledged_poll_end(client, &close_key).await?.as_deref()
+                == Some(POLL_END_PROVISIONAL_TRANSACTION_ID)
+        {
+            clear_acknowledged_poll_end(client, &close_key).await?;
+            return Ok(true);
+        }
         return Ok(false);
     };
     if pending.transaction_id != transaction_id || !pending.failed {
@@ -832,6 +863,51 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn provisional_close_fence_can_be_retried_after_restart() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!provisional-close:example.org");
+        let poll_id = event_id!("$provisional-close:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        mock_poll_start(
+            &server,
+            poll_id.as_str(),
+            client.user_id().unwrap().as_str(),
+        )
+        .await;
+        room.send_queue().set_enabled(false);
+        let key = poll_end_key(&client, room_id, poll_id).unwrap();
+        set_acknowledged_poll_end(&client, &key, POLL_END_PROVISIONAL_TRANSACTION_ID)
+            .await
+            .unwrap();
+
+        let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.transaction_id, POLL_END_PROVISIONAL_TRANSACTION_ID);
+        assert!(pending.failed);
+        assert!(retry_poll_end_impl(
+            &client,
+            room_id.as_str(),
+            poll_id.as_str(),
+            POLL_END_PROVISIONAL_TRANSACTION_ID,
+        )
+        .await
+        .unwrap());
+
+        let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(pending.transaction_id, POLL_END_PROVISIONAL_TRANSACTION_ID);
+        assert!(!pending.failed);
     }
 
     #[tokio::test]
