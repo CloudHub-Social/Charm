@@ -5,7 +5,7 @@ import {
   filterRooms,
   filterSlashCommands,
 } from "./composerSuggestions";
-import { resolveInlineShortcodes } from "./emojiShortcodes";
+import { resolveInlineShortcodes, resolveInlineShortcodesInHtml } from "./emojiShortcodes";
 import { parseSlashCommand, unescapeLiteralSlash } from "./slashCommands";
 
 describe("filterSlashCommands", () => {
@@ -40,6 +40,22 @@ describe("resolveInlineShortcodes", () => {
 
   it("leaves unknown shortcodes untouched", () => {
     expect(resolveInlineShortcodes("hey :not_an_emoji:")).toBe("hey :not_an_emoji:");
+  });
+
+  it("expands HTML text without changing shortcode-like link destinations", () => {
+    expect(
+      resolveInlineShortcodesInHtml(
+        '<p><a href="https://example.org/:smile:/">visit :smile:</a></p>',
+      ),
+    ).toBe('<p><a href="https://example.org/:smile:/">visit 😄</a></p>');
+  });
+
+  it("preserves shortcode literals inside inline and block code", () => {
+    expect(
+      resolveInlineShortcodesInHtml(
+        '<p>outside :smile: <code>:smile:</code></p><pre><code>const mood = ":smile:";</code></pre>',
+      ),
+    ).toBe('<p>outside 😄 <code>:smile:</code></p><pre><code>const mood = ":smile:";</code></pre>');
   });
 });
 

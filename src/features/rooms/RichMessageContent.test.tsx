@@ -30,7 +30,8 @@ describe("RichMessageContent", () => {
     expect(container.firstChild).not.toHaveAttribute("data-jumbo-emoji");
   });
 
-  it("keeps spoiler content concealed until the user reveals it", () => {
+  it.each([true, false])("keeps spoilers concealed with rich extras enabled=%s", (enabled) => {
+    featureFlagMocks.enabled = enabled;
     render(
       <RichMessageContent
         body="classified"

@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { editMessage, runCommand, sendMessage, sendReply } from "@/lib/matrix";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  editMessage,
+  runCommand,
+  sendMessage,
+  sendReply,
+  unbanMember,
+  setDisplayName,
+  ignoreUser,
+  unignoreUser,
+  joinRoom,
+} from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
-import type { ParsedSlashCommand } from "./slashCommands";
+import { isMessageSendingCommand, type ParsedSlashCommand } from "./slashCommands";
+import { useFlag } from "@/featureFlags";
 
 interface ComposerContent {
   body: string;
@@ -28,13 +40,16 @@ export function useMessageSend({
   stopTyping,
   mutationsBlockedRef,
 }: UseMessageSendOptions) {
+  const queryClient = useQueryClient();
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
+  const composerParityEnabled = useFlag("composer_parity");
   const roomId = room?.room_id ?? "";
   // Tracks the *currently viewed* room id across renders — used by
   // `handleSlashCommand`'s async continuation below to check whether the
   // user switched rooms mid-command, so a stale room's feedback isn't
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
+  const nicknameInFlight = useRef(false);
   currentRoomIdRef.current = roomId;
 
   // Room-scoped, not persistent: a bad-args/permission-denied banner from
@@ -58,7 +73,13 @@ export function useMessageSend({
       setEditingEventId(null);
       stopTyping();
       try {
-        await editMessage(targetRoom.room_id, eventId, content.body);
+        await editMessage(
+          targetRoom.room_id,
+          eventId,
+          content.body,
+          content.formattedBody,
+          content.mentions,
+        );
       } catch (err) {
         console.error(err);
       }
@@ -79,10 +100,13 @@ export function useMessageSend({
     // for rendering any more, only for triggering the send.
     try {
       if (replyingTo) {
-        // Replies don't yet carry formatting/mentions — `send_reply` wasn't
-        // extended in this pass (only `send_message` was, per spec scope); a
-        // formatted reply falls back to its plain body.
-        await sendReply(targetRoom.room_id, replyingTo.event_id, content.body);
+        await sendReply(
+          targetRoom.room_id,
+          replyingTo.event_id,
+          content.body,
+          content.formattedBody,
+          content.mentions,
+        );
       } else {
         await sendMessage(
           targetRoom.room_id,
@@ -115,7 +139,121 @@ export function useMessageSend({
     stopTyping();
     try {
       if (mutationsBlockedRef?.current) return false;
-      const result = await runCommand(targetRoomId, parsed.command, parsed.args);
+      if ("disabled" in parsed) {
+        setCommandFeedback(
+          `/${parsed.command} is unavailable while composer parity is disabled. Your draft was not sent.`,
+        );
+        return false;
+      }
+      if ("action" in parsed) {
+        if (!composerParityEnabled) return false;
+        const { command, args } = parsed;
+        if (
+          !args.length ||
+          ((command === "ignore" || command === "unignore" || command === "join") &&
+            args.length !== 1)
+        ) {
+          setCommandFeedback(
+            command === "nick"
+              ? "Usage: /nick <display name>"
+              : command === "join"
+                ? "Usage: /join <room id or alias>"
+                : `Usage: /${command} <user id>${command === "unban" ? " [reason]" : ""}`,
+          );
+          return false;
+        }
+        try {
+          switch (command) {
+            case "join":
+              await joinRoom(args[0]);
+              break;
+            case "unban":
+              await unbanMember(
+                targetRoomId,
+                args[0],
+                args.length > 1 ? args.slice(1).join(" ") : undefined,
+              );
+              break;
+            case "nick":
+              if (nicknameInFlight.current) {
+                setCommandFeedback(
+                  "A nickname update is already in progress. Try again after it finishes.",
+                );
+                return false;
+              }
+              nicknameInFlight.current = true;
+              try {
+                await setDisplayName(args.join(" "));
+              } finally {
+                nicknameInFlight.current = false;
+              }
+              void queryClient.invalidateQueries({ queryKey: ["profile"] });
+              void queryClient.invalidateQueries({ queryKey: ["own-profile"] });
+              break;
+            case "ignore":
+              await ignoreUser(args[0]);
+              void queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] });
+              break;
+            case "unignore":
+              await unignoreUser(args[0]);
+              void queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] });
+              break;
+          }
+          if (currentRoomIdRef.current === targetRoomId) setCommandFeedback(null);
+        } catch {
+          if (currentRoomIdRef.current === targetRoomId)
+            setCommandFeedback(
+              `Could not complete /${command}. Check the arguments and your permissions, then try again.`,
+            );
+          return false;
+        }
+        return currentRoomIdRef.current === targetRoomId;
+      }
+      if ("text" in parsed) {
+        if (!composerParityEnabled) return false;
+        if (parsed.command === "plain" && !parsed.text.trim()) {
+          setCommandFeedback("Usage: /plain <message>");
+          return false;
+        }
+        const suffix = parsed.command === "shrug" ? "¯\\_(ツ)_/¯" : "(╯°□°）╯︵ ┻━┻";
+        const body =
+          parsed.command === "plain"
+            ? parsed.text
+            : `${parsed.text}${parsed.text ? " " : ""}${suffix}`;
+        // Like normal submission, consume the reply context at dispatch, not
+        // after the await where a newly selected reply could be cleared.
+        const replyingTo = replyTarget;
+        setReplyTarget(null);
+        if (replyingTo) {
+          await sendReply(
+            targetRoomId,
+            replyingTo.event_id,
+            body,
+            null,
+            parsed.mentionIds?.length ? parsed.mentionIds : null,
+          );
+        } else {
+          await sendMessage(
+            targetRoomId,
+            body,
+            null,
+            parsed.mentionIds?.length ? parsed.mentionIds : null,
+          );
+        }
+        if (currentRoomIdRef.current !== targetRoomId) return false;
+        setCommandFeedback(null);
+        return true;
+      }
+      if (parsed.command === "notice" && !composerParityEnabled) return false;
+      const replyingTo = isMessageSendingCommand(parsed) ? replyTarget : null;
+      if (replyingTo) setReplyTarget(null);
+      const result = await runCommand(
+        targetRoomId,
+        parsed.command,
+        parsed.args,
+        replyingTo?.event_id ?? null,
+        parsed.mentionIds ?? null,
+      );
       // The user may have switched rooms while this command was in flight —
       // don't show room A's feedback under room B, and don't leave a stale
       // failure banner up once a later command (in the still-active room)
