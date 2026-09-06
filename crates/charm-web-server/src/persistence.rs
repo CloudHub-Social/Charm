@@ -684,6 +684,13 @@ impl PersistenceStore {
                 return Err("Recovery setup admission is no longer owned by this request.".into());
             }
             entry.pending_recovery = None;
+            // Clearing the claimed custody record is the successful cleanup
+            // transition itself. Release the session-side lease in the same
+            // CAS write so a later best-effort writer-lease release failure
+            // cannot leave logout blocked until expiry.
+            entry.recovery_setup_active = false;
+            entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
             let path = object_path_for_token(token);
             let blob = self.encrypt(&entry, &path)?;
             let json = serde_json::to_vec(&blob)
@@ -3052,7 +3059,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inactive_pending_recovery_does_not_trap_logout() {
+    async fn clearing_claimed_recovery_releases_the_logout_fence() {
         let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let store = PersistenceStore {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[76u8; 32])),
@@ -3086,9 +3093,14 @@ mod tests {
             .await
             .is_err());
         store
-            .release_pending_recovery_claim("failed-setup-token", "setup-owner")
+            .clear_claimed_pending_recovery("failed-setup-token", "setup-owner")
             .await
             .unwrap();
+        assert!(store
+            .pending_recovery("failed-setup-token")
+            .await
+            .unwrap()
+            .is_none());
         store
             .begin_recovery_safe_teardown("failed-setup-token")
             .await
