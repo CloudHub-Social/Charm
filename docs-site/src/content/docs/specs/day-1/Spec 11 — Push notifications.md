@@ -3,7 +3,7 @@ title: "Charm 2.0 Spec — Push notifications"
 type: spec
 project: Charm 2.0
 created: "2026-07-04"
-status: in-progress
+status: follow-up
 ---
 
 **Workstream:** one PR / one agent. **Tier:** Day-1 launch-critical.
