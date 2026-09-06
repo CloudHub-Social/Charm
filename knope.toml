@@ -94,5 +94,5 @@ repo = "Charm"
 # The <!-- commit:$commit_hash --> marker is used by prepare-release.yml
 change_templates = [
   "### $summary <!-- commit:$commit_hash -->\n\n$details",
-  "* $summary <!-- commit:$commit_hash -->",
+  "- $summary <!-- commit:$commit_hash -->",
 ]
