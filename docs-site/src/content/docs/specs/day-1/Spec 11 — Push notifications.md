@@ -50,8 +50,9 @@ workstream in the launch set.
   override, and each durable remote/override change triggers native
   reconciliation without waiting for another foreground transition.
   Android rotations carry forward every retired pusher until deletion succeeds.
-  Lifecycle and transport regressions await CI, and do not
-  replace the physical-device delivery gates below.
+  Lifecycle and transport regressions passed in
+  [#483](https://github.com/CloudHub-Social/Charm/pull/483)'s repository CI; that
+  evidence does not replace the APNs and physical-device delivery gates below.
 - iOS killed/background delivery is **not complete**: the Notification Service Extension target,
   shared App Group crypto access, and extension-to-Rust decrypt bridge remain to be implemented
   and verified.

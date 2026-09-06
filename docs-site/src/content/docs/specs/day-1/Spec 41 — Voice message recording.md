@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Voice message recording
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. Extends Spec 02 (media), which explicitly
@@ -93,7 +93,8 @@ A late permission response must release its stream if the recording attempt is
 no longer current. Preview is local-only until explicit send. Microphone samples,
 filenames, and recorded content must not enter logs or telemetry.
 
-The implementation branch now has bounded MediaRecorder capture, local native
+The default-off implementation merged in
+[#496](https://github.com/CloudHub-Social/Charm/pull/496). It has bounded MediaRecorder capture, local native
 audio-control preview, explicit send/discard, desktop start/stop and mobile
 hold/slide-to-discard controls. The composer mounts the recorder behind the
 default-off `voice_recording` flag and keys it by account and room. Recording
@@ -117,8 +118,8 @@ Native CSP allows `blob:` only in `media-src` for local preview; the browser
 regression applies that directive and waits for playable media metadata. These
 configuration checks do not prove that a signed macOS/iOS app can capture audio.
 
-This is implementation progress, not acceptance: passing CI, waveform UI,
-platform permission checks, and real-device/cross-client
+The merged implementation passed its repository CI. This is implementation
+progress, not full acceptance: waveform UI, platform permission checks, and real-device/cross-client
 interoperability remain outstanding. Synthetic-microphone tests do not replace
 device permission or codec interoperability checks.
 

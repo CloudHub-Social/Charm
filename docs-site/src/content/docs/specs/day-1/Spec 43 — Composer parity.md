@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Composer parity
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. Extends Spec 04 (composer). Autocomplete is
@@ -130,12 +130,19 @@ addition. No DTO changes for formatting (rides `formatted_body`).
 
 ## Implementation progress
 
+The current default-off composer slice merged in
+[#495](https://github.com/CloudHub-Social/Charm/pull/495). Repository CI covers
+the guarded formatting, editing, and command paths described below. Remaining
+commands, platform-native correction behavior, and physical-device verification
+keep the broader parity spec in follow-up.
+
 `/notice` is staged behind `composer_parity` and dispatches through `run_command`
 on native and web. The backend uses Ruma's `notice_plain` constructor and the
 existing serialized send helper, preserving `m.notice` semantics and refusing
 blank text. Parser and wire-content regressions are included. The updated
-`SlashCommand` union's CI-generated binding is committed; end-to-end verification
-of the current candidate remains pending.
+`SlashCommand` union's CI-generated binding is committed, and the candidate passed
+repository CI in #495. Live-homeserver and physical-device verification remain
+outstanding.
 
 The editable surface enables native `spellcheck` only while the default-off
 `composer_parity` flag is enabled. Rollout and kill-switch changes update the live
@@ -148,7 +155,7 @@ The new flag's CI-generated frontend catalog/type is committed. Link insertion u
 link mark and an accessible dialog, validates absolute web/mail/telephone URLs,
 rejects embedded credentials, and refuses stale selections after draft changes.
 Room/account changes remount the toolbar and close its dialog. These behaviors
-have regression tests but remain pending CI verification. Bare ArrowUp in an empty
+passed their repository CI regressions. Bare ArrowUp in an empty
 send-mode paragraph reuses the existing edit action for the latest editable own
 text message in the loaded timeline, behind the same default-off flag. It skips
 local echoes, failed sends, redactions, undecrypted placeholders, and attachments;
@@ -160,10 +167,10 @@ require explicit text-edit eligibility, independently of the composer parity fla
 Non-text and unknown events cannot open the text editor. ArrowUp requires an explicit positive value, skipping unknown
 legacy values and non-text fallback bodies. The binding was imported from CI run
 33845346784, where all 521 native tests passed, including subtype preservation
-and non-text rejection; the consumer regressions await current-head CI.
+and non-text rejection; the consumer regressions also passed in #495's repository CI.
 Autocomplete, IME composition, modified keys, drafts, and reply/edit mode retain
 their existing behavior. It does not fetch additional history to find an edit
-target. Shortcut regression tests are pending CI.
+target. Shortcut regression tests passed in #495's repository CI.
 
 The spoiler toolbar control uses TipTap's mark API to serialize
 `span[data-mx-spoiler]`, preserving existing spoiler reasons and nested formatting
@@ -181,7 +188,7 @@ disabling parity hides the new controls but must not strip existing formatting,
 spoiler markup, or explicit mentions from submitted edits and replies. Regression
 cases cover both flag states.
 Hook/transport regressions and the message-actions integration scenario cover
-spoiler retention at these boundaries, pending CI verification.
+spoiler retention at these boundaries and passed in #495's repository CI.
 The default-off composer flag also enables `/plain`, `/shrug`, and `/tableflip`
 in parsing and suggestions. These reuse the existing plain-message send path;
 `/plain` preserves internal whitespace and treats markup literally. Dispatch
@@ -190,15 +197,15 @@ scrolls after a successful message send in the same room. Message-sending comman
 consume reply context at dispatch, matching normal submission; non-message commands
 leave it intact. Clearing happens before awaiting the send so it cannot erase a
 new reply selected while that send is pending. Remaining slash-command
-requirements and CI/manual
-verification remain open; this does not establish full composer parity.
+requirements and manual cross-client/device verification remain open; this does
+not establish full composer parity.
 
 `/join <room id or alias>` is also staged behind `composer_parity`, in parsing,
 suggestions, and dispatch. It requires exactly one target and reuses the existing
 `joinRoom` transport and SDK-backed identifier validation. It joins without changing
 the current selection, sending a message, or clearing reply context; the normal
 room-list stream exposes the joined room. Routing, argument-count, and flag-off
-regressions await CI. This follows the existing
+regressions passed in #495's repository CI. This follows the existing
 [Matrix join operation](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3joinroomidoralias).
 
 The same flag stages `/unban`, `/nick`, `/ignore`, and `/unignore`, reusing the
@@ -206,7 +213,7 @@ existing membership, global display-name, and ignored-user IPC operations.
 The web companion exposes ignored-user reads and mutations through authenticated
 JSON routes, sharing the native SDK helpers and user-ID validation. User identifiers
 are carried in JSON bodies, not URL paths. Transport mappings and unauthenticated
-route rejection have regression coverage, pending CI and live end-to-end verification.
+route rejection passed repository CI; live end-to-end verification remains outstanding.
 Missing arguments show usage; ignore/unignore require exactly
 one user identifier. Backend validation and authorization remain authoritative.
 Ignore-list mutations serialize the complete server-read/modify/write sequence
@@ -225,7 +232,7 @@ invalidation cannot refill the list from pre-mutation sync state. Timeline and
 search filtering retain their separate sync-local reads for offline operation.
 Failures show inline feedback without logging action arguments, and completion
 does not update feedback after a room switch. Parsing and dispatch regressions
-are included, pending CI. These commands do not send chat messages or trigger
+passed in #495's repository CI. These commands do not send chat messages or trigger
 message-send scrolling. `/nick` changes the global profile, not the per-room nick.
 
 The link dialog contains Escape so dismissal does not cancel an unsaved message

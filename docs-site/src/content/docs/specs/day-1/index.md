@@ -8,7 +8,7 @@ status: active
 
 This is the implementation-status index for Charm's primary product specs. The
 status of each spec was reconciled against merged pull requests and the current
-repository on **2026-07-14**.
+repository on **2026-09-06**.
 
 Status meanings:
 
@@ -25,6 +25,12 @@ from the code that exists today. The [live roadmap](/product/roadmap/) adds open
 GitHub work and refreshes nightly; it does not override reviewed status recorded
 here.
 
+These labels describe repository implementation, not every release gate. Each
+evidence cell calls out default-off rollout, CI-only evidence, physical-device
+verification, and external platform dependencies when they remain. In particular,
+a free Apple Account is sufficient for a Personal Team iPad or iPhone daily-driver
+build; paid Apple membership gates APNs and distribution, not local installation.
+
 ## Foundation and core experience
 
 | # | Spec | Status | Evidence |
@@ -39,7 +45,7 @@ here.
 | 08 | [Settings and device management](/specs/day-1/spec-08--settings-and-device-management/) | **Shipped** | [#18](https://github.com/CloudHub-Social/Charm/pull/18) |
 | 09 | [Theming and appearance](/specs/day-1/spec-09--theming-and-appearance/) | **Shipped** | [#27](https://github.com/CloudHub-Social/Charm/pull/27) |
 | 10 | [Native platform shell](/specs/day-1/spec-10--native-platform-shell/) | **Shipped** | [#28](https://github.com/CloudHub-Social/Charm/pull/28) |
-| 11 | [Push notifications](/specs/day-1/spec-11--push-notifications/) | **In progress** | Desktop and Android foundations shipped in [#44](https://github.com/CloudHub-Social/Charm/pull/44); iOS registration and killed-app delivery remain in progress |
+| 11 | [Push notifications](/specs/day-1/spec-11--push-notifications/) | **In progress** | Desktop and Android foundations shipped in [#44](https://github.com/CloudHub-Social/Charm/pull/44); iOS APNs registration shipped default-off in [#483](https://github.com/CloudHub-Social/Charm/pull/483). Killed-app delivery, extension work, and physical-device evidence remain; live APNs delivery is externally gated but does not block a Personal Team build |
 | 12 | [First-run onboarding](/specs/day-1/spec-12--first-run-onboarding/) | **Shipped** | [#30](https://github.com/CloudHub-Social/Charm/pull/30) |
 | 13 | [Voice-video platform spike](/specs/day-1/spec-13--voice-video-platform-spike/) | **In progress** | Code fixes [#229](https://github.com/CloudHub-Social/Charm/pull/229), [#230](https://github.com/CloudHub-Social/Charm/pull/230); Android, iOS, and Linux still need recorded hardware/display verification in the [findings](/specs/day-1/spec-13-findings--voice-video-platform-spike/) |
 | 14 | [Adopt matrix-sdk-ui Timeline](/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/) | **Shipped** | [#12](https://github.com/CloudHub-Social/Charm/pull/12) |
@@ -74,11 +80,11 @@ here.
 | 38 | [Full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) | **Shipped** | Shared lazy-loaded Unicode picker for reactions and composer insertion behind `full_emoji_picker`; search, categories, recent ordering, skin tones, and custom-emoji injection covered by remote component/Storybook gates |
 | 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Shipped** | Foundation and rendering merged in [#324](https://github.com/CloudHub-Social/Charm/pull/324) and [#336](https://github.com/CloudHub-Social/Charm/pull/336); real Synapse proves second-client membership plus name, topic, avatar, and tombstone DTO variants |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Shipped** | Feature-gated behind `presence_privacy_controls`; see this spec's PR |
-| 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **Planned** | No matching merged implementation found |
+| 41 | [Voice message recording](/specs/day-1/spec-41--voice-message-recording/) | **In progress** | Default-off recording, preview, send, and cleanup shipped in [#496](https://github.com/CloudHub-Social/Charm/pull/496); waveform history and physical-device/cross-client verification remain |
 | 42 | [Media send polish](/specs/day-1/spec-42--media-send-polish/) | **Shipped** | Feature-gated behind `media_send_polish`: drag-and-drop target, captions, upload-size preflight, upload cancellation, GIF autoplay, and default EXIF stripping all implemented |
-| 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **Planned** | No matching merged implementation found |
-| 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **In progress** | Restore exists through Spec 25; first-time backup setup and encrypted room-key files are implemented behind separate default-off flags |
-| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **In progress** | Desktop and companion registration UIA, bounded password recovery/resend, flow discovery, advertised token login, and server-owned browser provider SSO are implemented; real-provider live verification remains |
+| 43 | [Composer parity](/specs/day-1/spec-43--composer-parity/) | **In progress** | Default-off formatting, guarded editing, and the first command slices shipped in [#495](https://github.com/CloudHub-Social/Charm/pull/495); remaining commands and physical-device verification remain |
+| 44 | [Crypto backup setup and key import/export](/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/) | **In progress** | First-time recovery setup and encrypted room-key files are implemented behind separate default-off flags; real-account interrupted-setup/restart/restore proof plus trust shields, unverified-device blocking, and QR verification remain |
+| 45 | [Registration and password reset](/specs/day-1/spec-45--registration-and-password-reset-flows/) | **In progress** | Desktop and companion registration UIA, bounded password recovery/resend, flow discovery, advertised token login, server-owned browser provider SSO, and same-device soft-logout recovery [#531](https://github.com/CloudHub-Social/Charm/pull/531) are implemented; real-provider verification remains |
 | 46 | [Notification granularity and email pushers](/specs/day-1/spec-46--notification-rule-granularity-and-email-pushers/) | **Planned** | No matching merged implementation found |
 | 47 | [Appearance and display parity](/specs/day-1/spec-47--appearance-and-display-parity/) | **Planned** | No matching merged implementation found |
 | 48 | [Desktop shell controls](/specs/day-1/spec-48--desktop-shell-and-settings-controls/) | **Planned** | No matching merged implementation found |
@@ -90,10 +96,10 @@ here.
 | 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **Shipped** | Flag-gated All / Unread filter, last-message preview, sort control (default/activity/A-Z/unread-first), and a typing-in-list indicator; each behind its own default-off flag |
 | 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Shipped** | Default-off Fuse.js room/DM/space switcher with keyboard navigation, account-scoped recents, and gated Spec 28 shortcut delegation |
 | 56 | [Room invites](/specs/day-1/spec-56--room-invites-surface/) | **Shipped** | [#243](https://github.com/CloudHub-Social/Charm/pull/243), default-off flag |
-| 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | No matching merged implementation found |
+| 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | Mobile completion is tracked in [#525](https://github.com/CloudHub-Social/Charm/issues/525) |
 | 58 | [Rich message content](/specs/day-1/spec-58--rich-message-content-rendering/) | **Shipped** | [#244](https://github.com/CloudHub-Social/Charm/pull/244), default-off flag |
 | 59 | [GIF picker](/specs/day-1/spec-59--gif-picker-klipy/) | **Planned** | No matching merged implementation found |
-| 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | No matching merged implementation found |
+| 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | Personal Team install and re-sign delivery is tracked in [#526](https://github.com/CloudHub-Social/Charm/issues/526); APNs and store distribution are independent paid-program follow-ups |
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
 | 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **Shipped** | Removal gating [#320](https://github.com/CloudHub-Social/Charm/pull/320), settings [#334](https://github.com/CloudHub-Social/Charm/pull/334), and child management [#335](https://github.com/CloudHub-Social/Charm/pull/335) are merged; Spec 33's real-Synapse suite closes the paired hierarchy-write evidence |

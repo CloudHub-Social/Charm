@@ -1,36 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-05T13:58:24.522Z",
+  "generatedAt": "2026-09-06T15:15:11.422Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 48,
-    "follow-up": 3,
-    "in-progress": 5,
-    "planned": 21
+    "shipped": 50,
+    "follow-up": 1,
+    "in-progress": 6,
+    "planned": 20
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 470,
-      "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/470",
-      "detail": "Day-2 Spec 06 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 468,
-      "title": "feat(rooms): add Matrix polls",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/468",
-      "detail": "Day-2 Spec 03 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 496,
-      "title": "feat(voice): add guarded recording and local preview",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/496",
-      "detail": "Day-1 Spec 41 · ready for review"
-    },
     {
       "type": "issue",
       "number": 416,
@@ -47,9 +26,16 @@
     },
     {
       "type": "issue",
-      "number": 419,
-      "title": "Spec 28: add durable search indexing reconciliation checkpoints",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/419",
+      "number": 526,
+      "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/526",
+      "detail": ""
+    },
+    {
+      "type": "issue",
+      "number": 525,
+      "title": "feat(notifications): finish mobile notification controls and inbox parity",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/525",
       "detail": ""
     }
   ],
@@ -89,8 +75,8 @@
       ],
       "counts": {
         "shipped": 25,
-        "follow-up": 1,
-        "in-progress": 1,
+        "follow-up": 0,
+        "in-progress": 2,
         "planned": 0
       }
     },
@@ -139,8 +125,8 @@
       "counts": {
         "shipped": 20,
         "follow-up": 1,
-        "in-progress": 3,
-        "planned": 12
+        "in-progress": 4,
+        "planned": 11
       }
     },
     {
@@ -164,9 +150,9 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 3,
-        "follow-up": 1,
-        "in-progress": 1,
+        "shipped": 5,
+        "follow-up": 0,
+        "in-progress": 0,
         "planned": 9
       }
     }
@@ -368,8 +354,16 @@
       "number": 11,
       "title": "Push notifications",
       "route": "/specs/day-1/spec-11--push-notifications/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 483,
+          "title": "feat(ios): wire APNs device registration",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/483",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T02:34:38Z"
+        },
         {
           "number": 44,
           "title": "Spec 11: Push notifications (Android UnifiedPush + iOS APNs)",
@@ -1387,9 +1381,9 @@
           "number": 496,
           "title": "feat(voice): add guarded recording and local preview",
           "url": "https://github.com/CloudHub-Social/Charm/pull/496",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-05T13:15:45Z"
+          "updatedAt": "2026-09-05T22:45:49Z"
         }
       ],
       "issues": []
@@ -1427,8 +1421,17 @@
       "number": 43,
       "title": "Composer parity",
       "route": "/specs/day-1/spec-43--composer-parity/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 495,
+          "title": "feat(composer): add guarded formatting and empty-composer editing",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/495",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T01:04:58Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1449,6 +1452,14 @@
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
       "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 531,
+          "title": "fix(auth): retain device across soft logout",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/531",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T13:57:48Z"
+        },
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",
@@ -1671,7 +1682,15 @@
       "route": "/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 525,
+          "title": "feat(notifications): finish mobile notification controls and inbox parity",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/525",
+          "updatedAt": "2026-09-05T17:43:31Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-58",
@@ -1710,7 +1729,15 @@
       "route": "/specs/day-1/spec-60--ios-platform-integrations/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 526,
+          "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/526",
+          "updatedAt": "2026-09-05T20:40:14Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-61",
@@ -1791,7 +1818,15 @@
       "route": "/specs/day-2/spec-01--threads/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 523,
+          "title": "feat(threads): implement Matrix thread parity for mobile daily use",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/523",
+          "updatedAt": "2026-09-05T17:43:29Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-2-02",
@@ -1801,7 +1836,15 @@
       "route": "/specs/day-2/spec-02--native-voice-and-video-calling/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 524,
+          "title": "feat(calls): add hosted Matrix widget and MatrixRTC call path",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/524",
+          "updatedAt": "2026-09-05T17:43:30Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-2-03",
@@ -1809,15 +1852,15 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 468,
           "title": "feat(rooms): add Matrix polls",
           "url": "https://github.com/CloudHub-Social/Charm/pull/468",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-05T13:53:49Z"
+          "updatedAt": "2026-09-06T13:39:18Z"
         }
       ],
       "issues": []
@@ -1857,15 +1900,15 @@
       "number": 6,
       "title": "Room directory and public room browser",
       "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 470,
           "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/470",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-05T13:57:57Z"
+          "updatedAt": "2026-09-05T14:00:30Z"
         }
       ],
       "issues": []

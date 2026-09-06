@@ -10,21 +10,18 @@ Day-2 contains secondary, power-user, and administrator capabilities that remain
 real product scope but are sequenced after the primary daily-driver foundation.
 Numbering is independent of [Day-1](/specs/day-1/).
 
-**Status audited 2026-07-14:** no matching merged or open implementation pull
-request was found for the then-existing Day-2 specs. Polls, message pinning,
-jump-to-date, and bookmarks have since shipped — see their own specs for the
-implementation boundaries.
-This statement is about implementation, not design readiness: several specs
-already contain a settled architecture and detailed acceptance criteria.
+**Status audited 2026-09-06.** These labels describe repository implementation;
+default-off rollout and physical-device verification are recorded separately in
+the boundary column and governing spec.
 
 | # | Spec | Status | Boundary or dependency |
 |---|---|---|---|
-| 01 | [Threads](/specs/day-2/spec-01--threads/) | **Planned** | Large timeline and navigation surface |
-| 02 | [Voice and video calling](/specs/day-2/spec-02--native-voice-and-video-calling/) | **Planned** | Architecture is settled on the Sable Call Matrix widget; depends on Day-1 Spec 49 widget support and the Spec 13 permission foundation |
-| 03 | [Polls](/specs/day-2/spec-03--polls/) | **Shipped** | SDK-owned MSC3381 aggregation with thin create/vote/end commands |
+| 01 | [Threads](/specs/day-2/spec-01--threads/) | **Planned** | Mobile implementation is tracked in [#523](https://github.com/CloudHub-Social/Charm/issues/523) |
+| 02 | [Voice and video calling](/specs/day-2/spec-02--native-voice-and-video-calling/) | **Planned** | Hosted MatrixRTC path is tracked in [#524](https://github.com/CloudHub-Social/Charm/issues/524); depends on Day-1 Spec 49 widget support, Charm-owned infrastructure, and the Spec 13 permission foundation |
+| 03 | [Polls](/specs/day-2/spec-03--polls/) | **Shipped** | Default-off SDK-owned MSC3381 aggregation with thin create/vote/end commands shipped in [#468](https://github.com/CloudHub-Social/Charm/pull/468); physical-device and live-homeserver verification remain rollout evidence |
 | 04 | [Message pinning](/specs/day-2/spec-04--message-pinning/) | **Shipped** | Shared room pins, distinct from private bookmarks |
 | 05 | [Custom emoji and sticker packs](/specs/day-2/spec-05--custom-emoji-and-sticker-packs/) | **Planned** | Pack consumption before authoring tools |
-| 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **In progress** | Own-homeserver public-room search, pagination, and join UI in PR #470 behind `room_directory` |
+| 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **Shipped** | Own-homeserver public-room search, pagination, and join UI shipped default-off in [#470](https://github.com/CloudHub-Social/Charm/pull/470); physical-device and live-homeserver verification remain rollout evidence |
 | 07 | [Location sharing](/specs/day-2/spec-07--location-sharing/) | **Planned** | Static location first; live beacons deferred |
 | 08 | [Image editing before send](/specs/day-2/spec-08--image-editing-before-send/) | **Planned** | Crop, annotate, and blur before upload |
 | 09 | [Multi-account switcher](/specs/day-2/spec-09--multi-account-switcher-ui/) | **Planned** | Builds on shipped Day-1 Spec 15 store isolation |
