@@ -1248,7 +1248,7 @@ jobs:
           # Rotate away from Swift archives cached before llvm-tools was
           # installed; those archives contain local rather than global bridge
           # symbols and remain link-broken even after the component appears.
-          key: ios-swift-rs-llvm-tools-v1
+          key: ios-swift-rs-1.0.8-llvm-tools-xcode27-v2
           workspaces: src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

@@ -24,19 +24,27 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
 
 1. Select an exact `origin/main` commit whose required GitHub Actions checks pass.
    Record the full SHA; simulator CI is repository evidence, not physical-device proof.
-2. Use a disposable worktree or copy. Do not edit a shared checkout or reuse an
-   uncommitted generated Xcode scheme.
-3. Inspect `node_modules` before bootstrapping dependencies. If it is a working
-   symlink created by Charm's `post-checkout` hook and the worktree and symlink-target
-   `pnpm-lock.yaml` files are identical, reuse it and do not run an install. If
-   `node_modules` is absent, obtain the repository owner's dependency-install
-   confirmation and run `pnpm install --frozen-lockfile`. If the symlink is broken or
-   the lockfiles differ, stop: remove only that worktree's symlink (never its target;
-   an agent also needs deletion authorization), then obtain dependency-install
-   confirmation before installing. The generated Xcode pre-build phase invokes the
-   repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
-4. Ensure Xcode is signed in with the device owner's Apple Account and the required
-   Rust iOS targets and LLVM tools are installed:
+2. Use the repeatable, disposable installer from the exact selected commit. It
+   creates a detached worktree, reuses only a lockfile-compatible `node_modules`,
+   applies the Personal Team signing overlay outside Git, creates fresh build outputs,
+   and installs the Release app with `devicectl`:
+
+   ```sh
+   CHARM_APPLE_TEAM_ID='<personal-team-id>' \
+   CHARM_IOS_BUNDLE_ID='social.cloudhub.charm.personal.device' \
+   CHARM_IOS_DEVICE_ID='<connected-device-uuid>' \
+   DEVELOPER_DIR='/Applications/Xcode-beta.app/Contents/Developer' \
+   scripts/personal-ios.sh build-install
+   ```
+
+   The command refuses a non-Xcode-27 toolchain, a canonical bundle identifier,
+   stale output, or a missing compatible dependency tree. It does not write any
+   identifier, profile, certificate, or entitlement downgrade into the repository.
+   `prepare` and `collect-logs` are available as separate commands when evidence is
+   needed after a failure.
+3. Ensure Xcode is signed in with the device owner's Apple Account and the required
+   Rust iOS targets and LLVM tools are installed. The installer runs these two
+   `rustup` commands before building:
 
    ```sh
    rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
@@ -48,20 +56,15 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    compile every dependency and then fail the final arm64 link with undefined
    `_register_plugin`, `_init_plugin_*`, or related symbols. Charm's iOS nightly
    and release workflows install the component explicitly.
-5. Prepare the standalone mobile bundle and open the generated project with
-   `pnpm tauri ios build --open`. This outer Tauri build is required: it generates
-   the frontend bundle and the untracked assets consumed by Xcode. Do not use
+4. The installer invokes `pnpm tauri ios build` in Release mode, which generates the
+   standalone frontend bundle and the untracked assets consumed by Xcode. Do not use
    `pnpm tauri ios dev --open` for a daily-driver install because that path can depend
    on the development server. Xcode 27 also requires the generated app manifest to
    declare `TaoSceneDelegate`; without it, iPadOS terminates the app during launch in
    `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`. Charm tracks that
    declaration in both `project.yml` and `Info.plist` so regeneration preserves it.
-6. In Xcode, edit the `charm_iOS` scheme so its **Run** build configuration is
-   **Release**, then use that scheme for the physical-device install (or archive and
-   install the Release build when Xcode offers that path for the selected Personal
-   Team). Automated agents do not invoke Tauri/Xcode device builds or perform signing
-   actions. Documentation changes still follow the validation policy in
-   `docs-site/AGENTS.md`.
+5. If Xcode asks for renewed Apple-account authentication, complete that one UI step
+   and rerun the same command. Otherwise no Xcode UI interaction is required.
 
 ## Personal Team signing
 

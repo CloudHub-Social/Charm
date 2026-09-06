@@ -76,7 +76,7 @@ jobs:
           # the workspace can alter src-tauri's build/resolution: the root
           # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
           # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
-          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(generate-third-party-licenses\.mjs|sync-android-version-code\.mjs|validate-changeset-packages\.mjs|license-texts/)|\.github/workflows/(pr-checklist-gate|quality-checks)\.yml$|knope\.toml$)'
+          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|sync-android-version-code\.mjs|validate-changeset-packages\.mjs|license-texts/)|\.github/workflows/(pr-checklist-gate|quality-checks)\.yml$|knope\.toml$)'
           # The Synapse/Dex/MAS integration jobs additionally mount and execute
           # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
@@ -196,6 +196,9 @@ jobs:
 
       - id: frontend_install
         run: pnpm install --frozen-lockfile
+
+      - name: Check committed iOS configuration consistency
+        run: pnpm check:ios-config
 
       # Licensing files and the Sable Call non-bundling boundary apply to every
       # deliverable, so verify them even when the changed-path filter skips the

@@ -291,7 +291,7 @@ jobs:
         with:
           # Do not restore Swift archives created before llvm-tools was
           # available; installing the component does not rewrite them.
-          key: ios-swift-rs-llvm-tools-v1
+          key: ios-swift-rs-1.0.8-llvm-tools-xcode27-v2
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
