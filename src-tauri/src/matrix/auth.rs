@@ -1496,28 +1496,23 @@ async fn finish_registration(
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
 
-    let client = match reopen_relocated_matrix_client(
-        &app,
-        client,
-        &account_key,
-        &homeserver_url,
-        &session,
-    )
-    .await
-    {
-        Ok(client) => client,
-        Err(error) => {
-            restore_unaffected_account(
-                &app,
-                state,
-                previous_client.as_ref(),
-                &account_key,
-                previous_timelines,
-            )
-            .await;
-            return Err(error);
-        }
-    };
+    let client =
+        match reopen_relocated_matrix_client(&app, client, &account_key, &homeserver_url, &session)
+            .await
+        {
+            Ok(client) => client,
+            Err(error) => {
+                restore_unaffected_account(
+                    &app,
+                    state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
     install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
@@ -4837,28 +4832,23 @@ pub async fn complete_sso_login(
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
 
-    let client = match reopen_relocated_matrix_client(
-        &app,
-        client,
-        &account_key,
-        &homeserver_url,
-        &session,
-    )
-    .await
-    {
-        Ok(client) => client,
-        Err(error) => {
-            restore_unaffected_account(
-                &app,
-                &state,
-                previous_client.as_ref(),
-                &account_key,
-                previous_timelines,
-            )
-            .await;
-            return Err(error);
-        }
-    };
+    let client =
+        match reopen_relocated_matrix_client(&app, client, &account_key, &homeserver_url, &session)
+            .await
+        {
+            Ok(client) => client,
+            Err(error) => {
+                restore_unaffected_account(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
     install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
