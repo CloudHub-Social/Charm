@@ -85,8 +85,11 @@ decrypt newly received events, or appears to replace rather than add a device.
 Start with default-off Labs features disabled, then enable and verify them one at a
 time. A Personal Team build is accepted as a personal daily-driver when it passes:
 
-- clean launch, login, verification, restart, reauthentication, and non-destructive
-  soft logout;
+- clean launch, login, verification, restart, and non-destructive explicit logout;
+- same-device reauthentication and non-destructive soft logout only after the
+  [Day-1 Spec 08](/specs/day-1/spec-08--settings-and-device-management/) recovery
+  slice ([#531](https://github.com/CloudHub-Social/Charm/pull/531), or its successor)
+  has merged into the recorded source SHA; it does not block the baseline before then;
 - existing-history and new-message decryption in encrypted rooms;
 - two-way text, reply, edit, reaction, redaction, media, voice message, receipts,
   typing, and invites;
