@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useFlag } from "@/featureFlags";
 import type { ComposerMode } from "./Composer";
 import { PollComposerAction } from "./PollComposerAction";
@@ -18,10 +18,6 @@ export function PollComposerControls({
   const enabled = useFlag("polls");
   const [open, setOpen] = useState(false);
 
-  useEffect(() => {
-    if (mutationsBlocked) setOpen(false);
-  }, [mutationsBlocked]);
-
   if (!enabled) return null;
   return (
     <>
@@ -32,7 +28,12 @@ export function PollComposerControls({
           onClick={() => setOpen(true)}
         />
       )}
-      <PollDialog open={open} roomId={roomId} onOpenChange={setOpen} />
+      <PollDialog
+        open={open}
+        roomId={roomId}
+        mutationsBlocked={mutationsBlocked}
+        onOpenChange={setOpen}
+      />
     </>
   );
 }

@@ -16,6 +16,7 @@ import { createPoll } from "@/lib/matrix";
 interface PollDialogProps {
   open: boolean;
   roomId: string;
+  mutationsBlocked?: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -29,17 +30,24 @@ const EMPTY_OPTIONS: DraftOption[] = [
   { id: 1, value: "" },
 ];
 
-export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
+export function PollDialog({
+  open,
+  roomId,
+  mutationsBlocked = false,
+  onOpenChange,
+}: PollDialogProps) {
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState<DraftOption[]>(EMPTY_OPTIONS);
   const [disclosed, setDisclosed] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
+  const closeRequested = useRef(false);
   const nextOptionId = useRef(2);
 
   useEffect(() => {
     requestId.current += 1;
+    closeRequested.current = false;
     setPending(false);
     setError(null);
     setQuestion("");
@@ -48,9 +56,18 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
     setDisclosed(true);
   }, [open, roomId]);
 
+  useEffect(() => {
+    if (open && mutationsBlocked && !pending && !closeRequested.current) {
+      requestId.current += 1;
+      closeRequested.current = true;
+      onOpenChange(false);
+    }
+  }, [mutationsBlocked, onOpenChange, open, pending]);
+
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen && pending) return;
     if (!nextOpen) requestId.current += 1;
+    if (!nextOpen) closeRequested.current = true;
     onOpenChange(nextOpen);
   }
 
@@ -62,7 +79,7 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (pending) return;
+    if (pending || mutationsBlocked) return;
     const normalizedQuestion = question.trim();
     const normalizedOptions = options.map((option) => option.value.trim());
     if (!normalizedQuestion || normalizedOptions.some((option) => !option)) {
@@ -82,7 +99,10 @@ export function PollDialog({ open, roomId, onOpenChange }: PollDialogProps) {
     setError(null);
     try {
       await createPoll(roomId, normalizedQuestion, normalizedOptions, disclosed);
-      if (requestId.current === id) onOpenChange(false);
+      if (requestId.current === id && !closeRequested.current) {
+        closeRequested.current = true;
+        onOpenChange(false);
+      }
     } catch {
       if (requestId.current === id) setError("The poll could not be created.");
     } finally {

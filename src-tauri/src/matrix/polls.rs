@@ -20,7 +20,7 @@ use matrix_sdk::ruma::{EventId, RoomId};
 use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Weak};
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
@@ -34,6 +34,7 @@ const MAX_OPTIONS: usize = 20;
 static POLL_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const POLL_END_ACK_PREFIX: &[u8] = b"charm.poll-end-ack.v1\0";
+const POLL_END_PROVISIONAL_INDEX_PREFIX: &[u8] = b"charm.poll-end-provisional-index.v1\0";
 const POLL_END_PROVISIONAL_TRANSACTION_ID: &str = "__charm_poll_end_provisional_v1__";
 
 #[derive(Clone, Debug, Serialize)]
@@ -73,6 +74,122 @@ fn poll_end_key(client: &Client, room_id: &RoomId, poll_id: &EventId) -> Result<
 
 fn poll_end_ack_store_key(key: &str) -> Vec<u8> {
     [POLL_END_ACK_PREFIX, key.as_bytes()].concat()
+}
+
+fn poll_end_provisional_index_key(client: &Client, room_id: &RoomId) -> Result<Vec<u8>, String> {
+    let user_id = client.user_id().ok_or("No active Matrix account")?;
+    let device_id = client.device_id().ok_or("No active Matrix device")?;
+    Ok([
+        POLL_END_PROVISIONAL_INDEX_PREFIX,
+        format!("{user_id}\0{device_id}\0{room_id}").as_bytes(),
+    ]
+    .concat())
+}
+
+fn poll_end_provisional_index_lock_key(
+    client: &Client,
+    room_id: &RoomId,
+) -> Result<String, String> {
+    let user_id = client.user_id().ok_or("No active Matrix account")?;
+    let device_id = client.device_id().ok_or("No active Matrix device")?;
+    Ok(format!(
+        "{user_id}\0{device_id}\0{room_id}\0provisional-index"
+    ))
+}
+
+async fn read_provisional_poll_end_index(
+    client: &Client,
+    room_id: &RoomId,
+) -> Result<Vec<String>, String> {
+    let Some(value) = client
+        .state_store()
+        .get_custom_value(&poll_end_provisional_index_key(client, room_id)?)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_slice(&value)
+        .map_err(|_| "Persisted provisional poll-close index is invalid".to_string())
+}
+
+async fn write_provisional_poll_end_index(
+    client: &Client,
+    room_id: &RoomId,
+    poll_ids: &[String],
+) -> Result<(), String> {
+    let key = poll_end_provisional_index_key(client, room_id)?;
+    if poll_ids.is_empty() {
+        return client
+            .state_store()
+            .remove_custom_value(&key)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    client
+        .state_store()
+        .set_custom_value_no_read(
+            &key,
+            serde_json::to_vec(poll_ids).map_err(|error| error.to_string())?,
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn install_provisional_poll_end(
+    client: &Client,
+    room_id: &RoomId,
+    poll_id: &EventId,
+    close_key: &str,
+) -> Result<(), String> {
+    let index_lock =
+        poll_mutation_lock(&poll_end_provisional_index_lock_key(client, room_id)?).await;
+    let _guard = index_lock.lock().await;
+    let mut poll_ids = read_provisional_poll_end_index(client, room_id).await?;
+    poll_ids.push(poll_id.to_string());
+    poll_ids.sort();
+    poll_ids.dedup();
+    write_provisional_poll_end_index(client, room_id, &poll_ids).await?;
+    if let Err(error) =
+        set_acknowledged_poll_end(client, close_key, POLL_END_PROVISIONAL_TRANSACTION_ID).await
+    {
+        poll_ids.retain(|candidate| candidate != poll_id.as_str());
+        let _ = write_provisional_poll_end_index(client, room_id, &poll_ids).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn promote_provisional_poll_end(
+    client: &Client,
+    room_id: &RoomId,
+    poll_id: &EventId,
+    close_key: &str,
+    transaction_id: &str,
+) -> Result<(), String> {
+    let index_lock =
+        poll_mutation_lock(&poll_end_provisional_index_lock_key(client, room_id)?).await;
+    let _guard = index_lock.lock().await;
+    set_acknowledged_poll_end(client, close_key, transaction_id).await?;
+    let mut poll_ids = read_provisional_poll_end_index(client, room_id).await?;
+    poll_ids.retain(|candidate| candidate != poll_id.as_str());
+    write_provisional_poll_end_index(client, room_id, &poll_ids).await
+}
+
+async fn clear_provisional_poll_end(
+    client: &Client,
+    room_id: &RoomId,
+    poll_id: &EventId,
+    close_key: &str,
+) -> Result<(), String> {
+    let index_lock =
+        poll_mutation_lock(&poll_end_provisional_index_lock_key(client, room_id)?).await;
+    let _guard = index_lock.lock().await;
+    clear_acknowledged_poll_end(client, close_key).await?;
+    let mut poll_ids = read_provisional_poll_end_index(client, room_id).await?;
+    poll_ids.retain(|candidate| candidate != poll_id.as_str());
+    write_provisional_poll_end_index(client, room_id, &poll_ids).await
 }
 
 async fn acknowledged_poll_end(client: &Client, key: &str) -> Result<Option<String>, String> {
@@ -215,7 +332,7 @@ pub async fn pending_poll_relations_impl(
         .subscribe()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(echoes
+    let mut relations: Vec<_> = echoes
         .into_iter()
         .filter_map(|echo| {
             let LocalEchoContent::Event {
@@ -248,7 +365,47 @@ pub async fn pending_poll_relations_impl(
                 _ => None,
             }
         })
-        .collect())
+        .collect();
+
+    // Send-queue echoes cannot rediscover the durable fence left by a crash
+    // between provisional admission and SDK queue insertion. Keep a
+    // room-scoped index so recovery remains reachable even when the poll is
+    // outside the currently loaded timeline.
+    let index_lock = poll_mutation_lock(&poll_end_provisional_index_lock_key(
+        client,
+        room.room_id(),
+    )?)
+    .await;
+    let _guard = index_lock.lock().await;
+    let indexed = read_provisional_poll_end_index(client, room.room_id()).await?;
+    let echoed_ends: HashSet<_> = relations
+        .iter()
+        .filter(|relation| matches!(&relation.kind, PendingPollRelationKind::End))
+        .map(|relation| relation.poll_event_id.clone())
+        .collect();
+    let mut retained = Vec::new();
+    for poll_event_id in indexed {
+        let Ok(poll_id) = EventId::parse(&poll_event_id) else {
+            continue;
+        };
+        let close_key = poll_end_key(client, room.room_id(), &poll_id)?;
+        if acknowledged_poll_end(client, &close_key).await?.as_deref()
+            == Some(POLL_END_PROVISIONAL_TRANSACTION_ID)
+        {
+            retained.push(poll_event_id.clone());
+            if !echoed_ends.contains(poll_event_id.as_str()) {
+                relations.push(PendingPollRelation {
+                    poll_event_id,
+                    transaction_id: POLL_END_PROVISIONAL_TRANSACTION_ID.into(),
+                    kind: PendingPollRelationKind::End,
+                    answer_id: None,
+                    failed: true,
+                });
+            }
+        }
+    }
+    write_provisional_poll_end_index(client, room.room_id(), &retained).await?;
+    Ok(relations)
 }
 
 pub async fn pending_poll_vote_impl(
@@ -306,7 +463,7 @@ async fn queue_poll_end_locked(
     // the generated transaction id, restart recovery can reconcile the real
     // echo; if admission never occurred, the provisional entry is exposed as
     // failed so the creator can retry or discard it explicitly.
-    set_acknowledged_poll_end(client, close_key, POLL_END_PROVISIONAL_TRANSACTION_ID).await?;
+    install_provisional_poll_end(client, room.room_id(), poll_event_id, close_key).await?;
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id.to_owned());
     let transaction_id = send_and_capture_transaction_id(
         client,
@@ -314,7 +471,14 @@ async fn queue_poll_end_locked(
         AnyMessageLikeEventContent::UnstablePollEnd(content),
     )
     .await?;
-    set_acknowledged_poll_end(client, close_key, &transaction_id).await?;
+    promote_provisional_poll_end(
+        client,
+        room.room_id(),
+        poll_event_id,
+        close_key,
+        &transaction_id,
+    )
+    .await?;
     Ok(transaction_id)
 }
 
@@ -346,6 +510,94 @@ async fn require_owned_live_poll(
     let own_user_id = client.user_id().ok_or("No active Matrix account")?;
     if original.sender != own_user_id {
         return Err("Only the poll creator can end this poll".into());
+    }
+    Ok(())
+}
+
+async fn require_live_poll_answer(
+    room: &matrix_sdk::Room,
+    poll_event_id: &EventId,
+    answer_id: &str,
+) -> Result<(), String> {
+    let (event, relations) = room
+        .load_or_fetch_event_with_relations(poll_event_id, None, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let event: AnySyncTimelineEvent = event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|error| error.to_string())?;
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::UnstablePollStart(event)) =
+        event
+    else {
+        return Err("Poll target is not a live poll start event".into());
+    };
+    let original = event
+        .as_original()
+        .ok_or("Poll target has already been redacted")?;
+    let UnstablePollStartEventContent::New(content) = &original.content else {
+        return Err("Poll target is not a live poll start event".into());
+    };
+    let mut answer_ids: Vec<_> = content
+        .poll_start
+        .answers
+        .iter()
+        .map(|answer| answer.id.clone())
+        .collect();
+    let mut latest_edit = None;
+
+    for relation in relations {
+        let Ok(relation): Result<AnySyncTimelineEvent, _> = relation.kind.raw().deserialize()
+        else {
+            continue;
+        };
+        let AnySyncTimelineEvent::MessageLike(relation) = relation else {
+            continue;
+        };
+        match relation {
+            AnySyncMessageLikeEvent::UnstablePollEnd(event) => {
+                if event.as_original().is_some_and(|event| {
+                    event.content.relates_to.event_id.as_str() == poll_event_id.as_str()
+                }) {
+                    return Err("This poll has already ended".into());
+                }
+            }
+            AnySyncMessageLikeEvent::UnstablePollStart(event) => {
+                let Some(event) = event.as_original() else {
+                    continue;
+                };
+                let UnstablePollStartEventContent::Replacement(replacement) = &event.content else {
+                    continue;
+                };
+                if replacement.relates_to.event_id.as_str() != poll_event_id.as_str() {
+                    continue;
+                }
+                if latest_edit
+                    .as_ref()
+                    .is_none_or(|(timestamp, _)| event.origin_server_ts > *timestamp)
+                {
+                    latest_edit = Some((
+                        event.origin_server_ts,
+                        replacement
+                            .relates_to
+                            .new_content
+                            .poll_start
+                            .answers
+                            .iter()
+                            .map(|answer| answer.id.clone())
+                            .collect(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, edited_answer_ids)) = latest_edit {
+        answer_ids = edited_answer_ids;
+    }
+    if !answer_ids.iter().any(|candidate| candidate == answer_id) {
+        return Err("That answer is not available on this poll".into());
     }
     Ok(())
 }
@@ -478,6 +730,7 @@ pub async fn vote_on_poll_impl(
     if pending_poll_vote(&room, &poll_event_id).await?.is_some() {
         return Err("This poll already has a queued vote. Wait for it to settle first.".into());
     }
+    require_live_poll_answer(&room, &poll_event_id, &answer_id).await?;
     let content = UnstablePollResponseEventContent::new(vec![answer_id], poll_event_id);
     send_and_capture_transaction_id(
         client,
@@ -575,6 +828,7 @@ pub async fn retry_poll_vote_impl(
     if pending.transaction_id != transaction_id || !pending.failed {
         return Ok(false);
     }
+    require_live_poll_answer(&room, &poll_event_id, &pending.answer_id).await?;
     resend_message_impl(client, room_id, transaction_id).await
 }
 
@@ -614,7 +868,7 @@ pub async fn discard_poll_end_impl(
             && acknowledged_poll_end(client, &close_key).await?.as_deref()
                 == Some(POLL_END_PROVISIONAL_TRANSACTION_ID)
         {
-            clear_acknowledged_poll_end(client, &close_key).await?;
+            clear_provisional_poll_end(client, room.room_id(), &poll_event_id, &close_key).await?;
             return Ok(true);
         }
         return Ok(false);
@@ -883,9 +1137,18 @@ mod tests {
         .await;
         room.send_queue().set_enabled(false);
         let key = poll_end_key(&client, room_id, poll_id).unwrap();
-        set_acknowledged_poll_end(&client, &key, POLL_END_PROVISIONAL_TRANSACTION_ID)
+        install_provisional_poll_end(&client, room_id, poll_id, &key)
             .await
             .unwrap();
+
+        let room_recovery = pending_poll_relations_impl(&client, room_id.as_str())
+            .await
+            .unwrap();
+        assert!(room_recovery.iter().any(|relation| {
+            relation.poll_event_id == poll_id.as_str()
+                && relation.transaction_id == POLL_END_PROVISIONAL_TRANSACTION_ID
+                && relation.failed
+        }));
 
         let pending = pending_poll_end_impl(&client, room_id.as_str(), poll_id.as_str())
             .await
@@ -908,6 +1171,35 @@ mod tests {
             .unwrap();
         assert_ne!(pending.transaction_id, POLL_END_PROVISIONAL_TRANSACTION_ID);
         assert!(!pending.failed);
+    }
+
+    #[tokio::test]
+    async fn vote_rejects_an_answer_not_offered_by_the_target_poll() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!invalid-answer:example.org");
+        let poll_id = event_id!("$invalid-answer:example.org");
+        server.sync_joined_room(&client, room_id).await;
+        mock_poll_start(
+            &server,
+            poll_id.as_str(),
+            client.user_id().unwrap().as_str(),
+        )
+        .await;
+
+        let error = vote_on_poll_impl(
+            &client,
+            room_id.as_str(),
+            poll_id.as_str(),
+            "missing-answer".into(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("not available"));
     }
 
     #[tokio::test]
@@ -972,6 +1264,12 @@ mod tests {
         let room_id = room_id!("!vote:example.org");
         let poll_id = event_id!("$vote:example.org");
         let room = server.sync_joined_room(&client, room_id).await;
+        mock_poll_start(
+            &server,
+            poll_id.as_str(),
+            client.user_id().unwrap().as_str(),
+        )
+        .await;
         room.send_queue().set_enabled(false);
 
         vote_on_poll_impl(&client, room_id.as_str(), poll_id.as_str(), "0".into())

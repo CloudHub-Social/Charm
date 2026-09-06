@@ -89,8 +89,9 @@ admit an ignored vote or duplicate close; only explicitly discarding a failed
 close removes that fence. The backend installs a provisional durable fence before
 SDK queue admission, closing the crash window between creating the local echo and
 persisting its generated transaction ID. On restart, a surviving echo replaces
-that provisional fence; if admission never completed, the UI exposes it as a
-failed close that can be retried or discarded. A retry whose failed local echo has disappeared also
+that provisional fence; a room-scoped durable index also exposes it in the
+recovery tray when no local echo exists and the target is outside the loaded
+timeline. The failed close can then be retried or discarded. A retry whose failed local echo has disappeared also
 clears the fence: there is no longer a transaction the client can retry, and
 retaining its acknowledgement would permanently lock the poll. Retry otherwise
 uses the existing transaction rather than creating a second end event; a retry
@@ -102,7 +103,9 @@ Queued vote transaction IDs are restored from those same local echoes, so an
 asynchronous homeserver rejection remains visible and can be retried or discarded
 after a remount or restart. If another client edits away the selected answer, a
 failed local response is discard-only because retrying its obsolete answer ID can
-never affect the current aggregate. Poll-specific vote and close recovery operations share
+never affect the current aggregate. New votes and retries load the target plus its
+current relations, rejecting redacted or ended polls and answer IDs removed by the
+latest edit before queue admission. Poll-specific vote and close recovery operations share
 the per-poll mutation lock, preventing one window from discarding an echo while
 another window retries it. Disabling the rollout hides creation and ordinary poll
 interaction, but a recovery-only controller remains mounted behind the fallback
