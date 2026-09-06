@@ -56,8 +56,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce, Payload};
+use aes_gcm::{Aes256Gcm, Key};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use futures_util::StreamExt;
@@ -1583,9 +1583,12 @@ impl PersistenceStore {
         let plaintext = match blob.version {
             0 => self
                 .key
-                .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref()),
+                .decrypt(
+                    Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
+                    ciphertext.as_ref(),
+                ),
             1 => self.key.decrypt(
-                Nonce::from_slice(&nonce_bytes),
+                Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
                 Payload {
                     msg: ciphertext.as_ref(),
                     aad: &session_aad(expected_path),
@@ -1603,7 +1606,7 @@ impl PersistenceStore {
         path: &ObjectPath,
     ) -> Result<EncryptedBlob, String> {
         let plaintext = serde_json::to_vec(session).map_err(|e| e.to_string())?;
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = self
             .key
             .encrypt(
@@ -3987,7 +3990,7 @@ mod tests {
             },
         }))
         .unwrap();
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = store
             .key
             .encrypt(&nonce, legacy_plaintext.as_ref())

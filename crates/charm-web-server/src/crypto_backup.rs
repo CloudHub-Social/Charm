@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce, Payload};
+use aes_gcm::{Aes256Gcm, Key};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use object_store::aws::AmazonS3Builder;
@@ -818,7 +818,7 @@ impl CryptoBackupStore {
     }
 
     fn encrypt(&self, plaintext: &[u8], aad: &[u8]) -> Result<EncryptedObject, String> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = self
             .key
             .encrypt(
@@ -857,7 +857,7 @@ impl CryptoBackupStore {
             .map_err(|error| error.to_string())?;
         self.key
             .decrypt(
-                Nonce::from_slice(&nonce),
+                Nonce::<Aes256Gcm>::from_slice(&nonce),
                 Payload {
                     msg: &ciphertext,
                     aad,
