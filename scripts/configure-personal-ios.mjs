@@ -72,6 +72,21 @@ write(
   `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n`,
 );
 
+// A Run action ordinarily means Debug, which asks Tauri for a Vite dev server.
+// Personal-device installs must be standalone Release builds, so change only
+// the disposable shared scheme; the committed development scheme stays Debug.
+const schemePath = "src-tauri/gen/apple/charm.xcodeproj/xcshareddata/xcschemes/charm_iOS.xcscheme";
+if (existsSync(join(root, schemePath))) {
+  const scheme = read(schemePath).replace(
+    /(<LaunchAction\s+buildConfiguration = ")debug("[\s\S]*?<\/LaunchAction>)/,
+    "$1release$2",
+  );
+  if (scheme === read(schemePath)) {
+    throw new Error("could not set the Personal Team Xcode Run scheme to Release");
+  }
+  write(schemePath, scheme);
+}
+
 write(
   ".charm-personal-ios.json",
   `${JSON.stringify({ bundleId, commit: process.env.CHARM_IOS_COMMIT ?? "unknown", teamId }, null, 2)}\n`,
