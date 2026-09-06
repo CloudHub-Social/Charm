@@ -713,8 +713,7 @@ pub async fn refresh_push_registration(
                         registered: false,
                         endpoint_present: true,
                         last_error: Some(
-                            "Push refresh failed; registration must be retried when online."
-                                .into(),
+                            "Push refresh failed; registration must be retried when online.".into(),
                         ),
                         available: false,
                     },
@@ -1997,7 +1996,10 @@ mod tests {
 
         assert_eq!(rotated.url_or_token, "new-token");
         assert_eq!(rotated.retired.len(), 2);
-        assert!(rotated.retired.iter().any(|item| item.token == "older-token"));
+        assert!(rotated
+            .retired
+            .iter()
+            .any(|item| item.token == "older-token"));
         assert!(rotated.retired.iter().any(|item| item.token == "old-token"));
     }
 
