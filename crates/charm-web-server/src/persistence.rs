@@ -339,6 +339,7 @@ pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
     crypto_backup: Option<Arc<crate::crypto_backup::CryptoBackupStore>>,
+    durable_session_backend: bool,
     /// Serializes [`Self::save`] and [`Self::touch_last_seen`] against each
     /// other, per token — without this, `touch_last_seen`'s read-then-write
     /// (fired detached from `routes::require_session`) can interleave with a
@@ -410,19 +411,24 @@ impl PersistenceStore {
         }
         let key = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
 
-        let store: Arc<dyn ObjectStore> = if let Ok(bucket) = spaces_bucket {
-            Arc::new(spaces_store_from_env(&bucket)?)
-        } else {
-            let dir = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
-            let dir = PathBuf::from(dir);
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            Arc::new(LocalFileSystem::new_with_prefix(&dir).map_err(|e| e.to_string())?)
-        };
+        let (store, durable_session_backend): (Arc<dyn ObjectStore>, bool) =
+            if let Ok(bucket) = spaces_bucket {
+                (Arc::new(spaces_store_from_env(&bucket)?), true)
+            } else {
+                let dir = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
+                let dir = PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                (
+                    Arc::new(LocalFileSystem::new_with_prefix(&dir).map_err(|e| e.to_string())?),
+                    false,
+                )
+            };
 
         Ok(Some(Self {
             key,
             store,
             crypto_backup: None,
+            durable_session_backend,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }))
     }
@@ -436,6 +442,7 @@ impl PersistenceStore {
             key,
             store: Arc::new(store),
             crypto_backup: None,
+            durable_session_backend: false,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -488,8 +495,10 @@ impl PersistenceStore {
         self
     }
 
-    pub fn has_crypto_backup(&self) -> bool {
-        self.crypto_backup.is_some()
+    /// Recovery setup mutates server-side secret storage, so it requires both
+    /// cross-instance CAS custody and a durable encrypted crypto snapshot.
+    pub fn supports_recovery_setup(&self) -> bool {
+        self.durable_session_backend && self.crypto_backup.is_some()
     }
 
     async fn update_existing_object(
@@ -2759,6 +2768,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[73; 32])),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let pending = serde_json::from_value(serde_json::json!({
@@ -2890,6 +2900,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let process_a = new_process();
@@ -2962,6 +2973,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let setup_process = new_process();
@@ -3016,6 +3028,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3045,6 +3058,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[76u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3088,6 +3102,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[79u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3133,6 +3148,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[78u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3216,6 +3232,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[77u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3277,6 +3294,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -3333,6 +3351,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[81u8; 32])),
             store: shared,
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         store
@@ -4030,6 +4049,10 @@ mod tests {
         assert!(
             store.is_some(),
             "a master key alone must be enough to opt in"
+        );
+        assert!(
+            !store.unwrap().durable_session_backend,
+            "local disk must not be advertised as cross-instance recovery custody"
         );
     }
 
@@ -4758,6 +4781,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let process_a = new_process();
@@ -4960,6 +4984,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let process_a = new_process();
@@ -5046,6 +5071,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let process_a = new_process();
@@ -5116,6 +5142,7 @@ mod tests {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::clone(&shared),
             crypto_backup: None,
+            durable_session_backend: true,
             token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         let process_a = new_process();

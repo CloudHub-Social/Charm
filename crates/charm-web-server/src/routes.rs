@@ -5660,9 +5660,10 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             .await
     }
     async fn checkpoint(&self) -> Result<(), String> {
-        if !self.persistence.has_crypto_backup() {
+        if !self.persistence.supports_recovery_setup() {
             return Err(
-                "Durable encrypted crypto snapshots are required for recovery setup.".into(),
+                "Durable conditional session storage and encrypted crypto snapshots are required for recovery setup."
+                    .into(),
             );
         }
         if self
@@ -5893,6 +5894,11 @@ async fn setup_recovery(
     if !session.crypto_store_open {
         return Err(ApiError::bad_request(
             "Encrypted storage is unavailable; recovery setup was not started.",
+        ));
+    }
+    if !persistence.supports_recovery_setup() {
+        return Err(ApiError::bad_request(
+            "Durable conditional session storage and encrypted crypto snapshots are required; recovery setup was not started.",
         ));
     }
     persistence
