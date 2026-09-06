@@ -17,9 +17,9 @@ on:
   push:
     branches: [main]
     paths:
-      # Same "what pnpm build:web can actually read" set as web-preview.yml's
-      # path filter — kept in sync manually since GitHub Actions `paths:`
-      # doesn't support importing a shared list.
+      # Same "what the shared web bundle can actually read" set as
+      # web-preview.yml's path filter — kept in sync manually since GitHub
+      # Actions `paths:` doesn't support importing a shared list.
       - "src/**"
       - "public/**"
       - ".design-sync/**"
@@ -32,6 +32,13 @@ on:
       - "tsconfig*.json"
       - "vite.config.ts"
       - "index.html"
+      - "LICENSE"
+      - "NOTICE"
+      - "LICENSING.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/generate-third-party-licenses.mjs"
+      - "scripts/license-texts/**"
+      - ".github/actions/build-web-worker/**"
       - ".github/workflows/web-deploy-dev.yml"
   workflow_dispatch:
 
