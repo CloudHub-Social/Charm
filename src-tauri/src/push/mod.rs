@@ -1022,7 +1022,17 @@ pub(crate) async fn unregister_push_impl(
         *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
         return Err(error);
     }
-    let status = finalize_and_emit(app, PushStatus::default());
+    let status = finalize_and_emit(
+        app,
+        if remote_cleanup_complete {
+            PushStatus::default()
+        } else {
+            pending_cleanup
+                .as_ref()
+                .map(status_from_persisted_endpoint)
+                .unwrap_or_default()
+        },
+    );
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     Ok(())
 }
@@ -2488,5 +2498,25 @@ mod tests {
             .last_error
             .as_deref()
             .is_some_and(|message| message.contains("retry registration")));
+    }
+
+    #[test]
+    fn disabled_tombstone_hydrates_as_pending_remote_cleanup() {
+        let mut disabled = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "disabled-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        disabled.disabled = true;
+
+        let status = status_from_persisted_endpoint(&disabled);
+
+        assert!(status.registered);
+        assert!(status.endpoint_present);
+        assert!(!status.available);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("cleanup will retry")));
     }
 }
