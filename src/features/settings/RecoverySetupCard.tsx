@@ -51,10 +51,12 @@ export function RecoverySetupCard({
   enabled,
   crossSigningReady,
   recoveryDisabled,
+  loadPendingRecoverySetup = getPendingRecoverySetup,
 }: {
   enabled: boolean;
   crossSigningReady: boolean;
   recoveryDisabled: boolean;
+  loadPendingRecoverySetup?: typeof getPendingRecoverySetup;
 }) {
   const queryClient = useQueryClient();
   // Do not place credentials in TanStack's mutation variables/data cache.
@@ -81,7 +83,7 @@ export function RecoverySetupCard({
   useEffect(() => {
     let active = true;
     const generation = requestGeneration.current;
-    void getPendingRecoverySetup()
+    void loadPendingRecoverySetup()
       .then((summary) => {
         if (!active || generation !== requestGeneration.current || !summary) return;
         setRecoveryKey(summary.recovery_key);
@@ -107,7 +109,7 @@ export function RecoverySetupCard({
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadPendingRecoverySetup]);
 
   const hasPassphrase = passphrase.length > 0;
   const passphraseValid =
@@ -158,7 +160,7 @@ export function RecoverySetupCard({
       void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
     } catch {
       try {
-        const summary = await getPendingRecoverySetup();
+        const summary = await loadPendingRecoverySetup();
         if (summary) {
           setRecoveryKey(summary.recovery_key);
           setRoomKeysBackedUp(summary.room_keys_backed_up);
