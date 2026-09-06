@@ -559,6 +559,9 @@ impl PersistenceStore {
         token: &str,
         pending: Option<&charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
     ) -> Result<(), String> {
+        if pending.is_some() && !self.durable_session_backend {
+            return Err("Protected recovery requires durable conditional session storage.".into());
+        }
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         for _ in 0..5 {
