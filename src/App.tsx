@@ -161,7 +161,12 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
       <ReauthenticationScreen
         session={session}
         onReauthenticated={handleSignedIn}
-        onUseAnotherAccount={handleLoggedOut}
+        onUseAnotherAccount={() => {
+          // Native logout emits session:invalidated before its command settles.
+          // Ignore that command's later completion if invalidation already
+          // cleared this session or a replacement login has since won.
+          if (sessionRef.current === session) handleLoggedOut();
+        }}
       />
     );
   }

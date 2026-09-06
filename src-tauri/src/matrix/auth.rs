@@ -498,14 +498,17 @@ pub async fn reauthenticate_password(
     // state empty would make the retained device unreachable for retry or logout.
     sync::abort_current_sync_loop(&app).await;
     *state.client.lock().await = Some(previous.clone());
-    let replacement =
-        match build_persisted_client_at(&store_root, &homeserver_url, &account_key).await {
-            Ok(client) => client,
-            Err(error) => {
-                *state.client.lock().await = Some(previous);
-                return Err(error);
-            }
-        };
+    // This becomes the foreground client after the retained device is
+    // reauthenticated, so it must opt into automatic refresh-token handling.
+    // `build_persisted_client_at` intentionally omits that policy for
+    // cold-start push clients, which are short-lived and headless.
+    let replacement = match build_client_at(&store_root, &homeserver_url, &account_key).await {
+        Ok(client) => client,
+        Err(error) => {
+            *state.client.lock().await = Some(previous);
+            return Err(error);
+        }
+    };
 
     let login_result = replacement
         .matrix_auth()
