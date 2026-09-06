@@ -6,7 +6,7 @@ describe("PaneResizeHandle", () => {
   it("supports precise keyboard resizing", () => {
     const onWidthChange = vi.fn();
     render(<PaneResizeHandle width={280} onWidthChange={onWidthChange} />);
-    const handle = screen.getByRole("separator", { name: "Resize room sidebar" });
+    const handle = screen.getByRole("button", { name: "Resize room sidebar" });
 
     fireEvent.keyDown(handle, { key: "ArrowRight" });
     fireEvent.keyDown(handle, { key: "ArrowLeft" });
