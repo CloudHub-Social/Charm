@@ -9,6 +9,9 @@ status: draft
 **Workstream:** multi-PR, likely the largest single Day-2 item. The architecture
 decision is complete: embed Sable Call as a Matrix widget after Day-1 Spec 49
 establishes the generic widget lifecycle and trust boundary.
+The [licensing and external-widget boundary](/architecture/licensing-boundaries/)
+is normative: Sable Call remains separately hosted external software and is
+never bundled into Charm.
 
 ## Problem & why now
 
@@ -57,6 +60,17 @@ The architecture question is closed: **Sable Call is a Matrix widget**, same mod
 as Element Call. This spec builds on Spec 49's generic widget-embedding + widget
 API (`matrix-widget-api` postMessage bridge, sandboxed iframe, capability
 negotiation) and adds the call-specific UI/UX around it.
+
+### Licensing and distribution boundary
+
+Charm's Apache-2.0 license does not cover Sable Call. The call surface loads a
+separately operated HTTPS deployment as a sandboxed Matrix widget and
+communicates only through the origin-bound, capability-scoped Widget API.
+Charm does not vendor, build, package, mirror, cache for offline use, or
+redistribute any Sable Call source, asset, JavaScript bundle, branding, or
+container. The exact upstream audit, provider duties, CI guard, App Store gate,
+and change procedure live in
+[Licensing and external-widget boundaries](/architecture/licensing-boundaries/).
 
 ### Phase 1 scope
 
@@ -110,6 +124,11 @@ peer-connection commands are needed — that was the superseded option.
   correctly tears down the widget.
 - Widget-integration: confirm Sable Call's specific capability requests are
   correctly granted (camera/mic, always-on-screen) via Spec 49's capability model.
+- Distribution: inspect each platform artifact and source archive to prove that
+  it contains no Sable Call bundle, asset, dependency, container, or offline
+  cache. CI also runs the repository-level `license:check` guard.
+- Privacy/security: reject the wrong origin, newly requested capabilities, and
+  stale grants after account switching, widget removal, or origin changes.
 - Manual (unavoidable for real calling): two-device call test across target
   platforms, reusing Spec 13's per-platform permission findings; confirm the mic/
   camera prompt flow works inside the widget iframe on each platform.
@@ -137,5 +156,7 @@ peer-connection commands are needed — that was the superseded option.
   explain why embedded Sable Call is the selected foundation.
 - [Spec 49: widget support](/specs/day-1/spec-49--widget-support/) defines the
   reusable widget lifecycle and trust boundary.
+- [Licensing and external-widget boundaries](/architecture/licensing-boundaries/)
+  defines the Apache/AGPL, hosting, packaging, privacy, and App Store gates.
 - [Spec 10: native platform shell](/specs/day-1/spec-10--native-platform-shell/)
   owns the desktop integration points around a call.
