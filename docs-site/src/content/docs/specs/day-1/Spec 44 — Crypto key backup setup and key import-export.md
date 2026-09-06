@@ -178,8 +178,9 @@ New IPC: `setup_recovery(passphrase?) -> recovery_key`,
 `import_room_keys(passphrase) -> { completed, imported_count, total_count }`. All
 are thin wrappers over matrix-rust-sdk crypto operations. Import/export paths are
 selected and consumed entirely on the Rust side; neither paths nor raw key material
-cross frontend IPC. Only the recovery key string the user must save crosses that
-boundary.
+cross frontend IPC. The optional recovery-setup passphrase and the generated
+recovery key string the user must save necessarily cross that boundary; they are
+never logged and remain in protected custody until acknowledgement.
 
 ## API/contract changes
 

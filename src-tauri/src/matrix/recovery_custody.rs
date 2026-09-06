@@ -239,9 +239,10 @@ pub async fn setup_with_custody(
     verification::validate_recovery_passphrase(passphrase.as_ref().map(|p| p.as_str()))?;
     let existing = custody.load().await?;
     if existing.as_ref().is_some_and(|pending| {
-        passphrase
-            .as_ref()
-            .is_some_and(|requested| requested.as_str() != pending.passphrase)
+        pending.requires_custody()
+            && passphrase
+                .as_ref()
+                .is_some_and(|requested| requested.as_str() != pending.passphrase)
     }) {
         // The previous seed may already protect server-side secrets. Replacing
         // it on retry could destroy the only way to reopen a partial setup.
@@ -252,6 +253,10 @@ pub async fn setup_with_custody(
     if let Some(summary) = pending_summary(client, custody).await? {
         return Ok(summary);
     }
+    // `pending_summary` may have cleared a pre-mutation seed. Re-read the
+    // canonical custody state so that seed cannot bypass the fresh-setup
+    // guards below after another client enabled recovery.
+    let existing = custody.load().await?;
     let pending = match existing {
         Some(pending) => pending,
         None => {
@@ -761,6 +766,29 @@ mod tests {
         };
 
         assert!(pending_summary(&client, &custody).await.unwrap().is_none());
+        assert!(custody.load().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cleared_pre_mutation_seed_cannot_bypass_fresh_setup_state_checks() {
+        let (_server, client) = client_with_current_recovery_key().await;
+        let mut seed = pending();
+        seed.recovery_key = None;
+        seed.room_keys_backed_up = false;
+        seed.server_mutation_started = false;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(seed)),
+            fail_save: false,
+        };
+
+        let error = setup_with_custody(&client, &custody, Some("replacement phrase".into()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Recovery can only be set up when it is currently disabled."
+        );
         assert!(custody.load().await.unwrap().is_none());
     }
 
