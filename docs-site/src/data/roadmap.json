@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-06T03:45:38.465Z",
+  "generatedAt": "2026-09-06T03:52:45.341Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 49,
-    "follow-up": 2,
-    "in-progress": 6,
+    "follow-up": 1,
+    "in-progress": 7,
     "planned": 20
   },
   "attention": [
@@ -89,8 +89,8 @@
       ],
       "counts": {
         "shipped": 25,
-        "follow-up": 1,
-        "in-progress": 1,
+        "follow-up": 0,
+        "in-progress": 2,
         "planned": 0
       }
     },
@@ -368,7 +368,7 @@
       "number": 11,
       "title": "Push notifications",
       "route": "/specs/day-1/spec-11--push-notifications/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
         {
           "number": 483,
