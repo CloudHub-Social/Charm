@@ -86,8 +86,10 @@ parallel protocol logic.
 A queued close keeps voting disabled through timeline confirmation. Its durable
 close fence remains after one renderer observes the end so a stale tab cannot
 admit an ignored vote or duplicate close; only explicitly discarding a failed
-close removes that fence. Retry uses the existing transaction rather than
-creating a second end event. The backend also consults the SDK's persistent local
+close removes that fence. A retry whose failed local echo has disappeared also
+clears the fence: there is no longer a transaction the client can retry, and
+retaining its acknowledgement would permanently lock the poll. Retry otherwise
+uses the existing transaction rather than creating a second end event. The backend also consults the SDK's persistent local
 echoes to reject votes and deduplicate close requests while an end is queued,
 including after a UI remount.
 Queued vote transaction IDs are restored from those same local echoes, so an
