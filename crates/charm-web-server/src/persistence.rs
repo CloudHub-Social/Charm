@@ -2863,7 +2863,8 @@ mod tests {
     #[tokio::test]
     async fn conditional_seed_cleanup_refuses_a_live_setup_claim() {
         let dir = scratch_dir("conditional-recovery-cleanup");
-        let store = PersistenceStore::new_for_test(&dir, [75u8; 32]);
+        let mut store = PersistenceStore::new_for_test(&dir, [75u8; 32]);
+        store.durable_session_backend = true;
         let session = dummy_session("@conditional:example.invalid");
         let pending = serde_json::from_value(serde_json::json!({
             "passphrase": "protected seed",
@@ -4545,7 +4546,8 @@ mod tests {
     #[tokio::test]
     async fn sweep_expired_preserves_a_stale_session_with_pending_recovery_custody() {
         let dir = scratch_dir("sweep-expired-pending-recovery");
-        let store = PersistenceStore::new_for_test(&dir, [55u8; 32]);
+        let mut store = PersistenceStore::new_for_test(&dir, [55u8; 32]);
+        store.durable_session_backend = true;
         let now = now_unix();
         let sixty_days = 60 * 24 * 60 * 60;
         save_with_last_seen(
@@ -4625,7 +4627,8 @@ mod tests {
             .await;
 
         let dir = scratch_dir("sweep-expired-stale-issued-recovery");
-        let store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        let mut store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        store.durable_session_backend = true;
         let sixty_days = 60 * 24 * 60 * 60;
         save_with_last_seen(
             &store,
