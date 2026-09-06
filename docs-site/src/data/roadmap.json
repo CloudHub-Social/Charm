@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-06T03:52:45.341Z",
+  "generatedAt": "2026-09-06T13:57:47.381Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 49,
+    "shipped": 50,
     "follow-up": 1,
-    "in-progress": 7,
+    "in-progress": 6,
     "planned": 20
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 468,
-      "title": "feat(rooms): add Matrix polls",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/468",
-      "detail": "Day-2 Spec 03 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 485,
@@ -164,9 +157,9 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 4,
+        "shipped": 5,
         "follow-up": 0,
-        "in-progress": 1,
+        "in-progress": 0,
         "planned": 9
       }
     }
@@ -1462,7 +1455,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/485",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-09-06T03:09:32Z"
+          "updatedAt": "2026-09-06T13:57:42Z"
         }
       ],
       "issues": []
@@ -1851,15 +1844,15 @@
       "number": 3,
       "title": "Polls",
       "route": "/specs/day-2/spec-03--polls/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 468,
           "title": "feat(rooms): add Matrix polls",
           "url": "https://github.com/CloudHub-Social/Charm/pull/468",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-06T03:09:39Z"
+          "updatedAt": "2026-09-06T13:39:18Z"
         }
       ],
       "issues": []

@@ -18,7 +18,7 @@ the boundary column and governing spec.
 |---|---|---|---|
 | 01 | [Threads](/specs/day-2/spec-01--threads/) | **Planned** | Mobile implementation is tracked in [#523](https://github.com/CloudHub-Social/Charm/issues/523) |
 | 02 | [Voice and video calling](/specs/day-2/spec-02--native-voice-and-video-calling/) | **Planned** | Hosted MatrixRTC path is tracked in [#524](https://github.com/CloudHub-Social/Charm/issues/524); depends on Day-1 Spec 49 widget support, Charm-owned infrastructure, and the Spec 13 permission foundation |
-| 03 | [Polls](/specs/day-2/spec-03--polls/) | **In progress** | Default-off Matrix poll implementation is in review in [#468](https://github.com/CloudHub-Social/Charm/pull/468) |
+| 03 | [Polls](/specs/day-2/spec-03--polls/) | **Shipped** | Default-off SDK-owned MSC3381 aggregation with thin create/vote/end commands shipped in [#468](https://github.com/CloudHub-Social/Charm/pull/468); physical-device and live-homeserver verification remain rollout evidence |
 | 04 | [Message pinning](/specs/day-2/spec-04--message-pinning/) | **Shipped** | Shared room pins, distinct from private bookmarks |
 | 05 | [Custom emoji and sticker packs](/specs/day-2/spec-05--custom-emoji-and-sticker-packs/) | **Planned** | Pack consumption before authoring tools |
 | 06 | [Room directory and public room browser](/specs/day-2/spec-06--room-directory-and-public-room-browser/) | **Shipped** | Own-homeserver public-room search, pagination, and join UI shipped default-off in [#470](https://github.com/CloudHub-Social/Charm/pull/470); physical-device and live-homeserver verification remain rollout evidence |

@@ -177,6 +177,8 @@ define_feature_flag_keys!(
         VoiceRecording,
         /// Day-2 Spec 06 searchable public-room directory and join flow.
         RoomDirectory,
+        /// Day-2 Spec 03 creation, voting, and creator-only closure of polls.
+        Polls,
         /// Spec 44 encrypted manual megolm key-file import and export.
         CryptoKeyFiles,
         /// Spec 11 APNs device registration and Matrix pusher lifecycle on iOS.
@@ -224,6 +226,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::ComposerParity => false,
             FeatureFlagKey::VoiceRecording => false,
             FeatureFlagKey::RoomDirectory => false,
+            FeatureFlagKey::Polls => false,
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::IosPushNotifications => false,
             FeatureFlagKey::AppearanceParity => false,
@@ -323,6 +326,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomDirectory => {
                 "Browse and search the homeserver's public room directory, then join a result."
             }
+            FeatureFlagKey::Polls => {
+                "Create, vote in, and display Matrix polls, with creator-only poll closure."
+            }
             FeatureFlagKey::CryptoKeyFiles => {
                 "Import or export standard passphrase-encrypted Matrix room-key files."
             }
@@ -380,6 +386,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::ComposerParity => "Spec 43 (composer parity)",
             FeatureFlagKey::VoiceRecording => "Spec 41 (voice message recording)",
             FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
+            FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::IosPushNotifications => "Spec 11 (push notifications)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
@@ -421,6 +428,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::ComposerParity => "composer_parity",
             FeatureFlagKey::VoiceRecording => "voice_recording",
             FeatureFlagKey::RoomDirectory => "room_directory",
+            FeatureFlagKey::Polls => "polls",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::IosPushNotifications => "ios_push_notifications",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
