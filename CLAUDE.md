@@ -239,8 +239,8 @@ Keep this override local-only, via the env var.
 
 ## Real-device Apple testing with a free Apple Account
 
-Free Apple Account / Xcode Personal Team signing is enough for local
-real-device smoke testing, but it is not the same thing as the self-signed
+Free Apple Account / Xcode Personal Team signing is enough for a locally installed
+iPad or iPhone daily-driver build, but it is not the same thing as the self-signed
 macOS certificate above:
 
 - The self-signed `APPLE_SIGNING_IDENTITY` flow is only for local macOS rebuild
@@ -259,6 +259,9 @@ macOS certificate above:
   status under this signing tier — e.g. Spec 11 push, Spec 10 desktop shell —
   lives in `docs-site/src/content/docs/specs/`; this section is build/install
   mechanics only.)
+- A delayed paid-program enrollment does not block building, installing, or using
+  the Personal Team app. Treat APNs and distribution as an independent follow-up,
+  while documenting the 7-day re-sign cadence and missing killed-state push.
 - The generated iOS entitlements currently include `aps-environment` and
   `com.apple.security.application-groups` for Spec 11. If Xcode refuses to sign
   a Personal Team build because those capabilities are unavailable, remove them
@@ -298,7 +301,7 @@ pnpm tauri build
 That bundle is useful for local smoke testing. It is not a notarized Developer
 ID distribution unless signed with a paid Apple Developer Program identity.
 
-### iPhone install with a free Apple ID
+### iPad or iPhone install with a free Apple ID
 
 Do not try to script certificate/profile creation. Let Xcode manage the
 account-bound signing material:
@@ -325,7 +328,7 @@ account-bound signing material:
 
 4. In Xcode, select the `charm_iOS` target, then **Signing & Capabilities**.
    Enable **Automatically manage signing** and choose the owner's Personal Team.
-5. Connect the iPhone, select it as the run destination, unlock it, and press
+5. Connect the iPad or iPhone, select it as the run destination, unlock it, and press
    **Run** in Xcode. If iOS blocks the developer app on first launch, approve the
    developer under the device's VPN & Device Management / Developer App settings,
    then run again.

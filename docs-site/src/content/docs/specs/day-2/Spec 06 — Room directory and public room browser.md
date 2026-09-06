@@ -3,13 +3,15 @@ title: Charm 2.0 Spec — Room directory and public room browser
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 sidebar:
   label: "Room directory & public browser"
 ---
 
-**Status:** implementation is in review behind the default-off `room_directory`
-feature flag.
+**Status:** the scoped own-homeserver implementation shipped in
+[#470](https://github.com/CloudHub-Social/Charm/pull/470) behind the default-off
+`room_directory` feature flag. Physical-device and live-homeserver checks remain
+rollout evidence rather than missing implementation.
 
 **Workstream:** one PR / one agent.
 

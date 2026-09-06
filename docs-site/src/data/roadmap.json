@@ -1,35 +1,28 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-04T16:26:42.102Z",
+  "generatedAt": "2026-09-06T03:19:45.695Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 48,
-    "follow-up": 2,
-    "in-progress": 6,
-    "planned": 21
+    "shipped": 49,
+    "follow-up": 1,
+    "in-progress": 7,
+    "planned": 20
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 496,
-      "title": "feat(voice): add guarded recording and local preview",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/496",
-      "detail": "Day-1 Spec 41 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 470,
-      "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/470",
-      "detail": "Day-2 Spec 06 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 468,
       "title": "feat(rooms): add Matrix polls",
       "url": "https://github.com/CloudHub-Social/Charm/pull/468",
       "detail": "Day-2 Spec 03 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 485,
+      "title": "feat: add first-time Matrix recovery setup",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/485",
+      "detail": "Day-1 Spec 44 · ready for review"
     },
     {
       "type": "issue",
@@ -47,9 +40,16 @@
     },
     {
       "type": "issue",
-      "number": 419,
-      "title": "Spec 28: add durable search indexing reconciliation checkpoints",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/419",
+      "number": 524,
+      "title": "feat(calls): add hosted Matrix widget and MatrixRTC call path",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/524",
+      "detail": ""
+    },
+    {
+      "type": "issue",
+      "number": 523,
+      "title": "feat(threads): implement Matrix thread parity for mobile daily use",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/523",
       "detail": ""
     }
   ],
@@ -89,8 +89,8 @@
       ],
       "counts": {
         "shipped": 25,
-        "follow-up": 1,
-        "in-progress": 1,
+        "follow-up": 0,
+        "in-progress": 2,
         "planned": 0
       }
     },
@@ -139,8 +139,8 @@
       "counts": {
         "shipped": 20,
         "follow-up": 1,
-        "in-progress": 3,
-        "planned": 12
+        "in-progress": 4,
+        "planned": 11
       }
     },
     {
@@ -164,9 +164,9 @@
         "day-2-14"
       ],
       "counts": {
-        "shipped": 3,
+        "shipped": 4,
         "follow-up": 0,
-        "in-progress": 2,
+        "in-progress": 1,
         "planned": 9
       }
     }
@@ -368,8 +368,16 @@
       "number": 11,
       "title": "Push notifications",
       "route": "/specs/day-1/spec-11--push-notifications/",
-      "status": "follow-up",
+      "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 483,
+          "title": "feat(ios): wire APNs device registration",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/483",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T02:34:38Z"
+        },
         {
           "number": 44,
           "title": "Spec 11: Push notifications (Android UnifiedPush + iOS APNs)",
@@ -1387,9 +1395,9 @@
           "number": 496,
           "title": "feat(voice): add guarded recording and local preview",
           "url": "https://github.com/CloudHub-Social/Charm/pull/496",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-04T16:21:04Z"
+          "updatedAt": "2026-09-05T22:45:49Z"
         }
       ],
       "issues": []
@@ -1427,8 +1435,17 @@
       "number": 43,
       "title": "Composer parity",
       "route": "/specs/day-1/spec-43--composer-parity/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 495,
+          "title": "feat(composer): add guarded formatting and empty-composer editing",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/495",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T01:04:58Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1438,7 +1455,16 @@
       "title": "Crypto key backup setup and key import/export",
       "route": "/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/",
       "status": "in-progress",
-      "pullRequests": [],
+      "pullRequests": [
+        {
+          "number": 485,
+          "title": "feat: add first-time Matrix recovery setup",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/485",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-09-06T03:09:32Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1791,7 +1817,15 @@
       "route": "/specs/day-2/spec-01--threads/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 523,
+          "title": "feat(threads): implement Matrix thread parity for mobile daily use",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/523",
+          "updatedAt": "2026-09-05T17:43:29Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-2-02",
@@ -1801,7 +1835,15 @@
       "route": "/specs/day-2/spec-02--native-voice-and-video-calling/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 524,
+          "title": "feat(calls): add hosted Matrix widget and MatrixRTC call path",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/524",
+          "updatedAt": "2026-09-05T17:43:30Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-2-03",
@@ -1817,7 +1859,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/468",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-09-04T16:03:51Z"
+          "updatedAt": "2026-09-06T03:09:39Z"
         }
       ],
       "issues": []
@@ -1857,15 +1899,15 @@
       "number": 6,
       "title": "Room directory and public room browser",
       "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 470,
           "title": "feat(rooms): add public room directory (Day-2 Spec 06)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/470",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-09-04T16:19:33Z"
+          "updatedAt": "2026-09-05T14:00:30Z"
         }
       ],
       "issues": []

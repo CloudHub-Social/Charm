@@ -4,8 +4,9 @@ description: Charm's deployed services, environments, ownership boundaries, and 
 ---
 
 Charm has three separately deployed public surfaces: the web frontend, its
-companion Matrix API, and this documentation site. They share a repository but
-have different runtimes, secrets, and release cadences.
+companion Matrix API, and this documentation site. Native personal-device builds
+form a separate operator-installed lane. They share a repository but have
+different runtimes, secrets, and release cadences.
 
 ```d2
 direction: right
@@ -46,6 +47,7 @@ Companion API -> Sentry: "operator-enabled backend events"
 | Shared development web app | `charm` Cloudflare Worker at `charm-2-dev.cloudhub.social` | A web-affecting push reaches `main` | Worker deploy succeeds; proxied `/api/auth/me` returns `401` |
 | Companion API | DigitalOcean App Platform from `.do/app.yaml` | A server/shared-Rust change reaches `main` | `/api/health` returns `200`; protected `/api/devices` returns `401` without a session |
 | Public docs | GitHub Pages at `charm-docs.cloudhub.social` | A docs change reaches `main`, a release completes, or the scheduled spec sync runs | Pages deploy succeeds; generated root CSS/JS URLs return their real content types |
+| Personal iOS/iPadOS build | Xcode automatic signing with the device owner's Personal Team | The owner selects a CI-green commit and presses Run in Xcode | Physical-device install matrix and re-sign rehearsal in the [personal Apple-device runbook](../personal-apple-device/) |
 
 ## Ownership boundaries
 
@@ -76,6 +78,8 @@ Companion API -> Sentry: "operator-enabled backend events"
   API proxying, preview comments, and troubleshooting.
 - [CI / release tiers](../../contributing/ci-tiers/) explains which checks
   gate pull requests, merge-queue commits, nightlies, and releases.
+- [Personal Apple-device installation](../personal-apple-device/) covers iPad
+  and iPhone installation, account-safety gates, acceptance checks, and re-signing.
 
 :::note[Canonical configuration]
 The workflows and service source are authoritative. These pages explain how

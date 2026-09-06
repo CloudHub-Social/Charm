@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Composer parity
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. Extends Spec 04 (composer). Autocomplete is
@@ -129,6 +129,12 @@ addition. No DTO changes for formatting (rides `formatted_body`).
   (select text → add URL → `<a>` mark) alongside the other formatting marks.
 
 ## Implementation progress
+
+The current default-off composer slice merged in
+[#495](https://github.com/CloudHub-Social/Charm/pull/495). Repository CI covers
+the guarded formatting, editing, and command paths described below. Remaining
+commands, platform-native correction behavior, and physical-device verification
+keep the broader parity spec in follow-up.
 
 `/notice` is staged behind `composer_parity` and dispatches through `run_command`
 on native and web. The backend uses Ruma's `notice_plain` constructor and the
