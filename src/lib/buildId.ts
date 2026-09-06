@@ -21,6 +21,15 @@ const BUILD_ID_PATTERN =
   /^(?<version>.+)\+(?:pr(?<pr>\d+)\.|(?<nightly>nightly)\.)?(?<sha>[0-9a-f]{7})$/;
 
 /**
+ * Resolve the source revision represented by a canonical build id. CI builds
+ * link legal/source metadata to their immutable short SHA; local builds have
+ * no source revision and fall back to the repository's main branch.
+ */
+export function getBuildSourceRef(buildId: string): string {
+  return buildId.match(BUILD_ID_PATTERN)?.groups?.sha ?? "main";
+}
+
+/**
  * Human-friendly rendering of {@link getBuildId}'s canonical id, e.g.
  * `0.4.2 (sha-a1b2c3d)` for an ordinary build, `0.4.2-pr187 (sha-a1b2c3d)`
  * for a PR preview, `0.4.2-nightly (sha-a1b2c3d)` for a nightly build. Local/

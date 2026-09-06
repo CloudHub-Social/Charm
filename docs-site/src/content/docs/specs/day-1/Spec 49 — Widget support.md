@@ -10,6 +10,8 @@ status: draft
 the 2026-07-13 owner adjudication of the parity audit. **Load-bearing:** Sable Call
 (the intended calling solution) is delivered as a Matrix widget, so widget support
 is a prerequisite for calling — see the cross-reference to day-2 Spec 02.
+The [licensing and external-widget boundary](/architecture/licensing-boundaries/)
+is also normative for this spec.
 
 ## Problem & why now
 
@@ -67,8 +69,10 @@ evolved) before implementing.
 - Add / remove / configure widgets in a room (for users with sufficient power level —
   reuse Spec 07's power-level gating, since adding a room widget is a state-event
   send).
-- A small set of known widget types with friendly add flows (Sable Call, Jitsi,
-  custom URL), plus a generic "add widget by URL" for power users.
+- A small set of known widget types with friendly add flows (Sable Call and
+  Jitsi). Generic "add widget by URL" remains available to power users in
+  direct desktop/web distributions; App Store builds use a reviewed, versioned
+  origin allowlist unless the applicable store approves a broader model.
 - Account widgets (personal, cross-room) add/remove.
 
 ### Sable Call specifically
@@ -81,6 +85,19 @@ evolved) before implementing.
   approach, that spec's "architecture decision" resolves to "embed the Sable Call
   widget via this spec's widget support," and its native-WebRTC option is dropped or
   deferred. Update day-2 Spec 02 accordingly when this lands.
+
+### Licensing and distribution boundary
+
+Sable Call is external AGPL software, not an Apache-licensed Charm dependency.
+Charm loads a separately operated HTTPS deployment in a sandboxed iframe and
+uses only the scoped Matrix Widget API bridge. Charm must not vendor, build,
+package, mirror, cache for offline use, or redistribute Sable Call source,
+assets, bundles, branding, or containers. CI enforces the repository-side
+non-bundling rule with `license:check`.
+
+The full requirements, audit record, App Store gate, provider obligations, and
+procedure for changing this boundary are defined in
+[Licensing and external-widget boundaries](/architecture/licensing-boundaries/).
 
 ## Data flow
 
@@ -105,6 +122,11 @@ widget); much of the widget API is frontend↔iframe postMessage.
   remove widget updates room state; power-level gating on add.
 - Security: assert the iframe sandbox + capability scoping actually constrain a
   widget (a widget cannot send/read event types it wasn't granted).
+- Distribution: artifact inspection confirms there is no Sable Call dependency,
+  bundle, asset, container, or offline cache; App Store variants reject widget
+  origins outside the reviewed allowlist.
+- Privacy: origin changes, account changes, and new capabilities require fresh
+  provider-specific approval; grants are revoked on sign-out and widget removal.
 - Manual: embed Sable Call, start and join a call end-to-end; embed a generic widget
   (e.g. a Jitsi or a simple test widget) and confirm the API bridge works.
 
@@ -127,3 +149,13 @@ widget); much of the widget API is frontend↔iframe postMessage.
   known set.
 - Widget-specific mobile layout (a call widget on a phone needs different placement
   than on desktop).
+
+## Acceptance criteria added by the licensing decision
+
+- Widget support ships behind a feature flag that defaults off.
+- Sable Call is reachable only as a separately hosted HTTPS widget through the
+  approved, origin-bound Widget API surface.
+- The application and release artifacts contain no Sable Call code or assets.
+- The external provider exposes the applicable AGPL source and notices.
+- Each store submission has a current, recorded review of its remote-code,
+  privacy, permission, indexing, age-rating, and third-party-rights rules.

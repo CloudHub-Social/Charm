@@ -1,3 +1,4 @@
+import com.mikepenz.aboutlibraries.plugin.StrictMode
 import io.sentry.android.gradle.extensions.SentryPluginExtension
 import java.util.Properties
 
@@ -5,6 +6,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("rust")
+    id("com.mikepenz.aboutlibraries.plugin.android") version "13.2.1"
 }
 
 val tauriProperties = Properties().apply {
@@ -65,6 +67,24 @@ if (sentryAndroidUpload) {
         autoInstallation {
             enabled.set(false)
         }
+    }
+}
+
+// Generate the resolved variant's Maven license metadata as an Android raw
+// resource so APK/AAB artifacts cover dependencies outside pnpm and Cargo.
+aboutLibraries {
+    library {
+        requireLicense = true
+    }
+    license {
+        strictMode = StrictMode.FAIL
+        allowedLicenses.addAll(
+            "Apache-2.0",
+            "BSD-2-Clause",
+            "BSD-3-Clause",
+            "ISC",
+            "MIT",
+        )
     }
 }
 
