@@ -10,7 +10,7 @@ try {
   if (error?.code !== "ENOENT") throw error;
 }
 const changesetFiles = entries
-  .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "README.md")
   .map((entry) => entry.name)
   .toSorted((left, right) => left.localeCompare(right));
 
