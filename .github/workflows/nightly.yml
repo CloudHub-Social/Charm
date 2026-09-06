@@ -184,10 +184,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          # Rotate away from Swift archives cached before llvm-tools was
-          # installed; those archives contain local rather than global bridge
-          # symbols and remain link-broken even after the component appears.
-          key: ios-swift-rs-llvm-tools-v1
           workspaces: src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -1249,6 +1245,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          # Rotate away from Swift archives cached before llvm-tools was
+          # installed; those archives contain local rather than global bridge
+          # symbols and remain link-broken even after the component appears.
+          key: ios-swift-rs-llvm-tools-v1
           workspaces: src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
