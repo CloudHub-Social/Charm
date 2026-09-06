@@ -40,7 +40,9 @@ workstream in the launch set.
   rotated-token refresh retains native registration plus durable cleanup/retry state,
   but reports push inactive until the new pusher is confirmed; it never unregisters the
   whole app while pretending the restored old token remains usable. Opt-out continues
-  platform and homeserver cleanup even when its initial disabled-state write fails.
+  platform and homeserver cleanup even when its initial disabled-state write fails, but
+  reports the operation incomplete and keeps conservative registered UI until the stale
+  enabled record is removed or replaced by a durable opt-out veto.
   Android rotations carry forward every retired pusher until deletion succeeds.
   Lifecycle and transport regressions await CI, and do not
   replace the physical-device delivery gates below.

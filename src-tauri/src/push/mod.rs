@@ -373,6 +373,46 @@ fn clear_persisted_endpoint(app: &AppHandle, account_key: &str) -> Result<(), St
     }
 }
 
+fn status_from_persisted_endpoint(persisted: &PersistedPushEndpoint) -> PushStatus {
+    if persisted.disabled {
+        return PushStatus {
+            transport: persisted.kind,
+            registered: true,
+            endpoint_present: true,
+            last_error: Some(
+                "Push is off locally; homeserver cleanup will retry when online.".into(),
+            ),
+            available: false,
+        };
+    }
+    if persisted.staged {
+        return PushStatus {
+            transport: persisted
+                .previous
+                .as_ref()
+                .map_or(persisted.kind, |record| record.kind),
+            registered: false,
+            endpoint_present: true,
+            last_error: Some(
+                if persisted.previous.is_some() {
+                    "A push replacement failed; retry registration when online."
+                } else {
+                    "An incomplete push registration is awaiting cleanup; retry when online."
+                }
+                .into(),
+            ),
+            available: false,
+        };
+    }
+    PushStatus {
+        transport: persisted.kind,
+        registered: true,
+        endpoint_present: true,
+        last_error: None,
+        available: false,
+    }
+}
+
 /// Builds the `PusherInit` every platform's registration converges on: an
 /// HTTP pusher pointed at [`PUSH_GATEWAY_URL`], `event_id_only` format (see
 /// this spec's acceptance criteria — the gateway payload must never carry
@@ -926,9 +966,31 @@ pub(crate) async fn unregister_push_impl(
         .push_transport
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
+    if let Some(error) = persistence_error {
+        // Cleanup ran, but an enabled record may still survive a restart.
+        // Keep the UI conservatively registered and report failure instead
+        // of publishing an off state that is not durably enforceable.
+        let status = finalize_and_emit(
+            app,
+            PushStatus {
+                transport: pending_cleanup
+                    .as_ref()
+                    .map_or(PusherKind::None, |record| record.kind),
+                registered: pending_cleanup.is_some(),
+                endpoint_present: pending_cleanup.is_some(),
+                last_error: Some(
+                    "Push cleanup ran, but the opt-out could not be saved. Retry turning it off."
+                        .into(),
+                ),
+                available: false,
+            },
+        );
+        *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        return Err(error);
+    }
     let status = finalize_and_emit(app, PushStatus::default());
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-    persistence_error.map_or(Ok(()), Err)
+    Ok(())
 }
 
 /// Remote deletion is best-effort, but must not prevent platform and local
@@ -1205,46 +1267,9 @@ pub async fn get_push_status(
                 .map(|id| persistence::account_key(id.as_str()));
             if let Some(account_key) = account_key {
                 if let Some(persisted) = load_persisted_endpoint(&app, &account_key) {
-                    if persisted.disabled {
-                        // Status reads stay local and responsive. Registration,
-                        // explicit opt-out, and logout own bounded retry attempts.
-                        status = PushStatus {
-                            transport: persisted.kind,
-                            registered: true,
-                            endpoint_present: true,
-                            last_error: Some(
-                                "Push is off locally; homeserver cleanup will retry when online."
-                                    .into(),
-                            ),
-                            available: false,
-                        };
-                    } else if persisted.staged {
-                        if let Some(previous) = persisted.previous.as_ref() {
-                            status = PushStatus {
-                                transport: previous.kind,
-                                registered: true,
-                                endpoint_present: true,
-                                last_error: Some(
-                                    "A push replacement is awaiting cleanup; retry when online."
-                                        .into(),
-                                ),
-                                available: false,
-                            };
-                        } else {
-                            status.last_error = Some(
-                                "An incomplete push registration is awaiting cleanup; retry when online."
-                                    .into(),
-                            );
-                        }
-                    } else {
-                        status = PushStatus {
-                            transport: persisted.kind,
-                            registered: true,
-                            endpoint_present: true,
-                            last_error: None,
-                            available: false, // set fresh below
-                        };
-                    }
+                    // Status reads stay local and responsive. Registration,
+                    // explicit opt-out, and logout own bounded retry attempts.
+                    status = status_from_persisted_endpoint(&persisted);
                 }
             }
         }
@@ -2372,5 +2397,30 @@ mod tests {
         assert_eq!(registration.transport, PusherKind::Apns);
         assert!(registration.registered);
         assert!(registration.endpoint_present);
+    }
+
+    #[test]
+    fn staged_rotation_hydrates_as_retryable_not_registered() {
+        let previous = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "old-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        let mut staged = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "new-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+        staged.staged = true;
+        staged.previous = Some(Box::new(previous));
+
+        let status = status_from_persisted_endpoint(&staged);
+
+        assert!(!status.registered);
+        assert!(status.endpoint_present);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("retry registration")));
     }
 }
