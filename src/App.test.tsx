@@ -229,32 +229,29 @@ describe("App", () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
-  it(
-    "ignores a stale reauthentication logout completion after invalidation and replacement login",
-    async () => {
-      const original = { user_id: "@me:localhost", device_id: "DEVICE1" };
-      tryRestoreSession.mockResolvedValue(original);
-      const reset = vi.fn();
+  it("ignores a stale reauthentication logout completion after invalidation and replacement login", async () => {
+    const original = { user_id: "@me:localhost", device_id: "DEVICE1" };
+    tryRestoreSession.mockResolvedValue(original);
+    const reset = vi.fn();
 
-      render(<App onLoggedOut={reset} />);
-      await screen.findByRole("button", { name: "trigger logout" });
-      act(() => reauthenticationRequiredCallback?.());
-      await screen.findByRole("button", { name: "continue retained device" });
-      const oldCompletion = latestReauthenticationLogoutCallback;
+    render(<App onLoggedOut={reset} />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    act(() => reauthenticationRequiredCallback?.());
+    await screen.findByRole("button", { name: "continue retained device" });
+    const oldCompletion = latestReauthenticationLogoutCallback;
 
-      act(() => sessionInvalidatedCallback?.());
-      await screen.findByText("login screen");
-      act(() => latestLoginCallback?.({ ...original }));
-      await screen.findByRole("button", { name: "trigger logout" });
-      queryClient.setQueryData(["replacement-session-sentinel"], "retained");
+    act(() => sessionInvalidatedCallback?.());
+    await screen.findByText("login screen");
+    act(() => latestLoginCallback?.({ ...original }));
+    await screen.findByRole("button", { name: "trigger logout" });
+    queryClient.setQueryData(["replacement-session-sentinel"], "retained");
 
-      act(() => oldCompletion?.());
-      expect(screen.getByRole("button", { name: "trigger logout" })).toBeInTheDocument();
-      expect(queryClient.getQueryData(["replacement-session-sentinel"])).toBe("retained");
-      expect(reset).toHaveBeenCalledOnce();
-      queryClient.removeQueries({ queryKey: ["replacement-session-sentinel"] });
-    },
-  );
+    act(() => oldCompletion?.());
+    expect(screen.getByRole("button", { name: "trigger logout" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(["replacement-session-sentinel"])).toBe("retained");
+    expect(reset).toHaveBeenCalledOnce();
+    queryClient.removeQueries({ queryKey: ["replacement-session-sentinel"] });
+  });
 
   it("clears the shared query cache and returns to the login screen on logout", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
