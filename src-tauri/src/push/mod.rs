@@ -1942,6 +1942,7 @@ mod tests {
             .await
             .unwrap_err();
 
+        assert_eq!(failure.message, "Homeserver rejected push refresh");
         assert!(failure.previous_registered);
     }
 
