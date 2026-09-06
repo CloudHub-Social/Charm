@@ -34,6 +34,6 @@ for (const filename of changesetFiles) {
 
 if (invalidFiles.length > 0) {
   throw new Error(
-    `Changesets must target Knope's default package with \"default: major|minor|patch\": ${invalidFiles.join(", ")}`,
+    `Changesets must target Knope's default package with "default: major|minor|patch": ${invalidFiles.join(", ")}`,
   );
 }
