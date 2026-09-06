@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { LoginScreen } from "@/features/auth/LoginScreen";
+import { ReauthenticationScreen } from "@/features/auth/ReauthenticationScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
 import { RoomsScreen } from "@/features/rooms/RoomsScreen";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
-import { onSessionInvalidated, tryRestoreSession, type LoginResponse } from "@/lib/matrix";
+import {
+  onReauthenticationRequired,
+  onSessionInvalidated,
+  tryRestoreSession,
+  type LoginResponse,
+} from "@/lib/matrix";
 import { queryClient } from "@/providers";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
@@ -34,7 +40,11 @@ interface AppProps {
  */
 function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
-  useApnsRefresh(session?.user_id, session?.device_id);
+  const [reauthenticationRequired, setReauthenticationRequired] = useState(false);
+  useApnsRefresh(
+    reauthenticationRequired ? undefined : session?.user_id,
+    reauthenticationRequired ? undefined : session?.device_id,
+  );
   const [restoring, setRestoring] = useState(true);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
@@ -49,6 +59,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const handleSignedIn = useCallback((nextSession: LoginResponse) => {
     sessionRef.current = nextSession;
     setSession(nextSession);
+    setReauthenticationRequired(false);
   }, []);
 
   const handleLoggedOut = useCallback(() => {
@@ -60,12 +71,14 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
     clearSettingsHash();
     onLoggedOutRef.current?.();
     setSession(null);
+    setReauthenticationRequired(false);
   }, []);
 
   useEffect(() => {
     let active = true;
     let invalidated = false;
-    let stopListening: (() => void) | undefined;
+    let stopInvalidationListening: (() => void) | undefined;
+    let stopReauthenticationListening: (() => void) | undefined;
 
     setRestoring(true);
     setRestoreError(null);
@@ -78,7 +91,18 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
           unlisten();
           return null;
         }
-        stopListening = unlisten;
+        stopInvalidationListening = unlisten;
+        return onReauthenticationRequired(() => {
+          if (active) setReauthenticationRequired(true);
+        });
+      })
+      .then((unlisten) => {
+        if (!unlisten) return null;
+        if (!active) {
+          unlisten();
+          return null;
+        }
+        stopReauthenticationListening = unlisten;
         return tryRestoreSession();
       })
       .then((restoredSession) => {
@@ -96,7 +120,8 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
 
     return () => {
       active = false;
-      stopListening?.();
+      stopInvalidationListening?.();
+      stopReauthenticationListening?.();
     };
   }, [handleLoggedOut, restoreAttempt]);
 
@@ -129,6 +154,21 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
 
   if (!session) {
     return <LoginScreen onSignedIn={handleSignedIn} />;
+  }
+
+  if (reauthenticationRequired) {
+    return (
+      <ReauthenticationScreen
+        session={session}
+        onReauthenticated={handleSignedIn}
+        onUseAnotherAccount={() => {
+          // Native logout emits session:invalidated before its command settles.
+          // Ignore that command's later completion if invalidation already
+          // cleared this session or a replacement login has since won.
+          if (sessionRef.current === session) handleLoggedOut();
+        }}
+      />
+    );
   }
 
   if (onboarding.status === "loading") {
