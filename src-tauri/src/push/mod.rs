@@ -338,16 +338,6 @@ fn persisted_endpoint_path(
     Ok(dir.join(format!("{account_key}.json")))
 }
 
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn save_persisted_endpoint(
-    app: &AppHandle,
-    account_key: &str,
-    endpoint: &PushEndpoint,
-) -> Result<(), String> {
-    let path = persisted_endpoint_path(app, account_key)?;
-    save_endpoint_record(&path, &PersistedPushEndpoint::from(endpoint))
-}
-
 fn save_endpoint_record(
     path: &std::path::Path,
     record: &PersistedPushEndpoint,
@@ -488,7 +478,13 @@ pub async fn register_push(
             let staged_path = persisted_endpoint_path(&app, account_key)?;
             if endpoint_changed {
                 if let Err(error) = save_endpoint_record(&staged_path, &staged) {
-                    let _ = transport.unregister().await;
+                    // APNs unregisters the whole app, not one token. A token
+                    // rotation may already have invalidated `previous`, but
+                    // unregistering here would also invalidate the only
+                    // current OS registration and make a retry impossible.
+                    if previous.is_none() {
+                        let _ = transport.unregister().await;
+                    }
                     return Err(error);
                 }
             }
@@ -524,7 +520,9 @@ pub async fn register_push(
                                     let _ = clear_persisted_endpoint(&app, account_key);
                                 }
                             }
-                            let _ = transport.unregister().await;
+                            if previous.is_none() {
+                                let _ = transport.unregister().await;
+                            }
                         } else {
                             *state
                                 .push_transport
@@ -533,7 +531,7 @@ pub async fn register_push(
                         }
                         PushStatus {
                             transport: endpoint.kind,
-                            registered: previous.is_some(),
+                            registered: previous.is_some() && !endpoint_changed,
                             endpoint_present: previous.is_some(),
                             last_error: Some(error),
                             available: false,
@@ -565,7 +563,6 @@ pub async fn register_push(
                     // that pusher here would remove the still-valid previous
                     // registration merely because its idempotent refresh failed.
                     if endpoint_changed {
-                        let _ = transport.unregister().await;
                         let rollback_complete = finish_remote_push_cleanup(
                             client.pusher().delete(PusherIds::new(
                                 endpoint.url_or_token.clone(),
@@ -581,6 +578,9 @@ pub async fn register_push(
                                 let _ = clear_persisted_endpoint(&app, account_key);
                             }
                         }
+                        if previous.is_none() {
+                            let _ = transport.unregister().await;
+                        }
                     } else {
                         *state
                             .push_transport
@@ -589,7 +589,7 @@ pub async fn register_push(
                     }
                     PushStatus {
                         transport: endpoint.kind,
-                        registered: previous.is_some(),
+                        registered: previous.is_some() && !endpoint_changed,
                         endpoint_present: previous.is_some(),
                         last_error: Some(e.to_string()),
                         available: false,
@@ -700,22 +700,27 @@ pub async fn refresh_push_registration(
                 *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
             }
             Err(_) => {
-                // Keep the previous registration and opt-out controls alive.
+                // Keep cleanup/retry controls alive, but do not claim an old
+                // APNs token still delivers after the OS rotated it.
+                *state
+                    .push_transport
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(transport);
                 let status = finalize_and_emit(
                     &app,
                     PushStatus {
                         transport: PusherKind::Apns,
-                        registered: true,
+                        registered: false,
                         endpoint_present: true,
                         last_error: Some(
-                            "Push refresh failed; the previous registration is retained. Retry when online."
+                            "Push refresh failed; registration must be retried when online."
                                 .into(),
                         ),
                         available: false,
                     },
                 );
                 *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-                return Err("Push refresh failed; previous registration retained".into());
+                return Err("Push refresh failed; registration retry required".into());
             }
         }
     }
@@ -741,7 +746,6 @@ async fn refresh_existing_endpoint(
         staged.staged = true;
         staged.previous = Some(Box::new(previous.clone()));
         if let Err(error) = persist(&staged) {
-            let _ = transport.unregister().await;
             return Err(error);
         }
     }
@@ -762,23 +766,10 @@ async fn refresh_existing_endpoint(
             if rollback_complete {
                 let _ = persist(&previous);
             }
-            let _ = transport.unregister().await;
         }
         return Err("Homeserver rejected push refresh".into());
     }
-    let mut record = PersistedPushEndpoint::from(&endpoint);
-    record.retired = previous.retired.clone();
-    // A token can rotate back to a formerly-retired value. Never delete the
-    // endpoint we just installed while retrying earlier cleanup.
-    record
-        .retired
-        .retain(|old| old.token != endpoint.url_or_token || old.app_id != endpoint.app_id);
-    if changed {
-        record.retired.push(RetiredPusher {
-            token: previous.url_or_token.clone(),
-            app_id: previous.app_id.clone(),
-        });
-    }
+    let mut record = active_record_after_rotation(&previous, &endpoint);
     if let Err(error) = persist(&record) {
         if changed {
             let rollback_complete = finish_remote_push_cleanup(
@@ -792,7 +783,6 @@ async fn refresh_existing_endpoint(
             if rollback_complete {
                 let _ = persist(&previous);
             }
-            let _ = transport.unregister().await;
         }
         return Err(error);
     }
@@ -801,6 +791,26 @@ async fn refresh_existing_endpoint(
     // compaction write fails. A later refresh or opt-out retries them.
     let _ = persist(&record);
     Ok(endpoint)
+}
+
+fn active_record_after_rotation(
+    previous: &PersistedPushEndpoint,
+    endpoint: &PushEndpoint,
+) -> PersistedPushEndpoint {
+    let mut record = PersistedPushEndpoint::from(endpoint);
+    record.retired = previous.retired.clone();
+    // A token can rotate back to a formerly-retired value. Never delete the
+    // endpoint just installed while retrying earlier cleanup.
+    record
+        .retired
+        .retain(|old| old.token != endpoint.url_or_token || old.app_id != endpoint.app_id);
+    if previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id {
+        record.retired.push(RetiredPusher {
+            token: previous.url_or_token.clone(),
+            app_id: previous.app_id.clone(),
+        });
+    }
+    record
 }
 
 /// Unregisters this device from remote push: tells the transport to drop its
@@ -868,11 +878,17 @@ pub(crate) async fn unregister_push_impl(
             include_staged_previous_cleanup_targets(record);
         }
         record.disabled = true;
-        // Do not announce or execute opt-out until its tombstone is durable.
-        // Otherwise a restart can accept the stale enabled record and silently
-        // re-register push against the user's choice.
-        persisted_endpoint_path(app, account_key)
-            .and_then(|path| save_endpoint_record(&path, record))?;
+        // Admit opt-out durably when possible so a restart cannot accept the
+        // stale enabled record. A write failure is reported after cleanup,
+        // but cannot justify leaving OS or homeserver delivery active.
+        if let Err(error) = persisted_endpoint_path(app, account_key)
+            .and_then(|path| save_endpoint_record(&path, record))
+        {
+            // Continue through OS and homeserver cleanup. Failing to persist
+            // the opt-out tombstone must not leave delivery active merely
+            // because local storage is unavailable.
+            persistence_error = Some(error);
+        }
     }
     // Remove the platform endpoint before spending any of the bounded
     // homeserver cleanup budget. Mobile suspension must not leave local
@@ -1063,20 +1079,24 @@ pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint)
 
     let status = match client.pusher().set(pusher, false).await {
         Ok(()) => {
-            if let Err(error) = save_persisted_endpoint(app, &account_key, &endpoint) {
-                tracing::error!(command = "reregister_endpoint", %error);
-            }
-            // Matrix pushers are keyed by (pushkey, app_id) — `set_pusher`
-            // above upserts the *new* one but never removes whatever the
-            // stale pushkey was registered under, so without this the
-            // homeserver keeps a dead pusher (and can keep sending to it)
-            // for as long as the account exists.
-            if previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id
-            {
-                let ids = PusherIds::new(previous.url_or_token, previous.app_id);
-                if let Err(e) = client.pusher().delete(ids).await {
-                    eprintln!("failed to delete the stale pusher after endpoint rotation: {e}");
+            let mut active = active_record_after_rotation(&previous, &endpoint);
+            match persisted_endpoint_path(app, &account_key) {
+                Ok(path) => {
+                    if let Err(error) = save_endpoint_record(&path, &active) {
+                        tracing::error!(command = "reregister_endpoint", %error);
+                    }
+                    // Preserve every older cleanup target until its homeserver
+                    // deletion succeeds; a failed rotation cleanup must survive
+                    // the next Android callback and process restart.
+                    retry_retired_push_cleanup(
+                        &client,
+                        &mut active,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await;
+                    let _ = save_endpoint_record(&path, &active);
                 }
+                Err(error) => tracing::error!(command = "reregister_endpoint", %error),
             }
             PushStatus {
                 transport: endpoint.kind,
@@ -1799,7 +1819,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apns_refresh_preserves_old_registration_on_os_or_server_failure() {
+    async fn apns_refresh_keeps_current_os_registration_available_for_retry() {
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
@@ -1830,12 +1850,9 @@ mod tests {
             .await
             .is_err());
             assert_eq!(writes, usize::from(!os_failure));
-            assert_eq!(
-                transport
-                    .unregistered
-                    .load(std::sync::atomic::Ordering::SeqCst),
-                !os_failure
-            );
+            assert!(!transport
+                .unregistered
+                .load(std::sync::atomic::Ordering::SeqCst));
         }
     }
 
@@ -1928,7 +1945,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apns_refresh_rolls_back_os_registration_when_persistence_fails() {
+    async fn apns_refresh_does_not_unregister_the_current_os_token_when_persistence_fails() {
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
@@ -1954,9 +1971,34 @@ mod tests {
         })
         .await
         .is_err());
-        assert!(transport
+        assert!(!transport
             .unregistered
             .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn rotated_record_preserves_all_retired_cleanup_targets() {
+        let mut previous = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "old-token".into(),
+            app_id: ANDROID_UNIFIED_PUSH_APP_ID.into(),
+            kind: PusherKind::UnifiedPush,
+        });
+        previous.retired.push(RetiredPusher {
+            token: "older-token".into(),
+            app_id: ANDROID_UNIFIED_PUSH_APP_ID.into(),
+        });
+        let endpoint = PushEndpoint {
+            url_or_token: "new-token".into(),
+            app_id: ANDROID_UNIFIED_PUSH_APP_ID.into(),
+            kind: PusherKind::UnifiedPush,
+        };
+
+        let rotated = active_record_after_rotation(&previous, &endpoint);
+
+        assert_eq!(rotated.url_or_token, "new-token");
+        assert_eq!(rotated.retired.len(), 2);
+        assert!(rotated.retired.iter().any(|item| item.token == "older-token"));
+        assert!(rotated.retired.iter().any(|item| item.token == "old-token"));
     }
 
     #[test]

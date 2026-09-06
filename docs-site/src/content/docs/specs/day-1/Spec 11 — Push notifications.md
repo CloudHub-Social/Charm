@@ -36,9 +36,13 @@ workstream in the launch set.
   Rust re-reads the native token after restore and whenever the app foregrounds, only
   for an already-enabled registration and the exact current user/device. A rotation
   received while suspended is therefore reconciled on the next foreground or restart.
-  Registration, refresh, and opt-out share session/lifecycle exclusion. Failed
-  refresh preserves the previous registration; changed-token cleanup targets are
-  retained for retry. Lifecycle and transport regressions await CI, and do not
+  Registration, refresh, and opt-out share session/lifecycle exclusion. A failed
+  rotated-token refresh retains native registration plus durable cleanup/retry state,
+  but reports push inactive until the new pusher is confirmed; it never unregisters the
+  whole app while pretending the restored old token remains usable. Opt-out continues
+  platform and homeserver cleanup even when its initial disabled-state write fails.
+  Android rotations carry forward every retired pusher until deletion succeeds.
+  Lifecycle and transport regressions await CI, and do not
   replace the physical-device delivery gates below.
 - iOS killed/background delivery is **not complete**: the Notification Service Extension target,
   shared App Group crypto access, and extension-to-Rust decrypt bridge remain to be implemented
