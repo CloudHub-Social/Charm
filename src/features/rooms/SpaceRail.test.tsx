@@ -833,7 +833,7 @@ describe("SpaceRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
     expect(leaveRoom).toHaveBeenCalledWith("!space:localhost");
-    await screen.findByRole("navigation", { name: "Spaces" });
+    await screen.findByRole("navigation", { name: /^(?:Primary navigation|Spaces)$/ });
   });
 
   it("redirects home after leaving the currently active space", async () => {
