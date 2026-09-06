@@ -681,6 +681,7 @@ pub async fn refresh_push_registration(
             // path reacquires it, then remove the OS and homeserver pushers
             // while the authenticated session is still available.
             drop(_push_guard);
+            drop(_session_guard);
             return unregister_push_impl(&app, &state).await;
         }
         if previous.staged {
@@ -747,7 +748,7 @@ pub async fn refresh_push_registration(
                 );
                 *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
             }
-            Err(_) => {
+            Err(error) => {
                 // Keep cleanup/retry controls alive, but do not claim an old
                 // APNs token still delivers after the OS rotated it.
                 *state
@@ -758,7 +759,7 @@ pub async fn refresh_push_registration(
                     &app,
                     PushStatus {
                         transport: PusherKind::Apns,
-                        registered: false,
+                        registered: error.previous_registered,
                         endpoint_present: true,
                         last_error: Some(
                             "Push refresh failed; registration must be retried when online.".into(),
@@ -767,11 +768,18 @@ pub async fn refresh_push_registration(
                     },
                 );
                 *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-                return Err("Push refresh failed; registration retry required".into());
+                return Err(error.message);
             }
         }
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "ios", test))]
+#[derive(Debug)]
+struct PushRefreshFailure {
+    message: PushError,
+    previous_registered: bool,
 }
 
 #[cfg(any(target_os = "ios", test))]
@@ -780,11 +788,20 @@ async fn refresh_existing_endpoint(
     transport: &dyn NotificationTransport,
     previous: PersistedPushEndpoint,
     mut persist: impl FnMut(&PersistedPushEndpoint) -> Result<(), String>,
-) -> Result<PushEndpoint, PushError> {
+) -> Result<PushEndpoint, PushRefreshFailure> {
     if previous.disabled {
-        return Err("Push remains disabled".into());
+        return Err(PushRefreshFailure {
+            message: "Push remains disabled".into(),
+            previous_registered: false,
+        });
     }
-    let endpoint = transport.register().await?;
+    let endpoint = transport
+        .register()
+        .await
+        .map_err(|message| PushRefreshFailure {
+            message,
+            previous_registered: true,
+        })?;
     let changed =
         previous.url_or_token != endpoint.url_or_token || previous.app_id != endpoint.app_id;
     let name = client.device_id().map(|id| id.as_str()).unwrap_or("Charm");
@@ -793,7 +810,10 @@ async fn refresh_existing_endpoint(
         staged.staged = true;
         staged.previous = Some(Box::new(previous.clone()));
         if let Err(error) = persist(&staged) {
-            return Err(error);
+            return Err(PushRefreshFailure {
+                message: error,
+                previous_registered: false,
+            });
         }
     }
     let set_result = client
@@ -814,7 +834,10 @@ async fn refresh_existing_endpoint(
                 let _ = persist(&previous);
             }
         }
-        return Err("Homeserver rejected push refresh".into());
+        return Err(PushRefreshFailure {
+            message: "Homeserver rejected push refresh".into(),
+            previous_registered: !changed,
+        });
     }
     let mut record = active_record_after_rotation(&previous, &endpoint);
     if let Err(error) = persist(&record) {
@@ -831,7 +854,10 @@ async fn refresh_existing_endpoint(
                 let _ = persist(&previous);
             }
         }
-        return Err(error);
+        return Err(PushRefreshFailure {
+            message: error,
+            previous_registered: !changed,
+        });
     }
     retry_retired_push_cleanup(client, &mut record, std::time::Duration::from_secs(5)).await;
     // The first durable record still contains all cleanup targets if this
@@ -1886,6 +1912,37 @@ mod tests {
                 .unregistered
                 .load(std::sync::atomic::Ordering::SeqCst));
         }
+    }
+
+    #[tokio::test]
+    async fn unchanged_apns_token_failure_preserves_registered_status() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/pushers/set"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(
+                serde_json::json!({"errcode":"M_UNKNOWN","error":"temporary failure"}),
+            ))
+            .mount(server.server())
+            .await;
+        let transport = RefreshTransport {
+            fail: false,
+            unregistered: false.into(),
+        };
+        let previous = PersistedPushEndpoint::from(&PushEndpoint {
+            url_or_token: "new-token".into(),
+            app_id: IOS_APP_ID.into(),
+            kind: PusherKind::Apns,
+        });
+
+        let failure = refresh_existing_endpoint(&client, &transport, previous, |_| Ok(()))
+            .await
+            .unwrap_err();
+
+        assert!(failure.previous_registered);
     }
 
     #[tokio::test]
