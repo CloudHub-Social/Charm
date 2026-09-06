@@ -12,7 +12,7 @@ try {
 const changesetFiles = entries
   .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
   .map((entry) => entry.name)
-  .sort();
+  .toSorted((left, right) => left.localeCompare(right));
 
 if (expectConsumed) {
   if (changesetFiles.length > 0) {
