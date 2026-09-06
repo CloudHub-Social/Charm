@@ -91,11 +91,18 @@ function indexMetadata(tier) {
 				cell,
 			),
 		);
-		const pullRequests = [...line.matchAll(/#(\d+)/g)].map((match) => Number(match[1]));
-		const current = metadata.get(link[1]) || { statuses: [], pullRequests: [] };
+		const pullRequests = [
+			...line.matchAll(/https:\/\/github\.com\/[^/)]+\/[^/)]+\/pull\/(\d+)/g),
+		].map((match) => Number(match[1]));
+		const issues = [
+			...line.matchAll(/https:\/\/github\.com\/[^/)]+\/[^/)]+\/issues\/(\d+)/g),
+		].map((match) => Number(match[1]));
+		const current = metadata.get(link[1]) || { statuses: [], pullRequests: [], issues: [] };
 		if (statusCell) current.statuses.push(normalizeStatus(statusCell));
 		current.pullRequests.push(...pullRequests);
 		current.pullRequests = [...new Set(current.pullRequests)];
+		current.issues.push(...issues);
+		current.issues = [...new Set(current.issues)];
 		metadata.set(link[1], current);
 	}
 
@@ -253,7 +260,11 @@ const [allPullRequests, allIssues] = await Promise.all([
 
 const issues = allIssues.filter((issue) => !issue.pull_request);
 const hydratedSpecs = specs.map((spec) => {
-	const index = indexByTier[spec.tier].get(spec.route) || { statuses: [], pullRequests: [] };
+	const index = indexByTier[spec.tier].get(spec.route) || {
+		statuses: [],
+		pullRequests: [],
+		issues: [],
+	};
 	const baselineStatuses = [normalizeStatus(spec.frontmatterStatus), ...index.statuses];
 	const baseline = baselineStatuses.includes('shipped')
 		? 'shipped'
@@ -279,6 +290,7 @@ const hydratedSpecs = specs.map((spec) => {
 	const linkedIssues = issues
 		.filter(
 			(issue) =>
+				index.issues.includes(issue.number) ||
 				mentionsSpecInTitle(issue, spec) ||
 				(!titleClaimsAnyOtherSpec(issue, spec) && mentionsSpecInBody(issue, spec)),
 		)

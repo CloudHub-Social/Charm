@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-06T15:13:58.339Z",
+  "generatedAt": "2026-09-06T15:15:11.422Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 50,
@@ -26,16 +26,16 @@
     },
     {
       "type": "issue",
-      "number": 524,
-      "title": "feat(calls): add hosted Matrix widget and MatrixRTC call path",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/524",
+      "number": 526,
+      "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/526",
       "detail": ""
     },
     {
       "type": "issue",
-      "number": 523,
-      "title": "feat(threads): implement Matrix thread parity for mobile daily use",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/523",
+      "number": 525,
+      "title": "feat(notifications): finish mobile notification controls and inbox parity",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/525",
       "detail": ""
     }
   ],
@@ -1682,7 +1682,15 @@
       "route": "/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 525,
+          "title": "feat(notifications): finish mobile notification controls and inbox parity",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/525",
+          "updatedAt": "2026-09-05T17:43:31Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-58",
@@ -1721,7 +1729,15 @@
       "route": "/specs/day-1/spec-60--ios-platform-integrations/",
       "status": "planned",
       "pullRequests": [],
-      "issues": []
+      "issues": [
+        {
+          "number": 526,
+          "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/526",
+          "updatedAt": "2026-09-05T20:40:14Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-1-61",
