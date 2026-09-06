@@ -1029,9 +1029,8 @@ pub(crate) async fn unregister_push_impl(
             .as_ref()
             .map(status_from_persisted_endpoint)
             .unwrap_or_default();
-        status.last_error = Some(
-            "Push cleanup is still pending on this device. Retry turning it off.".into(),
-        );
+        status.last_error =
+            Some("Push cleanup is still pending on this device. Retry turning it off.".into());
         let status = finalize_and_emit(app, status);
         *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
         return Err(error);
