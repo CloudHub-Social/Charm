@@ -19,6 +19,7 @@ const recoveryStatus = vi.fn();
 const recoverFromKey = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
+  getPendingRecoverySetup: async () => null,
   listDevices: (...args: unknown[]) => listDevices(...args),
   crossSigningStatus: (...args: unknown[]) => crossSigningStatus(...args),
   getCrossSigningResetUrl: (...args: unknown[]) => getCrossSigningResetUrl(...args),

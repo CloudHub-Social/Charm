@@ -30,6 +30,8 @@ const DEVICES: DeviceSummary[] = [
   },
 ];
 
+const loadNoPendingRecoverySetup = async () => null;
+
 /** Same seeded-`QueryClient` approach as `MediaMessage.stories.tsx` — no real Tauri backend in Storybook. */
 function withSeededDevices(devices: DeviceSummary[], status: CrossSigningStatusSummary) {
   const client = new QueryClient();
@@ -58,7 +60,7 @@ export const Bootstrapped: Story = {
     });
     return (
       <QueryClientProvider client={client}>
-        <DevicesPanel />
+        <DevicesPanel loadPendingRecoverySetup={loadNoPendingRecoverySetup} />
       </QueryClientProvider>
     );
   },
@@ -74,7 +76,7 @@ export const NotSetUp: Story = {
     });
     return (
       <QueryClientProvider client={client}>
-        <DevicesPanel />
+        <DevicesPanel loadPendingRecoverySetup={loadNoPendingRecoverySetup} />
       </QueryClientProvider>
     );
   },

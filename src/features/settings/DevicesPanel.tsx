@@ -12,11 +12,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
+import { bootstrapCrossSigning, type DeviceSummary, type RecoverySetupSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { DeviceRow } from "./DeviceRow";
+import { RecoverySetupCard } from "./RecoverySetupCard";
 import { RoomKeyFilesCard } from "./RoomKeyFilesCard";
 import {
   useCrossSigningResetUrl,
@@ -37,7 +38,12 @@ function groupDevices(devices: DeviceSummary[]) {
   };
 }
 
-export function DevicesPanel() {
+export function DevicesPanel({
+  loadPendingRecoverySetup,
+}: {
+  loadPendingRecoverySetup?: () => Promise<RecoverySetupSummary | null>;
+} = {}) {
+  const recoverySetupEnabled = useFlag("crypto_backup_setup");
   const keyFilesEnabled = useFlag("crypto_key_files");
   const keyFilesSettled = useFeatureFlagPersistenceSettled("crypto_key_files");
   const { data: profile } = useProfile();
@@ -95,6 +101,9 @@ export function DevicesPanel() {
   const isBootstrapped = Boolean(
     status?.has_identity ||
     (status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key),
+  );
+  const hasLocalCrossSigningKeys = Boolean(
+    status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key,
   );
   const groups = groupDevices(devices ?? []);
   const selectableDeviceIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
@@ -277,6 +286,12 @@ export function DevicesPanel() {
         </SettingsCard>
       )}
 
+      <RecoverySetupCard
+        enabled={recoverySetupEnabled}
+        crossSigningReady={hasLocalCrossSigningKeys}
+        recoveryDisabled={recoveryState === "disabled"}
+        loadPendingRecoverySetup={loadPendingRecoverySetup}
+      />
       {!isWebBuild() && <RoomKeyFilesCard enabled={keyFilesEnabled && keyFilesSettled} />}
 
       {verify.isError && (

@@ -171,7 +171,10 @@ function canonicalLicenseFiles(entry) {
   const attribution =
     entry.authors !== "Not declared" ? entry.authors : `${entry.name} contributors`;
   const declaredLicense = entry.license.replace(/[()]/g, "").trim();
-  const licenseIds = declaredLicense.split(/\s+OR\s+/i).map((value) => value.trim());
+  // Cargo manifests created before SPDX 2.0 commonly use `/` for the same
+  // disjunctive choice now written as `OR` (for example `MIT/Apache-2.0`).
+  // Treat both spellings as alternatives so each canonical text is bundled.
+  const licenseIds = declaredLicense.split(/\s+OR\s+|\s*\/\s*/i).map((value) => value.trim());
   const files = [];
 
   for (const licenseId of licenseIds) {

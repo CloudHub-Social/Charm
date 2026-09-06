@@ -38,6 +38,13 @@ space-parent creation and reorganization remain disabled unless
 `CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION` is set to `1` or `true`.
 Read-only space hierarchy browsing and top-level space creation are unaffected.
 
+First-time recovery setup requires both the browser's `crypto_backup_setup` flag
+and `CHARM_WEB_CRYPTO_BACKUP_SETUP=1` on the companion. The server gate defaults
+off. `POST /api/verification/recovery/setup` authenticates the session, validates
+the optional passphrase through the shared native boundary, and returns the
+issued recovery credential with `Cache-Control: no-store`. A later durable-store
+snapshot failure is logged without secrets and does not suppress the issued key.
+
 ## Request and event surfaces
 
 - Login, registration, logout, profile, rooms, members, timelines, message

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-06T13:58:41.249Z",
+  "generatedAt": "2026-09-06T15:13:58.339Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 50,
@@ -10,13 +10,6 @@
     "planned": 20
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 485,
-      "title": "feat: add first-time Matrix recovery setup",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/485",
-      "detail": "Day-1 Spec 44 · ready for review"
-    },
     {
       "type": "issue",
       "number": 416,
@@ -1448,16 +1441,7 @@
       "title": "Crypto key backup setup and key import/export",
       "route": "/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/",
       "status": "in-progress",
-      "pullRequests": [
-        {
-          "number": 485,
-          "title": "feat: add first-time Matrix recovery setup",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/485",
-          "state": "open",
-          "draft": false,
-          "updatedAt": "2026-09-06T13:58:28Z"
-        }
-      ],
+      "pullRequests": [],
       "issues": []
     },
     {
@@ -1468,6 +1452,14 @@
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
       "status": "in-progress",
       "pullRequests": [
+        {
+          "number": 531,
+          "title": "fix(auth): retain device across soft logout",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/531",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-09-06T13:57:48Z"
+        },
         {
           "number": 322,
           "title": "Spec 45: Make registration and recovery decision-ready",

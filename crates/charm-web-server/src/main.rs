@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let state = AppState {
+        crypto_backup_setup_enabled: std::env::var("CHARM_WEB_CRYPTO_BACKUP_SETUP").as_deref()
+            == Ok("1"),
         persistence: persistence.clone(),
         space_hierarchy_reorganization: std::env::var(SPACE_HIERARCHY_REORGANIZATION_ENV)
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
@@ -73,6 +75,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..AppState::default()
     };
 
+    // Reserve the serving address before taking crypto-writer ownership. A
+    // replacement that cannot bind must not fence a healthy old instance.
+    let addr =
+        std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("failed to bind {addr}: {e}");
+            return Err(e.into());
+        }
+    };
+
+    spawn_pending_revocation_sweeper(state.sessions.clone(), persistence.clone());
+    if let Some(crypto_backup) = crypto_backup.as_deref() {
+        crypto_backup.activate_writer().await.map_err(|e| {
+            tracing::error!("failed to activate durable crypto snapshot writer: {e}");
+            format!("failed to activate durable crypto snapshot writer: {e}")
+        })?;
+    }
     if let Some(persistence) = &persistence {
         match persistence.persisted_crypto_store_keys().await {
             Ok(persisted_store_keys) => {
@@ -154,21 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_expired_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
     }
 
-    let addr =
-        std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(listener) => listener,
-        Err(e) => {
-            // Same reasoning as the persistence error above: log it as an
-            // ERROR before returning so it reaches Sentry, not just stdout.
-            tracing::error!("failed to bind {addr}: {e}");
-            return Err(e.into());
-        }
-    };
     if let Some(crypto_backup) = crypto_backup.as_deref() {
-        crypto_backup.activate_writer().await.map_err(|e| {
-            tracing::error!("failed to activate durable crypto snapshot writer: {e}");
-            format!("failed to activate durable crypto snapshot writer: {e}")
+        crypto_backup.commit_writer().await.map_err(|e| {
+            tracing::error!("failed to commit durable crypto snapshot writer: {e}");
+            format!("failed to commit durable crypto snapshot writer: {e}")
         })?;
     }
     tracing::info!("charm-web-server listening on {addr}");
@@ -192,6 +202,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(e.into());
     }
     Ok(())
+}
+
+/// Retries token revocation for sessions already removed from browser
+/// authentication. This runs even without durable persistence so an
+/// in-memory-only deployment does not drop its sole revocable client after a
+/// transient homeserver failure.
+fn spawn_pending_revocation_sweeper(
+    sessions: charm_web_server::session::SessionStore,
+    persistence: Option<Arc<PersistenceStore>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(charm_web_server::session::SWEEP_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            for (token, session) in sessions.take_pending_revocations() {
+                if let Err(error) =
+                    charm_web_server::persistence::revoke_matrix_session(&session.client).await
+                {
+                    tracing::warn!(
+                        "failed to revoke quarantined Matrix session; retaining it for retry: {error}"
+                    );
+                    sessions.retain_for_revocation(token, session);
+                    continue;
+                }
+                if let Some(persistence) = &persistence {
+                    let live_crypto = session
+                        .persisted_crypto
+                        .as_ref()
+                        .map(|crypto| (crypto.store_key.as_str(), crypto.passphrase.as_str()));
+                    if let Err(error) = persistence.remove(&token, live_crypto).await {
+                        tracing::warn!(
+                            "failed to remove revoked quarantined session storage: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    });
 }
 
 async fn shutdown_signal() {
@@ -285,6 +334,33 @@ fn spawn_idle_session_sweeper(
             }
             tracing::info!("evicting {} idle session(s)", evicted.len());
             for (token, session) in evicted {
+                let initial_save_never_landed = session
+                    .awaiting_initial_persistence
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if initial_save_never_landed {
+                    // After SessionStore's bounded retry grace, there is no
+                    // durable token to restore later. Revoke the live token
+                    // before dropping the only client that still owns it.
+                    if let Err(error) =
+                        charm_web_server::persistence::revoke_matrix_session(&session.client).await
+                    {
+                        tracing::warn!(
+                            "failed to revoke never-persisted idle session; retaining it for retry: {error}"
+                        );
+                        sessions.retain_for_revocation(token, session);
+                        continue;
+                    }
+                    let live_crypto = session
+                        .persisted_crypto
+                        .as_ref()
+                        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                    if let Err(error) = persistence.remove(&token, live_crypto).await {
+                        tracing::warn!(
+                            "failed to remove never-persisted idle session storage: {error}"
+                        );
+                    }
+                    continue;
+                }
                 // `sweep_idle` already aborted this session's sync loop
                 // synchronously, before it ever returned this list — see
                 // that function's doc comment for why the abort itself
