@@ -74,6 +74,9 @@ const SECRET_FIELD_PATTERN =
 // a generic `*secret` catch-all) for the free-text `key=value` case.
 const SECRET_FIELD_NAME_PATTERN =
   /(?:access[_-]?token|refresh[_-]?token|token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|secret)$/i;
+// Recording payloads and derived amplitudes are private content, not metrics.
+// Redact the entire envelope before inspecting bytes, duration, or MIME data.
+const RECORDING_FIELD_NAME_PATTERN = /^(?:recording|voice|waveform|audio[_-]?bytes)$/i;
 
 export function scrubMatrixIds(text: string): string {
   return text
@@ -137,9 +140,10 @@ export function scrubSentryValue<T>(value: T, seen = new WeakSet<object>()): T {
 
   const output: Record<string, unknown> = {};
   for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = SECRET_FIELD_NAME_PATTERN.test(key)
-      ? "[redacted]"
-      : scrubSentryValue(fieldValue, seen);
+    output[key] =
+      SECRET_FIELD_NAME_PATTERN.test(key) || RECORDING_FIELD_NAME_PATTERN.test(key)
+        ? "[redacted]"
+        : scrubSentryValue(fieldValue, seen);
   }
   return output as T;
 }
@@ -203,7 +207,7 @@ export function summarizeString(value: string): string {
  * much potential content — ends up in telemetry.
  */
 export function summarizeValue(value: unknown, key?: string, depth = 0): unknown {
-  if (key && SECRET_FIELD_NAME_PATTERN.test(key)) {
+  if (key && (SECRET_FIELD_NAME_PATTERN.test(key) || RECORDING_FIELD_NAME_PATTERN.test(key))) {
     return "[redacted]";
   }
   if (typeof value === "string") return summarizeString(value);

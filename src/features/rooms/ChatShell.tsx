@@ -15,6 +15,7 @@ import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray } from "./UploadTray";
+import { VoiceRecorder } from "./VoiceRecorder";
 import {
   activeReplyTargetAtomFamily,
   editingEventIdAtomFamily,
@@ -185,6 +186,7 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const voiceRecordingEnabled = useFlag("voice_recording");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
@@ -196,6 +198,7 @@ export function ChatShell({
   const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
+  const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
   const [dateJumpTarget, setDateJumpTarget] = useState<{
     eventId: string;
@@ -508,10 +511,8 @@ export function ChatShell({
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
-  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(
-    activeRoomId,
-    roomMutationsBlockedRef,
-  );
+  const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
+    useAttachmentUploads(activeRoomId, roomMutationsBlockedRef);
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);
@@ -615,6 +616,7 @@ export function ChatShell({
   }
 
   async function handleAttachClick() {
+    if (voiceCaptureActive) return;
     if (isWebBuild()) {
       attachmentInputRef.current?.click();
       return;
@@ -1081,6 +1083,7 @@ export function ChatShell({
             <button
               aria-label="Attach"
               onClick={handleAttachClick}
+              disabled={voiceCaptureActive}
               className={cn(
                 "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
                 mobile ? "size-11 rounded-full" : "size-9 rounded-md",
@@ -1145,6 +1148,15 @@ export function ChatShell({
               <Send size={16} />
             </button>
           </div>
+          {voiceRecordingEnabled && !roomMutationsBlocked && (
+            <VoiceRecorder
+              key={`${currentUserId}:${room.room_id}`}
+              mobile={layout === "mobile"}
+              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+              onClearFailedUpload={dismissFailedUploadForFile}
+              onCaptureChange={setVoiceCaptureActive}
+            />
+          )}
         </div>
       )}
       {!mobile && participants.length > 0 && (

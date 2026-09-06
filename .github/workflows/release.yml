@@ -30,14 +30,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           persist-credentials: true
           token: ${{ steps.generate-token.outputs.token }}
 
-      - uses: knope-dev/action@19617851f9f13ab2f27a05989c55efb18aca3675 # v2.1.2
-        with:
-          version: 0.22.3
-
-      - name: Create Release
-        run: knope release --verbose
+      - name: Create draft release and trigger tagged builds
         env:
-          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version' package.json)
+          # Android versionCode derivation intentionally accepts stable SemVer
+          # only. Reject prereleases before creating either a tag or a draft so
+          # an unsupported release cannot leave partially published state.
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          git check-ref-format "refs/tags/$tag"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            test "$(git rev-parse "$tag^{commit}")" = "$RELEASE_COMMIT"
+          else
+            git tag "$tag" "$RELEASE_COMMIT"
+          fi
+          # Create a missing ref with GITHUB_TOKEN, whose events cannot
+          # recursively start release-builds. The explicit dispatch below is
+          # therefore the single build trigger for both new and resumed tags.
+          if ! git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            GH_TOKEN="$WORKFLOW_TOKEN" gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$RELEASE_COMMIT"
+          fi
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          test "$(git rev-parse "$tag^{commit}")" = "$RELEASE_COMMIT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --draft --target "$RELEASE_COMMIT" --title "$tag" --generate-notes
+          fi
+          gh workflow run release-builds.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"

@@ -24,7 +24,7 @@
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' asset: http://asset.localhost data:",
-        "media-src": "'self' asset: http://asset.localhost",
+        "media-src": "'self' asset: http://asset.localhost blob:",
         "font-src": "'self'"
       },
       "assetProtocol": {
@@ -42,6 +42,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "entitlements": "Entitlements.plist"
+    },
     "android": {
       "versionCode": 1003
     },

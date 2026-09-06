@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 import {
   getTimelinePage,
   markRoomRead,
@@ -50,6 +51,7 @@ export function useChatTimeline(
   hideMembershipEvents = false,
   showHiddenEvents = false,
 ) {
+  const chatVisible = useContext(ChatVisibilityContext);
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [timelineItems, setTimelineItems] = useState<TimelineItemSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -552,7 +554,7 @@ export function useChatTimeline(
       lastMarkedReadRoomId.current = null;
       return;
     }
-    if (roomSettingsOpen) return;
+    if (roomSettingsOpen || !chatVisible) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
     // Review fix: a Saved Messages jump opens this room to scroll to an
@@ -567,7 +569,7 @@ export function useChatTimeline(
     // actually scrolls down to the live tail themselves.
     if (hasPendingJump) return;
     markRoomRead(room.room_id).catch(logAndIgnore);
-  }, [room, roomSettingsOpen, hasPendingJump]);
+  }, [room, roomSettingsOpen, hasPendingJump, chatVisible]);
 
   // Marks the room read once the true bottom of the timeline is visible —
   // driven by Virtuoso's own `atBottomStateChange` (see
@@ -576,7 +578,7 @@ export function useChatTimeline(
   // row is no longer always a mounted DOM node to observe.
   function markReadIfAtBottom() {
     if (!room || !latestEventId) return;
-    if (roomSettingsOpen) return;
+    if (roomSettingsOpen || !chatVisible) return;
     // Review fix: checks the suppression ref (which stays set across the
     // gap between `hasPendingJump` clearing and Virtuoso's own
     // `atBottomStateChange` report — see that ref's own comment), not
@@ -629,7 +631,7 @@ export function useChatTimeline(
     }
     markReadIfAtBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `markReadIfAtBottom` closes over refs, not state.
-  }, [room, latestEventId, roomSettingsOpen, hasPendingJump]);
+  }, [room, latestEventId, roomSettingsOpen, hasPendingJump, chatVisible]);
 
   function handleAtBottomStateChange(atBottom: boolean) {
     isAtBottomRef.current = atBottom;

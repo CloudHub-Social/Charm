@@ -31,6 +31,17 @@ error remains visible in the retained shell for retry. Failed ordinary logout
 also retains push registration until that durable boundary succeeds. A late
 restore rejection cannot override an already-delivered session invalidation.
 
+Native password, token, SSO, registration, and OAuth/QR sessions request or carry
+refresh tokens. Live app clients enable matrix-rust-sdk's bounded automatic refresh
+path and synchronously persist rotated tokens to the same per-account keychain entry.
+The persistence callback is bound to the original user, device, authentication kind,
+and last durable access token, so a stopped, logged-out, or superseded client cannot
+recreate or overwrite a newer session. Headless notification clients do not rotate
+tokens because they cannot safely publish a replacement without the app lifecycle.
+This prevents ordinary access-token expiry from becoming a destructive logout; an
+exhausted or rejected refresh token still enters the explicit soft-logout reauthentication
+work tracked separately.
+
 - **Auth shipped**: `login`, `register`, `discover_homeserver`, `start_sso_login` /
   `complete_sso_login` / `cancel_sso_login`, `try_restore_session`, QR login — all in
   `src-tauri/src/matrix/mod.rs` + `qr_login.rs`. **No `logout`.**

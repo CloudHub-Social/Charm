@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSetAtom } from "jotai";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { CROSS_SIGNING_STATUS_QUERY_KEY, DEVICES_QUERY_KEY } from "@/features/settings/useDevices";
@@ -16,6 +17,7 @@ import {
 } from "@/lib/matrix";
 import { avatarColor, initials } from "@/features/rooms/roomDisplay";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { verificationOverlayOpenAtom } from "./verificationAtoms";
 
 type Phase =
   | { kind: "incoming" }
@@ -30,10 +32,16 @@ export function VerificationOverlay() {
   const [phase, setPhase] = useState<Phase>({ kind: "incoming" });
   const doneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
+  const setOverlayOpen = useSetAtom(verificationOverlayOpenAtom);
   const { closeSettings } = useSettingsNavigation();
+  const dismissOverlay = useCallback(() => {
+    setOverlayOpen(false);
+    setRequest(null);
+  }, [setOverlayOpen]);
 
   useEffect(() => {
     const unlisten = onVerificationRequest((incoming) => {
+      setOverlayOpen(true);
       setRequest(incoming);
       setPhase({ kind: "incoming" });
       // Radix's Dialog applies `aria-hidden` to everything outside its own
@@ -49,7 +57,14 @@ export function VerificationOverlay() {
     return () => {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
-  }, [closeSettings]);
+  }, [closeSettings, setOverlayOpen]);
+
+  useEffect(
+    () => () => {
+      setOverlayOpen(false);
+    },
+    [setOverlayOpen],
+  );
 
   useEffect(() => {
     if (!request) return undefined;
@@ -69,7 +84,7 @@ export function VerificationOverlay() {
           setPhase({ kind: "done" });
           void queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY });
           void queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY });
-          doneTimeoutRef.current = setTimeout(() => setRequest(null), 2000);
+          doneTimeoutRef.current = setTimeout(dismissOverlay, 2000);
           break;
         case "cancelled":
           setPhase({ kind: "cancelled", reason: update.reason });
@@ -87,7 +102,7 @@ export function VerificationOverlay() {
         doneTimeoutRef.current = null;
       }
     };
-  }, [queryClient, request]);
+  }, [dismissOverlay, queryClient, request]);
 
   if (!request) return null;
 
@@ -110,7 +125,7 @@ export function VerificationOverlay() {
     } catch (err) {
       console.error(err);
     }
-    setRequest(null);
+    dismissOverlay();
   }
 
   async function handleConfirm() {
@@ -223,7 +238,7 @@ export function VerificationOverlay() {
             <span className="text-[32px] leading-none text-destructive">✕</span>
             <p className="text-base font-bold text-foreground">Verification cancelled</p>
             <p className="text-[13px] text-muted-foreground">{phase.reason}</p>
-            <Button variant="secondary" className="w-full" onClick={() => setRequest(null)}>
+            <Button variant="secondary" className="w-full" onClick={dismissOverlay}>
               Dismiss
             </Button>
           </>

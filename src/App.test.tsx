@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
+import type { LoginResponse } from "@/lib/matrix";
 import App from "./App";
 import { queryClient } from "./providers";
 
@@ -8,6 +10,8 @@ const listRooms = vi.fn();
 const getAccountData = vi.fn();
 const getLocalOnboardingFlag = vi.fn();
 const resetRoomSendQueueBarrier = vi.fn();
+const roomSessionMounted = vi.fn();
+const roomSessionDisposed = vi.fn();
 const onSessionInvalidated = vi.fn();
 let sessionInvalidatedCallback: (() => void) | undefined;
 let latestLogoutCallback: (() => void) | undefined;
@@ -30,15 +34,26 @@ vi.mock("@/lib/deepLink", () => ({
 }));
 
 vi.mock("@/features/auth/LoginScreen", () => ({
-  LoginScreen: ({ onSignedIn }: { onSignedIn: NonNullable<typeof latestLoginCallback> }) => {
+  LoginScreen: ({ onSignedIn }: { onSignedIn: (session: LoginResponse) => void }) => {
     latestLoginCallback = onSignedIn;
-    return <div>login screen</div>;
+    return (
+      <div>
+        login screen
+        <button onClick={() => onSignedIn({ user_id: "@me:localhost", device_id: "DEVICE2" })}>
+          sign in again
+        </button>
+      </div>
+    );
   },
 }));
 
 vi.mock("@/features/rooms/RoomsScreen", () => ({
-  RoomsScreen: ({ onLoggedOut }: { onLoggedOut: () => void }) => {
+  RoomsScreen: function RoomSession({ onLoggedOut }: { onLoggedOut: () => void }) {
     latestLogoutCallback = onLoggedOut;
+    useEffect(() => {
+      roomSessionMounted();
+      return () => roomSessionDisposed();
+    }, []);
     return <button onClick={onLoggedOut}>trigger logout</button>;
   },
 }));
@@ -71,6 +86,8 @@ beforeEach(() => {
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
   resetRoomSendQueueBarrier.mockReset();
+  roomSessionMounted.mockReset();
+  roomSessionDisposed.mockReset();
   sessionInvalidatedCallback = undefined;
   latestLogoutCallback = undefined;
   latestLoginCallback = undefined;
@@ -81,6 +98,19 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+  it("disposes room-owned resources before a same-account login on a new device", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
+    expect(roomSessionDisposed).toHaveBeenCalledOnce();
+    expect(resetRoomSendQueueBarrier).toHaveBeenCalledOnce();
+
+    fireEvent.click(await screen.findByRole("button", { name: "sign in again" }));
+    await screen.findByRole("button", { name: "trigger logout" });
+    expect(roomSessionMounted).toHaveBeenCalledTimes(2);
+    expect(roomSessionDisposed).toHaveBeenCalledOnce();
+  });
+
   it("ignores an old settings completion after invalidation and replacement login", async () => {
     const original = { user_id: "@me:localhost", device_id: "DEVICE1" };
     tryRestoreSession.mockResolvedValue(original);

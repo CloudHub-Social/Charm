@@ -84,20 +84,32 @@ because it adds any real security over SHA256 — SHA1 is broken for
 collision resistance. Treat `SHA256SUMS.txt` and the GPG signatures below as
 the actual integrity checks, and `SHA1SUMS.txt` as compatibility-only.
 
-**GPG signatures** — attached when the `GPG_PRIVATE_KEY` repo secret is
-configured (see below): every artifact gets its own detached
+**GPG signatures** — attached when `GPG_PRIVATE_KEY` is configured in the
+protected `nightly-signing` or `release-signing` environment (see below): every artifact gets its own detached
 `<filename>.asc`, and `SHA256SUMS.txt`/`SHA1SUMS.txt` are signed too (so
 verifying `SHA256SUMS.txt.asc` alone vouches for every artifact's hash,
 without checking each `.asc` individually — either approach works). The
-public key ships alongside every signed release as
-`charm-nightly-signing-key.asc`:
+public key ships as `charm-nightly-signing-key.asc` for nightlies and
+`charm-release-signing-key.asc` for stable releases. Import the key attached
+to the release you downloaded:
 
 ```sh
-gpg --import charm-nightly-signing-key.asc
+# Stable release:
+gpg --import charm-release-signing-key.asc
+# For a nightly, use: gpg --import charm-nightly-signing-key.asc
 gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
 # or, for one specific artifact:
 gpg --verify Charm_<version>_amd64.deb.asc Charm_<version>_amd64.deb
 ```
+
+Each nightly and stable release also includes platform-named SPDX JSON
+software bills of materials (`charm-<platform>.spdx.json`). Verify an SBOM
+through the same signed checksum manifest before importing it into an
+SPDX-compatible inventory or vulnerability scanner. It describes the
+lockfile-pinned source commit used by that platform build. The scanner receives
+a clean Git archive, not the post-build workspace or its runtime credentials,
+caches, and signing material. This source inventory is not an exhaustive
+inventory of packaged binaries or platform-resolved transitive dependencies.
 
 This is a self-issued key, not backed by a CA or Apple/Microsoft's
 notarization chains — it proves the file matches what this pipeline
@@ -106,13 +118,20 @@ anywhere else. Compare `gpg`'s reported key fingerprint against the one
 recorded when the key was generated (ask a maintainer) if you want that
 assurance too.
 
-### Generating a nightly signing cert (maintainers)
+### Generating signing identities (maintainers)
 
-macOS/Windows/Android nightly builds are signed automatically once the
-relevant repo secrets exist; until then, each platform falls back to its
-previous unsigned/ephemeral-keystore behavior (the workflow degrades
-gracefully either way). All platforms' artifacts are GPG-signed the same
-way (centrally, once every artifact has been built — see
+Signing credentials must be stored only as environment secrets: nightly
+identities in the protected `nightly-signing` environment and distinct stable
+identities in the protected `release-signing` environment. Never store private
+signing material or its passwords as repository secrets, where branch-selected
+workflow YAML could access it. macOS/Windows/Android nightly builds are signed
+automatically once the relevant `nightly-signing` secrets exist; until then,
+each platform falls back to its previous unsigned/ephemeral-keystore behavior
+(the workflow degrades gracefully either way). Generate and archive the
+nightly and stable identities separately, then add each set of names below to
+its matching environment. The example identity names are for nightly builds;
+use clear `Charm Release` names for the stable set. All platforms' artifacts
+are GPG-signed the same way (centrally, once every artifact has been built — see
 nightly.yml's publish-nightly job), purely for download
 provenance — none of the OS-level publisher-trust gates above are affected
 by it, only whether a `.asc` signature is available to verify against.
@@ -135,11 +154,17 @@ misleading `MAC verification failed (wrong password?)` error even when the passw
 correct — confirmed the hard way in production. `-legacy` switches to the RC2/3DES +
 SHA-1 encryption `security import` actually understands.
 
-Add as repo secrets: `MACOS_CERT_P12` (contents of `cert.p12.b64`),
+Add as environment secrets: `MACOS_CERT_P12` (contents of `cert.p12.b64`),
 `MACOS_CERT_PASSWORD` (the password used above), `MACOS_CERT_NAME` (the
 cert's common name, exactly as it appears in Keychain Access).
 
-**Windows** — from PowerShell:
+For stable releases, use an Apple-issued Developer ID Application certificate
+in `release-signing`, not the self-signed nightly identity. Also add `APPLE_ID`,
+`APPLE_PASSWORD` (an app-specific password), and `APPLE_TEAM_ID`; Tauri uses
+them to submit and staple the notarization ticket before the release workflow
+accepts the app and disk image.
+
+**Windows nightly** — use a self-signed test identity from PowerShell:
 
 ```powershell
 $cert = New-SelfSignedCertificate -Type CodeSigning -Subject "CN=Charm Nightly" `
@@ -149,12 +174,23 @@ Export-PfxCertificate -Cert $cert -FilePath cert.pfx -Password $password
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx")) | Out-File cert.pfx.b64
 ```
 
-Add as repo secrets: `WINDOWS_CERT_PFX` (contents of `cert.pfx.b64`),
-`WINDOWS_CERT_PASSWORD` (the password used above).
+Add as environment secrets: `WINDOWS_CERT_PFX` (contents of `cert.pfx.b64`),
+`WINDOWS_CERT_PASSWORD` (the password used above) in `nightly-signing`.
 
-Neither cert needs to be trusted by anyone else's machine ahead of time —
-they only remove the "unidentified publisher" badge, not the OS's
-first-run friction described above.
+**Windows stable** — obtain a long-lived Authenticode code-signing certificate
+whose chain is trusted by Windows (for example, an OV/EV certificate issued by
+a public CA), export that certificate and private key as a password-protected
+PFX, and base64-encode the PFX. Store its encoded PFX and password under the
+same secret names in `release-signing`. Do not copy the self-signed nightly
+identity into that environment: stable CI requires `Get-AuthenticodeSignature`
+to report `Valid` for the app and installers, and an untrusted self-signed
+certificate cannot satisfy that gate. Certificate purchase, identity
+validation, renewal, and archival are maintainer/provider operations; the
+workflow never generates or replaces the stable identity.
+
+The self-signed macOS and Windows identities described above are only suitable
+for nightly provenance. They do not remove the OS first-run friction described
+above and are not substitutes for the stable platform trust chains.
 
 **Android** — a normal Java keystore via `keytool` (bundled with any JDK).
 Unlike the macOS/Windows certs, this one's identity *must* stay stable
@@ -170,7 +206,7 @@ base64 -i charm-nightly.keystore -o charm-nightly.keystore.b64   # macOS
 # base64 -w0 charm-nightly.keystore > charm-nightly.keystore.b64  # Linux
 ```
 
-Add as repo secrets: `ANDROID_KEYSTORE_JKS` (contents of
+Add as environment secrets: `ANDROID_KEYSTORE_JKS` (contents of
 `charm-nightly.keystore.b64`), `ANDROID_KEYSTORE_PASSWORD` and
 `ANDROID_KEY_PASSWORD` (the password used above — keytool above sets both
 to the same value, but they can differ), `ANDROID_KEY_ALIAS` (`charm-nightly`
@@ -179,8 +215,8 @@ durable (e.g. Bitwarden) before deleting the local copy** — there's no
 recovery path if it's lost, only starting over with a new identity that
 breaks upgrades for existing installs.
 
-**Linux (GPG)** — any GPG keypair; a passphrase-protected one since it's
-going into repo secrets either way:
+**Linux (GPG)** — any GPG keypair; use a passphrase-protected one because the
+private key is still sensitive even inside a protected environment:
 
 ```sh
 gpg --batch --full-generate-key <<'EOF'
@@ -193,8 +229,7 @@ Expire-Date: 2y
 EOF
 ```
 
-(Use a real passphrase-protected key instead of `%no-protection` if you'd
-rather not rely on repo-secret confidentiality alone — swap in `Passphrase:
+(Use a real passphrase-protected key instead of `%no-protection` — swap in `Passphrase:
 <a password>` and drop `%no-protection`.) Then export both halves:
 
 ```sh
@@ -202,7 +237,7 @@ key_id=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit
 gpg --export-secret-keys --armor "$key_id" > charm-nightly-gpg-private.asc
 ```
 
-Add as repo secrets: `GPG_PRIVATE_KEY` (contents of
+Add as environment secrets: `GPG_PRIVATE_KEY` (contents of
 `charm-nightly-gpg-private.asc`), `GPG_PASSPHRASE` (empty string is fine if
 you used `%no-protection` above). The public key is re-exported and
 published as a release asset (`charm-nightly-signing-key.asc`) by the

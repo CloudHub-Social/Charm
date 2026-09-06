@@ -10,6 +10,26 @@
   ],
   "features": [
     {
+      "slug": "voice-recording",
+      "title": "Voice message recording",
+      "summary": "Opt into recording an audio message, preview it locally, and explicitly send or discard it.",
+      "status": "preview",
+      "spec": "Spec 41",
+      "specLinks": [
+        {
+          "label": "Spec 41",
+          "href": "/specs/day-1/spec-41--voice-message-recording/"
+        }
+      ],
+      "flag": "voice_recording",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "voice-recording-local-preview",
+        "alt": "Charm voice recording preview with playback, send, and discard controls",
+        "caption": "The preview remains local until Send. Recording is experimental and off by default."
+      }
+    },
+    {
       "slug": "room-directory",
       "title": "Public room directory",
       "summary": "Search the current homeserver's public room directory, browse paginated results, and join without leaving Charm.",

@@ -106,8 +106,12 @@ release commits and PRs are bot-authored:
   releasable changesets, it opens/updates a `release` branch and PR via
   `knope prepare-release`, with `.github/scripts/enrich-changelog.mjs`
   replacing commit-hash markers with PR links and crediting authors.
-- `release.yml` runs `knope release` when that `release` PR is merged,
-  publishing the version bump, `CHANGELOG.md` update, and GitHub Release.
+- `release.yml` creates or validates the matching version tag and draft GitHub
+  Release when that `release` PR is merged. `release-builds.yml` builds, signs,
+  verifies, and uploads the complete artifact set, then publishes that draft.
+  Resume a failed release from the release-builds run; the canonical gates and
+  recovery rules live in the
+  [release-tier guide](docs-site/src/content/docs/contributing/ci-tiers.md).
 
 ### Local validation and dry-run (optional)
 

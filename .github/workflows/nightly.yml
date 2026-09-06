@@ -150,6 +150,7 @@ jobs:
   macos:
     name: macOS (tauri build)
     runs-on: macos-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -244,7 +245,7 @@ jobs:
           MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
         run: |
           set -euo pipefail
-          keychain="nightly-signing.keychain-db"
+          keychain="$RUNNER_TEMP/nightly-signing.keychain-db"
           keychain_password=$(uuidgen)
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
@@ -252,10 +253,10 @@ jobs:
           echo "$MACOS_CERT_P12" | base64 -D > cert.p12
           security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security find-certificate -a -p "$keychain" > signing-cert.pem
+          signing_cert="$RUNNER_TEMP/nightly-signing-cert.pem"
+          security find-certificate -a -p "$keychain" > "$signing_cert"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
-            -k /Library/Keychains/System.keychain signing-cert.pem
-          rm -f signing-cert.pem
+            -k /Library/Keychains/System.keychain "$signing_cert"
           IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           rm -f cert.p12
@@ -324,6 +325,50 @@ jobs:
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri build
 
+      - name: Remove nightly macOS signing identity
+        if: always() && env.HAS_MACOS_CERT == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/nightly-signing.keychain-db"
+          signing_cert="$RUNNER_TEMP/nightly-signing-cert.pem"
+          if [ -e "$signing_cert" ]; then
+            # `security remove-trusted-cert` can wait indefinitely on trustd.
+            # Keep cleanup best-effort on this ephemeral runner, but do not let
+            # it prevent the already-built artifact from being published.
+            python3_path="$(command -v python3 || true)"
+            if [ -z "$python3_path" ]; then
+              echo "::warning::python3 is unavailable; the hosted runner will discard the temporary nightly signing trust at teardown."
+            else
+              sudo -n "$python3_path" - "$signing_cert" <<'PY' || true
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  ["/usr/bin/security", "remove-trusted-cert", "-d", sys.argv[1]],
+                  stdin=subprocess.DEVNULL,
+                  timeout=30,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  print(
+                      "::warning::Could not remove the temporary nightly signing trust; "
+                      "the hosted runner will discard it at teardown."
+                  )
+          except subprocess.TimeoutExpired:
+              print(
+                  "::warning::Timed out removing the temporary nightly signing trust; "
+                  "the hosted runner will discard it at teardown."
+              )
+          PY
+            fi
+            rm -f -- "$signing_cert"
+          fi
+          if [ -e "$keychain" ]; then
+            security lock-keychain "$keychain"
+            security delete-keychain "$keychain"
+          fi
+
       - name: Resolve Cargo target directory
         id: cargo-target
         run: |
@@ -356,12 +401,37 @@ jobs:
       # `gh release create`'s asset upload expect plain files. The .dmg
       # already contains the .app, so uploading both is redundant as well as
       # broken.
+      - name: Export committed source for macOS SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
+      - name: Generate macOS SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ env.CHARM_SBOM_SOURCE }}
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-macos.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload macOS artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-macos
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            charm-macos.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -383,6 +453,7 @@ jobs:
   windows:
     name: Windows (tauri build)
     runs-on: windows-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -509,6 +580,16 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
 
+      - name: Remove imported Windows signing identity
+        if: always() && env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_CERT_THUMBPRINT" -DeleteKey
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-signing.json"
+          if (Test-Path $configPath) { Remove-Item -LiteralPath $configPath }
+
       - name: Resolve Windows debug-file directory
         id: windows-debug-files
         shell: pwsh
@@ -539,6 +620,29 @@ jobs:
 
       # Only published for main — see the macOS job's "Upload macOS
       # artifacts" step for the same reasoning.
+      - name: Export committed source for Windows SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
+      - name: Generate Windows SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ env.CHARM_SBOM_SOURCE }}
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-windows.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Windows artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -547,6 +651,7 @@ jobs:
           path: |
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
+            charm-windows.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -813,6 +918,29 @@ jobs:
       # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
       # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
       # begin with — apt/rpm install unsigned packages fine.
+      - name: Export committed source for Linux SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
+      - name: Generate Linux SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ env.CHARM_SBOM_SOURCE }}
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-linux.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Linux artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -822,6 +950,7 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
+            charm-linux.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -843,6 +972,7 @@ jobs:
   android:
     name: Android (tauri android build)
     runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: read
       issues: write
@@ -989,6 +1119,10 @@ jobs:
           export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri android build --target aarch64 --ci
 
+      - name: Remove imported Android signing material
+        if: always() && env.HAS_ANDROID_KEYSTORE == 'true'
+        run: rm -f -- "$RUNNER_TEMP/nightly-signing.keystore"
+
       # The Gradle plugin (Build step above) already uploads Proguard mapping
       # + native symbols when SENTRY_ANDROID_UPLOAD is true; this separate
       # debug-files upload covers the Rust/NDK native debug info the Gradle
@@ -1023,12 +1157,37 @@ jobs:
       # Android happily installs the APK once the device has "install
       # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
       # equivalent block to work around.
+      - name: Export committed source for Android SBOM
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom_source=$(mktemp -d)
+          git archive HEAD | tar -x -C "$sbom_source"
+          if [ "$RUNNER_OS" = Windows ]; then
+            sbom_source=$(cygpath -m "$sbom_source")
+          fi
+          printf 'CHARM_SBOM_SOURCE=%s\n' "$sbom_source" >> "$GITHUB_ENV"
+
+      - name: Generate Android SPDX SBOM
+        if: github.ref == 'refs/heads/main'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ env.CHARM_SBOM_SOURCE }}
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-android.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Upload Android artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-android
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            charm-android.spdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1242,6 +1401,7 @@ jobs:
     needs: [frontend-sourcemaps, macos, windows, linux, android]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'nightly-signing' || '' }}
     permissions:
       contents: write
     # Job-level (rather than referencing secrets.* directly in a step's
@@ -1256,6 +1416,18 @@ jobs:
           pattern: nightly-*
           path: artifacts
           merge-multiple: true
+
+      - name: Verify complete nightly artifact and SBOM set
+        run: |
+          set -euo pipefail
+          for pattern in '*.dmg' '*.msi' '*.exe' '*.deb' '*.rpm' '*.AppImage' '*.apk' \
+            'charm-macos.spdx.json' 'charm-windows.spdx.json' \
+            'charm-linux.spdx.json' 'charm-android.spdx.json'; do
+            if ! find artifacts -type f -name "$pattern" -print -quit | grep -q .; then
+              echo "::error::Missing nightly asset matching $pattern"
+              exit 1
+            fi
+          done
 
       # Centralized here (one ubuntu-latest job, where gpg is already known
       # to be present) rather than duplicated per-platform-job: signing

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
@@ -32,6 +33,7 @@ function typingLabel(userIds: string[]): string {
 }
 
 export function useChatTyping(roomId: string | null, currentUserId: string) {
+  const chatVisible = useContext(ChatVisibilityContext);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const lastTypingSentAt = useRef(0);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -122,7 +124,7 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   }, [roomId]);
 
   function handleTypingInput() {
-    if (!roomId || hideTyping) return;
+    if (!roomId || hideTyping || !chatVisible) return;
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
@@ -146,6 +148,16 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
     }
     wasHidingTyping.current = hideTyping;
   }, [hideTyping, roomId]);
+
+  const wasChatVisible = useRef(chatVisible);
+  useEffect(() => {
+    if (!chatVisible && wasChatVisible.current) {
+      setTypingUserIds([]);
+      lastTypingSentAt.current = 0;
+      if (roomId) sendTyping(roomId, false).catch(logAndIgnore);
+    }
+    wasChatVisible.current = chatVisible;
+  }, [chatVisible, roomId]);
 
   const stopTyping = useCallback(() => {
     if (roomId) sendTyping(roomId, false).catch(logAndIgnore);

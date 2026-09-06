@@ -909,6 +909,22 @@ describe("matrix web transport", () => {
     expect(calls[2][1].body).toBeInstanceOf(FormData);
   });
 
+  it("carries voice metadata alongside the file in the existing multipart upload", async () => {
+    const file = new File(["audio"], "Voice message.webm", { type: "audio/webm" });
+    const voice = { duration_ms: 1200, waveform: [0.1, 0.8] };
+    await invoke("send_attachment", {
+      roomId: "!r:example.org",
+      filePath: file,
+      txnId: "voice-1",
+      voice,
+    });
+    const [url, options] = lastFetch();
+    expect(url).toBe("https://api.example/api/rooms/!r%3Aexample.org/attachments?txn_id=voice-1");
+    const form = options.body as FormData;
+    expect(form.get("voice")).toBe(JSON.stringify(voice));
+    expect(form.get("file")).toBeInstanceOf(File);
+  });
+
   it("preserves OAuth session metadata from the web profile endpoint", async () => {
     fetchMock().mockResolvedValueOnce(
       okJson({
