@@ -145,16 +145,25 @@ describe("SpaceRail", () => {
     setSpaceParent.mockResolvedValue(undefined);
   });
 
-  it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
-    renderRail();
+  it("renders the refreshed primary destinations and account entry", () => {
+    const onSelectActivity = vi.fn();
+    const onOpenAccount = vi.fn();
+    renderRail({ activityCount: 4, onSelectActivity, onOpenAccount });
 
     expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
+    const activity = screen.getByRole("button", { name: "Activity, 4 items" });
+    expect(activity).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create or join space" })).toBeInTheDocument();
+    const account = screen.getByRole("button", { name: "Account and settings" });
+    fireEvent.click(activity);
+    fireEvent.click(account);
+    expect(onSelectActivity).toHaveBeenCalledOnce();
+    expect(onOpenAccount).toHaveBeenCalledOnce();
   });
 
   it("scopes the Home badge to rooms visible in Home mode", () => {

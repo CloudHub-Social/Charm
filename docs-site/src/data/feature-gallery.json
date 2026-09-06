@@ -599,8 +599,8 @@
     },
     {
       "slug": "ux-refresh-navigation-rail",
-      "title": "People-first navigation rail",
-      "summary": "Prioritize up to three recently active unread direct messages, then count only additional conversations in the Direct Messages overflow badge.",
+      "title": "Charm cross-platform UX renewal",
+      "summary": "A warmer, people-first responsive shell across navigation, rooms, conversations, Activity, onboarding, authentication, settings, and contextual panels.",
       "status": "preview",
       "spec": "Spec 64",
       "specLinks": [
@@ -613,8 +613,8 @@
       "snapshot": {
         "suite": "e2e",
         "name": "ux-refresh-navigation-rail",
-        "alt": "Charm's warm aubergine application rail showing three unread direct-message avatars, a separate overflow badge, and selected space styling",
-        "caption": "The deterministic journey proves visible direct-message shortcuts and overflow counts are disjoint before capturing the gated desktop rail."
+        "alt": "Charm's renewed desktop interface with a warm aubergine people rail, charcoal room list, focused conversation canvas, and integrated composer",
+        "caption": "The deterministic journey proves direct-message shortcuts and overflow counts are disjoint, then captures the complete default-off desktop renewal."
       }
     },
     {

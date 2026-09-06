@@ -111,7 +111,7 @@ describe("AppearancePanel", () => {
   it("defaults to Bubble message layout and switches on click", () => {
     renderPanel();
     const bubbleButton = screen.getByRole("button", { name: /Bubble/ });
-    const discordButton = screen.getByRole("button", { name: /Discord/ });
+    const discordButton = screen.getByRole("button", { name: /Modern/ });
     expect(bubbleButton).toHaveAttribute("aria-pressed", "true");
     expect(discordButton).toHaveAttribute("aria-pressed", "false");
 

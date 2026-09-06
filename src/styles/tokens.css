@@ -133,6 +133,32 @@
   --color-accent-hover: #a396fb;
   --color-accent-active: var(--accent-500);
 }
+
+/* The refresh attribute lives on <html> so portalled Radix surfaces inherit
+   the same visual language as the application shell. */
+html[data-ux-refresh="true"] body {
+  background: var(--ux-content-bg);
+}
+
+html[data-ux-refresh="true"] [data-slot="dialog-overlay"] {
+  background: rgb(10 7 12 / 68%);
+  backdrop-filter: blur(5px);
+}
+
+html[data-ux-refresh="true"] [data-slot="dialog-content"],
+html[data-ux-refresh="true"] [data-slot="popover-content"],
+html[data-ux-refresh="true"] [data-slot="dropdown-menu-content"],
+html[data-ux-refresh="true"] [data-slot="context-menu-content"] {
+  border-color: var(--ux-shell-border);
+  background: var(--ux-content-raised);
+  box-shadow: 0 22px 70px rgb(0 0 0 / 28%);
+}
+
+html[data-ux-refresh="true"] [data-slot="popover-content"],
+html[data-ux-refresh="true"] [data-slot="dropdown-menu-content"],
+html[data-ux-refresh="true"] [data-slot="context-menu-content"] {
+  border-radius: 14px;
+}
 /* GENERATED:SEMANTIC:END */
 
 /* Component tier — element-specific, composed from semantic tokens */
@@ -156,6 +182,21 @@
   --ux-rail-badge: #6954e8;
   --ux-rail-badge-text: #ffffff;
   --ux-rail-focus: #f4c95d;
+  --ux-sidebar-bg: #211f26;
+  --ux-sidebar-raised: #2a2730;
+  --ux-content-bg: #29272f;
+  --ux-content-raised: #332f39;
+  --ux-composer-bg: #38333f;
+  --ux-shell-border: #443d4a;
+  --ux-shell-border-strong: #66586e;
+  --ux-selection: #4a354f;
+  --ux-selection-hover: #3c303f;
+  --ux-selection-strong: #d9c2ea;
+  --ux-presence: #72e6bd;
+  --ux-badge: #745eea;
+  --ux-badge-text: #ffffff;
+  --ux-favourite: #f4c95d;
+  --ux-shell-focus: #bba9ff;
 
   /* Density — driven by [data-density] on <html>. "cozy" is the default
      shape (current spacing); "compact" tightens message row padding. */
@@ -180,6 +221,21 @@
   --ux-rail-badge: #5847e0;
   --ux-rail-badge-text: #ffffff;
   --ux-rail-focus: #6d5ef8;
+  --ux-sidebar-bg: #f4eef5;
+  --ux-sidebar-raised: #fffaff;
+  --ux-content-bg: #fffafd;
+  --ux-content-raised: #ffffff;
+  --ux-composer-bg: #ffffff;
+  --ux-shell-border: #dfd3e1;
+  --ux-shell-border-strong: #bfaac5;
+  --ux-selection: #eadcf0;
+  --ux-selection-hover: #f0e6f3;
+  --ux-selection-strong: #5f3f69;
+  --ux-presence: #187d5b;
+  --ux-badge: #5847e0;
+  --ux-badge-text: #ffffff;
+  --ux-favourite: #9b6800;
+  --ux-shell-focus: #6d5ef8;
 }
 
 [data-theme="midnight"] {
@@ -195,6 +251,21 @@
   --ux-rail-badge: #7462ed;
   --ux-rail-badge-text: #ffffff;
   --ux-rail-focus: #f4c95d;
+  --ux-sidebar-bg: #100d13;
+  --ux-sidebar-raised: #19151d;
+  --ux-content-bg: #161219;
+  --ux-content-raised: #211b25;
+  --ux-composer-bg: #261f2b;
+  --ux-shell-border: #352a3b;
+  --ux-shell-border-strong: #5b4665;
+  --ux-selection: #402c48;
+  --ux-selection-hover: #2d2232;
+  --ux-selection-strong: #e1c8ee;
+  --ux-presence: #79ecc2;
+  --ux-badge: #7462ed;
+  --ux-badge-text: #ffffff;
+  --ux-favourite: #f4c95d;
+  --ux-shell-focus: #c5b4ff;
 }
 
 [data-density="compact"] {

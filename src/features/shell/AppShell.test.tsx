@@ -246,6 +246,28 @@ describe("AppShell", () => {
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
+  it("keeps the chat owner mounted but hidden while Activity replaces the workspace", () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    render(
+      <AppShell
+        activeRoomId="!room:example.org"
+        selectionRequestId={0}
+        mobileView="detail"
+        onMobileViewChange={vi.fn()}
+        primaryDestination="activity"
+        destinationContent={<main>activity-feed</main>}
+        spaceRail={<div>space-rail</div>}
+        roomList={<div>room-list</div>}
+        content={<VisibilityProbe />}
+        rightPanel={null}
+      />,
+    );
+
+    expect(screen.getByText("activity-feed")).toBeInTheDocument();
+    expect(screen.queryByText("room-list")).not.toBeInTheDocument();
+    expect(screen.getByText("chat-hidden")).not.toBeVisible();
+  });
+
   it("renders the bottom-nav layout with the room list by default on mobile", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     renderShell(null);
@@ -262,7 +284,8 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
-    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
   });
 
   it("keeps the existing bottom navigation in room detail when the redesign flag is disabled", () => {

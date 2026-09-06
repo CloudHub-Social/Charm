@@ -1,4 +1,5 @@
 import {
+  Bell,
   ChevronDown,
   DoorOpen,
   FolderPlus,
@@ -73,6 +74,10 @@ interface SpaceRailProps {
   onSelectDms: () => void;
   onSelectRoom: (roomId: string) => void;
   onSelectSpace: (spaceId: string) => void;
+  activityActive?: boolean;
+  activityCount?: number;
+  onSelectActivity?: () => void;
+  onOpenAccount?: () => void;
   onCreateJoin: () => void;
   onCreateUnderSpace?: (spaceId: string) => void;
   onOpenSettings?: (spaceId: string) => void;
@@ -94,6 +99,10 @@ export function SpaceRail({
   onSelectDms,
   onSelectRoom,
   onSelectSpace,
+  activityActive = false,
+  activityCount = 0,
+  onSelectActivity,
+  onOpenAccount,
   onCreateJoin,
   onCreateUnderSpace,
   onOpenSettings,
@@ -606,7 +615,7 @@ export function SpaceRail({
         )}
         <SpaceButton
           space={space}
-          active={activeMode === "space" && activeSpaceId === space.room_id}
+          active={!activityActive && activeMode === "space" && activeSpaceId === space.room_id}
           unread={counts.unread}
           highlight={counts.highlight}
           onClick={() => onSelectSpace(space.room_id)}
@@ -831,7 +840,7 @@ export function SpaceRail({
         >
           <RailIconButton
             label="Home"
-            active={activeMode === "home"}
+            active={!activityActive && activeMode === "home"}
             unread={homeBadge.unread}
             highlight={homeBadge.highlight}
             onClick={onSelectHome}
@@ -851,7 +860,9 @@ export function SpaceRail({
                   <DirectMessageShortcut
                     key={item.room.room_id}
                     item={item}
-                    active={activeMode === "dms" && activeRoomId === item.room.room_id}
+                    active={
+                      !activityActive && activeMode === "dms" && activeRoomId === item.room.room_id
+                    }
                     onClick={() => onSelectRoom(item.room.room_id)}
                   />
                 ))}
@@ -859,7 +870,11 @@ export function SpaceRail({
             )}
             <RailIconButton
               label="Direct messages"
-              active={activeMode === "dms" && (!uxRefreshEnabled || !hasActiveDirectShortcut)}
+              active={
+                !activityActive &&
+                activeMode === "dms" &&
+                (!uxRefreshEnabled || !hasActiveDirectShortcut)
+              }
               unread={uxRefreshEnabled ? railAttention.overflowUnread : directUnreadCount}
               highlight={uxRefreshEnabled ? railAttention.overflowHighlight : directHighlightCount}
               onClick={onSelectDms}
@@ -902,6 +917,18 @@ export function SpaceRail({
               </div>
             )}
           </fieldset>
+          {uxRefreshEnabled && onSelectActivity && (
+            <RailIconButton
+              label="Activity"
+              active={activityActive}
+              unread={activityCount}
+              badgeLabel={activityCount > 0 ? `${activityCount} items` : undefined}
+              onClick={onSelectActivity}
+              uxRefresh
+            >
+              <Bell aria-hidden="true" />
+            </RailIconButton>
+          )}
           <div
             className={cn(
               "my-1 h-px w-8",
@@ -939,6 +966,16 @@ export function SpaceRail({
         >
           <Plus aria-hidden="true" />
         </RailIconButton>
+        {uxRefreshEnabled && onOpenAccount && (
+          <RailIconButton
+            label="Account and settings"
+            active={false}
+            onClick={onOpenAccount}
+            uxRefresh
+          >
+            <Settings aria-hidden="true" />
+          </RailIconButton>
+        )}
       </aside>
       <InviteToSpaceDialog
         spaceId={inviteTarget?.spaceId ?? null}
@@ -1058,6 +1095,7 @@ interface RailIconButtonProps {
   active: boolean;
   unread?: number;
   highlight?: number;
+  badgeLabel?: string;
   uxRefresh?: boolean;
   onClick: () => void;
   children: ReactNode;
@@ -1068,11 +1106,14 @@ function RailIconButton({
   active,
   unread = 0,
   highlight = 0,
+  badgeLabel,
   uxRefresh = false,
   onClick,
   children,
 }: RailIconButtonProps) {
-  const accessibleLabel = labelWithBadge(label, unread, highlight);
+  const accessibleLabel = badgeLabel
+    ? `${label}, ${badgeLabel}`
+    : labelWithBadge(label, unread, highlight);
   return (
     <Tooltip>
       <TooltipTrigger asChild>

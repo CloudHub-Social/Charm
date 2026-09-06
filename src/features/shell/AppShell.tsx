@@ -1,4 +1,4 @@
-import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
+import { Bell, MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
@@ -6,6 +6,10 @@ import { useAtomValue } from "jotai";
 import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 import { ChatVisibilityContext } from "./chatVisibility";
+import type { PrimaryDestination } from "./navigationState";
+import { PaneResizeHandle } from "./PaneResizeHandle";
+import { usePanePreferences } from "./usePanePreferences";
+import { cn } from "@/lib/utils";
 
 export type MobileView = "list" | "detail";
 
@@ -34,6 +38,10 @@ interface AppShellProps {
    */
   mobileView: MobileView;
   onMobileViewChange: (view: MobileView) => void;
+  primaryDestination?: PrimaryDestination;
+  destinationContent?: ReactNode;
+  onSelectChats?: () => void;
+  onSelectActivity?: () => void;
 }
 
 /**
@@ -54,13 +62,22 @@ export function AppShell({
   onMobileViewChange,
   isSettingsActive = false,
   chatObscured = false,
+  primaryDestination = "home",
+  destinationContent = null,
+  onSelectChats,
+  onSelectActivity,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
+  const mobileChatLayoutEnabled = mobileChatRedesignEnabled || uxRefreshEnabled;
   const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
+  const { preferences, setRoomSidebarWidth } = usePanePreferences();
   const contentRef = useRef<HTMLDivElement>(null);
+  const showingActivity = primaryDestination === "activity";
   const chatVisible =
+    !showingActivity &&
     !isSettingsActive &&
     !chatObscured &&
     !verificationOverlayOpen &&
@@ -84,20 +101,47 @@ export function AppShell({
   }, [activeRoomId, selectionRequestId]);
 
   return (
-    <div className={layout === "desktop" ? "flex h-[100dvh]" : "flex h-[100dvh] flex-col"}>
+    <div
+      data-ux-refresh={uxRefreshEnabled ? "true" : undefined}
+      className={
+        layout === "desktop"
+          ? "relative flex h-[100dvh] overflow-hidden bg-background"
+          : "flex h-[100dvh] flex-col overflow-hidden bg-background"
+      }
+    >
       {layout === "desktop" && spaceRail}
-      {layout === "desktop" && roomList}
+      {layout === "desktop" &&
+        !showingActivity &&
+        (uxRefreshEnabled ? (
+          <>
+            <div
+              className="h-full shrink-0 [&>aside]:h-full [&>aside]:w-full"
+              style={{ width: preferences.roomSidebarWidth }}
+            >
+              {roomList}
+            </div>
+            <PaneResizeHandle
+              width={preferences.roomSidebarWidth}
+              onWidthChange={setRoomSidebarWidth}
+            />
+          </>
+        ) : (
+          roomList
+        ))}
       {/* This keyed owner stays in the same parent across breakpoints so a
           rotation cannot abort admitted attachment or voice uploads. */}
       <div
         key="chat-content"
         ref={contentRef}
         hidden={
-          layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null)
+          showingActivity ||
+          (layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null))
         }
         className={
           layout === "desktop"
-            ? "contents"
+            ? uxRefreshEnabled
+              ? "flex min-w-0 flex-1 [&>div]:min-w-0"
+              : "contents"
             : "h-full min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
         }
       >
@@ -105,39 +149,88 @@ export function AppShell({
           {content}
         </ChatVisibilityContext.Provider>
       </div>
-      {layout === "desktop" && rightPanel}
+      {layout === "desktop" && showingActivity && destinationContent}
+      {layout === "desktop" &&
+        !showingActivity &&
+        rightPanel &&
+        (uxRefreshEnabled ? (
+          <div className="z-30 h-full shrink-0 shadow-[-18px_0_45px_rgba(0,0,0,0.18)] max-xl:absolute max-xl:inset-y-0 max-xl:right-0 xl:shadow-none [&>div]:h-full">
+            {rightPanel}
+          </div>
+        ) : (
+          rightPanel
+        ))}
       {layout === "mobile" &&
-        (mobileView === "detail" && activeRoomId ? (
+        (showingActivity ? (
+          destinationContent
+        ) : mobileView === "detail" && activeRoomId ? (
           rightPanel && (
             <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
               {rightPanel}
             </div>
           )
         ) : (
-          <div className="flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0",
+              uxRefreshEnabled
+                ? "[&>aside:first-child]:w-20 [&>aside:last-child]:w-[calc(100%-80px)]"
+                : "[&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)]",
+            )}
+          >
             {spaceRail}
             {roomList}
           </div>
         ))}
       {layout === "mobile" &&
-        (!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
+        (uxRefreshEnabled ||
+          showingActivity ||
+          !mobileChatLayoutEnabled ||
+          mobileView === "list" ||
+          !activeRoomId) && (
           <nav
-            className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+            className={cn(
+              "flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]",
+              uxRefreshEnabled &&
+                "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] px-2 pt-1",
+            )}
             aria-label="Primary"
           >
             <button
               type="button"
-              aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
-              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
-              onClick={() => onMobileViewChange("list")}
+              aria-current={
+                (
+                  uxRefreshEnabled
+                    ? !showingActivity && !isSettingsActive
+                    : mobileView === "list" && !isSettingsActive
+                )
+                  ? "page"
+                  : undefined
+              }
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
+              onClick={() => {
+                onSelectChats?.();
+                onMobileViewChange("list");
+              }}
             >
               <MessageSquare className="size-5" aria-hidden="true" />
               Chats
             </button>
+            {uxRefreshEnabled && onSelectActivity && (
+              <button
+                type="button"
+                aria-current={showingActivity ? "page" : undefined}
+                className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
+                onClick={onSelectActivity}
+              >
+                <Bell className="size-5" aria-hidden="true" />
+                Activity
+              </button>
+            )}
             <button
               type="button"
               aria-current={isSettingsActive ? "page" : undefined}
-              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
               onClick={() => openSettings("account")}
             >
               <SettingsIcon className="size-5" aria-hidden="true" />

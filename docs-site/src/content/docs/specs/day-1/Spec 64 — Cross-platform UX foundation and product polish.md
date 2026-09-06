@@ -11,15 +11,17 @@ sidebar:
 ## Implementation status
 
 **In progress.** [Issue #539](https://github.com/CloudHub-Social/Charm/issues/539)
-is the program ledger. The first slice establishes the default-off
-`ux_refresh_v1` rollout gate, the account-scoped unread-DM rail model, the
-gated application-rail treatment, and deterministic Storybook fixtures. The
-legacy shell and preference schema remain the rollback path.
+is the program ledger and [PR #540](https://github.com/CloudHub-Social/Charm/pull/540)
+contains the complete, default-off visual renewal for Charm's currently shipped
+surfaces. It covers the responsive shell, people-first rail, room list,
+conversation, composer, Activity inbox, contextual panels, onboarding,
+authentication, and settings as one reversible review unit.
 
-Spec 47's unfinished appearance work is preserved as a separate branch. Any
-portable theme, font, density, spacing, or message-layout persistence introduced
-here must be reconciled with that work before the two branches overlap. Pane
-dimensions are device-local and must not enter cross-device appearance sync.
+Spec 47's appearance persistence is already present on `main` and is reused here.
+Portable theme, font, density, spacing, and message-layout values remain in that
+versioned appearance envelope. The new room-sidebar width uses a separate
+device-local versioned preference and never enters cross-device appearance sync.
+The legacy shell remains the rollback path while `ux_refresh_v1` is disabled.
 
 ## Approved direction
 
@@ -30,7 +32,7 @@ dimensions are device-local and must not enter cross-device appearance sync.
 
 This concept is directional rather than pixel evidence. Approved Storybook
 fixtures provide the measured component contract. Deterministic CI screenshots
-and native artifacts replace the concept as each implementation slice ships.
+and native artifacts replace the concept as implementation evidence lands.
 
 Charm combines:
 
@@ -82,7 +84,8 @@ The rail is ordered as follows:
    conversations and highlights not represented by the visible avatars.
 4. Activity for mentions, replies, invites, calls, and actionable failures.
 5. Divider, then spaces and compact nested-space folder capsules.
-6. Add Space and account switching at the bottom.
+6. Add Space and the active-account/settings entry at the bottom. It becomes the
+   account switcher when Day-2 Spec 09 supplies the account-list and switch APIs.
 
 Unread DM shortcuts are derived from one account's joined-room snapshot. Sort by
 descending `last_activity_ts`; ties and missing timestamps preserve the
@@ -94,9 +97,10 @@ avatars are 44px. Avoid rectangular icon outlines and generic app-launcher image
 Ambient unread may use a subdued dot; use numerical badges where the exact number
 helps the user act, including highlights and overflow.
 
-The Activity and account-switcher positions are reserved by this information
-architecture, but they must not be rendered as inert controls before their routes
-exist.
+Activity is a real destination backed by the current account's invites, unread
+rooms, marked-unread rooms, and message previews. The active-account entry opens
+account settings today; it must not imply multi-account switching before Day-2
+Spec 09 supplies that route.
 
 ## Room list, conversation, and composer
 
@@ -124,8 +128,9 @@ equivalent to:
 - `PrimaryDestination` — Home, Direct Messages, Activity, or Space;
 - `AppNavigationState` — active account, destination, space, room, contextual
   panel, and mobile route;
-- `ContextPanelKind` — Threads, members, pins, room details, search, or none;
-- `MobileRoute` — top-level destination, list, conversation, or contextual detail;
+- `ContextPanelKind` — the currently implemented members or pinned-messages
+  panel, or none; future routes extend the union when their owning specs ship;
+- `MobileRoute` — Activity, room list, conversation, or contextual detail;
 - `RailAttentionItem` — one account-scoped actionable rail shortcut; and
 - `PanePreferences` — versioned device-local pane sizes and open state.
 
@@ -142,12 +147,20 @@ pane must not remount the owner of a draft, upload, call, or playing media item.
 
 ## Essential destinations and remaining surfaces
 
-- Activity composes Spec 57's events and actionable failures.
-- Threads use the context panel on desktop and a pushed route on compact screens.
-- Calls enter from the room header and persist in a call shelf across room changes.
-- Emoji, GIF, sticker, and custom-emoji discovery share one responsive expression
-  tray while their protocol behavior remains in their feature specs.
-- Images receive a reversible preview/edit step before upload.
+- Activity currently composes actionable state already exposed by the room
+  snapshot: invites, unread rooms, marked-unread rooms, and message previews.
+  Mentions, replies, calls, and delivery failures join the same destination when
+  their owning APIs expose a normalized event feed.
+- Members and pinned messages use the context panel on desktop and a pushed route
+  on compact screens. Threads adopt the same composition when the thread feature
+  ships.
+- Calls enter from the room header and persist in a call shelf across room changes
+  after Day-2 Spec 02 provides native calling; this PR does not add a dead call
+  control.
+- Existing emoji and media actions live in the stable composer shell. GIF,
+  sticker, custom-emoji discovery, and reversible image editing remain owned by
+  their feature specs and must join the same responsive tray without changing the
+  shell.
 - Fresh installations choose Modern, Bubbles, or IRC from live previews; Modern is
   preselected. Existing installations keep their saved/current layout without a
   new prompt.
@@ -178,34 +191,43 @@ Rollout sequence:
 Cross-platform nightly failures are repaired in separate PRs and cannot count as
 positive rollout evidence merely because a UI change is unrelated to the failure.
 
-## Delivery slices
+## One-PR implementation boundary
 
-1. Rail model, tokens, gated presentation, Storybook states, and specification.
-2. Typed shell state and device-local pane preferences.
-3. Room-list selection and conversation/header/composer treatment.
-4. Activity, account switching, Threads, and persistent call shelf composition.
-5. Expression tray and image preview/edit composition.
-6. Onboarding, settings, authentication, verification, search, directory, and
-   administration polish.
-7. Opt-in/default-on rollout evidence and legacy-shell retirement.
+PR #540 intentionally keeps the complete visual renewal in one feature-flagged
+change so reviewers can judge the product as a coherent whole. It includes:
 
-Only one major redesign seam is active at a time. Each slice is independently
-reviewable, feature-flagged, and reversible.
+1. Rail attention model, tokens, measured Storybook states, and specification.
+2. Typed navigation state, responsive shell, overlay/pushed contextual panels,
+   and device-local resizable pane preferences.
+3. Room-list hierarchy, message grouping, header actions, contextual formatting,
+   composer treatment, empty states, and conversation-width constraints.
+4. The real Activity destination and active-account/settings entry.
+5. Fresh-install Modern/Bubbles/IRC selection, settings, authentication,
+   reauthentication, onboarding, and shared portalled-surface treatment.
+6. Deterministic desktop, medium, tablet, and compact CI screenshot journeys.
+
+This boundary does not silently pull Day-2 product work into a visual PR. Native
+calling and multi-account switching remain owned by Specs 02 and 09 respectively;
+Threads, the combined expression tray, and image editing remain functional
+dependencies. When those features land, they must use the shell contracts in this
+spec rather than introduce another parallel navigation or composer.
 
 ## Acceptance criteria
 
 1. CI captures deterministic Linux screenshots at 1440×900, 1024×768, 768×1024,
    and 390×844 using real Charm fixtures.
-2. Rail fixtures cover zero, one, three, and more than three unread DMs; folders;
-   selected spaces; muted rooms; large counts; multiple/offline accounts; and long
-   names.
+2. Rail fixtures cover zero, one, three, and more than three unread DMs; Activity;
+   folders; selected spaces; muted rooms; large counts; and long names.
+   Multiple/offline-account states join this matrix with Day-2 Spec 09.
 3. Unit and journey tests prove visible DM avatars and overflow badges never
    double-count the same conversation.
 4. Axe and manual review cover contrast, keyboard navigation, visible focus,
    logical reading order, screen-reader labels, 44px touch targets, 200% zoom,
    reduced motion, bidirectional text, and long strings.
-5. Journeys cover account/space/room switching, Activity triage, Threads, calls,
-   expression/media sending, image editing, and first-run appearance choice.
+5. Current-feature journeys cover space/room switching, Activity triage, media
+   composition, and first-run appearance choice. Threads, calls, multi-account
+   switching, the combined expression tray, and image editing add their journey
+   cases in their owning feature PRs.
 6. Reviewers inspect CI screenshots and native artifacts for macOS, Windows/Linux,
    web, iOS, and Android before closing each applicable slice.
 7. Deep links, drafts, scroll anchoring, uploads, local echoes, encryption states,

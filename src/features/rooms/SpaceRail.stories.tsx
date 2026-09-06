@@ -88,6 +88,9 @@ const meta = {
     onSelectDms: () => {},
     onSelectRoom: () => {},
     onSelectSpace: () => {},
+    onSelectActivity: () => {},
+    activityCount: 5,
+    onOpenAccount: () => {},
     onCreateJoin: () => {},
   },
 } satisfies Meta<typeof SpaceRail>;
@@ -108,6 +111,10 @@ export const SpaceSelectedWithFolder: Story = {
     activeMode: "space",
     activeSpaceId: "!space:localhost",
   },
+};
+
+export const ActivitySelected: Story = {
+  args: { activityActive: true },
 };
 
 export const NoUnreadDirectMessages: Story = {

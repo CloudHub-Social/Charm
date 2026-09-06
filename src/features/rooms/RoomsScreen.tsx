@@ -16,6 +16,13 @@ import {
 } from "@/features/settings/useSettingsNavigation";
 import { CrashRecoveryPrompt } from "@/observability/CrashRecoveryPrompt";
 import { AppShell, type MobileView } from "@/features/shell/AppShell";
+import type {
+  AppNavigationState,
+  ContextPanelKind,
+  PrimaryDestination,
+} from "@/features/shell/navigationState";
+import { ActivityView } from "@/features/activity/ActivityView";
+import { activityAttentionCount } from "@/features/activity/activityModel";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
@@ -114,6 +121,7 @@ export function RoomsScreen({
   const roomListUpdateRevisionRef = useRef(0);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
+  const [primaryDestination, setPrimaryDestination] = useState<PrimaryDestination>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
@@ -278,6 +286,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
+    setPrimaryDestination("home");
     setSelectedSpaceId(null);
   }
 
@@ -286,6 +295,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
+    setPrimaryDestination("direct-messages");
     setSelectedSpaceId(null);
   }
 
@@ -294,6 +304,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
+    setPrimaryDestination("space");
     setSelectedSpaceId(spaceId);
   }
 
@@ -355,6 +366,7 @@ export function RoomsScreen({
         selectSpace(parentSpaceId);
       } else {
         setRoomListMode("home");
+        setPrimaryDestination("home");
         setSelectedSpaceId(null);
         setShowAllRooms(true);
       }
@@ -504,6 +516,7 @@ export function RoomsScreen({
   useEffect(() => {
     function syncFocusedRoom() {
       const isShowingChat =
+        primaryDestination !== "activity" &&
         !settingsSection &&
         !roomSettingsTarget &&
         document.hasFocus() &&
@@ -517,7 +530,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
+  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView, primaryDestination]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -562,6 +575,7 @@ export function RoomsScreen({
       // timelines. Bring that inbox into view and consume the deep link so
       // it cannot block normal room selection indefinitely.
       setRoomListMode("home");
+      setPrimaryDestination("home");
       setSelectedSpaceId(null);
       setMobileView("list");
       autoSelectSuppressedRef.current = { kind: "invite", roomId: match.room_id };
@@ -713,9 +727,55 @@ export function RoomsScreen({
     setPinnedMessagesDrawerOpen,
   ]);
 
+  const contextPanel: ContextPanelKind = pinnedMessagesDrawerOpen
+    ? "pinned-messages"
+    : membersDrawerOpen
+      ? "members"
+      : null;
+  const navigationState: AppNavigationState = {
+    destination: primaryDestination,
+    accountId: currentUserId,
+    spaceId: selectedSpaceId,
+    roomId: activeRoom?.room_id ?? null,
+    contextPanel,
+    mobileRoute:
+      primaryDestination === "activity"
+        ? "activity"
+        : contextPanel
+          ? "context-panel"
+          : mobileView === "detail"
+            ? "conversation"
+            : "room-list",
+  };
+
   return (
     <>
       <AppShell
+        primaryDestination={navigationState.destination}
+        onSelectChats={() => {
+          if (primaryDestination === "activity") selectHome();
+        }}
+        onSelectActivity={() => {
+          setPrimaryDestination("activity");
+          setMobileView("list");
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+        }}
+        destinationContent={
+          <ActivityView
+            rooms={rooms}
+            onSelectRoom={(roomId) => {
+              const room = rooms.find((candidate) => candidate.room_id === roomId);
+              if (!room) return;
+              if (room.membership === "invite") {
+                selectHome();
+                setMobileView("list");
+                return;
+              }
+              selectRoomInVisibleMode(room);
+            }}
+          />
+        }
         spaceRail={
           <SpaceRail
             rooms={joinedRooms}
@@ -731,6 +791,15 @@ export function RoomsScreen({
               selectRoom(roomId);
             }}
             onSelectSpace={selectSpace}
+            activityActive={primaryDestination === "activity"}
+            activityCount={activityAttentionCount(rooms)}
+            onSelectActivity={() => {
+              setPrimaryDestination("activity");
+              setMobileView("list");
+              setMembersDrawerOpen(false);
+              setPinnedMessagesDrawerOpen(false);
+            }}
+            onOpenAccount={() => openSettings("account")}
             onCreateJoin={() => {
               setCreateSpaceParentId(null);
               setCreateJoinDialogOpen(true);
@@ -790,6 +859,9 @@ export function RoomsScreen({
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
             onNavigateToProfileRoom={navigateToProfileRoom}
+            onOpenMessageSearch={
+              messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
+            }
             currentTombstone={activeRoomDetails?.tombstone ?? null}
             currentRoomStateResolved={activeRoomStateResolved}
             onFollowRoomUpgrade={followRoomUpgrade}

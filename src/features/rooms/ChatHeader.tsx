@@ -1,5 +1,5 @@
 import type { PresenceUpdate, RoomSummary } from "@/lib/matrix";
-import { ArrowLeft, CalendarDays, Info, MoreVertical, Pin, Settings } from "lucide-react";
+import { ArrowLeft, CalendarDays, Info, MoreVertical, Pin, Search, Settings } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { cn } from "@/lib/utils";
+import { useFlag } from "@/featureFlags";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 
 interface ChatHeaderProps {
@@ -25,6 +26,7 @@ interface ChatHeaderProps {
   onOpenRoomSettings: () => void;
   jumpToDateEnabled: boolean;
   onJumpToDate: () => void;
+  onOpenMessageSearch?: () => void;
 }
 
 export function ChatHeader({
@@ -41,12 +43,16 @@ export function ChatHeader({
   onOpenRoomSettings,
   jumpToDateEnabled,
   onJumpToDate,
+  onOpenMessageSearch,
 }: ChatHeaderProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   return (
     <div
       className={cn(
         "flex items-center justify-between border-b border-border",
         mobile ? "h-14 gap-1 px-1.5" : "gap-2 p-4",
+        uxRefreshEnabled &&
+          "min-h-18 border-[var(--ux-shell-border)] bg-[var(--ux-content-bg)] px-3 py-2 sm:px-5",
       )}
     >
       {mobile && (
@@ -59,8 +65,8 @@ export function ChatHeader({
           <ArrowLeft className="size-5" />
         </button>
       )}
-      <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold text-foreground">
-        <Avatar size="sm">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5 text-[15px] font-bold text-foreground">
+        <Avatar size="sm" className={cn(uxRefreshEnabled && "size-10")}>
           <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
           <AvatarFallback
             style={{ background: avatarColor(room.room_id) }}
@@ -77,7 +83,20 @@ export function ChatHeader({
             />
           )}
         </Avatar>
-        <span className="truncate">{displayName(room.room_id, room.name)}</span>
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate">{displayName(room.room_id, room.name)}</span>
+          {uxRefreshEnabled && (
+            <span className="truncate text-xs font-medium text-muted-foreground">
+              {room.is_direct
+                ? presence?.presence === "online"
+                  ? "Online"
+                  : "Direct message"
+                : room.is_muted
+                  ? "Muted room"
+                  : "Room"}
+            </span>
+          )}
+        </span>
       </div>
       {mobile ? (
         <DropdownMenu>
@@ -91,6 +110,12 @@ export function ChatHeader({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-48">
+            {onOpenMessageSearch && (
+              <DropdownMenuItem className="min-h-11" onSelect={onOpenMessageSearch}>
+                <Search />
+                Search messages
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem className="min-h-11" onSelect={onToggleMembers}>
               <Info />
               {membersDrawerOpen ? "Hide members" : "Show members"}
@@ -116,6 +141,19 @@ export function ChatHeader({
         </DropdownMenu>
       ) : (
         <div className="flex shrink-0 items-center gap-1">
+          {onOpenMessageSearch && (
+            <button
+              type="button"
+              aria-label="Search messages"
+              onClick={onOpenMessageSearch}
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+              )}
+            >
+              <Search className="size-4" />
+            </button>
+          )}
           <button
             type="button"
             aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
@@ -123,6 +161,7 @@ export function ChatHeader({
             onClick={onToggleMembers}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               membersDrawerOpen && "bg-accent text-accent-foreground",
             )}
           >
@@ -138,6 +177,7 @@ export function ChatHeader({
               onClick={onTogglePinnedMessages}
               className={cn(
                 "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
                 pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
               )}
             >
@@ -154,7 +194,10 @@ export function ChatHeader({
               type="button"
               aria-label="Jump to date"
               onClick={onJumpToDate}
-              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+              )}
             >
               <CalendarDays className="size-4" />
             </button>
@@ -163,7 +206,10 @@ export function ChatHeader({
             type="button"
             aria-label="Room settings"
             onClick={onOpenRoomSettings}
-            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+            )}
           >
             <Settings className="size-4" />
           </button>

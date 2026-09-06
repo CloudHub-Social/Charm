@@ -182,6 +182,7 @@ export function ChatShell({
   onBack,
   onNavigateToRoom,
   onNavigateToProfileRoom,
+  onOpenMessageSearch,
   currentTombstone = null,
   currentRoomStateResolved = true,
   onFollowRoomUpgrade,
@@ -190,6 +191,7 @@ export function ChatShell({
 }: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const voiceRecordingEnabled = useFlag("voice_recording");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
@@ -201,7 +203,7 @@ export function ChatShell({
   const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
   const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
   const userProfileCardsEnabled = useFlag("user_profile_cards");
-  const mobile = layout === "mobile" && mobileChatRedesignEnabled;
+  const mobile = layout === "mobile" && (mobileChatRedesignEnabled || uxRefreshEnabled);
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
@@ -548,8 +550,32 @@ export function ChatShell({
 
   if (!room) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-        Select a room to start chatting
+      <div
+        className={cn(
+          "flex flex-1 items-center justify-center text-sm text-muted-foreground",
+          uxRefreshEnabled && "bg-[var(--ux-content-bg)] px-6 text-center",
+        )}
+      >
+        <div
+          className={cn(
+            uxRefreshEnabled &&
+              "max-w-sm rounded-3xl border border-[var(--ux-shell-border)] bg-[var(--ux-content-raised)] px-8 py-10 shadow-lg",
+          )}
+        >
+          {uxRefreshEnabled && (
+            <span className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-[var(--ux-selection)] text-[var(--ux-selection-strong)]">
+              <MessageCircle className="size-7" aria-hidden="true" />
+            </span>
+          )}
+          <p className={cn(uxRefreshEnabled && "text-base font-bold text-foreground")}>
+            Select a room to start chatting
+          </p>
+          {uxRefreshEnabled && (
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              Your draft and current conversation stay ready while you move around Charm.
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -696,7 +722,10 @@ export function ChatShell({
   return (
     <div
       data-testid="chat-shell"
-      className="relative flex min-w-0 flex-1 flex-col"
+      className={cn(
+        "relative flex min-w-0 flex-1 flex-col",
+        uxRefreshEnabled && "bg-[var(--ux-content-bg)]",
+      )}
       onDragEnter={handleDragEnter}
       onDragOver={handleAttachmentDragOver}
       onDragLeave={handleDragLeave}
@@ -738,6 +767,7 @@ export function ChatShell({
         }
         jumpToDateEnabled={jumpToDateEnabled}
         onJumpToDate={() => setJumpToDateOpen(true)}
+        onOpenMessageSearch={onOpenMessageSearch}
       />
       <div className="relative flex min-h-0 flex-1 flex-col">
         {/* Keep loading while older pages are auto-fetched for a renderable message;
@@ -745,22 +775,29 @@ export function ChatShell({
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
-        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && mobile && (
-          <div className="flex flex-1 items-center justify-center px-6 text-center">
-            <div className="flex max-w-xs flex-col items-center">
-              <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-                <MessageCircle className="size-6" aria-hidden="true" />
-              </span>
-              <p className="text-sm font-semibold text-foreground">No messages yet</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Send the first message to start the conversation.
-              </p>
+        {!loading &&
+          messages.length === 0 &&
+          !hasMore &&
+          !hasVisibleNotices &&
+          (mobile || uxRefreshEnabled) && (
+            <div className="flex flex-1 items-center justify-center px-6 text-center">
+              <div className="flex max-w-xs flex-col items-center">
+                <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+                  <MessageCircle className="size-6" aria-hidden="true" />
+                </span>
+                <p className="text-sm font-semibold text-foreground">No messages yet</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Send the first message to start the conversation.
+                </p>
+              </div>
             </div>
-          </div>
-        )}
-        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && !mobile && (
-          <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
-        )}
+          )}
+        {!loading &&
+          messages.length === 0 &&
+          !hasMore &&
+          !hasVisibleNotices &&
+          !mobile &&
+          !uxRefreshEnabled && <p className="p-4 text-sm text-muted-foreground">No messages yet</p>}
         {!loading && messages.length === 0 && hasVisibleNotices && (
           <div
             ref={noticeOnlyScrollerRef}
@@ -799,7 +836,7 @@ export function ChatShell({
             // enough messages to scroll, it grows to fit its own content
             // instead of owning the remaining chat pane, breaking viewport
             // measurement and potentially pushing the composer offscreen.
-            className="flex-1 p-4"
+            className={cn("flex-1 p-4", uxRefreshEnabled && "px-3 py-5 sm:px-6")}
             data={messages}
             firstItemIndex={firstItemIndex}
             initialTopMostItemIndex={messages.length - 1}
@@ -1067,6 +1104,7 @@ export function ChatShell({
           className={cn(
             "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
             mobile ? "px-2" : "px-3",
+            uxRefreshEnabled && "mx-auto w-full max-w-[64rem] px-3 sm:px-6",
           )}
         >
           <input
@@ -1079,6 +1117,8 @@ export function ChatShell({
             className={cn(
               "flex items-end border border-border bg-card",
               mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+              uxRefreshEnabled &&
+                "gap-1 rounded-[20px] border-[var(--ux-shell-border)] bg-[var(--ux-composer-bg)] p-1.5 shadow-[0_12px_35px_rgba(0,0,0,0.16)]",
             )}
             onPaste={handlePaste}
           >
@@ -1124,9 +1164,11 @@ export function ChatShell({
               onBlur={stopTyping}
               onEmptyChange={setIsComposerEmpty}
               onEditLastMessage={() => messageActionController.editLastMessage(messages)}
-              showFormattingToolbar={!mobile || showMobileFormatting}
+              showFormattingToolbar={
+                uxRefreshEnabled ? showMobileFormatting : !mobile || showMobileFormatting
+              }
             />
-            {mobile && (
+            {(mobile || uxRefreshEnabled) && (
               <button
                 type="button"
                 aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
