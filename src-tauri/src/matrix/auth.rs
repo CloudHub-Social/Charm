@@ -480,9 +480,8 @@ pub async fn reauthenticate_password(
     let expected_access_token = previous_session.tokens.access_token.clone();
     let account_key = persistence::account_key(expected_user_id.as_str());
     let homeserver_url = previous.homeserver().to_string();
-    let store_root = persistence::matrix_store_root_at(
-        &app.path().app_data_dir().map_err(|e| e.to_string())?,
-    )?;
+    let store_root =
+        persistence::matrix_store_root_at(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
 
     let saved = persistence::load_session(&account_key)?
         .ok_or_else(|| "the retained Matrix session is unavailable".to_string())?;
