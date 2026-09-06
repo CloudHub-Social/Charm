@@ -40,7 +40,7 @@ export function ReauthenticationScreen({
     }
   };
 
-  const useAnotherAccount = async () => {
+  const handleUseAnotherAccount = async () => {
     if (pending || loggingOut) return;
     setLoggingOut(true);
     setError(null);
@@ -75,7 +75,6 @@ export function ReauthenticationScreen({
               value={password}
               disabled={pending || loggingOut}
               onChange={(event) => setPassword(event.target.value)}
-              autoFocus
             />
           </div>
 
@@ -94,7 +93,7 @@ export function ReauthenticationScreen({
             type="button"
             variant="ghost"
             disabled={pending || loggingOut}
-            onClick={() => void useAnotherAccount()}
+            onClick={() => void handleUseAnotherAccount()}
           >
             {loggingOut ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : null}
             Use another account
