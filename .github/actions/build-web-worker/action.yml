@@ -39,6 +39,10 @@ runs:
     - run: pnpm build:web
       shell: bash
 
+    - name: Package license and notices
+      shell: bash
+      run: cp LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md dist/
+
     - name: Add Document-Policy header for static assets
       shell: bash
       # Cloudflare Workers Static Assets serves anything not matched by

@@ -25,6 +25,26 @@ into any user- or store-visible identifier (package name, Tauri
 `productName`/`identifier`, deep-link scheme, Cargo crate name). No `charm2`,
 `charm-2.0`, `Charm 2`, etc.
 
+## Contribution licensing and provenance
+
+Unless you conspicuously state otherwise, any contribution intentionally
+submitted to Charm is licensed under the repository's Apache-2.0 license as
+described in section 5 of that license. By submitting it, you represent that
+you have the right to do so. Preserve third-party copyright notices and call
+out copied or adapted code, assets, designs, and other material in the PR.
+
+Do not copy source, assets, build output, or substantial implementation detail
+from Sable Call or Element Call into Charm. Their code is not made Apache-2.0
+by being useful to this project. Charm's planned Sable Call integration is a
+separate-origin Matrix Widget API boundary; see the
+[licensing architecture](docs-site/src/content/docs/architecture/licensing-boundaries.md).
+
+AI-assisted contributions have the same provenance requirements as any other
+contribution. The human submitter must review and understand the change, check
+that generated material was not copied from an incompatible source, disclose
+known sources, and remove anything they cannot license to Charm. An AI tool's
+output is not proof of ownership or license compatibility.
+
 ## Quality gate
 
 Run these before opening a PR — they mirror CI:

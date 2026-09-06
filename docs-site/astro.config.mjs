@@ -89,6 +89,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Overview', slug: 'architecture/overview' },
 						{ label: 'Async reconciliation', slug: 'architecture/async-reconciliation' },
+						{ label: 'Licensing boundaries', slug: 'architecture/licensing-boundaries' },
 					],
 				},
 				{
