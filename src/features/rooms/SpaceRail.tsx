@@ -859,9 +859,7 @@ export function SpaceRail({
             )}
             <RailIconButton
               label="Direct messages"
-              active={
-                activeMode === "dms" && (!uxRefreshEnabled || !hasActiveDirectShortcut)
-              }
+              active={activeMode === "dms" && (!uxRefreshEnabled || !hasActiveDirectShortcut)}
               unread={uxRefreshEnabled ? railAttention.overflowUnread : directUnreadCount}
               highlight={uxRefreshEnabled ? railAttention.overflowHighlight : directHighlightCount}
               onClick={onSelectDms}
@@ -1161,12 +1159,7 @@ function DirectMessageShortcut({
               insideInteractiveParent
             />
           </Avatar>
-          <BadgeDot
-            unread={item.unread}
-            highlight={item.highlight}
-            uxRefresh
-            subduedUnread
-          />
+          <BadgeDot unread={item.unread} highlight={item.highlight} uxRefresh subduedUnread />
         </button>
       </TooltipTrigger>
       <TooltipContent side="right">{label}</TooltipContent>
