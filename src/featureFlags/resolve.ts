@@ -24,7 +24,11 @@ export function resolveFlag(
   remote: FeatureFlagRemote = {},
 ): boolean {
   const remoteValue = remote[key];
-  if (key === "encrypted_local_message_search" && remoteValue === false) return false;
+  if (
+    (key === "encrypted_local_message_search" || key === "ios_push_notifications") &&
+    remoteValue === false
+  )
+    return false;
   const override = overrides[key];
   if (typeof override === "boolean") return override;
   if (typeof remoteValue === "boolean") return remoteValue;

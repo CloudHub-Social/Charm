@@ -181,6 +181,10 @@ define_feature_flag_keys!(
         Polls,
         /// Spec 44 encrypted manual megolm key-file import and export.
         CryptoKeyFiles,
+        /// Spec 11 APNs device registration and Matrix pusher lifecycle on iOS.
+        /// Runtime delivery also requires a paid Apple Developer team and a
+        /// matching gateway credential, so this remains dark by default.
+        IosPushNotifications,
         /// Spec 47 appearance customization and display preferences.
         AppearanceParity,
     }
@@ -224,6 +228,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomDirectory => false,
             FeatureFlagKey::Polls => false,
             FeatureFlagKey::CryptoKeyFiles => false,
+            FeatureFlagKey::IosPushNotifications => false,
             FeatureFlagKey::AppearanceParity => false,
         }
     }
@@ -327,6 +332,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoKeyFiles => {
                 "Import or export standard passphrase-encrypted Matrix room-key files."
             }
+            FeatureFlagKey::IosPushNotifications => {
+                "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider."
+            }
             FeatureFlagKey::AppearanceParity => {
                 "Customize appearance and display preferences, including clock and date formats."
             }
@@ -380,6 +388,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
             FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
+            FeatureFlagKey::IosPushNotifications => "Spec 11 (push notifications)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
         }
     }
@@ -421,6 +430,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomDirectory => "room_directory",
             FeatureFlagKey::Polls => "polls",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
+            FeatureFlagKey::IosPushNotifications => "ios_push_notifications",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
         }
     }
@@ -565,8 +575,10 @@ pub fn resolve(
     overrides: &BTreeMap<String, bool>,
     remote: &BTreeMap<String, bool>,
 ) -> bool {
-    if key == FeatureFlagKey::EncryptedLocalMessageSearch
-        && remote.get(key.as_wire_key()) == Some(&false)
+    if matches!(
+        key,
+        FeatureFlagKey::EncryptedLocalMessageSearch | FeatureFlagKey::IosPushNotifications
+    ) && remote.get(key.as_wire_key()) == Some(&false)
     {
         return false;
     }
@@ -727,6 +739,17 @@ mod tests {
             FeatureFlagKey::EncryptedLocalMessageSearch,
             &override_on,
             &remote_on
+        ));
+    }
+
+    #[test]
+    fn remote_false_vetoes_ios_push_override() {
+        let override_on = overrides(&[("ios_push_notifications", true)]);
+        let remote_off = overrides(&[("ios_push_notifications", false)]);
+        assert!(!resolve(
+            FeatureFlagKey::IosPushNotifications,
+            &override_on,
+            &remote_off
         ));
     }
 

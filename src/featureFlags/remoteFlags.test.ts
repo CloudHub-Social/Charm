@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => false),
@@ -279,6 +280,28 @@ describe("remote cache when no endpoint is configured", () => {
     expect(
       JSON.parse(localStorage.getItem("charm:featureFlagsRemote") ?? "{}").state.remote,
     ).toEqual({});
+  });
+
+  it("versions a native flag after clearing its stale startup cache", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    localStorage.setItem(
+      "charm:featureFlagsRemote",
+      JSON.stringify({
+        state: { remote: { ios_push_notifications: true } },
+        updatedAt: 1,
+      }),
+    );
+    const mod = await import("./index");
+    const version = renderHook(() =>
+      mod.useFeatureFlagPersistenceVersion("ios_push_notifications"),
+    );
+
+    await act(async () => {
+      await mod.initializeFeatureFlags();
+    });
+
+    expect(version.result.current).toBe(1);
+    expect(mod.getFlag("ios_push_notifications")).toBe(false);
   });
 
   it("does not mint a durable install id when no endpoint is configured", async () => {

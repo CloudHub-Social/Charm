@@ -3,7 +3,7 @@ title: "Charm 2.0 Spec — Push notifications"
 type: spec
 project: Charm 2.0
 created: "2026-07-04"
-status: shipped
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. **Tier:** Day-1 launch-critical.
@@ -22,17 +22,42 @@ workstream in the launch set.
 
 ## Current state (in repo)
 
-- Session + crypto persistence exist: matrix-sdk `sqlite` + `e2e-encryption` features
-  (`src-tauri/Cargo.toml`), SQLCipher store + keychain key (`matrix/persistence.rs`), sync
-  loop in `matrix/mod.rs` (`spawn_sync_loop`) emitting `sync:state` / `room_list:update` /
-  `timeline:update`.
-- **Local** OS notifications are Spec 10 (`tauri-plugin-notification`, fired in-app on new
-  messages). **No** pusher registration, **no** push gateway integration, **no** UnifiedPush
-  or APNs plumbing, **no** background/headless decrypt path.
-- No mobile capability files yet; `capabilities/default.json` is desktop-scoped.
-- `matrix-sdk` is present; its `push` module (`Ruleset` / `m.push_rules`) and
-  `HttpPusherData` / `set_pusher` client APIs are available but unused.
-- No `NotificationTransport` abstraction exists yet.
+- The cross-platform `NotificationTransport`, Matrix `event_id_only` pusher lifecycle,
+  persisted endpoint cleanup, push status UI, encrypted-event fetch/decrypt, safe generic
+  fallback, push-rule evaluation, and notification dedupe are implemented.
+- Android has its UnifiedPush/FCM native bridge and headless decrypt entry point. Its killed-app
+  delivery and gateway paths still require the real-device/integration gates below.
+- iOS APNs token registration is implemented behind the default-off
+  `ios_push_notifications` flag using the pinned notification plugin revision
+  `1e0e9ee7464a553d891598bf4376d444b05bed3c` (MIT). The plugin supplies the Swift
+  application-delegate bridge; Charm owns the Matrix pusher and privacy lifecycle.
+  The native plugin owns the token completely; Charm grants the renderer no token-event
+  permission, and the token payload never crosses Charm IPC or enters frontend caches.
+  Rust re-reads the native token after restore and whenever the app foregrounds, only
+  for an already-enabled registration and the exact current user/device. A rotation
+  received while suspended is therefore reconciled on the next foreground or restart.
+  Registration, refresh, and opt-out share session/lifecycle exclusion. A failed
+  rotated-token refresh retains native registration plus durable cleanup/retry state,
+  but reports push inactive until the new pusher is confirmed; it never unregisters the
+  whole app while pretending the restored old token remains usable. Opt-out continues
+  platform and homeserver cleanup even when its initial disabled-state write fails, but
+  reports the operation incomplete and keeps conservative registered UI until the stale
+  enabled record is removed or replaced by a durable opt-out veto.
+  When the remote flag turns off, the next authenticated foreground refresh
+  runs that same bounded platform and homeserver teardown for any persisted
+  APNs registration; the flag is therefore an operational kill switch, not
+  only a registration-UI gate. An explicit remote `false` hard-vetoes a Labs
+  override, and each durable remote/override change triggers native
+  reconciliation without waiting for another foreground transition.
+  Android rotations carry forward every retired pusher until deletion succeeds.
+  Lifecycle and transport regressions await CI, and do not
+  replace the physical-device delivery gates below.
+- iOS killed/background delivery is **not complete**: the Notification Service Extension target,
+  shared App Group crypto access, and extension-to-Rust decrypt bridge remain to be implemented
+  and verified.
+- Live iOS delivery remains externally gated on a paid Apple Developer team, a Push-enabled App
+  ID/profile, and a matching APNs provider credential in the gateway. Personal Team
+  AltStore/SideStore re-signing cannot provide that remote-push capability.
 
 ## Scope (in)
 
@@ -123,6 +148,21 @@ workstream in the launch set.
 - **iOS**: enable Push Notifications + Background Modes capabilities in the Xcode project Tauri
   generates; add a **Notification Service Extension** target that links the Rust core; register
   for remote notifications to get the APNs token via Tauri v2 mobile push APIs.
+
+### iOS upstream provenance
+
+- Audited source: `Just-Insane/tauri-plugin-notifications` at
+  `1e0e9ee7464a553d891598bf4376d444b05bed3c` (retrieved 2026-09-05). This revision is
+  based on `SableClient/tauri-plugin-notifications` commit
+  `758156fd9b1cbc99c83062194a2a59c411b5907f` and adds an opt-in boundary for generic
+  push-token events. Charm pins the exact hardened commit rather than a floating branch.
+- The plugin is MIT licensed. The imported seam is limited to its maintained Tauri/Swift APNs
+  registration bridge; no AGPL Sable application code or assets are copied.
+- Sable's open issue #376 documents that its own AltStore build still lacks operational push
+  because APNs provider credentials and eligible signing are unresolved. Charm therefore treats
+  this as reusable client plumbing, not evidence of end-to-end delivery.
+- The APNs token is device/app scoped. Charm does not log it or send it to telemetry; it is used
+  only as the Matrix pusher key and is removed on push disable/logout.
 - Capability files: add `src-tauri/capabilities/mobile.json` (or per-platform) granting
   `notification:default` and any push permissions; keep desktop capabilities unchanged.
 
@@ -240,10 +280,18 @@ delivery, and push-triggered background decrypt/display. APNs requires the
 app's App ID/provisioning profile to carry the Push Notifications
 capability, and the gateway needs an Apple push key/certificate — both are
 paid-Apple-Developer-Program-only. Separately (not a signing-tier issue):
-**this repo's iOS APNs Rust/Swift bridge is still a documented stub** —
-confirm current state before assuming this is purely a signing-tier
-limitation; the settings UI should report no available iOS push transport
-until that native plugin work actually lands.
+The iOS APNs Rust/Swift registration bridge is now implemented behind the
+default-off `ios_push_notifications` flag, but enabling that flag does not
+remove either the paid signing/provider requirement or the still-missing
+Notification Service Extension background-decrypt path.
+
+The settings turn-off control remains available for persisted registrations
+even when the registration feature flag is off. Native cleanup also constructs
+the platform transport independently of this gate, including after process
+restart, and foreground refresh invokes it when the flag has been disabled;
+new registrations still require the flag. This cleanup path needs
+remote/platform verification. APNs token refresh after session restoration is
+implemented; only native-device verification remains before this slice is release-ready.
 
 **Testable on Personal Team signing regardless:** app launch, WebView
 rendering, Matrix login, normal foreground sync, local storage/Keychain

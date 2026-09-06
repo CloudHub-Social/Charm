@@ -3,17 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GeneralPanel } from "./GeneralPanel";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
-const isPermissionGranted = vi.fn();
-const requestPermission = vi.fn();
+const isNotificationPermissionGranted = vi.fn();
+const requestNotificationPermission = vi.fn();
 
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  isPermissionGranted: (...args: unknown[]) => isPermissionGranted(...args),
-  requestPermission: (...args: unknown[]) => requestPermission(...args),
+vi.mock("@/lib/matrix", () => ({
+  isNotificationPermissionGranted: (...args: unknown[]) => isNotificationPermissionGranted(...args),
+  requestNotificationPermission: (...args: unknown[]) => requestNotificationPermission(...args),
 }));
 
 beforeEach(() => {
-  isPermissionGranted.mockReset().mockResolvedValue(false);
-  requestPermission.mockReset().mockResolvedValue("granted");
+  isNotificationPermissionGranted.mockReset().mockResolvedValue(false);
+  requestNotificationPermission.mockReset().mockResolvedValue("granted");
 });
 
 describe("GeneralPanel", () => {
@@ -26,11 +26,11 @@ describe("GeneralPanel", () => {
     renderWithProviders(<GeneralPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Enable" }));
 
-    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(requestNotificationPermission).toHaveBeenCalled());
   });
 
   it("shows Enabled instead of a button once notifications are granted", async () => {
-    isPermissionGranted.mockResolvedValue(true);
+    isNotificationPermissionGranted.mockResolvedValue(true);
     renderWithProviders(<GeneralPanel />);
 
     expect(await screen.findByText("Enabled")).toBeInTheDocument();
