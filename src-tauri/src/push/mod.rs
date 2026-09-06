@@ -865,6 +865,7 @@ async fn refresh_existing_endpoint(
     Ok(endpoint)
 }
 
+#[cfg(any(target_os = "android", target_os = "ios", test))]
 fn active_record_after_rotation(
     previous: &PersistedPushEndpoint,
     endpoint: &PushEndpoint,
