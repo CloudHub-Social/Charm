@@ -675,6 +675,14 @@ pub async fn refresh_push_registration(
         let Some(mut previous) = load_persisted_endpoint(&app, &account_key) else {
             return Ok(());
         };
+        if active_transport(&app).is_none() {
+            // A rollout disable is an operational kill switch, not merely a
+            // UI admission check. Drop this guard before the shared teardown
+            // path reacquires it, then remove the OS and homeserver pushers
+            // while the authenticated session is still available.
+            drop(_push_guard);
+            return unregister_push_impl(&app, &state).await;
+        }
         if previous.staged {
             let cleanup_complete = finish_remote_push_cleanup(
                 client.pusher().delete(PusherIds::new(

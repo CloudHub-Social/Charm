@@ -43,6 +43,10 @@ workstream in the launch set.
   platform and homeserver cleanup even when its initial disabled-state write fails, but
   reports the operation incomplete and keeps conservative registered UI until the stale
   enabled record is removed or replaced by a durable opt-out veto.
+  When the remote flag turns off, the next authenticated foreground refresh
+  runs that same bounded platform and homeserver teardown for any persisted
+  APNs registration; the flag is therefore an operational kill switch, not
+  only a registration-UI gate.
   Android rotations carry forward every retired pusher until deletion succeeds.
   Lifecycle and transport regressions await CI, and do not
   replace the physical-device delivery gates below.
@@ -282,7 +286,8 @@ Notification Service Extension background-decrypt path.
 The settings turn-off control remains available for persisted registrations
 even when the registration feature flag is off. Native cleanup also constructs
 the platform transport independently of this gate, including after process
-restart; new registrations still require the flag. This cleanup path needs
+restart, and foreground refresh invokes it when the flag has been disabled;
+new registrations still require the flag. This cleanup path needs
 remote/platform verification. APNs token refresh after session restoration is
 implemented; only native-device verification remains before this slice is release-ready.
 
