@@ -3,7 +3,12 @@ import path from "node:path";
 
 const changesetDirectory = ".changeset";
 const expectConsumed = process.argv.includes("--expect-consumed");
-const entries = await readdir(changesetDirectory, { withFileTypes: true });
+let entries = [];
+try {
+  entries = await readdir(changesetDirectory, { withFileTypes: true });
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
 const changesetFiles = entries
   .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
   .map((entry) => entry.name)
