@@ -1488,6 +1488,7 @@ pub fn run() {
             had_unclean_previous_session,
             forward_sentry_envelope,
             matrix::auth::login,
+            matrix::auth::reauthenticate_password,
             matrix::auth::register,
             matrix::auth::begin_registration,
             matrix::auth::request_registration_email,
