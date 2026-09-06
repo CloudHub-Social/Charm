@@ -26,11 +26,15 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    Record the full SHA; simulator CI is repository evidence, not physical-device proof.
 2. Use a disposable worktree or copy. Do not edit a shared checkout or reuse an
    uncommitted generated Xcode scheme.
-3. Ensure Xcode is signed in with the device owner's Apple Account and the required
+3. With the repository owner's dependency-install confirmation, bootstrap the clean
+   worktree with `pnpm install --frozen-lockfile`. The generated Xcode pre-build phase
+   invokes the repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
+4. Ensure Xcode is signed in with the device owner's Apple Account and the required
    Rust iOS targets are installed.
-4. Open the generated `src-tauri/gen/apple/charm.xcodeproj` project. If regeneration
+5. Open the generated `src-tauri/gen/apple/charm.xcodeproj` project. If regeneration
    is required, the device owner runs `pnpm tauri ios dev --open`; automated agents
-   on managed Charm workstations do not run local build or verification commands.
+   do not invoke Tauri/Xcode device builds or perform signing actions. Documentation
+   changes still follow the validation policy in `docs-site/AGENTS.md`.
 
 ## Personal Team signing
 

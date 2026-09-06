@@ -103,6 +103,7 @@ export default defineConfig({
 					label: 'Operations',
 					items: [
 						{ label: 'Platform overview', slug: 'operations/overview' },
+						{ label: 'Personal Apple device', slug: 'operations/personal-apple-device' },
 						{ label: 'Sentry observability', slug: 'operations/sentry' },
 						{ label: 'Rust companion API', slug: 'operations/web-server' },
 						{ label: 'Cloudflare previews', slug: 'operations/cloudflare-previews' },
