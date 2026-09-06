@@ -133,7 +133,7 @@ Responsive behavior:
 
 - **Wide (≥1200px):** rail, room sidebar, conversation, and optional context panel.
 - **Medium (768–1199px):** rail, sidebar, and conversation; context content overlays.
-- **Compact (<768px):** one pushed pane at a time, native back behavior, safe-area
+- **Compact (&lt;768px):** one pushed pane at a time, native back behavior, safe-area
   and software-keyboard handling, and bottom navigation for top-level destinations.
 
 Breakpoint transitions preserve deep links, active room, draft, scroll anchor,
