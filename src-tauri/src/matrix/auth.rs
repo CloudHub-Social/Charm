@@ -756,6 +756,29 @@ pub async fn login(
         // present at a time.
         let _ = persistence::clear_oauth_session(&account_key);
 
+        let client = match reopen_relocated_matrix_client(
+            &app,
+            client,
+            &account_key,
+            &homeserver_url,
+            &session,
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(error) => {
+                restore_unaffected_account(
+                    &app,
+                    &state,
+                    previous_client.as_ref(),
+                    &account_key,
+                    previous_timelines,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
         install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
         let response = LoginResponse {
@@ -1040,6 +1063,41 @@ pub(crate) async fn build_client(
     let store_root =
         persistence::matrix_store_root_at(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
     build_client_at(&store_root, homeserver_url, store_key).await
+}
+
+/// Reopens a just-authenticated Matrix client after its encrypted store has
+/// been relocated from a temporary login directory to the account directory.
+///
+/// SQLite connections retain the path they were opened with. Continuing to
+/// use `client` after `relocate_store_and_save_session` renames that directory
+/// works only until the SDK lazily opens another database (notably the event
+/// cache), at which point mobile platforms report `unable to open database
+/// file` for the now-missing `tmp-*` path. Drop every handle owned by the
+/// temporary client, then restore the same session into a client opened at
+/// the permanent path before installing callbacks or starting sync.
+async fn reopen_relocated_matrix_client(
+    app: &AppHandle,
+    client: Client,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &matrix_sdk::authentication::matrix::MatrixSession,
+) -> Result<Client, String> {
+    drop(client);
+
+    let client = build_client(app, homeserver_url, account_key)
+        .await
+        .map_err(|error| {
+            format!("login was saved, but its account store could not be reopened: {error}")
+        })?;
+    client
+        .matrix_auth()
+        .restore_session(session.clone(), RoomLoadSettings::default())
+        .await
+        .map_err(|error| {
+            format!("login was saved, but its session could not be restored: {error}")
+        })?;
+
+    Ok(client)
 }
 
 /// Encryption behavior shared by every live desktop and web client.
@@ -1437,6 +1495,29 @@ async fn finish_registration(
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    let client = match reopen_relocated_matrix_client(
+        &app,
+        client,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) => {
+            restore_unaffected_account(
+                &app,
+                state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return Err(error);
+        }
+    };
 
     install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
@@ -4755,6 +4836,29 @@ pub async fn complete_sso_login(
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    let client = match reopen_relocated_matrix_client(
+        &app,
+        client,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) => {
+            restore_unaffected_account(
+                &app,
+                &state,
+                previous_client.as_ref(),
+                &account_key,
+                previous_timelines,
+            )
+            .await;
+            return Err(error);
+        }
+    };
 
     install_session_callbacks(&client, &account_key, &homeserver_url)?;
 
