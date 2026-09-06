@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..AppState::default()
     };
 
+    spawn_pending_revocation_sweeper(state.sessions.clone(), persistence.clone());
     if let Some(persistence) = &persistence {
         match persistence.persisted_crypto_store_keys().await {
             Ok(persisted_store_keys) => {
@@ -194,6 +195,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Retries token revocation for sessions already removed from browser
+/// authentication. This runs even without durable persistence so an
+/// in-memory-only deployment does not drop its sole revocable client after a
+/// transient homeserver failure.
+fn spawn_pending_revocation_sweeper(
+    sessions: charm_web_server::session::SessionStore,
+    persistence: Option<Arc<PersistenceStore>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(charm_web_server::session::SWEEP_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            for (token, session) in sessions.take_pending_revocations() {
+                if let Err(error) =
+                    charm_web_server::persistence::revoke_matrix_session(&session.client).await
+                {
+                    tracing::warn!(
+                        "failed to revoke quarantined Matrix session; retaining it for retry: {error}"
+                    );
+                    sessions.retain_for_revocation(token, session);
+                    continue;
+                }
+                if let Some(persistence) = &persistence {
+                    let live_crypto = session
+                        .persisted_crypto
+                        .as_ref()
+                        .map(|crypto| (crypto.store_key.as_str(), crypto.passphrase.as_str()));
+                    if let Err(error) = persistence.remove(&token, live_crypto).await {
+                        tracing::warn!(
+                            "failed to remove revoked quarantined session storage: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
@@ -279,8 +319,7 @@ fn spawn_idle_session_sweeper(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let mut evicted = sessions.take_pending_revocations();
-            evicted.extend(sessions.sweep_idle(idle_timeout).await);
+            let evicted = sessions.sweep_idle(idle_timeout).await;
             if evicted.is_empty() {
                 continue;
             }

@@ -2548,7 +2548,12 @@ async fn logout(
                             .retain_for_revocation(token.clone(), Arc::clone(&session));
                     }
                 } else if let Err(error) = revoked {
-                    tracing::warn!("failed to revoke non-persisted Matrix session: {error}");
+                    tracing::warn!(
+                        "failed to revoke in-memory-only Matrix session; retaining it for retry: {error}"
+                    );
+                    state
+                        .sessions
+                        .retain_for_revocation(token.clone(), Arc::clone(&session));
                 }
                 state.sessions.forget_evicted_presence(&token);
             } else if let Some(persistence) = &state.persistence {
