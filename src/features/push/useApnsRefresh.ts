@@ -1,9 +1,11 @@
 import { useEffect } from "react";
 import { refreshPushRegistration } from "@/lib/matrix";
 import { preloadPlatformTag } from "@/lib/platform";
+import { useFeatureFlagPersistenceVersion } from "@/featureFlags";
 
 /** One listener per signed-in session, including restored and onboarding sessions. */
 export function useApnsRefresh(userId?: string, deviceId?: string) {
+  const persistedFlagVersion = useFeatureFlagPersistenceVersion("ios_push_notifications");
   useEffect(() => {
     if (!userId || !deviceId) return;
     let active = true;
@@ -35,5 +37,5 @@ export function useApnsRefresh(userId?: string, deviceId?: string) {
       active = false;
       document.removeEventListener("visibilitychange", foreground);
     };
-  }, [userId, deviceId]);
+  }, [userId, deviceId, persistedFlagVersion]);
 }

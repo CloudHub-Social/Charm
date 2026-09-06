@@ -4,14 +4,29 @@ import { useApnsRefresh } from "./useApnsRefresh";
 
 const refresh = vi.fn();
 const platform = vi.fn();
+let persistedFlagVersion = 0;
 vi.mock("@/lib/matrix", () => ({
   refreshPushRegistration: (...args: unknown[]) => refresh(...args),
 }));
 vi.mock("@/lib/platform", () => ({ preloadPlatformTag: () => Promise.resolve(platform()) }));
+vi.mock("@/featureFlags", () => ({
+  useFeatureFlagPersistenceVersion: () => persistedFlagVersion,
+}));
 
 beforeEach(() => {
   refresh.mockReset().mockResolvedValue(undefined);
   platform.mockReset().mockReturnValue("ios");
+  persistedFlagVersion = 0;
+});
+
+it("reconciles APNs after a remote flag value is persisted", async () => {
+  const view = renderHook(() => useApnsRefresh("@alice:example.org", "DEVICE"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+
+  persistedFlagVersion = 1;
+  view.rerender();
+
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
 });
 
 it("refreshes the restored session and on each foreground transition", async () => {

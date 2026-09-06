@@ -561,8 +561,10 @@ pub fn resolve(
     overrides: &BTreeMap<String, bool>,
     remote: &BTreeMap<String, bool>,
 ) -> bool {
-    if key == FeatureFlagKey::EncryptedLocalMessageSearch
-        && remote.get(key.as_wire_key()) == Some(&false)
+    if matches!(
+        key,
+        FeatureFlagKey::EncryptedLocalMessageSearch | FeatureFlagKey::IosPushNotifications
+    ) && remote.get(key.as_wire_key()) == Some(&false)
     {
         return false;
     }
@@ -723,6 +725,17 @@ mod tests {
             FeatureFlagKey::EncryptedLocalMessageSearch,
             &override_on,
             &remote_on
+        ));
+    }
+
+    #[test]
+    fn remote_false_vetoes_ios_push_override() {
+        let override_on = overrides(&[("ios_push_notifications", true)]);
+        let remote_off = overrides(&[("ios_push_notifications", false)]);
+        assert!(!resolve(
+            FeatureFlagKey::IosPushNotifications,
+            &override_on,
+            &remote_off
         ));
     }
 

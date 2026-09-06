@@ -46,7 +46,9 @@ workstream in the launch set.
   When the remote flag turns off, the next authenticated foreground refresh
   runs that same bounded platform and homeserver teardown for any persisted
   APNs registration; the flag is therefore an operational kill switch, not
-  only a registration-UI gate.
+  only a registration-UI gate. An explicit remote `false` hard-vetoes a Labs
+  override, and each durable remote/override change triggers native
+  reconciliation without waiting for another foreground transition.
   Android rotations carry forward every retired pusher until deletion succeeds.
   Lifecycle and transport regressions await CI, and do not
   replace the physical-device delivery gates below.
