@@ -12,11 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import {
-  bootstrapCrossSigning,
-  type DeviceSummary,
-  type RecoverySetupSummary,
-} from "@/lib/matrix";
+import { bootstrapCrossSigning, type DeviceSummary, type RecoverySetupSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
