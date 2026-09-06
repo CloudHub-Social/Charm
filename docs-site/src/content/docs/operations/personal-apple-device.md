@@ -60,7 +60,11 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    If signing fails, remove `aps-environment` and
    `com.apple.security.application-groups` only from the disposable Xcode project.
    Do not commit that downgrade.
-5. Unlock the device, press **Run** in Xcode, and accept the device's developer trust
+5. On iOS/iPadOS 16 or later, enable **Settings → Privacy & Security → Developer
+   Mode**, restart the device when prompted, and confirm Developer Mode after the
+   restart. If the setting is not visible yet, reconnect the unlocked device to Xcode
+   and attempt **Run** once so iOS offers it, then complete the restart flow.
+6. Unlock the device, press **Run** in Xcode, and accept the device's developer trust
    prompt if one appears.
 
 Record the source SHA, Xcode version, device model and OS, development bundle
@@ -85,7 +89,11 @@ time. A Personal Team build is accepted as a personal daily-driver when it passe
   soft logout;
 - existing-history and new-message decryption in encrypted rooms;
 - two-way text, reply, edit, reaction, redaction, media, voice message, receipts,
-  typing, invites, polls, and threads when their flags are enabled;
+  typing, and invites;
+- polls only after [Day-2 Spec 03](/specs/day-2/spec-03--polls/) has merged into the
+  recorded source SHA, and threads only after
+  [Day-2 Spec 01](/specs/day-2/spec-01--threads/) has landed; neither blocks the
+  baseline while its implementation is unreleased;
 - offline send and reconnect, Wi-Fi changes, foreground/background transitions,
   process termination/relaunch, and device restart;
 - supported foreground notification behavior and honest unavailable state for
