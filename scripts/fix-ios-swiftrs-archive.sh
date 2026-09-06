@@ -11,7 +11,7 @@ fi
 # Xcode 27's linker cannot satisfy swift-rs' runtime references when every
 # duplicate SwiftRs.o member keeps the helper functions local. Export one copy
 # and leave the remaining plugin copies local to avoid duplicate definitions.
-if xcrun nm "$archive" 2>/dev/null | grep -q ' T _release_object$'; then
+if xcrun nm "$archive" 2>/dev/null | grep ' T _release_object$' >/dev/null; then
   exit 0
 fi
 
@@ -38,7 +38,7 @@ cd "$scratch"
 "$ar_tool" q "$archive" SwiftRs.o
 "$ar_tool" s "$archive"
 
-if ! xcrun nm "$archive" 2>/dev/null | grep -q ' T _release_object$'; then
+if ! xcrun nm "$archive" 2>/dev/null | grep ' T _release_object$' >/dev/null; then
   print -u2 "SwiftRs archive fix did not export the runtime helper symbols"
   exit 1
 fi
