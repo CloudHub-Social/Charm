@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ios-push-events",
+  "description": "APNs registration stays behind Charm's Rust commands; the renderer receives no token events",
+  "windows": ["main"],
+  "platforms": ["iOS"],
+  "permissions": []
+}

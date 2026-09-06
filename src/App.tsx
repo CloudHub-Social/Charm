@@ -13,6 +13,7 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 import { resetPrivacySettingsWriteQueue } from "@/features/settings/usePrivacySettings";
 import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents";
 import { resetRoomSendQueueBarrier } from "@/features/rooms/useRoomSendQueueBarrier";
+import { useApnsRefresh } from "@/features/push/useApnsRefresh";
 import { RoomKeyFilesSessionProvider } from "@/features/settings/RoomKeyFilesCard";
 
 interface AppProps {
@@ -33,6 +34,7 @@ interface AppProps {
  */
 function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
+  useApnsRefresh(session?.user_id, session?.device_id);
   const [restoring, setRestoring] = useState(true);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreAttempt, setRestoreAttempt] = useState(0);

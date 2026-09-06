@@ -187,6 +187,12 @@
   },
   {
     "default": false,
+    "description": "Create, vote in, and display Matrix polls, with creator-only poll closure.",
+    "key": "polls",
+    "owner": "Day-2 Spec 03 (polls)"
+  },
+  {
+    "default": false,
     "description": "Set up Matrix secret storage and server-side encrypted room-key backup.",
     "key": "crypto_backup_setup",
     "owner": "Spec 44 (crypto key backup and import/export)"
@@ -196,6 +202,12 @@
     "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
     "key": "crypto_key_files",
     "owner": "Spec 44 (crypto key backup and import/export)"
+  },
+  {
+    "default": false,
+    "description": "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider.",
+    "key": "ios_push_notifications",
+    "owner": "Spec 11 (push notifications)"
   },
   {
     "default": false,

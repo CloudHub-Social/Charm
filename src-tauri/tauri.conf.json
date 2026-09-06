@@ -74,6 +74,9 @@
           "charm"
         ]
       }
+    },
+    "notifications": {
+      "exposePushTokenEvents": false
     }
   }
 }

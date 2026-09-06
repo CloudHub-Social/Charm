@@ -584,6 +584,81 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         formatted_body: args.formattedBody,
         mentions: args.mentions,
       });
+    case "create_poll":
+      return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/polls`, {
+        question: args.question,
+        options: args.options,
+        disclosed: args.disclosed,
+      });
+    case "vote_on_poll":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote`,
+        { answer_id: args.answerId },
+      );
+    case "get_pending_poll_vote":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote`,
+      );
+    case "get_pending_poll_relations":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/poll-relations/pending`,
+      );
+    case "retry_poll_vote":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote/${encodeSegment(String(args.transactionId))}/retry`,
+      );
+    case "discard_poll_vote":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/vote/${encodeSegment(String(args.transactionId))}`,
+      );
+    case "end_poll":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end`,
+      );
+    case "retry_poll_end":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end/${encodeSegment(String(args.transactionId))}/retry`,
+      );
+    case "discard_poll_end":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end/${encodeSegment(String(args.transactionId))}`,
+      );
+    case "get_pending_poll_end":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end`,
+      );
+    case "confirm_poll_end_synced":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/polls/${encodeSegment(
+          String(args.pollEventId),
+        )}/end`,
+      );
     case "send_reply":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/reply`, {
         in_reply_to_event_id: args.inReplyToEventId,

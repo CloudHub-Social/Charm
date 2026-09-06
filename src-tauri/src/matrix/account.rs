@@ -367,10 +367,12 @@ async fn clear_local_session_locked(
         );
     }
 
-    // Do not remove notifications while a failed durable sign-out retains
-    // the live account. After admission, clean push before clearing client.
-    if let Err(e) = crate::push::unregister_push_impl(app, state).await {
-        eprintln!("failed to unregister push during logout/deactivate: {e}");
+    // Only remove push after logout has a durable restore veto. If storage
+    // failures retain the live session for retry, its notifications must stay
+    // registered too. The live SDK client remains available for the bounded
+    // homeserver deletion even though local credential files are now cleared.
+    if crate::push::unregister_push_impl(app, state).await.is_err() {
+        tracing::warn!(command = "logout", status = "push_cleanup_record_failed");
     }
 
     // A recovery credential is not a login credential. Failure to remove it
@@ -523,7 +525,6 @@ pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(),
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-
     let result = clear_local_session_locked(
         &app,
         &state,

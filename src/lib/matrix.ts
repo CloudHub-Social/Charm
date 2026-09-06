@@ -27,6 +27,9 @@ import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
 import type { NotificationSettingsSummary } from "@bindings/NotificationSettingsSummary";
 import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
+import type { PollAnswerSummary } from "@bindings/PollAnswerSummary";
+import type { PollKindSummary } from "@bindings/PollKindSummary";
+import type { PollSummary } from "@bindings/PollSummary";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { PrivacySettings } from "@bindings/PrivacySettings";
@@ -174,6 +177,9 @@ export type {
   NotificationSettingsSummary,
   OwnProfile,
   PinnedMessageSummary,
+  PollAnswerSummary,
+  PollKindSummary,
+  PollSummary,
   PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
@@ -535,6 +541,107 @@ export function sendMessage(
   });
 }
 
+/** Creates an MSC3381 single-select poll via the Matrix send queue. */
+export function createPoll(
+  roomId: string,
+  question: string,
+  options: string[],
+  disclosed: boolean,
+): Promise<string> {
+  return invokeMatrix("create_poll", { roomId, question, options, disclosed });
+}
+
+/** Sends a response relation; the latest valid response from a user wins. */
+export function voteOnPoll(roomId: string, pollEventId: string, answerId: string): Promise<string> {
+  return invokeMatrix("vote_on_poll", { roomId, pollEventId, answerId });
+}
+
+export interface PendingPollVote {
+  transaction_id: string;
+  answer_id: string;
+  failed: boolean;
+}
+
+/** Returns a queued poll response so failures remain recoverable after remount/restart. */
+export function getPendingPollVote(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollVote | null> {
+  return invokeMatrix("get_pending_poll_vote", { roomId, pollEventId });
+}
+
+/** Retries one asynchronously failed poll response under the poll mutation lock. */
+export function retryPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_vote", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one asynchronously failed poll response under the poll mutation lock. */
+export function discardPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_vote", { roomId, pollEventId, transactionId });
+}
+
+/** Ends an open poll and returns the send-queue transaction id. */
+export function endPoll(roomId: string, pollEventId: string): Promise<string> {
+  return invokeMatrix("end_poll", { roomId, pollEventId });
+}
+
+/** Retries one failed poll close and preserves its shared mutation lock. */
+export function retryPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_end", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one failed poll close without racing a concurrent retry. */
+export function discardPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_end", { roomId, pollEventId, transactionId });
+}
+
+export interface PendingPollEnd {
+  transaction_id: string;
+  failed: boolean;
+}
+
+export interface PendingPollRelation {
+  poll_event_id: string;
+  transaction_id: string;
+  kind: "vote" | "end";
+  answer_id: string | null;
+  failed: boolean;
+}
+
+/** Lists poll relations independently of whether their target event is loaded. */
+export function getPendingPollRelations(roomId: string): Promise<PendingPollRelation[]> {
+  return invokeMatrix("get_pending_poll_relations", { roomId });
+}
+
+/** Returns the queued poll-close state, including after a row remount. */
+export function getPendingPollEnd(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollEnd | null> {
+  return invokeMatrix("get_pending_poll_end", { roomId, pollEventId });
+}
+
+/** Releases the shared close lock after the synced timeline reports the poll ended. */
+export function confirmPollEndSynced(roomId: string, pollEventId: string): Promise<void> {
+  return invokeMatrix("confirm_poll_end_synced", { roomId, pollEventId });
+}
+
 /** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */
 export function runCommand(
   roomId: string,
@@ -615,11 +722,13 @@ export function sendReply(
 /**
  * Retries a failed message send in place via the send queue's own retry
  * primitive (`SendHandle::unwedge`), rather than re-composing and sending
- * new content. `transactionId` is the failed local echo's
+ * new content. Resolves `true` only when the local echo was still present
+ * and was actually unwedgeable; `false` means another renderer already
+ * removed it. `transactionId` is the failed local echo's
  * `RoomMessageSummary.transaction_id` (present while `send_state.state` is
  * `"error"`).
  */
-export function resendMessage(roomId: string, transactionId: string): Promise<void> {
+export function resendMessage(roomId: string, transactionId: string): Promise<boolean> {
   return invoke("resend_message", { roomId, transactionId });
 }
 
@@ -1405,8 +1514,29 @@ export function onSpaceChildrenUpdate(callback: (spaceId: string) => void): Prom
  * it obtains a UnifiedPush/FCM/APNs endpoint and registers it as a pusher
  * with the homeserver.
  */
+export function refreshPushRegistration(
+  expectedUserId: string,
+  expectedDeviceId: string,
+): Promise<void> {
+  return invoke(
+    "refresh_push_registration",
+    { expectedUserId, expectedDeviceId },
+    { captureOnError: false },
+  );
+}
+
 export function registerPush(): Promise<PushRegistration> {
   return invoke("register_push");
+}
+
+export function requestNotificationPermission(): Promise<
+  "granted" | "denied" | "prompt" | "prompt-with-rationale"
+> {
+  return invoke("request_notification_permission");
+}
+
+export function isNotificationPermissionGranted(): Promise<boolean> {
+  return invoke("is_notification_permission_granted");
 }
 
 export function unregisterPush(): Promise<void> {

@@ -39,7 +39,7 @@ here.
 | 08 | [Settings and device management](/specs/day-1/spec-08--settings-and-device-management/) | **Shipped** | [#18](https://github.com/CloudHub-Social/Charm/pull/18) |
 | 09 | [Theming and appearance](/specs/day-1/spec-09--theming-and-appearance/) | **Shipped** | [#27](https://github.com/CloudHub-Social/Charm/pull/27) |
 | 10 | [Native platform shell](/specs/day-1/spec-10--native-platform-shell/) | **Shipped** | [#28](https://github.com/CloudHub-Social/Charm/pull/28) |
-| 11 | [Push notifications](/specs/day-1/spec-11--push-notifications/) | **Shipped** | [#44](https://github.com/CloudHub-Social/Charm/pull/44) |
+| 11 | [Push notifications](/specs/day-1/spec-11--push-notifications/) | **In progress** | Desktop and Android foundations shipped in [#44](https://github.com/CloudHub-Social/Charm/pull/44); iOS registration and killed-app delivery remain in progress |
 | 12 | [First-run onboarding](/specs/day-1/spec-12--first-run-onboarding/) | **Shipped** | [#30](https://github.com/CloudHub-Social/Charm/pull/30) |
 | 13 | [Voice-video platform spike](/specs/day-1/spec-13--voice-video-platform-spike/) | **In progress** | Code fixes [#229](https://github.com/CloudHub-Social/Charm/pull/229), [#230](https://github.com/CloudHub-Social/Charm/pull/230); Android, iOS, and Linux still need recorded hardware/display verification in the [findings](/specs/day-1/spec-13-findings--voice-video-platform-spike/) |
 | 14 | [Adopt matrix-sdk-ui Timeline](/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/) | **Shipped** | [#12](https://github.com/CloudHub-Social/Charm/pull/12) |
