@@ -282,6 +282,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          # Required by swift-rs to globalize the Swift @_cdecl symbols before
+          # Xcode's final link. Clean Xcode 27 runners do not include it.
+          components: llvm-tools-preview
           targets: aarch64-apple-ios-sim
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

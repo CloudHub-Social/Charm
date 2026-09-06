@@ -36,7 +36,18 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    confirmation before installing. The generated Xcode pre-build phase invokes the
    repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
 4. Ensure Xcode is signed in with the device owner's Apple Account and the required
-   Rust iOS targets are installed.
+   Rust iOS targets and LLVM tools are installed:
+
+   ```sh
+   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+   rustup component add llvm-tools-preview
+   ```
+
+   `swift-rs` uses `llvm-objcopy` from that component to export the Swift
+   `@_cdecl` bridge functions. On a clean machine or cloud runner, omitting it can
+   compile every dependency and then fail the final arm64 link with undefined
+   `_register_plugin`, `_init_plugin_*`, or related symbols. Charm's iOS nightly
+   and release workflows install the component explicitly.
 5. Prepare the standalone mobile bundle and open the generated project with
    `pnpm tauri ios build --open`. This outer Tauri build is required: it generates
    the frontend bundle and the untracked assets consumed by Xcode. Do not use

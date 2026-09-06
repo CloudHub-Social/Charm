@@ -1233,6 +1233,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          # swift-rs uses llvm-objcopy to export @_cdecl Swift bridge symbols.
+          # Without this, Xcode 27 reaches the final arm64 link and fails with
+          # undefined _register_plugin/_init_plugin_* symbols.
+          components: llvm-tools-preview
           targets: aarch64-apple-ios-sim
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
