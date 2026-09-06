@@ -284,6 +284,21 @@ describe("PollMessage", () => {
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeDisabled();
   });
 
+  it("clears a failed-close error when recovery now reports the close queued", async () => {
+    getPendingPollEnd
+      .mockResolvedValueOnce({ transaction_id: "txn-recovered-end", failed: true })
+      .mockResolvedValueOnce({ transaction_id: "txn-recovered-end", failed: false });
+    const view = render(<PollMessage message={pollMessage()} roomId="!room:example.org" own />);
+    expect(await screen.findByText("The poll could not be ended.")).toBeVisible();
+
+    view.rerender(
+      <PollMessage message={pollMessage({ edited: true })} roomId="!room:example.org" own />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Close queued" })).toBeDisabled();
+    expect(screen.queryByText("The poll could not be ended.")).not.toBeInTheDocument();
+  });
+
   it("discards a failed local close after another client ends the poll", async () => {
     getPendingPollEnd.mockResolvedValueOnce({
       transaction_id: "txn-failed-end",

@@ -10,10 +10,12 @@ use matrix_sdk::ruma::events::poll::{
     unstable_response::UnstablePollResponseEventContent,
     unstable_start::{
         NewUnstablePollStartEventContent, UnstablePollAnswer, UnstablePollAnswers,
-        UnstablePollStartContentBlock,
+        UnstablePollStartContentBlock, UnstablePollStartEventContent,
     },
 };
-use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+use matrix_sdk::ruma::events::{
+    AnyMessageLikeEventContent, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+};
 use matrix_sdk::ruma::{EventId, RoomId};
 use matrix_sdk::send_queue::LocalEchoContent;
 use matrix_sdk::Client;
@@ -292,6 +294,38 @@ async fn pending_poll_end_locked(
         }))
 }
 
+async fn require_owned_live_poll(
+    client: &Client,
+    room: &matrix_sdk::Room,
+    poll_event_id: &EventId,
+) -> Result<(), String> {
+    let event = room
+        .load_or_fetch_event(poll_event_id, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let event: AnySyncTimelineEvent = event
+        .kind
+        .raw()
+        .deserialize()
+        .map_err(|error| error.to_string())?;
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::UnstablePollStart(event)) =
+        event
+    else {
+        return Err("Poll target is not a live poll start event".into());
+    };
+    let original = event
+        .as_original()
+        .ok_or("Poll target has already been redacted")?;
+    if !matches!(&original.content, UnstablePollStartEventContent::New(_)) {
+        return Err("Poll target is not a live poll start event".into());
+    }
+    let own_user_id = client.user_id().ok_or("No active Matrix account")?;
+    if original.sender != own_user_id {
+        return Err("Only the poll creator can end this poll".into());
+    }
+    Ok(())
+}
+
 pub async fn confirm_poll_end_synced_impl(
     client: &Client,
     room_id: &str,
@@ -447,6 +481,7 @@ pub async fn end_poll_impl(
     if pending_poll_vote(&room, &poll_event_id).await?.is_some() {
         return Err("This poll has a queued vote. Wait for it to settle before closing.".into());
     }
+    require_owned_live_poll(client, &room, &poll_event_id).await?;
     let content = UnstablePollEndEventContent::new("Poll ended", poll_event_id);
     let transaction_id = send_and_capture_transaction_id(
         client,
@@ -482,6 +517,8 @@ pub async fn retry_poll_end_impl(
     let retried = resend_message_impl(client, room_id, transaction_id).await?;
     if retried {
         set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
+    } else {
+        clear_acknowledged_poll_end(client, &close_key).await?;
     }
     Ok(retried)
 }
@@ -549,9 +586,15 @@ pub async fn discard_poll_end_impl(
     clear_acknowledged_poll_end(client, &close_key).await?;
     let discarded = discard_failed_message_impl(client, room_id, transaction_id).await?;
     if !discarded {
-        // The SDK may have advanced the echo between the read and abort.
-        // Restore the fence until a timeline proves that close settled.
-        set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
+        // The SDK may have advanced the echo between the read and abort. Only
+        // restore the fence when a second queue read proves the close still
+        // exists; a genuinely missing echo must leave the fence cleared so
+        // the creator can try again.
+        if let Some(current) = pending_poll_end(&room, &poll_event_id).await? {
+            if current.transaction_id == transaction_id && !current.failed {
+                set_acknowledged_poll_end(client, &close_key, transaction_id).await?;
+            }
+        }
     }
     Ok(discarded)
 }
@@ -676,6 +719,37 @@ pub async fn confirm_poll_end_synced(
 mod tests {
     use super::*;
 
+    async fn mock_poll_start(
+        server: &matrix_sdk::test_utils::mocks::MatrixMockServer,
+        poll_event_id: &str,
+        sender: &str,
+    ) {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, ResponseTemplate};
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/client/v3/rooms/.*/event/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "org.matrix.msc3381.poll.start",
+                "event_id": poll_event_id,
+                "sender": sender,
+                "origin_server_ts": 1,
+                "content": {
+                    "org.matrix.msc1767.text": "Poll",
+                    "org.matrix.msc3381.poll.start": {
+                        "question": { "org.matrix.msc1767.text": "Question?" },
+                        "kind": "org.matrix.msc3381.poll.disclosed",
+                        "max_selections": 1,
+                        "answers": [
+                            { "id": "0", "org.matrix.msc1767.text": "A" },
+                            { "id": "1", "org.matrix.msc1767.text": "B" }
+                        ]
+                    }
+                }
+            })))
+            .mount(server.server())
+            .await;
+    }
+
     #[tokio::test]
     async fn mutation_locks_are_shared_per_poll_without_serializing_other_polls() {
         let first = poll_mutation_lock("@alice:example.org\0!room:example.org\0$first").await;
@@ -721,7 +795,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_retry_echo_keeps_the_acknowledged_close_fence() {
+    async fn missing_retry_echo_clears_the_acknowledged_close_fence() {
         use matrix_sdk::ruma::{event_id, room_id};
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         let server = MatrixMockServer::new().await;
@@ -743,13 +817,10 @@ mod tests {
         )
         .await
         .unwrap());
-        assert_eq!(
-            acknowledged_poll_end(&client, &key)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("missing-transaction")
-        );
+        assert!(acknowledged_poll_end(&client, &key)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -762,6 +833,12 @@ mod tests {
         let room_id = room_id!("!poll:example.org");
         let poll_id = event_id!("$poll:example.org");
         let room = server.sync_joined_room(&client, room_id).await;
+        mock_poll_start(
+            &server,
+            poll_id.as_str(),
+            client.user_id().unwrap().as_str(),
+        )
+        .await;
         room.send_queue().set_enabled(false);
         let (first, second) = tokio::join!(
             end_poll_impl(&client, room_id.as_str(), poll_id.as_str()),
@@ -775,6 +852,27 @@ mod tests {
         );
         let (echoes, _) = room.send_queue().subscribe().await.unwrap();
         assert_eq!(echoes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_the_poll_creator_can_queue_an_end_relation() {
+        use matrix_sdk::ruma::{event_id, room_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_room_state_encryption().plain().mount().await;
+        let room_id = room_id!("!foreign-poll:example.org");
+        let poll_id = event_id!("$foreign-poll:example.org");
+        let room = server.sync_joined_room(&client, room_id).await;
+        mock_poll_start(&server, poll_id.as_str(), "@another:example.org").await;
+        room.send_queue().set_enabled(false);
+
+        let error = end_poll_impl(&client, room_id.as_str(), poll_id.as_str())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "Only the poll creator can end this poll");
+        assert!(room.send_queue().subscribe().await.unwrap().0.is_empty());
     }
 
     #[tokio::test]

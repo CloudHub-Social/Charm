@@ -234,6 +234,7 @@ export function PollMessage({
           // queue removes its successful echo before /sync reports the end.
           acknowledgedPollCloses.set(closeKey, pending.transaction_id);
           setEndAcknowledged(true);
+          setError(null);
         }
       })
       .catch(() => {

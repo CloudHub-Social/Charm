@@ -66,7 +66,9 @@ timeline.
   option resends response (last response per user wins, per protocol semantics —
   confirm against current MSC3381 text before implementing tie-break rules).
 - Ending: only the poll creator can send the poll-end event to close voting; UI
-  then locks further votes and shows final tallies.
+  then locks further votes and shows final tallies. The shared native/web command
+  reloads the target event and verifies that it is an unredacted poll start owned
+  by the current account, so direct IPC or HTTP callers cannot bypass the UI rule.
 
 ## Data flow
 
@@ -95,10 +97,11 @@ the per-poll mutation lock, preventing one window from discarding an echo while
 another window retries it. Disabling the rollout hides creation and ordinary poll
 interaction, but a recovery-only controller remains mounted behind the fallback
 event row so an outstanding failed relation can still be retried or discarded.
-The active room also scans its durable poll-relation echoes and renders the same
-Retry/Discard recovery above the composer when the target poll is outside the
-loaded timeline window; loaded targets remain owned by their poll row so the two
-surfaces do not duplicate controls.
+The active room also scans its durable failed poll-relation echoes and renders a
+discard-only recovery tray above the composer. That tray intentionally includes
+loaded and virtualized-out targets: a loaded poll row can therefore also expose its
+richer Retry/Discard controls while the room-level tray provides an always-mounted
+escape hatch for abandoning the failed relation.
 
 ## API/contract changes
 
