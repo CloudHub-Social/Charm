@@ -505,6 +505,11 @@ pub async fn retry_poll_end_impl(
     let mutation_lock = poll_mutation_lock(&close_key).await;
     let _guard = mutation_lock.lock().await;
     let Some(pending) = pending_poll_end(&room, &poll_event_id).await? else {
+        // The SDK can remove a failed echo between the UI presenting Retry
+        // and this command acquiring the mutation lock. With no echo left to
+        // retry, the acknowledgement no longer protects an active close and
+        // must not keep the poll locked indefinitely.
+        clear_acknowledged_poll_end(client, &close_key).await?;
         return Ok(false);
     };
     if pending.transaction_id != transaction_id || !pending.failed {
