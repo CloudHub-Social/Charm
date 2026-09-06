@@ -133,9 +133,11 @@
   --color-accent-hover: #a396fb;
   --color-accent-active: var(--accent-500);
 }
+/* GENERATED:SEMANTIC:END */
 
 /* The refresh attribute lives on <html> so portalled Radix surfaces inherit
-   the same visual language as the application shell. */
+   the same visual language as the application shell. This must remain outside
+   the generated token regions above. */
 html[data-ux-refresh="true"] body {
   background: var(--ux-content-bg);
 }
@@ -159,7 +161,6 @@ html[data-ux-refresh="true"] [data-slot="dropdown-menu-content"],
 html[data-ux-refresh="true"] [data-slot="context-menu-content"] {
   border-radius: 14px;
 }
-/* GENERATED:SEMANTIC:END */
 
 /* Component tier — element-specific, composed from semantic tokens */
 :root {
