@@ -51,7 +51,7 @@ media: MediaContent | null,
  * MSC3381 poll state already aggregated by matrix-sdk-ui. `None` for
  * ordinary messages and unsupported message-like event types.
  */
-poll: PollSummary | null,
+poll: PollSummary | null, 
 /**
  * Whether the resolved message is text, emote, or notice. Absence from
  * an older server is unknown, never permission to edit a fallback body.
