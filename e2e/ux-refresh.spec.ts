@@ -76,7 +76,7 @@ test("UX refresh rail prioritizes unread people without double-counting overflow
   await expect(rail.getByRole("button", { name: /^Emery,/ })).toHaveCount(0);
 
   await rail.getByRole("button", { name: "Alice, 1 unread, 2 mentions" }).click();
-  await expect(rail.getByRole("button", { name: "Alice, 1 unread, 2 mentions" })).toHaveAttribute(
+  await expect(rail.getByRole("button", { name: /^Alice(?:,|$)/ })).toHaveAttribute(
     "aria-current",
     "page",
   );

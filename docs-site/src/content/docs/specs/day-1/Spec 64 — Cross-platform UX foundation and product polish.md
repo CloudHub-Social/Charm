@@ -23,7 +23,10 @@ dimensions are device-local and must not enter cross-device appearance sync.
 
 ## Approved direction
 
-![Sable-forward desktop direction: warm aubergine rail, charcoal room list, ink conversation canvas, and people-first unread-DM shortcuts](/design/spec-64/sable-forward-desktop.png)
+<img
+  src="/design/spec-64/sable-forward-desktop.png"
+  alt="Sable-forward desktop direction with a warm aubergine rail, charcoal room list, ink conversation canvas, and people-first unread-DM shortcuts"
+/>
 
 This concept is directional rather than pixel evidence. Approved Storybook
 fixtures provide the measured component contract. Deterministic CI screenshots

@@ -19,6 +19,11 @@ export interface RailAttentionState {
   overflowHighlight: number;
 }
 
+export interface RailAttentionOptions {
+  activeRoomId?: string | null;
+  visibleLimit?: number;
+}
+
 /**
  * Produces the non-duplicating DM rail model from one account's room snapshot.
  * Recent activity wins; equal or missing timestamps preserve the authoritative
@@ -26,34 +31,42 @@ export interface RailAttentionState {
  */
 export function deriveRailAttention(
   rooms: RoomSummary[],
-  visibleLimit = MAX_VISIBLE_RAIL_DMS,
+  { activeRoomId = null, visibleLimit = MAX_VISIBLE_RAIL_DMS }: RailAttentionOptions = {},
 ): RailAttentionState {
-  const candidates = rooms
+  const unreadRooms = rooms
     .map((room, index) => ({ room, index }))
     .filter(({ room }) => room.is_direct && !room.is_space && room.has_unread)
-    .sort((a, b) => {
+    .toSorted((a, b) => {
       const aTimestamp = a.room.last_activity_ts;
       const bTimestamp = b.room.last_activity_ts;
       if (aTimestamp === bTimestamp) return a.index - b.index;
       if (aTimestamp === null) return 1;
       if (bTimestamp === null) return -1;
       return bTimestamp - aTimestamp;
-    })
-    .map<RailAttentionItem>(({ room }) => ({
-      kind: "direct_message",
-      room,
-      unread: 1,
-      highlight: room.unread_count,
-      lastActivityTs: room.last_activity_ts,
-    }));
-
+    });
+  const activeRoom = rooms.find(
+    (room) => room.room_id === activeRoomId && room.is_direct && !room.is_space,
+  );
+  const orderedRooms = activeRoom
+    ? [activeRoom, ...unreadRooms.map(({ room }) => room).filter((room) => room !== activeRoom)]
+    : unreadRooms.map(({ room }) => room);
   const limit = Math.max(0, visibleLimit);
-  const visibleItems = candidates.slice(0, limit);
-  const overflowItems = candidates.slice(limit);
+  const visibleRooms = orderedRooms.slice(0, limit);
+  const visibleRoomIds = new Set(visibleRooms.map((room) => room.room_id));
+  const overflowRooms = unreadRooms
+    .map(({ room }) => room)
+    .filter((room) => !visibleRoomIds.has(room.room_id));
+  const toItem = (room: RoomSummary): RailAttentionItem => ({
+    kind: "direct_message",
+    room,
+    unread: room.has_unread ? 1 : 0,
+    highlight: room.unread_count,
+    lastActivityTs: room.last_activity_ts,
+  });
 
   return {
-    visibleItems,
-    overflowUnread: overflowItems.length,
-    overflowHighlight: overflowItems.reduce((sum, item) => sum + item.highlight, 0),
+    visibleItems: visibleRooms.map(toItem),
+    overflowUnread: overflowRooms.length,
+    overflowHighlight: overflowRooms.reduce((sum, room) => sum + room.unread_count, 0),
   };
 }

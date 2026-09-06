@@ -518,7 +518,10 @@ export function SpaceRail({
 
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
-  const railAttention = useMemo(() => deriveRailAttention(directRooms), [directRooms]);
+  const railAttention = useMemo(
+    () => deriveRailAttention(directRooms, { activeRoomId }),
+    [activeRoomId, directRooms],
+  );
   const hasActiveDirectShortcut = railAttention.visibleItems.some(
     (item) => activeMode === "dms" && item.room.room_id === activeRoomId,
   );
@@ -856,7 +859,9 @@ export function SpaceRail({
             )}
             <RailIconButton
               label="Direct messages"
-              active={activeMode === "dms" && (!uxRefreshEnabled || !hasActiveDirectShortcut)}
+              active={
+                activeMode === "dms" && (!uxRefreshEnabled || !hasActiveDirectShortcut)
+              }
               unread={uxRefreshEnabled ? railAttention.overflowUnread : directUnreadCount}
               highlight={uxRefreshEnabled ? railAttention.overflowHighlight : directHighlightCount}
               onClick={onSelectDms}
