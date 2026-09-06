@@ -144,9 +144,7 @@ describe("RecoverySetupCard", () => {
     );
     renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not reopen pending recovery",
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reopen pending recovery");
     expect(
       screen.queryByRole("button", { name: "Repair interrupted setup" }),
     ).not.toBeInTheDocument();
