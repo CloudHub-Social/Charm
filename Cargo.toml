@@ -3,10 +3,14 @@ resolver = "2"
 members = ["src-tauri", "crates/charm-web-server"]
 
 # Tao 0.35.3 returns a pointer to an already-dropped UISceneConfiguration on
-# iOS. Pin the upstream lifetime fix until a compatible 0.35.x release exists.
+# iOS and lazily registers its scene delegate after UIKit tries to resolve the
+# static Info.plist entry. Pin the two minimal 0.35.x backports until a
+# compatible release exists. The fork commit is based directly on the upstream
+# lifetime fix and adds the early registration already present on Tao's dev
+# branch in a3ff3f035f3f5886a45af0533532e568ca57e91b.
 # https://github.com/tauri-apps/tao/pull/1245
 [patch.crates-io]
-tao = { git = "https://github.com/tauri-apps/tao", rev = "f2163508104413ef0609178dcebdd5803b496211" }
+tao = { git = "https://github.com/Just-Insane/tao", rev = "b3c73f064541011f6a99704982485a662d6b0561" }
 
 # `src-tauri` remains buildable standalone (`cd src-tauri && cargo build`) —
 # Tauri's CLI expects to run from that directory. This root manifest only
