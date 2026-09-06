@@ -39,8 +39,11 @@ and last durable access token, so a stopped, logged-out, or superseded client ca
 recreate or overwrite a newer session. Headless notification clients do not rotate
 tokens because they cannot safely publish a replacement without the app lifecycle.
 This prevents ordinary access-token expiry from becoming a destructive logout; an
-exhausted or rejected refresh token still enters the explicit soft-logout reauthentication
-work tracked separately.
+exhausted or rejected refresh token enters a dedicated native same-device password
+reauthentication flow: the room shell stops, the retained account and device are shown,
+and a successful login replaces only the tokens before sync resumes against the same
+encrypted store. SSO/OIDC and web-companion reauthentication parity remain tracked in
+[#498](https://github.com/CloudHub-Social/Charm/issues/498).
 
 - **Auth shipped**: `login`, `register`, `discover_homeserver`, `start_sso_login` /
   `complete_sso_login` / `cancel_sso_login`, `try_restore_session`, QR login — all in
@@ -365,9 +368,13 @@ Surfaces changed:
     matching ordinary logout; incomplete cleanup is reported without logging
     keychain errors or treating the missing marker as successful cleanup.
     `M_UNKNOWN_TOKEN` with `soft_logout: true` never enters this destructive path;
-    its existing device and persisted crypto state are retained. The dedicated
-    same-device reauthentication UI/flow remains an outstanding readiness item,
-    not a completed feature merely because destructive cleanup is excluded.
+    its existing device and persisted crypto state are retained. Native password
+    sessions instead stop retrying sync and prompt for same-device reauthentication.
+    The replacement login is pinned to the retained MXID and device ID, atomically
+    replaces the expected persisted access token, reinstalls durable refresh-token
+    callbacks, and only then resumes sync. Failed credentials preserve the retained
+    client for retry or explicit logout. SSO/OIDC and web-companion parity remain
+    outstanding under #498.
     Logout, local-data removal, and deactivation workers likewise retain shared
     ownership of login exclusion through blocking cleanup, even if their caller
     is cancelled. The caller retains exclusion after a worker panic so recovery
