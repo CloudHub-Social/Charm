@@ -1,0 +1,59 @@
+import type { RoomSummary } from "@/lib/matrix";
+
+export const MAX_VISIBLE_RAIL_DMS = 3;
+
+/** One account-scoped direct-message shortcut rendered in the application rail. */
+export interface RailAttentionItem {
+  kind: "direct_message";
+  room: RoomSummary;
+  unread: number;
+  highlight: number;
+  lastActivityTs: number | null;
+}
+
+export interface RailAttentionState {
+  visibleItems: RailAttentionItem[];
+  /** Number of unread DM conversations not already represented by a visible avatar. */
+  overflowUnread: number;
+  /** Highlight count belonging only to overflow conversations. */
+  overflowHighlight: number;
+}
+
+/**
+ * Produces the non-duplicating DM rail model from one account's room snapshot.
+ * Recent activity wins; equal or missing timestamps preserve the authoritative
+ * room-list order so the shortcuts do not jump around on unrelated renders.
+ */
+export function deriveRailAttention(
+  rooms: RoomSummary[],
+  visibleLimit = MAX_VISIBLE_RAIL_DMS,
+): RailAttentionState {
+  const candidates = rooms
+    .map((room, index) => ({ room, index }))
+    .filter(({ room }) => room.is_direct && !room.is_space && room.has_unread)
+    .sort((a, b) => {
+      const aTimestamp = a.room.last_activity_ts;
+      const bTimestamp = b.room.last_activity_ts;
+      if (aTimestamp === bTimestamp) return a.index - b.index;
+      if (aTimestamp === null) return 1;
+      if (bTimestamp === null) return -1;
+      return bTimestamp - aTimestamp;
+    })
+    .map<RailAttentionItem>(({ room }) => ({
+      kind: "direct_message",
+      room,
+      unread: 1,
+      highlight: room.unread_count,
+      lastActivityTs: room.last_activity_ts,
+    }));
+
+  const limit = Math.max(0, visibleLimit);
+  const visibleItems = candidates.slice(0, limit);
+  const overflowItems = candidates.slice(limit);
+
+  return {
+    visibleItems,
+    overflowUnread: overflowItems.length,
+    overflowHighlight: overflowItems.reduce((sum, item) => sum + item.highlight, 0),
+  };
+}

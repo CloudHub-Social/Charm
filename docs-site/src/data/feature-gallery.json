@@ -598,6 +598,26 @@
       }
     },
     {
+      "slug": "ux-refresh-navigation-rail",
+      "title": "People-first navigation rail",
+      "summary": "Prioritize up to three recently active unread direct messages, then count only additional conversations in the Direct Messages overflow badge.",
+      "status": "preview",
+      "spec": "Spec 64",
+      "specLinks": [
+        {
+          "label": "Spec 64",
+          "href": "/specs/day-1/spec-64--cross-platform-ux-foundation-and-product-polish/"
+        }
+      ],
+      "flag": "ux_refresh_v1",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "ux-refresh-navigation-rail",
+        "alt": "Charm's warm aubergine application rail showing three unread direct-message avatars, a separate overflow badge, and selected space styling",
+        "caption": "The deterministic journey proves visible direct-message shortcuts and overflow counts are disjoint before capturing the gated desktop rail."
+      }
+    },
+    {
       "slug": "sidebar-management",
       "title": "Sidebar and space management",
       "summary": "Pin, unpin, and reorder spaces on the rail, and manage a space from a right-click context menu: invite, add an existing room or space, mark it suggested, remove it from a parent, or leave.",

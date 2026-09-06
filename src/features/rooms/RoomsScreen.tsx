@@ -723,8 +723,13 @@ export function RoomsScreen({
             activeSpaceId={selectedSpaceId}
             showAllRooms={showAllRooms}
             currentUserId={currentUserId}
+            activeRoomId={activeRoom?.room_id ?? null}
             onSelectHome={selectHome}
             onSelectDms={selectDms}
+            onSelectRoom={(roomId) => {
+              selectDms();
+              selectRoom(roomId);
+            }}
             onSelectSpace={selectSpace}
             onCreateJoin={() => {
               setCreateSpaceParentId(null);

@@ -142,6 +142,21 @@
   ); /* 8px, per design-doc convention for contained-bg elements */
   --message-group-window-ms: 300000; /* 5 minutes */
 
+  /* Spec 64 — application rail. Kept in the component tier so the UX
+     refresh can evolve without changing Spec 09's generated base tokens. */
+  --ux-rail-bg: #241c2b;
+  --ux-rail-hover: #382b42;
+  --ux-rail-active: #503458;
+  --ux-rail-folder: #302338;
+  --ux-rail-border: #1b151f;
+  --ux-rail-divider: #56445e;
+  --ux-rail-text: #f8f1fb;
+  --ux-rail-marker: #72e6bd;
+  --ux-rail-unread: #a995b2;
+  --ux-rail-badge: #6954e8;
+  --ux-rail-badge-text: #ffffff;
+  --ux-rail-focus: #f4c95d;
+
   /* Density — driven by [data-density] on <html>. "cozy" is the default
      shape (current spacing); "compact" tightens message row padding. */
   --message-row-padding-y: var(--space-2);
@@ -150,6 +165,36 @@
      rem base so both Tailwind text utilities and hand-authored rem values
      scale together. 1 = M (default). */
   --font-scale: 1;
+}
+
+[data-theme="light"] {
+  --ux-rail-bg: #f0e8f2;
+  --ux-rail-hover: #e3d6e6;
+  --ux-rail-active: #d5bfdc;
+  --ux-rail-folder: #e7dce9;
+  --ux-rail-border: #d4c5d8;
+  --ux-rail-divider: #c7b5cc;
+  --ux-rail-text: #2d2032;
+  --ux-rail-marker: #187d5b;
+  --ux-rail-unread: #705779;
+  --ux-rail-badge: #5847e0;
+  --ux-rail-badge-text: #ffffff;
+  --ux-rail-focus: #6d5ef8;
+}
+
+[data-theme="midnight"] {
+  --ux-rail-bg: #160e1b;
+  --ux-rail-hover: #2c1c34;
+  --ux-rail-active: #482a51;
+  --ux-rail-folder: #24152b;
+  --ux-rail-border: #0b070e;
+  --ux-rail-divider: #493450;
+  --ux-rail-text: #fff8ff;
+  --ux-rail-marker: #79ecc2;
+  --ux-rail-unread: #b29abb;
+  --ux-rail-badge: #7462ed;
+  --ux-rail-badge-text: #ffffff;
+  --ux-rail-focus: #f4c95d;
 }
 
 [data-density="compact"] {
