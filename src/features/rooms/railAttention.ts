@@ -24,6 +24,16 @@ export interface RailAttentionOptions {
   visibleLimit?: number;
 }
 
+function toRailAttentionItem(room: RoomSummary): RailAttentionItem {
+  return {
+    kind: "direct_message",
+    room,
+    unread: room.has_unread ? 1 : 0,
+    highlight: room.unread_count,
+    lastActivityTs: room.last_activity_ts,
+  };
+}
+
 /**
  * Produces the non-duplicating DM rail model from one account's room snapshot.
  * Recent activity wins; equal or missing timestamps preserve the authoritative
@@ -56,16 +66,9 @@ export function deriveRailAttention(
   const overflowRooms = unreadRooms
     .map(({ room }) => room)
     .filter((room) => !visibleRoomIds.has(room.room_id));
-  const toItem = (room: RoomSummary): RailAttentionItem => ({
-    kind: "direct_message",
-    room,
-    unread: room.has_unread ? 1 : 0,
-    highlight: room.unread_count,
-    lastActivityTs: room.last_activity_ts,
-  });
 
   return {
-    visibleItems: visibleRooms.map(toItem),
+    visibleItems: visibleRooms.map(toRailAttentionItem),
     overflowUnread: overflowRooms.length,
     overflowHighlight: overflowRooms.reduce((sum, room) => sum + room.unread_count, 0),
   };
