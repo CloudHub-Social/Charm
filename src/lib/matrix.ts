@@ -237,6 +237,11 @@ export function login(request: LoginRequest): Promise<LoginResponse> {
   return invoke("login", { request }, { captureOnError: false });
 }
 
+/** Reauthenticates the retained Matrix device after a soft logout. */
+export function reauthenticatePassword(password: string): Promise<LoginResponse> {
+  return invoke("reauthenticate_password", { password }, { captureOnError: false });
+}
+
 export function register(request: RegisterRequest): Promise<LoginResponse> {
   return invoke("register", { request }, { captureOnError: false });
 }
@@ -393,6 +398,11 @@ export function onSyncState(callback: (event: SyncStateEvent) => void): Promise<
 /** The backend has made the active session unauthenticated and torn down its client. */
 export function onSessionInvalidated(callback: () => void): Promise<UnlistenFn> {
   return listen("session:invalidated", () => callback());
+}
+
+/** The active device and encrypted store were retained but need fresh credentials. */
+export function onReauthenticationRequired(callback: () => void): Promise<UnlistenFn> {
+  return listen("session:reauthentication_required", () => callback());
 }
 
 /** Tells the Rust side which room (if any) currently has focus, so the timeline listener can suppress a local notification for whatever room the user is already looking at (Spec 10). Pass `null` when no room is focused (e.g. the room list or settings has focus). */
