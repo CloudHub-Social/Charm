@@ -36,11 +36,19 @@ type = "Command"
 command = "git switch -c release"
 
 [[workflows.steps]]
+type = "Command"
+command = "node scripts/validate-changeset-packages.mjs"
+
+[[workflows.steps]]
 type = "PrepareRelease"
 
 [[workflows.steps]]
 type = "Command"
-command = "node scripts/sync-android-version-code.mjs && git add src-tauri/tauri.conf.json"
+command = "node scripts/validate-changeset-packages.mjs --expect-consumed"
+
+[[workflows.steps]]
+type = "Command"
+command = "node scripts/sync-android-version-code.mjs $version && git add src-tauri/tauri.conf.json"
 
 [[workflows.steps]]
 type = "Command"

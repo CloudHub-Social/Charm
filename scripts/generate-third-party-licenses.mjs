@@ -73,15 +73,21 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.`;
 
 function commandJson(command, commandArgs, cwd = repositoryRoot) {
-  const executable = process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
-  const result = spawnSync(executable, commandArgs, {
+  const useShell = process.platform === "win32" && command === "pnpm";
+  const result = spawnSync(command, commandArgs, {
     cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    shell: useShell,
   });
 
   if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || "unknown failure").trim();
+    const detail = (
+      result.stderr ||
+      result.stdout ||
+      result.error?.message ||
+      "unknown failure"
+    ).trim();
     throw new Error(`${command} ${commandArgs.join(" ")} failed: ${detail}`);
   }
 

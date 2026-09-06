@@ -17,18 +17,21 @@ function deriveVersionCode(version) {
 }
 
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
-const versionCode = deriveVersionCode(packageJson.version);
+const checkOnly = process.argv.includes("--check");
+const explicitVersion = process.argv.slice(2).find((argument) => argument !== "--check");
+const version = explicitVersion ?? packageJson.version;
+const versionCode = deriveVersionCode(version);
 const tauriConfigPath = "src-tauri/tauri.conf.json";
 const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
 
-if (process.argv.includes("--check")) {
+if (checkOnly) {
   if (tauriConfig.bundle.android.versionCode !== versionCode) {
     throw new Error(
       `Android versionCode ${tauriConfig.bundle.android.versionCode} does not match derived value ${versionCode}`,
     );
   }
   const previousTag = process.env.PREVIOUS_RELEASE_TAG;
-  if (previousTag && previousTag !== `v${packageJson.version}`) {
+  if (previousTag && previousTag !== `v${version}`) {
     const previousVersionCode = deriveVersionCode(previousTag.replace(/^v/, ""));
     if (versionCode <= previousVersionCode) {
       throw new Error(
