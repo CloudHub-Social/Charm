@@ -136,6 +136,18 @@ describe("RecoverySetupCard", () => {
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
   });
 
+  it("offers repair when mount finds retained state without secret storage", async () => {
+    getPendingRecoverySetup.mockRejectedValue(
+      new Error(
+        "Protected recovery state was retained; repair the interrupted setup before signing out.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
+
+    expect(await screen.findByRole("button", { name: "Repair interrupted setup" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("treats empty custody after a lost repair response as completed", async () => {
     getPendingRecoverySetup
       .mockRejectedValueOnce(

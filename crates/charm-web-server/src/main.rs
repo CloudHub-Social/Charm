@@ -76,6 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     spawn_pending_revocation_sweeper(state.sessions.clone(), persistence.clone());
+    if let Some(crypto_backup) = crypto_backup.as_deref() {
+        crypto_backup.activate_writer().await.map_err(|e| {
+            tracing::error!("failed to activate durable crypto snapshot writer: {e}");
+            format!("failed to activate durable crypto snapshot writer: {e}")
+        })?;
+    }
     if let Some(persistence) = &persistence {
         match persistence.persisted_crypto_store_keys().await {
             Ok(persisted_store_keys) => {
@@ -168,12 +174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     };
-    if let Some(crypto_backup) = crypto_backup.as_deref() {
-        crypto_backup.activate_writer().await.map_err(|e| {
-            tracing::error!("failed to activate durable crypto snapshot writer: {e}");
-            format!("failed to activate durable crypto snapshot writer: {e}")
-        })?;
-    }
     tracing::info!("charm-web-server listening on {addr}");
 
     let shutdown_state = state.clone();

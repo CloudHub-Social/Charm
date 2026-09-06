@@ -25,6 +25,8 @@ const REPLACED_PENDING_RECOVERY_ERROR =
   "Pending recovery no longer matches the account's current secret storage.";
 const STALE_ISSUED_RECOVERY_ERROR =
   "The saved recovery key no longer matches the account's current secret storage.";
+const REPAIR_REQUIRED_RECOVERY_ERROR =
+  "Protected recovery state was retained; repair the interrupted setup before signing out.";
 
 function setupFailureGuidance(error: unknown): string {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
@@ -89,7 +91,10 @@ export function RecoverySetupCard({
         if (!active || generation !== requestGeneration.current) return;
         const message =
           error instanceof Error ? error.message : typeof error === "string" ? error : "";
-        if (message.includes(REPLACED_PENDING_RECOVERY_ERROR)) {
+        if (
+          message.includes(REPLACED_PENDING_RECOVERY_ERROR) ||
+          message.includes(REPAIR_REQUIRED_RECOVERY_ERROR)
+        ) {
           setRepairAvailable(true);
           setPendingReadError(false);
         } else if (message.includes(STALE_ISSUED_RECOVERY_ERROR)) {
@@ -130,9 +135,7 @@ export function RecoverySetupCard({
         error instanceof Error ? error.message : typeof error === "string" ? error : "";
       setRepairAvailable(
         message.includes(REPLACED_PENDING_RECOVERY_ERROR) ||
-          message.includes(
-            "Protected recovery state was retained; repair the interrupted setup before signing out.",
-          ),
+          message.includes(REPAIR_REQUIRED_RECOVERY_ERROR),
       );
     } finally {
       setPassphrase("");

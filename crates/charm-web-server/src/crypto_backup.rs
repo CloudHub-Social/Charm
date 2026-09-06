@@ -196,10 +196,10 @@ impl CryptoBackupStore {
         }))
     }
 
-    /// Mark this fully initialized server as the only instance allowed to
-    /// publish crypto snapshots. Startup calls this only after restoration
-    /// and listener binding have succeeded, so a failed replacement cannot
-    /// fence out the healthy instance that is still serving traffic.
+    /// Mark this server as the only instance allowed to publish or mutate
+    /// crypto snapshots. Startup calls this before restoring sessions so an
+    /// outgoing recovery mutation must finish and publish its final checkpoint
+    /// before the replacement opens any crypto database from that snapshot.
     pub async fn activate_writer(&self) -> Result<(), String> {
         if !self.enforce_writer_fence {
             return Ok(());
