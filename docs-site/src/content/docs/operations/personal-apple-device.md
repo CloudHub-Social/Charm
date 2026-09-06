@@ -52,7 +52,10 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    `pnpm tauri ios build --open`. This outer Tauri build is required: it generates
    the frontend bundle and the untracked assets consumed by Xcode. Do not use
    `pnpm tauri ios dev --open` for a daily-driver install because that path can depend
-   on the development server.
+   on the development server. Xcode 27 also requires the generated app manifest to
+   declare `TaoSceneDelegate`; without it, iPadOS terminates the app during launch in
+   `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`. Charm tracks that
+   declaration in both `project.yml` and `Info.plist` so regeneration preserves it.
 6. In Xcode, edit the `charm_iOS` scheme so its **Run** build configuration is
    **Release**, then use that scheme for the physical-device install (or archive and
    install the Release build when Xcode offers that path for the selected Personal

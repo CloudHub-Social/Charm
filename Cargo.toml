@@ -2,6 +2,12 @@
 resolver = "2"
 members = ["src-tauri", "crates/charm-web-server"]
 
+# Tao 0.35.3 returns a pointer to an already-dropped UISceneConfiguration on
+# iOS. Pin the upstream lifetime fix until a compatible 0.35.x release exists.
+# https://github.com/tauri-apps/tao/pull/1245
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "f2163508104413ef0609178dcebdd5803b496211" }
+
 # `src-tauri` remains buildable standalone (`cd src-tauri && cargo build`) —
 # Tauri's CLI expects to run from that directory. This root manifest only
 # adds a shared `Cargo.lock` / build graph for the workspace as a whole; it
