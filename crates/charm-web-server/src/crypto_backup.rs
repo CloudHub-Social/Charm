@@ -476,6 +476,13 @@ impl CryptoBackupStore {
         }
     }
 
+    async fn active_writer_id(&self) -> Result<Option<String>, String> {
+        Ok(self
+            .active_writer_fence()
+            .await?
+            .map(|(fence, _)| fence.writer_id))
+    }
+
     async fn is_active_writer(&self) -> Result<bool, String> {
         if !self.enforce_writer_fence {
             return Ok(true);
