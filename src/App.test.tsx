@@ -13,7 +13,9 @@ const resetRoomSendQueueBarrier = vi.fn();
 const roomSessionMounted = vi.fn();
 const roomSessionDisposed = vi.fn();
 const onSessionInvalidated = vi.fn();
+const onReauthenticationRequired = vi.fn();
 let sessionInvalidatedCallback: (() => void) | undefined;
+let reauthenticationRequiredCallback: (() => void) | undefined;
 let latestLogoutCallback: (() => void) | undefined;
 let latestLoginCallback: ((session: { user_id: string; device_id: string }) => void) | undefined;
 
@@ -27,6 +29,7 @@ vi.mock("@/lib/matrix", () => ({
   onVerificationRequest: () => Promise.resolve(() => {}),
   onSasUpdate: () => Promise.resolve(() => {}),
   onSessionInvalidated: (callback: () => void) => onSessionInvalidated(callback),
+  onReauthenticationRequired: (callback: () => void) => onReauthenticationRequired(callback),
 }));
 
 vi.mock("@/lib/deepLink", () => ({
@@ -45,6 +48,18 @@ vi.mock("@/features/auth/LoginScreen", () => ({
       </div>
     );
   },
+}));
+
+vi.mock("@/features/auth/ReauthenticationScreen", () => ({
+  ReauthenticationScreen: ({
+    session,
+    onReauthenticated,
+  }: {
+    session: LoginResponse;
+    onReauthenticated: (session: LoginResponse) => void;
+  }) => (
+    <button onClick={() => onReauthenticated(session)}>continue retained device</button>
+  ),
 }));
 
 vi.mock("@/features/rooms/RoomsScreen", () => ({
@@ -89,10 +104,15 @@ beforeEach(() => {
   roomSessionMounted.mockReset();
   roomSessionDisposed.mockReset();
   sessionInvalidatedCallback = undefined;
+  reauthenticationRequiredCallback = undefined;
   latestLogoutCallback = undefined;
   latestLoginCallback = undefined;
   onSessionInvalidated.mockReset().mockImplementation((callback: () => void) => {
     sessionInvalidatedCallback = callback;
+    return Promise.resolve(() => {});
+  });
+  onReauthenticationRequired.mockReset().mockImplementation((callback: () => void) => {
+    reauthenticationRequiredCallback = callback;
     return Promise.resolve(() => {});
   });
 });
@@ -189,6 +209,19 @@ describe("App", () => {
     expect(clearSpy).toHaveBeenCalled();
     expect(await screen.findByText("login screen")).toBeInTheDocument();
     clearSpy.mockRestore();
+  });
+
+  it("keeps the account and resumes the room shell after same-device reauthentication", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const reset = vi.fn();
+
+    render(<App onLoggedOut={reset} />);
+    await screen.findByRole("button", { name: "trigger logout" });
+    act(() => reauthenticationRequiredCallback?.());
+
+    fireEvent.click(await screen.findByRole("button", { name: "continue retained device" }));
+    expect(await screen.findByRole("button", { name: "trigger logout" })).toBeInTheDocument();
+    expect(reset).not.toHaveBeenCalled();
   });
 
   it("clears the shared query cache and returns to the login screen on logout", async () => {

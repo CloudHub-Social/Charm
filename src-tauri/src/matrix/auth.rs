@@ -453,6 +453,151 @@ pub struct LoginResponse {
     pub device_id: String,
 }
 
+/// Replaces only the active Matrix access and refresh tokens after a soft
+/// logout. The encrypted SDK store and device ID are retained; a response for
+/// any other account or device is rejected.
+#[tauri::command]
+pub async fn reauthenticate_password(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    password: String,
+) -> Result<LoginResponse, String> {
+    if password.is_empty() {
+        return Err("password is required".to_string());
+    }
+
+    let _completion_guard = state.login_completion_lock.lock().await;
+    let previous = state.require_client().await?;
+    let previous_session = match previous.session() {
+        Some(AuthSession::Matrix(session)) => session,
+        Some(AuthSession::OAuth(_)) => {
+            return Err("this session must be reauthenticated with its identity provider".into());
+        }
+        _ => return Err("the active Matrix session cannot be reauthenticated".into()),
+    };
+    let expected_user_id = previous_session.meta.user_id.clone();
+    let expected_device_id = previous_session.meta.device_id.clone();
+    let expected_access_token = previous_session.tokens.access_token.clone();
+    let account_key = persistence::account_key(expected_user_id.as_str());
+    let homeserver_url = previous.homeserver().to_string();
+    let store_root = persistence::matrix_store_root_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+    )?;
+
+    let saved = persistence::load_session(&account_key)?
+        .ok_or_else(|| "the retained Matrix session is unavailable".to_string())?;
+    if saved.session.meta != previous_session.meta
+        || saved.session.tokens.access_token != expected_access_token
+    {
+        return Err("the retained Matrix session was replaced; sign in again".to_string());
+    }
+
+    // The failed sync task has stopped, but room timelines still retain Client
+    // clones and SQLite handles. Close those before the replacement opens the
+    // same encrypted store. Immediately republish `previous` as an intentionally
+    // stopped client: this command can be cancelled at any await, and leaving the
+    // state empty would make the retained device unreachable for retry or logout.
+    sync::abort_current_sync_loop(&app).await;
+    *state.client.lock().await = Some(previous.clone());
+    let replacement = match build_persisted_client_at(
+        &store_root,
+        &homeserver_url,
+        &account_key,
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(error) => {
+            *state.client.lock().await = Some(previous);
+            return Err(error);
+        }
+    };
+
+    let login_result = replacement
+        .matrix_auth()
+        .login_username(expected_user_id.as_str(), &password)
+        .device_id(expected_device_id.as_str())
+        .request_refresh_token()
+        .send()
+        .await;
+    if let Err(error) = login_result {
+        *state.client.lock().await = Some(previous);
+        return Err(error.to_string());
+    }
+
+    let Some(replacement_session) = replacement.matrix_auth().session() else {
+        *state.client.lock().await = Some(previous);
+        return Err("reauthentication succeeded without a Matrix session".to_string());
+    };
+    if replacement_session.meta.user_id != expected_user_id
+        || replacement_session.meta.device_id != expected_device_id
+    {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            replacement.matrix_auth().logout(),
+        )
+        .await;
+        *state.client.lock().await = Some(previous);
+        return Err("reauthentication returned a different Matrix device".to_string());
+    }
+
+    // This await remains before the token commit. `previous` is still the
+    // published, stopped client if cancellation happens here. From the CAS
+    // below through client adoption there are deliberately no await points,
+    // so cancellation cannot durably commit the new token while leaving only
+    // the server-invalid client addressable in memory.
+    super::actions::clear_room_upgrade_queue_barriers().await;
+    let mut active_client = state.client.lock().await;
+    let replaced = match persistence::replace_session_if_current(
+        &account_key,
+        &homeserver_url,
+        &expected_access_token,
+        &replacement_session,
+    ) {
+        Ok(replaced) => replaced,
+        Err(error) => {
+            drop(active_client);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                replacement.matrix_auth().logout(),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if !replaced {
+        drop(active_client);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            replacement.matrix_auth().logout(),
+        )
+        .await;
+        return Err("the retained Matrix session was replaced; sign in again".to_string());
+    }
+
+    // This is a newly-built client, so callback installation cannot collide
+    // with an earlier callback pair. If it unexpectedly fails after the new
+    // tokens are durable, retain the replacement as the addressable client so
+    // the user can retry or explicitly log out. Do not restart sync without
+    // durable refresh-token callbacks: a rotation could otherwise work until
+    // restart and then silently restore the superseded token.
+    if let Err(error) = install_session_callbacks(&replacement, &account_key, &homeserver_url) {
+        *active_client = Some(replacement);
+        return Err(format!(
+            "reauthentication succeeded, but refresh-token persistence could not resume: {error}"
+        ));
+    }
+    let _ = persistence::clear_oauth_session(&account_key);
+    *active_client = Some(replacement.clone());
+    drop(active_client);
+    sync::spawn_sync_loop(app, replacement);
+
+    Ok(LoginResponse {
+        user_id: expected_user_id.to_string(),
+        device_id: expected_device_id.to_string(),
+    })
+}
+
 /// Authenticates against a real homeserver via matrix-rust-sdk, persists the
 /// session (SQLCipher-encrypted store on disk, passphrase + session tokens in
 /// the OS keychain — never in the same file, never in plaintext) so future

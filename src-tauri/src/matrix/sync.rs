@@ -789,6 +789,20 @@ fn is_terminal_auth_error(error: &matrix_sdk::Error) -> bool {
         .is_some_and(is_terminal_auth_kind)
 }
 
+fn is_soft_logout_auth_error(error: &matrix_sdk::Error) -> bool {
+    error
+        .client_api_error_kind()
+        .is_some_and(is_soft_logout_auth_kind)
+}
+
+fn is_soft_logout_auth_kind(kind: &ErrorKind) -> bool {
+    matches!(kind, ErrorKind::UnknownToken(data) if data.soft_logout)
+}
+
+fn emit_reauthentication_required(app: &AppHandle) {
+    let _ = app.emit("session:reauthentication_required", ());
+}
+
 fn is_terminal_auth_kind(kind: &ErrorKind) -> bool {
     // Soft logout asks for same-device reauthentication, not destruction of
     // the retained crypto/session store. Only a hard invalidation may enter
@@ -1057,7 +1071,9 @@ fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: 
         {
             Ok(response) => response,
             Err(e) => {
-                if is_terminal_auth_error(&e) {
+                if is_soft_logout_auth_error(&e) {
+                    emit_reauthentication_required(&app);
+                } else if is_terminal_auth_error(&e) {
                     teardown_terminal_auth_session(&app, &client).await;
                 }
                 let _ = app.emit(
@@ -1199,6 +1215,21 @@ fn spawn_sync_task_with_presence(app: AppHandle, client: Client, fresh_session: 
                     }
                 }
                 Err(e) => {
+                    if is_soft_logout_auth_error(&e) {
+                        tracing::warn!(
+                            command = "sync_loop",
+                            status = "reauthentication_required",
+                            "Sync requires same-device reauthentication"
+                        );
+                        emit_reauthentication_required(&app);
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
                     if is_terminal_auth_error(&e) {
                         tracing::error!(
                             command = "sync_loop",
@@ -1279,7 +1310,7 @@ mod invite_notification_tests {
 
     #[test]
     fn soft_logout_does_not_authorize_terminal_session_cleanup() {
-        use super::is_terminal_auth_kind;
+        use super::{is_soft_logout_auth_kind, is_terminal_auth_kind};
         use matrix_sdk::ruma::api::error::{ErrorKind, UnknownTokenErrorData};
 
         let mut data = UnknownTokenErrorData::new();
@@ -1287,7 +1318,10 @@ mod invite_notification_tests {
             data.clone()
         )));
         data.soft_logout = true;
-        assert!(!is_terminal_auth_kind(&ErrorKind::UnknownToken(data)));
+        let soft_logout = ErrorKind::UnknownToken(data);
+        assert!(!is_terminal_auth_kind(&soft_logout));
+        assert!(is_soft_logout_auth_kind(&soft_logout));
+        assert!(!is_soft_logout_auth_kind(&ErrorKind::Forbidden));
     }
 
     #[test]
