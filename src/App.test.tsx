@@ -57,9 +57,7 @@ vi.mock("@/features/auth/ReauthenticationScreen", () => ({
   }: {
     session: LoginResponse;
     onReauthenticated: (session: LoginResponse) => void;
-  }) => (
-    <button onClick={() => onReauthenticated(session)}>continue retained device</button>
-  ),
+  }) => <button onClick={() => onReauthenticated(session)}>continue retained device</button>,
 }));
 
 vi.mock("@/features/rooms/RoomsScreen", () => ({

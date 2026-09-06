@@ -29,7 +29,9 @@ export function ReauthenticationScreen({
     try {
       const refreshed = await reauthenticatePassword(password);
       if (refreshed.user_id !== session.user_id || refreshed.device_id !== session.device_id) {
-        throw new Error("The homeserver returned a different Matrix device. Sign in again instead.");
+        throw new Error(
+          "The homeserver returned a different Matrix device. Sign in again instead.",
+        );
       }
       setPassword("");
       onReauthenticated(refreshed);
@@ -60,8 +62,8 @@ export function ReauthenticationScreen({
         <div className="space-y-2 text-center">
           <h1 className="text-xl font-semibold">Sign in again</h1>
           <p className="text-sm text-muted-foreground">
-            Your homeserver ended this login. Enter the password for {session.user_id} to keep
-            using this encrypted device.
+            Your homeserver ended this login. Enter the password for {session.user_id} to keep using
+            this encrypted device.
           </p>
         </div>
 
