@@ -87,6 +87,26 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
 Record the source SHA, Xcode version, device model and OS, development bundle
 identifier, profile expiry, and enabled feature flags after installation.
 
+## Cloud build evidence
+
+The `iOS release evidence` workflow is a separate proof lane, not a distribution
+mechanism. On iOS-, Tauri-, Cargo-, authentication-, or persistence-affecting
+changes it selects Xcode 27, builds a release simulator app, installs and opens it,
+delivers `charm://sso-callback`, and verifies that the process remains alive. It also
+creates an unsigned arm64 device archive.
+
+The workflow retains these private CI artifacts for the exact commit:
+
+- `charm-ios-simulator-release`;
+- `charm-ios-device-unsigned-xcarchive`;
+- `charm-ios-debug-symbols`;
+- `charm-ios-build-metadata`, including the Xcode version, SPDX SBOM, checksums, and
+  artifact-size report.
+
+An unsigned device archive cannot be installed on an iPad. Never put Personal Team
+profiles, certificates, or Apple credentials into GitHub merely to make that artifact
+installable. The Personal Team command above remains the physical-device lane.
+
 ## Personal Matrix account safety gate
 
 Before first login, keep a second verified Matrix client available and confirm an
