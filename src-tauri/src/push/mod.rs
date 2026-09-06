@@ -715,11 +715,11 @@ pub async fn refresh_push_registration(
             return Ok(());
         }
         if previous.disabled {
-            tracing::warn!(
-                command = "refresh_push_registration",
-                status = "ignored_while_push_disabled"
-            );
-            return Ok(());
+            // A disabled record is a durable retry tombstone, not an inert
+            // preference. Foreground refresh is our next bounded opportunity
+            // to finish both native and homeserver cleanup automatically.
+            drop(_push_guard);
+            return unregister_push_impl(&app, &state).await;
         }
         let Some(transport) = active_transport(&app) else {
             return Ok(());
@@ -967,9 +967,11 @@ pub(crate) async fn unregister_push_impl(
     // homeserver cleanup budget. Mobile suspension must not leave local
     // delivery active merely because a remote pusher deletion stalled.
     let transport = existing_transport.or_else(|| platform_transport(app));
-    if let Some(transport) = transport {
-        let _ = transport.unregister().await;
-    }
+    let platform_cleanup_error = if let Some(transport) = transport {
+        transport.unregister().await.err()
+    } else {
+        None
+    };
 
     let remote_cleanup_complete = if let Some(record) = pending_cleanup.as_mut() {
         retry_persisted_push_cleanup(&client, record).await
@@ -978,7 +980,7 @@ pub(crate) async fn unregister_push_impl(
     };
 
     if let Some(account_key) = &account_key {
-        if remote_cleanup_complete {
+        if remote_cleanup_complete && platform_cleanup_error.is_none() {
             persistence_error = clear_persisted_endpoint(app, account_key).err();
         } else if let Some(record) = &pending_cleanup {
             let save_result = persisted_endpoint_path(app, account_key)
@@ -1019,6 +1021,18 @@ pub(crate) async fn unregister_push_impl(
                 available: false,
             },
         );
+        *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        return Err(error);
+    }
+    if let Some(error) = platform_cleanup_error {
+        let mut status = pending_cleanup
+            .as_ref()
+            .map(status_from_persisted_endpoint)
+            .unwrap_or_default();
+        status.last_error = Some(
+            "Push cleanup is still pending on this device. Retry turning it off.".into(),
+        );
+        let status = finalize_and_emit(app, status);
         *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
         return Err(error);
     }
