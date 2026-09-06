@@ -857,11 +857,11 @@ impl PersistenceStore {
             0 => self
                 .key
                 .decrypt(
-                    Nonce::<aes_gcm::aead::consts::U12>::from_slice(&nonce_bytes),
+                    Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
                     ciphertext.as_ref(),
                 ),
             1 => self.key.decrypt(
-                Nonce::<aes_gcm::aead::consts::U12>::from_slice(&nonce_bytes),
+                Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
                 Payload {
                     msg: ciphertext.as_ref(),
                     aad: &session_aad(expected_path),

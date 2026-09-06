@@ -626,7 +626,7 @@ impl CryptoBackupStore {
             .map_err(|error| error.to_string())?;
         self.key
             .decrypt(
-                Nonce::<aes_gcm::aead::consts::U12>::from_slice(&nonce),
+                Nonce::<Aes256Gcm>::from_slice(&nonce),
                 Payload {
                     msg: &ciphertext,
                     aad,
