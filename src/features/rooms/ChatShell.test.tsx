@@ -123,6 +123,7 @@ const addBookmark = vi.fn().mockResolvedValue(undefined);
 const removeBookmark = vi.fn().mockResolvedValue(undefined);
 const getEventAtTimestamp = vi.fn().mockResolvedValue("$date-target");
 const loadTimelineAroundEvent = vi.fn().mockResolvedValue(false);
+const getPendingPollRelations = vi.fn().mockResolvedValue([]);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -293,6 +294,14 @@ vi.mock("@/lib/matrix", () => ({
   removeBookmark: (...args: unknown[]) => removeBookmark(...args),
   getEventAtTimestamp: (...args: unknown[]) => getEventAtTimestamp(...args),
   loadTimelineAroundEvent: (...args: unknown[]) => loadTimelineAroundEvent(...args),
+  getPendingPollRelations: (...args: unknown[]) => getPendingPollRelations(...args),
+  getPendingPollVote: vi.fn().mockResolvedValue(null),
+  getPendingPollEnd: vi.fn().mockResolvedValue(null),
+  confirmPollEndSynced: vi.fn().mockResolvedValue(undefined),
+  retryPollVote: vi.fn(),
+  discardPollVote: vi.fn(),
+  retryPollEnd: vi.fn(),
+  discardPollEnd: vi.fn(),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -370,6 +379,7 @@ function summary(
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    poll: null,
     is_undecrypted: false,
     ...overrides,
   };
