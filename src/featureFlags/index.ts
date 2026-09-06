@@ -153,6 +153,18 @@ async function initializeFeatureFlagsInner(mutationId: number): Promise<void> {
   } else {
     remoteCache = await clearStaleCache();
   }
+  // A successful startup clear is itself a durable remote mutation. Publish
+  // per-key versions just like a normal OFREP refresh so native consumers do
+  // not reconcile once against the stale file and then miss the authoritative
+  // default-off state when initialization completes asynchronously.
+  for (const key of FEATURE_FLAG_KEYS) {
+    if (
+      resolveFlag(key, persistedOverrides, cachedRemote.remote) !==
+      resolveFlag(key, persistedOverrides, remoteCache)
+    ) {
+      persistedFlagVersions[key] = (persistedFlagVersions[key] ?? 0) + 1;
+    }
+  }
   if (mutationId === cacheMutationId) {
     overridesCache = persistedOverrides;
     persistedOverridesCache = persistedOverrides;
