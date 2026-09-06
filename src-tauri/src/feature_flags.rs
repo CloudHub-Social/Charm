@@ -189,6 +189,11 @@ define_feature_flag_keys!(
         IosPushNotifications,
         /// Spec 47 appearance customization and display preferences.
         AppearanceParity,
+        /// Spec 64 cross-platform UX renewal: the revised application rail,
+        /// responsive shell, conversation treatment, and composed product
+        /// surfaces. Kept separate from feature-specific flags so those
+        /// capabilities can continue to roll out independently.
+        UxRefreshV1,
     }
 );
 
@@ -233,6 +238,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::IosPushNotifications => false,
             FeatureFlagKey::AppearanceParity => false,
+            FeatureFlagKey::UxRefreshV1 => false,
         }
     }
 
@@ -344,6 +350,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::AppearanceParity => {
                 "Customize appearance and display preferences, including clock and date formats."
             }
+            FeatureFlagKey::UxRefreshV1 => {
+                "Use the renewed cross-platform application shell and people-first navigation."
+            }
         }
     }
 
@@ -397,6 +406,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::IosPushNotifications => "Spec 11 (push notifications)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
+            FeatureFlagKey::UxRefreshV1 => {
+                "Spec 64 (cross-platform UX foundation and product polish)"
+            }
         }
     }
 
@@ -440,6 +452,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::IosPushNotifications => "ios_push_notifications",
             FeatureFlagKey::AppearanceParity => "appearance_parity",
+            FeatureFlagKey::UxRefreshV1 => "ux_refresh_v1",
         }
     }
 }
