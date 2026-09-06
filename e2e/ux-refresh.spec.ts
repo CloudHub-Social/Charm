@@ -168,7 +168,7 @@ test("UX refresh rail prioritizes unread people without double-counting overflow
   await captureSnapshot(page, "ux-refresh-mobile-chats-390x844");
 
   await page.getByRole("button", { name: "Spaces" }).click();
-  await expect(page.getByRole("heading", { name: "Spaces" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Spaces", exact: true })).toBeVisible();
   await captureSnapshot(page, "ux-refresh-mobile-spaces-390x844");
 
   await page
