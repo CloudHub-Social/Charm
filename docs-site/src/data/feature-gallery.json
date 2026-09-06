@@ -4,9 +4,51 @@
     "canary",
     "message_pinning",
     "presence_privacy_controls",
-    "user_profile_cards"
+    "user_profile_cards",
+    "crypto_key_files",
+    "ios_push_notifications"
   ],
   "features": [
+    {
+      "slug": "voice-recording",
+      "title": "Voice message recording",
+      "summary": "Opt into recording an audio message, preview it locally, and explicitly send or discard it.",
+      "status": "preview",
+      "spec": "Spec 41",
+      "specLinks": [
+        {
+          "label": "Spec 41",
+          "href": "/specs/day-1/spec-41--voice-message-recording/"
+        }
+      ],
+      "flag": "voice_recording",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "voice-recording-local-preview",
+        "alt": "Charm voice recording preview with playback, send, and discard controls",
+        "caption": "The preview remains local until Send. Recording is experimental and off by default."
+      }
+    },
+    {
+      "slug": "room-directory",
+      "title": "Public room directory",
+      "summary": "Search the current homeserver's public room directory, browse paginated results, and join without leaving Charm.",
+      "status": "preview",
+      "spec": "Day-2 Spec 06",
+      "specLinks": [
+        {
+          "label": "Day-2 Spec 06",
+          "href": "/specs/day-2/spec-06--room-directory-and-public-room-browser/"
+        }
+      ],
+      "flag": "room_directory",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-room-directory",
+        "alt": "Charm public room browser showing homeserver directory results and member counts",
+        "caption": "Playwright opens the default-off directory browser and captures deterministic homeserver search results."
+      }
+    },
     {
       "slug": "forget-local-data",
       "title": "Forget local data",
@@ -67,6 +109,26 @@
         "caption": "Playwright chooses a date, resolves the first later Matrix event, and highlights the target in the existing virtualized timeline."
       },
       "maxDiffPixels": 1500
+    },
+    {
+      "slug": "polls",
+      "title": "Polls",
+      "summary": "Create single-choice Matrix polls, vote in the timeline, follow disclosed results, and close polls when the decision is complete.",
+      "status": "preview",
+      "spec": "Day-2 Spec 03",
+      "specLinks": [
+        {
+          "label": "Day-2 Spec 03",
+          "href": "/specs/day-2/spec-03--polls/"
+        }
+      ],
+      "flag": "polls",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-polls",
+        "alt": "Charm conversation showing a disclosed poll and the create-poll dialog",
+        "caption": "Playwright renders live poll totals and opens the composer flow from a complete room timeline."
+      }
     },
     {
       "slug": "message-search",
@@ -165,6 +227,26 @@
         "name": "room-invite-accepted",
         "alt": "Charm room list after accepting an invitation to Project room",
         "caption": "The accepted room opens immediately and joins the regular room list."
+      }
+    },
+    {
+      "slug": "composer-parity",
+      "title": "Composer formatting and shortcuts",
+      "summary": "Opt into spoiler, strikethrough, code-block and link controls, additional slash commands, and editing your latest message from an empty composer.",
+      "status": "preview",
+      "spec": "Spec 43",
+      "specLinks": [
+        {
+          "label": "Spec 43",
+          "href": "/specs/day-1/spec-43--composer-parity/"
+        }
+      ],
+      "flag": "composer_parity",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "composer-parity-controls-on",
+        "alt": "Charm composer with the optional formatting controls enabled",
+        "caption": "The preview flag exposes additional composer controls; the feature remains off by default."
       }
     },
     {

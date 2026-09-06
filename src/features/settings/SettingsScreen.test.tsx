@@ -58,10 +58,6 @@ vi.mock("@/lib/matrix", () => ({
   onDndChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  requestPermission: vi.fn().mockResolvedValue("granted"),
-}));
-
 let focusModeFlagEnabled = false;
 let bookmarksFlagEnabled = false;
 vi.mock("@/featureFlags", () => ({

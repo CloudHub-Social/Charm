@@ -1,4 +1,5 @@
 import type { BadgeState } from "@bindings/BadgeState";
+import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 import type { BookmarkEntry } from "@bindings/BookmarkEntry";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { DndSnapshot } from "@bindings/DndSnapshot";
@@ -11,6 +12,8 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { GroupDmAvatarMember } from "@bindings/GroupDmAvatarMember";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
+import type { PublicRoomPage } from "@bindings/PublicRoomPage";
+import type { PublicRoomSummary } from "@bindings/PublicRoomSummary";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
@@ -24,6 +27,9 @@ import type { MutualRoomSummary } from "@bindings/MutualRoomSummary";
 import type { NotificationSettingsSummary } from "@bindings/NotificationSettingsSummary";
 import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
+import type { PollAnswerSummary } from "@bindings/PollAnswerSummary";
+import type { PollKindSummary } from "@bindings/PollKindSummary";
+import type { PollSummary } from "@bindings/PollSummary";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { PrivacySettings } from "@bindings/PrivacySettings";
@@ -39,6 +45,8 @@ import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
+import type { RoomKeyExportSummary } from "@bindings/RoomKeyExportSummary";
+import type { RoomKeyImportSummary } from "@bindings/RoomKeyImportSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RegistrationAuthResponse } from "@bindings/RegistrationAuthResponse";
 import type { RegistrationEmailChallenge } from "@bindings/RegistrationEmailChallenge";
@@ -168,6 +176,9 @@ export type {
   NotificationSettingsSummary,
   OwnProfile,
   PinnedMessageSummary,
+  PollAnswerSummary,
+  PollKindSummary,
+  PollSummary,
   PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
@@ -529,13 +540,122 @@ export function sendMessage(
   });
 }
 
+/** Creates an MSC3381 single-select poll via the Matrix send queue. */
+export function createPoll(
+  roomId: string,
+  question: string,
+  options: string[],
+  disclosed: boolean,
+): Promise<string> {
+  return invokeMatrix("create_poll", { roomId, question, options, disclosed });
+}
+
+/** Sends a response relation; the latest valid response from a user wins. */
+export function voteOnPoll(roomId: string, pollEventId: string, answerId: string): Promise<string> {
+  return invokeMatrix("vote_on_poll", { roomId, pollEventId, answerId });
+}
+
+export interface PendingPollVote {
+  transaction_id: string;
+  answer_id: string;
+  failed: boolean;
+}
+
+/** Returns a queued poll response so failures remain recoverable after remount/restart. */
+export function getPendingPollVote(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollVote | null> {
+  return invokeMatrix("get_pending_poll_vote", { roomId, pollEventId });
+}
+
+/** Retries one asynchronously failed poll response under the poll mutation lock. */
+export function retryPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_vote", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one asynchronously failed poll response under the poll mutation lock. */
+export function discardPollVote(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_vote", { roomId, pollEventId, transactionId });
+}
+
+/** Ends an open poll and returns the send-queue transaction id. */
+export function endPoll(roomId: string, pollEventId: string): Promise<string> {
+  return invokeMatrix("end_poll", { roomId, pollEventId });
+}
+
+/** Retries one failed poll close and preserves its shared mutation lock. */
+export function retryPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("retry_poll_end", { roomId, pollEventId, transactionId });
+}
+
+/** Discards one failed poll close without racing a concurrent retry. */
+export function discardPollEnd(
+  roomId: string,
+  pollEventId: string,
+  transactionId: string,
+): Promise<boolean> {
+  return invokeMatrix("discard_poll_end", { roomId, pollEventId, transactionId });
+}
+
+export interface PendingPollEnd {
+  transaction_id: string;
+  failed: boolean;
+}
+
+export interface PendingPollRelation {
+  poll_event_id: string;
+  transaction_id: string;
+  kind: "vote" | "end";
+  answer_id: string | null;
+  failed: boolean;
+}
+
+/** Lists poll relations independently of whether their target event is loaded. */
+export function getPendingPollRelations(roomId: string): Promise<PendingPollRelation[]> {
+  return invokeMatrix("get_pending_poll_relations", { roomId });
+}
+
+/** Returns the queued poll-close state, including after a row remount. */
+export function getPendingPollEnd(
+  roomId: string,
+  pollEventId: string,
+): Promise<PendingPollEnd | null> {
+  return invokeMatrix("get_pending_poll_end", { roomId, pollEventId });
+}
+
+/** Releases the shared close lock after the synced timeline reports the poll ended. */
+export function confirmPollEndSynced(roomId: string, pollEventId: string): Promise<void> {
+  return invokeMatrix("confirm_poll_end_synced", { roomId, pollEventId });
+}
+
 /** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */
 export function runCommand(
   roomId: string,
   command: SlashCommand,
   args: string[],
+  inReplyToEventId?: string | null,
+  mentionIds?: string[] | null,
 ): Promise<CommandResult> {
-  return invoke("run_command", { roomId, command, args });
+  return invoke("run_command", {
+    roomId,
+    command,
+    args,
+    inReplyToEventId: inReplyToEventId ?? null,
+    mentionIds: mentionIds ?? null,
+  });
 }
 
 export function onTimelineUpdate(
@@ -544,8 +664,14 @@ export function onTimelineUpdate(
   return listen<RoomTimelineUpdate>("timeline:update", (e) => callback(e.payload));
 }
 
-export function editMessage(roomId: string, eventId: string, newBody: string): Promise<void> {
-  return invoke("edit_message", { roomId, eventId, newBody });
+export function editMessage(
+  roomId: string,
+  eventId: string,
+  newBody: string,
+  formattedBody: string | null = null,
+  mentions: string[] | null = null,
+): Promise<void> {
+  return invoke("edit_message", { roomId, eventId, newBody, formattedBody, mentions });
 }
 
 export function redactEvent(
@@ -582,18 +708,26 @@ export function toggleReaction(
 }
 
 /** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
-export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
-  return invoke("send_reply", { roomId, inReplyToEventId, body });
+export function sendReply(
+  roomId: string,
+  inReplyToEventId: string,
+  body: string,
+  formattedBody: string | null = null,
+  mentions: string[] | null = null,
+): Promise<string> {
+  return invoke("send_reply", { roomId, inReplyToEventId, body, formattedBody, mentions });
 }
 
 /**
  * Retries a failed message send in place via the send queue's own retry
  * primitive (`SendHandle::unwedge`), rather than re-composing and sending
- * new content. `transactionId` is the failed local echo's
+ * new content. Resolves `true` only when the local echo was still present
+ * and was actually unwedgeable; `false` means another renderer already
+ * removed it. `transactionId` is the failed local echo's
  * `RoomMessageSummary.transaction_id` (present while `send_state.state` is
  * `"error"`).
  */
-export function resendMessage(roomId: string, transactionId: string): Promise<void> {
+export function resendMessage(roomId: string, transactionId: string): Promise<boolean> {
   return invoke("resend_message", { roomId, transactionId });
 }
 
@@ -672,6 +806,16 @@ export function recoverFromKey(recoveryKey: string): Promise<void> {
   return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
 }
 
+/** Opens a native save picker and exports an SDK-compatible encrypted room-key file. */
+export function exportRoomKeys(passphrase: string): Promise<RoomKeyExportSummary> {
+  return invoke("export_room_keys", { passphrase }, { captureOnError: false });
+}
+
+/** Opens a native file picker and imports an SDK-compatible encrypted room-key file. */
+export function importRoomKeys(passphrase: string): Promise<RoomKeyImportSummary> {
+  return invoke("import_room_keys", { passphrase }, { captureOnError: false });
+}
+
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
   return invoke("accept_verification_request", { otherUserId, flowId });
 }
@@ -729,22 +873,53 @@ function isUploadCancellation(error: unknown): boolean {
     : false;
 }
 
-export function sendAttachment(
+function recordingBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read voice recording"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Could not read voice recording"));
+        return;
+      }
+      resolve(reader.result.slice(reader.result.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function sendAttachment(
   roomId: string,
   filePath: string | File,
   txnId: string,
   caption?: string,
   stripExifEnabled = true,
   signal?: AbortSignal,
+  voice?: VoiceMessageMetadata,
 ): Promise<void> {
+  let recording: { mime_type: string; bytes_base64: string } | undefined;
+  if (!isWebBuild() && typeof filePath !== "string") {
+    if (!voice) throw new Error("Native in-memory attachments require recording metadata");
+    if (filePath.size === 0 || filePath.size > 32 * 1024 * 1024)
+      throw new Error("Voice recording exceeds the in-memory upload limit");
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    const bytesBase64 = await recordingBase64(filePath);
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    recording = {
+      mime_type: filePath.type,
+      bytes_base64: bytesBase64,
+    };
+  }
   return invoke(
     "send_attachment",
     {
       roomId,
-      filePath,
+      filePath: recording ? "" : filePath,
       txnId,
       caption,
       stripExifEnabled,
+      ...(voice ? { voice } : {}),
+      ...(recording ? { recording } : {}),
       ...(isWebBuild() ? { signal } : {}),
     },
     { captureOnError: (error) => !isUploadCancellation(error) },
@@ -958,6 +1133,16 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
 export function joinRoom(roomIdOrAlias: string): Promise<JoinedRoom> {
   return invoke("join_room", { roomIdOrAlias });
 }
+
+export function searchPublicRooms(
+  query: string | null,
+  since: string | null = null,
+  limit = 20,
+): Promise<PublicRoomPage> {
+  return invoke("search_public_rooms", { query, since, limit });
+}
+
+export type { PublicRoomPage, PublicRoomSummary };
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
@@ -1310,8 +1495,29 @@ export function onSpaceChildrenUpdate(callback: (spaceId: string) => void): Prom
  * it obtains a UnifiedPush/FCM/APNs endpoint and registers it as a pusher
  * with the homeserver.
  */
+export function refreshPushRegistration(
+  expectedUserId: string,
+  expectedDeviceId: string,
+): Promise<void> {
+  return invoke(
+    "refresh_push_registration",
+    { expectedUserId, expectedDeviceId },
+    { captureOnError: false },
+  );
+}
+
 export function registerPush(): Promise<PushRegistration> {
   return invoke("register_push");
+}
+
+export function requestNotificationPermission(): Promise<
+  "granted" | "denied" | "prompt" | "prompt-with-rationale"
+> {
+  return invoke("request_notification_permission");
+}
+
+export function isNotificationPermissionGranted(): Promise<boolean> {
+  return invoke("is_notification_permission_granted");
 }
 
 export function unregisterPush(): Promise<void> {

@@ -7,16 +7,21 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --n
     patchelf \
     pkg-config \
     libssl-dev \
+    nodejs \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
+COPY LICENSE ./LICENSE
 COPY crates/charm-web-server ./crates/charm-web-server
 COPY src-tauri ./src-tauri
+COPY scripts/generate-third-party-licenses.mjs ./scripts/generate-third-party-licenses.mjs
+COPY scripts/license-texts ./scripts/license-texts
 
-RUN cargo build --release -p charm-web-server
+RUN cargo build --release -p charm-web-server \
+    && node scripts/generate-third-party-licenses.mjs --cargo --output /tmp/THIRD_PARTY_LICENSES.txt
 
 FROM debian:bookworm-slim
 
@@ -29,6 +34,8 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --n
 WORKDIR /app
 
 COPY --from=builder /app/target/release/charm-web-server /usr/local/bin/charm-web-server
+COPY --from=builder /tmp/THIRD_PARTY_LICENSES.txt /usr/share/doc/charm/THIRD_PARTY_LICENSES.txt
+COPY LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md /usr/share/doc/charm/
 
 ENV CHARM_WEB_SERVER_ADDR=0.0.0.0:8787
 

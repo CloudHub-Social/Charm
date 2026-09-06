@@ -16,7 +16,7 @@ use matrix_sdk::ruma::api::client::room::report_content;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::{
-    AddMentions, ForwardThread, Relation, ReplacementMetadata, RoomMessageEventContent,
+    AddMentions, ForwardThread, Relation, ReplacementMetadata,
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
@@ -195,9 +195,19 @@ pub async fn edit_message(
     room_id: String,
     event_id: String,
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    edit_message_impl(&client, &room_id, &event_id, new_body).await
+    edit_message_impl(
+        &client,
+        &room_id,
+        &event_id,
+        new_body,
+        formatted_body,
+        mentions,
+    )
+    .await
 }
 
 /// Core logic behind [`edit_message`], taking a plain `&Client` so it's
@@ -207,6 +217,8 @@ pub async fn edit_message_impl(
     room_id: &str,
     event_id: &str,
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<(), String> {
     let room = get_room(client, room_id)?;
 
@@ -242,9 +254,18 @@ pub async fn edit_message_impl(
     if original_message.sender != own_user_id {
         return Err("only the original sender can edit this message".to_string());
     }
+    if !super::timeline::is_text_editable(&original_message.content.msgtype) {
+        return Err("this message type cannot be edited in the text composer".to_string());
+    }
 
     let metadata = ReplacementMetadata::from(original_message);
-    let content = RoomMessageEventContent::text_plain(new_body).make_replacement(metadata);
+    let content = build_text_edit_content(
+        &original_message.content.msgtype,
+        new_body,
+        formatted_body,
+        mentions,
+    )?
+    .make_replacement(metadata);
 
     // Routed through the same capture helper as send_message/send_reply
     // (discarding the transaction id — edits don't need frontend
@@ -261,6 +282,78 @@ pub async fn edit_message_impl(
     .await?;
 
     Ok(())
+}
+
+fn build_text_edit_content(
+    original: &matrix_sdk::ruma::events::room::message::MessageType,
+    body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
+) -> Result<matrix_sdk::ruma::events::room::message::RoomMessageEventContent, String> {
+    use matrix_sdk::ruma::events::room::message::{
+        EmoteMessageEventContent, MessageType, NoticeMessageEventContent,
+    };
+    if !super::timeline::is_text_editable(original) {
+        return Err("this message type cannot be edited in the text composer".to_string());
+    }
+    let mut content = super::send::build_message_content(body, formatted_body, mentions)?;
+    let MessageType::Text(text) = content.msgtype else {
+        return Err("text edit content unavailable".to_string());
+    };
+    content.msgtype = match original {
+        MessageType::Emote(_) => {
+            let mut emote = EmoteMessageEventContent::plain(text.body);
+            emote.formatted = text.formatted;
+            MessageType::Emote(emote)
+        }
+        MessageType::Notice(_) => {
+            let mut notice = NoticeMessageEventContent::plain(text.body);
+            notice.formatted = text.formatted;
+            MessageType::Notice(notice)
+        }
+        _ => MessageType::Text(text),
+    };
+    Ok(content)
+}
+
+#[cfg(test)]
+mod text_edit_content_tests {
+    use super::build_text_edit_content;
+    use matrix_sdk::ruma::events::room::message::MessageType;
+
+    #[test]
+    fn text_edits_preserve_the_original_subtype_formatting_and_mentions() {
+        for msgtype in ["m.text", "m.emote", "m.notice"] {
+            let original: MessageType = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype, "body": "old"
+            }))
+            .unwrap();
+            let edited = build_text_edit_content(
+                &original,
+                "new".into(),
+                Some("<b>new</b>".into()),
+                Some(vec!["@alice:example.org".into()]),
+            )
+            .unwrap();
+            let wire = serde_json::to_value(edited).unwrap();
+            assert_eq!(wire["msgtype"], msgtype);
+            assert_eq!(wire["body"], "new");
+            assert_eq!(wire["formatted_body"], "<b>new</b>");
+            assert_eq!(wire["m.mentions"]["user_ids"][0], "@alice:example.org");
+        }
+    }
+
+    #[test]
+    fn non_text_message_fallback_bodies_are_not_editable() {
+        for raw in [
+            serde_json::json!({"msgtype":"m.location", "body":"location", "geo_uri":"geo:1,2"}),
+            serde_json::json!({"msgtype":"com.example.custom", "body":"fallback"}),
+        ] {
+            let original: MessageType = serde_json::from_value(raw).unwrap();
+            assert!(!super::super::timeline::is_text_editable(&original));
+            assert!(build_text_edit_content(&original, "new".into(), None, None).is_err());
+        }
+    }
 }
 
 /// Redacts (deletes) an event the current user has power to redact — either
@@ -506,9 +599,19 @@ pub async fn send_reply(
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<String, String> {
     let client = state.require_client().await?;
-    send_reply_impl(&client, &room_id, &in_reply_to_event_id, body).await
+    send_reply_impl(
+        &client,
+        &room_id,
+        &in_reply_to_event_id,
+        body,
+        formatted_body,
+        mentions,
+    )
+    .await
 }
 
 /// Core logic behind [`send_reply`].
@@ -517,6 +620,21 @@ pub async fn send_reply_impl(
     room_id: &str,
     in_reply_to_event_id: &str,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
+) -> Result<String, String> {
+    let content = super::send::build_message_content(body, formatted_body, mentions)?;
+    send_room_message_reply_impl(client, room_id, in_reply_to_event_id, content).await
+}
+
+/// Queues an arbitrary room-message subtype as a reply. Slash commands use
+/// this to retain `m.emote` / `m.notice` while sharing the same target
+/// validation, rich-reply fallback, and mention behavior as normal replies.
+pub(crate) async fn send_room_message_reply_impl(
+    client: &Client,
+    room_id: &str,
+    in_reply_to_event_id: &str,
+    content: matrix_sdk::ruma::events::room::message::RoomMessageEventContent,
 ) -> Result<String, String> {
     let room = get_room(client, room_id)?;
 
@@ -547,11 +665,7 @@ pub async fn send_reply_impl(
         .as_original()
         .ok_or_else(|| "target event has already been redacted".to_string())?;
 
-    let content = RoomMessageEventContent::text_plain(body).make_reply_to(
-        original_message,
-        ForwardThread::No,
-        AddMentions::Yes,
-    );
+    let content = content.make_reply_to(original_message, ForwardThread::No, AddMentions::Yes);
 
     super::send::send_and_capture_transaction_id(
         client,
@@ -867,15 +981,15 @@ mod room_send_queue_barrier_tests {
 /// equivalent. Uses matrix-rust-sdk's own send-queue retry primitive
 /// (`SendHandle::unwedge`) rather than re-composing and re-sending new
 /// content, so this is the same local echo retried in place, not a
-/// duplicate. A no-op from the caller's perspective if the transaction id no
-/// longer has a pending local echo (e.g. it was already discarded, or a
-/// stale/duplicate `resend` fired after a previous one already succeeded).
+/// duplicate. Returns whether the transaction id still identified a pending
+/// local echo that was actually unwedgeable. `false` means it was already
+/// discarded or a stale/duplicate `resend` raced a previous success.
 #[tauri::command]
 pub async fn resend_message(
     state: State<'_, MatrixState>,
     room_id: String,
     transaction_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let client = state.require_client().await?;
     resend_message_impl(&client, &room_id, &transaction_id).await
 }
@@ -885,7 +999,7 @@ pub async fn resend_message_impl(
     client: &Client,
     room_id: &str,
     transaction_id: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let _send_guard = super::send::SEND_CAPTURE_LOCK.lock().await;
     let room = get_room(client, room_id)?;
     if ROOM_UPGRADE_BARRIER_ROOMS
@@ -896,7 +1010,7 @@ pub async fn resend_message_impl(
         return Err("This room is read-only while its current state is verified.".to_string());
     }
     let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     // The SDK's send-queue loop disables a room's queue after *any* send
     // error (recoverable or not — see its own "Disable the queue for this
@@ -906,7 +1020,11 @@ pub async fn resend_message_impl(
     // actually reads from, so without this Resend would silently do
     // nothing.
     room.send_queue().set_enabled(true);
-    send_handle.unwedge().await.map_err(|e| e.to_string())
+    send_handle
+        .unwedge()
+        .await
+        .map(|_| true)
+        .map_err(|e| e.to_string())
 }
 
 /// Discards a failed message local echo — Charm 1.0's `onDeleteFailedSend`
@@ -1746,9 +1864,13 @@ mod resend_discard_tests {
 
         let mut updates = client.send_queue().subscribe();
 
-        resend_message_impl(&client, room_id.as_str(), transaction_id.as_str())
+        let retried = resend_message_impl(&client, room_id.as_str(), transaction_id.as_str())
             .await
             .expect("unwedging a failed local echo should succeed");
+        assert!(
+            retried,
+            "the failed local echo should have been found and unwedgeable"
+        );
 
         // Confirm the retried send actually reaches the mocked "sent" outcome
         // for the same transaction id, not just that `unwedge()` returned Ok.
@@ -1793,7 +1915,7 @@ mod resend_discard_tests {
         // failure to surface.
         assert_eq!(
             resend_message_impl(&client, room_id.as_str(), bogus_txn_id).await,
-            Ok(())
+            Ok(false)
         );
         assert_eq!(
             discard_failed_message_impl(&client, room_id.as_str(), bogus_txn_id).await,

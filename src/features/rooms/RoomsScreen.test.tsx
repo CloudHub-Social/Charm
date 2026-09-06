@@ -39,6 +39,7 @@ const setFocusedRoom = vi.fn();
 const acceptInvite = vi.fn();
 const declineInvite = vi.fn();
 const joinRoom = vi.fn();
+const directoryNavigation = { controller: null as AbortController | null };
 
 vi.mock("@/lib/matrix", () => ({
   acceptInvite: (...args: unknown[]) => acceptInvite(...args),
@@ -233,14 +234,28 @@ vi.mock("./RoomList", () => ({
     onAcceptInvite,
     onDeclineInvite,
     onOpenQuickSwitcher,
+    onDirectoryJoined,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
     onAcceptInvite: (id: string) => Promise<void>;
     onDeclineInvite: (id: string) => Promise<void>;
     onOpenQuickSwitcher?: () => void;
+    onDirectoryJoined: (id: string, signal?: AbortSignal) => Promise<void>;
   }) => (
     <div>
+      <button
+        type="button"
+        onClick={() => {
+          directoryNavigation.controller = new AbortController();
+          void onDirectoryJoined("!directory:example.org", directoryNavigation.controller.signal);
+        }}
+      >
+        joined-directory-room
+      </button>
+      <button type="button" onClick={() => directoryNavigation.controller?.abort()}>
+        dismiss-directory
+      </button>
       {onOpenQuickSwitcher && (
         <button type="button" onClick={onOpenQuickSwitcher}>
           open-quick-switcher
@@ -999,7 +1014,7 @@ describe("RoomsScreen", () => {
 
     await screen.findByText("space-rail:space:!space:example.org");
     expect(screen.getByRole("button", { name: /chats/i })).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/chat-content:/)).not.toBeVisible();
   });
 
   it("returns to the mobile list when the active room disappears", async () => {
@@ -1026,7 +1041,7 @@ describe("RoomsScreen", () => {
 
     await screen.findByRole("button", { name: "!b:example.org" });
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
-    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/chat-content:/)).not.toBeVisible();
   });
 
   it("does not resync focus when room metadata changes for the same active room", async () => {
@@ -1421,6 +1436,63 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(joinRoom).toHaveBeenCalledWith(replacement.room_id));
     expect(await screen.findByText(`chat-content:${replacement.room_id}`)).toBeInTheDocument();
     expect(listRooms).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains directory join selection until the room snapshot arrives", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const joined = room({ room_id: "!directory:example.org" });
+    listRooms.mockReset().mockResolvedValue([firstRoom]);
+    render(
+      <Provider store={createStore()}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "joined-directory-room" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(`chat-content:${firstRoom.room_id}`)).toBeInTheDocument();
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, joined]));
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
+  });
+
+  it("does not navigate after directory dismissal during the parent refresh", async () => {
+    const firstRoom = room({ room_id: "!a:example.org" });
+    const joined = room({ room_id: "!directory:example.org" });
+    let completeRefresh!: (rooms: RoomSummary[]) => void;
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([firstRoom])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeRefresh = resolve;
+          }),
+      );
+    render(
+      <Provider store={createStore()}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText(`chat-content:${firstRoom.room_id}`);
+    fireEvent.click(screen.getByRole("button", { name: "joined-directory-room" }));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "dismiss-directory" }));
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => updateRooms([firstRoom, joined]));
+    await act(async () => completeRefresh([firstRoom, joined]));
+    expect(screen.getByText(`chat-content:${firstRoom.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${joined.room_id}`)).not.toBeInTheDocument();
   });
 
   it("keeps the current chat visible until a newly-created DM reaches the room-list stream", async () => {

@@ -1,68 +1,74 @@
-//! iOS transport: APNs via Tauri v2 mobile push.
+//! iOS APNs transport, backed by SableClient's pinned MIT-licensed Tauri
+//! notification plugin. The plugin owns the Swift application-delegate bridge
+//! that requests authorization, calls `registerForRemoteNotifications`, and
+//! resolves the resulting device token back to Rust.
 //!
-//! **Not wired up yet — `register`/`unregister` return an explicit error
-//! rather than pretending to work.** Registering for remote notifications
-//! (`UIApplication.registerForRemoteNotifications()`) and receiving the
-//! resulting device-token delegate callback are Objective-C runtime APIs
-//! Rust can't call directly, and Tauri's Rust-driven iOS application delegate
-//! (via `tao`) leaves no hand-editable `AppDelegate.swift` to hook into
-//! directly. Tauri v2's supported extension point for exactly this is a
-//! **mobile plugin** (a Swift `Plugin` subclass Tauri's iOS runtime forwards
-//! `UIApplicationDelegate` callbacks to, registered from Rust via
-//! `tauri::ios_plugin_binding!`/`register_ios_plugin`) — a first attempt at
-//! that here broke CI: `ios_plugin_binding!` emits an `extern "C"` reference
-//! Rust expects resolved at `cargo build --lib`'s *own* link step (not later,
-//! when Xcode links the full app with the Swift plugin's `@_cdecl` symbol),
-//! and this project's `Sources/charm` isn't wired through the Tauri CLI's
-//! `tauri plugin ios init`-generated scaffolding that normally makes that
-//! work — reproducing that scaffolding by hand, with no Xcode available in
-//! this environment to iterate against, risked shipping something that
-//! looked done but silently never linked. Removed rather than left half-broken.
-//!
-//! What it would take to finish this: run `pnpm tauri ios init` (or the
-//! equivalent plugin scaffolding step) in a real Xcode environment to
-//! generate the correct plugin crate/Swift-package wiring, reimplement
-//! `PushPlugin.swift`'s `register`/`didRegisterForRemoteNotificationsWithDeviceToken`
-//! against that scaffolding, and verify a real `cargo build --target
-//! aarch64-apple-ios-sim` + `xcodebuild` round-trip before relying on it.
-//! Android is unaffected — its JNI bridge (`push::android`) resolves symbols
-//! at JVM runtime via `System.loadLibrary`, not at Rust link time, so it
-//! doesn't have this problem.
+//! This client bridge is necessary but not sufficient for live delivery: the
+//! installed app must be signed by a paid Apple Developer team with the Push
+//! Notifications capability, and the gateway must hold an APNs provider key
+//! for the same team/App ID. A Personal Team AltStore/SideStore re-sign cannot
+//! satisfy those requirements. The runtime flag therefore remains off until
+//! the signing and gateway gates have been proven on a physical device.
 
-use tauri::{AppHandle, Runtime};
+use std::sync::Mutex;
 
-use super::{PushEndpoint, PushError};
+use tauri::AppHandle;
+use tauri_plugin_notifications::NotificationsExt;
 
-/// Intentionally not a real Tauri plugin yet — see this module's doc
-/// comment. Kept as a plain `Builder` with no `.setup()` so `lib.rs` has a
-/// stable `push::ios::init()` call site to swap the real implementation into
-/// later, without another `lib.rs` edit.
-pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::new("charm-push").build()
-}
+use super::{PushEndpoint, PushError, PusherKind, IOS_APP_ID};
 
 pub struct ApnsTransport {
-    #[allow(dead_code)]
     app: AppHandle,
+    endpoint: Mutex<Option<PushEndpoint>>,
 }
 
 impl ApnsTransport {
     pub fn new(app: AppHandle) -> Self {
-        Self { app }
+        Self {
+            app,
+            endpoint: Mutex::new(None),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl super::NotificationTransport for ApnsTransport {
     async fn register(&self) -> Result<PushEndpoint, PushError> {
-        Err("APNs registration is not wired up yet — see push::ios's doc comment".to_string())
+        let response = self
+            .app
+            .notifications()
+            .register_for_push_notifications(None, None, None, None, None)
+            .await
+            .map_err(|error| format!("APNs registration failed: {error}"))?;
+        let endpoint = PushEndpoint {
+            url_or_token: response.device_token,
+            app_id: IOS_APP_ID.to_string(),
+            kind: PusherKind::Apns,
+        };
+        *self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(endpoint.clone());
+        Ok(endpoint)
     }
 
     async fn unregister(&self) -> Result<(), PushError> {
+        self.app
+            .notifications()
+            .unregister_for_push_notifications()
+            .await
+            .map_err(|error| format!("APNs unregister failed: {error}"))?;
+        *self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         Ok(())
     }
 
     fn endpoint(&self) -> Option<PushEndpoint> {
-        None
+        self.endpoint
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 }

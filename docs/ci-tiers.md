@@ -68,17 +68,33 @@ Tier 1/2 already catch plain compile errors — this only needs to catch
 native-bundler and release-mode-specific breakage, and there's no strong
 reason that needs to be fast.
 
-## Tier 4 — Production release _(partially implemented)_
+## Tier 4 — Production release _(signing-dependent)_
 
-Triggered by pushing a version tag (`v*`). `release-builds.yml`
-already does part of this today: uploads debug symbols and frontend source
-maps to Sentry for the tagged commit, with size analysis for those builds.
-The remaining piece — producing real
-**signed and notarized** shipping bundles (macOS notarization, code-signing
-certs, Windows Authenticode, etc.) and publishing them (GitHub Release
-assets, the auto-updater feed) — is designed but not built. It needs signing
-credentials that don't exist in CI yet; that's a distinct follow-up task,
-not something to wire up silently.
+Triggered by `release.yml` after the generated stable-version release PR merges.
+That workflow pins the PR's exact merge commit, creates the tag and draft, then
+explicitly dispatches `release-builds.yml` on that tag. Pushing a `v*` tag by
+itself does not start a build. A failed run can therefore leave a tag without a
+draft; the operator must resume or repair that exact tag rather than creating
+another one.
+GitHub generates the draft notes; Knope still prepares the version
+and changelog in the release PR. Uploads never overwrite existing assets: retries
+reuse only byte-identical draft assets, and conflicting drafts require explicit
+operator repair. Publication requires the complete remote asset count and SHA-256
+digests to match the local set. Published releases are never mutated by a rerun.
+`release-builds.yml` also requires
+frontend sourcemaps and platform builds before publishing complete bundles,
+platform SPDX SBOMs, and a GPG-signed checksum manifest. Android and Windows
+use existing signing secrets and must verify the resulting native signatures.
+The non-publishing `verify_platform_signing` dispatch is restricted to reviewed
+`main`; it provides actual signing evidence after the workflow merges.
+Apple production certificate import and notarization submission are wired to
+the protected `release-signing` environment; macOS verification intentionally
+blocks stable publication until those credentials exist and the signed,
+notarized artifacts pass validation. Updater readiness and actual
+signed-artifact validation remain separate gates; workflow implementation is
+not release proof.
+The canonical operational requirements, secret names, and evidence boundaries
+are in [the release-tier guide](../docs-site/src/content/docs/contributing/ci-tiers.md).
 
 ## Supporting infrastructure
 

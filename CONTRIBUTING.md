@@ -25,6 +25,26 @@ into any user- or store-visible identifier (package name, Tauri
 `productName`/`identifier`, deep-link scheme, Cargo crate name). No `charm2`,
 `charm-2.0`, `Charm 2`, etc.
 
+## Contribution licensing and provenance
+
+Unless you conspicuously state otherwise, any contribution intentionally
+submitted to Charm is licensed under the repository's Apache-2.0 license as
+described in section 5 of that license. By submitting it, you represent that
+you have the right to do so. Preserve third-party copyright notices and call
+out copied or adapted code, assets, designs, and other material in the PR.
+
+Do not copy source, assets, build output, or substantial implementation detail
+from Sable Call or Element Call into Charm. Their code is not made Apache-2.0
+by being useful to this project. Charm's planned Sable Call integration is a
+separate-origin Matrix Widget API boundary; see the
+[licensing architecture](docs-site/src/content/docs/architecture/licensing-boundaries.md).
+
+AI-assisted contributions have the same provenance requirements as any other
+contribution. The human submitter must review and understand the change, check
+that generated material was not copied from an incompatible source, disclose
+known sources, and remove anything they cannot license to Charm. An AI tool's
+output is not proof of ownership or license compatibility.
+
 ## Quality gate
 
 Run these before opening a PR — they mirror CI:
@@ -106,8 +126,12 @@ release commits and PRs are bot-authored:
   releasable changesets, it opens/updates a `release` branch and PR via
   `knope prepare-release`, with `.github/scripts/enrich-changelog.mjs`
   replacing commit-hash markers with PR links and crediting authors.
-- `release.yml` runs `knope release` when that `release` PR is merged,
-  publishing the version bump, `CHANGELOG.md` update, and GitHub Release.
+- `release.yml` creates or validates the matching version tag and draft GitHub
+  Release when that `release` PR is merged. `release-builds.yml` builds, signs,
+  verifies, and uploads the complete artifact set, then publishes that draft.
+  Resume a failed release from the release-builds run; the canonical gates and
+  recovery rules live in the
+  [release-tier guide](docs-site/src/content/docs/contributing/ci-tiers.md).
 
 ### Local validation and dry-run (optional)
 

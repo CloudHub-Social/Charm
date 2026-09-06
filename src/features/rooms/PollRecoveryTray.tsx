@@ -1,0 +1,91 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  discardPollEnd,
+  discardPollVote,
+  getPendingPollRelations,
+  type PendingPollRelation,
+} from "@/lib/matrix";
+
+interface PollRecoveryTrayProps {
+  roomId: string;
+}
+
+export function PollRecoveryTray({ roomId }: PollRecoveryTrayProps) {
+  const [relations, setRelations] = useState<PendingPollRelation[]>([]);
+  const [busyTransactionId, setBusyTransactionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const activeRoomId = useRef(roomId);
+  activeRoomId.current = roomId;
+  const loadRelations = useCallback(async () => {
+    const pending = await getPendingPollRelations(roomId);
+    if (activeRoomId.current !== roomId) return null;
+    return pending.filter((relation) => relation.failed);
+  }, [roomId]);
+
+  useEffect(() => {
+    let active = true;
+    let retryTimer: number | undefined;
+    const load = async () => {
+      try {
+        const pending = await loadRelations();
+        if (active && pending) setRelations(pending);
+      } catch {
+        // The durable queue remains authoritative; retry while this room is open.
+      } finally {
+        if (active) retryTimer = window.setTimeout(() => void load(), 2_000);
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [loadRelations]);
+
+  async function discard(relation: PendingPollRelation) {
+    setBusyTransactionId(relation.transaction_id);
+    setError(null);
+    try {
+      const changed =
+        relation.kind === "vote"
+          ? await discardPollVote(roomId, relation.poll_event_id, relation.transaction_id)
+          : await discardPollEnd(roomId, relation.poll_event_id, relation.transaction_id);
+      if (!changed) setError("That failed poll action was already handled elsewhere.");
+      const pending = await loadRelations();
+      if (pending) setRelations(pending);
+    } catch {
+      setError(`The failed poll ${relation.kind} could not be discarded.`);
+    } finally {
+      setBusyTransactionId(null);
+    }
+  }
+
+  if (relations.length === 0) return null;
+
+  return (
+    <section aria-label="Poll send recovery" className="flex flex-col gap-2 px-4 pb-2">
+      {relations.map((relation) => {
+        const busy = busyTransactionId === relation.transaction_id;
+        return (
+          <div
+            key={relation.transaction_id}
+            className="flex items-center gap-2 rounded-md border border-destructive/40 bg-card px-3 py-2 text-[13px]"
+          >
+            <span className="min-w-0 flex-1 text-foreground">
+              A poll {relation.kind === "vote" ? "vote" : "close"} failed to send.
+            </span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void discard(relation)}
+              className="rounded px-2.5 py-1 text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              Discard
+            </button>
+          </div>
+        );
+      })}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </section>
+  );
+}

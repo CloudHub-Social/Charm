@@ -3,16 +3,56 @@ title: Charm 2.0 Spec — Crypto key backup setup and key import/export
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 sidebar:
   label: "Crypto key backup & import/export"
 ---
 
-**Workstream:** one PR / one agent. Extends Spec 25 (persistent crypto state &
+**Workstream:** dependency-ordered security slices. Extends Spec 25 (persistent crypto state &
 recovery-key-sufficient verification), which shipped recovery-key **restore** but
 not first-time **setup** or manual key file I/O.
 
+## Current implementation status
+
+- **Manual encrypted room-key import/export:** implemented behind the default-off
+  `crypto_key_files` feature flag. Charm delegates the interoperable encrypted
+  file format to matrix-rust-sdk and uses Rust-owned native pickers so selected
+  file paths and key material never enter frontend IPC. These native-only controls
+  are hidden in web builds, even when the flag is enabled. While a transfer is
+  pending, Cancel, close, Escape, and outside dismissal cannot hide its dialog;
+  a session-scoped provider also keeps progress and completion visible across
+  Settings closure, tab changes, and browser Back/hash navigation. Credentials
+  stay in that owner's local state, not query/mutation caches, and are cleared on
+  completion or session teardown. Dismissal becomes available again after the
+  native command settles. These lifecycle regressions await CI.
+  After the picker and before SDK key access, the native command revalidates the
+  active user/device and the feature flag. It clones the current client, releases
+  the global client mutex, and retains only session-transition exclusion until
+  SDK file work finishes, including when the invoking future is dropped.
+  iOS imports use security-scoped in-place document access before Charm's bounded
+  snapshot; Android import remains unavailable until bounded content-URI streaming
+  is implemented. Passphrases enter zeroizing storage before validation or
+  any early return. New exports require at least eight Unicode code points;
+  imports accept existing short or empty passphrases without imposing a new
+  strength policy. Both paths enforce the same 1024-byte UTF-8 limit in the UI
+  and native command. Real-device iOS file-provider export remains a manual gate;
+  the pinned dialog plugin's save implementation does not consume FileAccessMode.
+- **First-time key backup / 4S setup:** not yet implemented. Existing recovery-key
+  restore still covers only accounts whose server-side recovery is already set up.
+- **Trust shields, blacklist-unverified-devices, and QR verification:** not yet
+  implemented.
+
 ## Problem & why now
+
+Native key imports reject zero or more than 1,000,000 PBKDF2 rounds before
+client admission; matrix-rust-sdk still authenticates and decrypts the file.
+Native key imports read from one opened file into a private, size-bounded
+encrypted snapshot before acquiring account-transfer exclusion. The SDK imports
+that snapshot rather than reopening the user-selected pathname. Temporary
+ciphertext is removed when the owned transfer completes or fails; plaintext keys
+are not written to the staging file. iOS opens the selected document in place;
+Android does not expose import until Charm can bound reads from provider URIs.
+Regression execution remains in CI.
 
 Charm 2.0's crypto is strong on verification and restore: SAS verification,
 cross-signing bootstrap, recovery-key restore, and reset are all present
@@ -27,11 +67,12 @@ audit (2026-07-13) found two real gaps against Charm 1.0:
    this (`components/Devices.tsx:60-122` secret-storage bootstrap, `LocalBackup.tsx`).
    This is the more important of the two — without it, new users never establish a
    backup, so a lost device = lost message history.
-2. **Manual megolm key export/import is missing.** Charm 1.0 exports/imports
+2. **Manual megolm key export/import was missing.** Charm 1.0 exports/imports
    encrypted `.txt` room-key files (`LocalBackup.tsx:40-47,188-190` —
    `exportRoomKeysAsJson` + `encryptMegolmKeyFile` → `cinny-keys.txt`, and the
-   import side). Charm 2.0 has no key-file I/O anywhere. This is the offline/manual
-   escape hatch when server backup isn't trusted or available.
+   import side). Charm 2.0 now provides this as a default-off, staged feature.
+   This is the offline/manual escape hatch when server backup isn't trusted or
+   available.
 
 Two further items — per-message/user **trust shields** in the timeline and a
 **blacklist-unverified-devices** setting — the owner confirmed (2026-07-13) as
@@ -93,16 +134,19 @@ negotiation). Reuse whatever QR-generation/scanning the login flow (MSC4108,
 
 ## Data flow
 
-New IPC: `setup_key_backup(passphrase?) -> recovery_key`, `export_room_keys(passphrase,
-file_path)`, `import_room_keys(passphrase, file_path) -> imported_count`. All thin
-wrappers over matrix-rust-sdk crypto operations, Rust-side (keys never cross IPC as
-raw material — only the recovery key string the user must save, and file paths).
+New IPC: `setup_key_backup(passphrase?) -> recovery_key`,
+`export_room_keys(passphrase) -> completed`, and
+`import_room_keys(passphrase) -> { completed, imported_count, total_count }`. All
+are thin wrappers over matrix-rust-sdk crypto operations. Import/export file paths
+are selected and consumed entirely on the Rust side through native pickers; neither
+paths nor raw key material cross frontend IPC. Only the future recovery key string
+that the user must save will cross that boundary.
 
 ## API/contract changes
 
-New IPC commands as above (ts-rs bindings). Reuse Spec 20's `UiaCommandError` for
-the UIA-gated setup. Optional small DTO additions for per-message/user trust state
-if the shields are included.
+New IPC commands as above (ts-rs bindings). Import/export expose only completion
+and aggregate key counts. Reuse Spec 20's `UiaCommandError` for the UIA-gated
+setup. Small DTO additions will be needed for per-message/user trust state.
 
 ## Testing strategy
 

@@ -1,5 +1,15 @@
 import "@testing-library/jest-dom/vitest";
 
+// ProseMirror measures a DOM Range when scrolling the selection into view.
+// jsdom has no layout engine, so provide empty geometry; real positioning is
+// exercised by the browser E2E suite, not asserted from these placeholders.
+if (typeof Range.prototype.getClientRects !== "function") {
+  Range.prototype.getClientRects = () => Object.assign([], { item: () => null });
+}
+if (typeof Range.prototype.getBoundingClientRect !== "function") {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
+
 // jsdom doesn't implement IntersectionObserver — ChatShell's "mark read when
 // the last message scrolls into view" logic (Spec 05) uses one, so components
 // that mount it need at least a no-op stub to avoid a ReferenceError.

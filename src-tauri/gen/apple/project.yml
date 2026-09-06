@@ -50,7 +50,7 @@ targets:
         # denies) the moment WKWebView asks AVFoundation for camera/mic
         # access.
         NSCameraUsageDescription: Charm needs camera access for video calls.
-        NSMicrophoneUsageDescription: Charm needs microphone access for voice and video calls.
+        NSMicrophoneUsageDescription: Charm uses the microphone to record voice messages you choose to send and for calls.
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:

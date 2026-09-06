@@ -169,6 +169,42 @@
   },
   {
     "default": false,
+    "description": "Use extended composer formatting and command controls.",
+    "key": "composer_parity",
+    "owner": "Spec 43 (composer parity)"
+  },
+  {
+    "default": false,
+    "description": "Record, preview, and send voice messages from the composer.",
+    "key": "voice_recording",
+    "owner": "Spec 41 (voice message recording)"
+  },
+  {
+    "default": false,
+    "description": "Browse and search the homeserver's public room directory, then join a result.",
+    "key": "room_directory",
+    "owner": "Day-2 Spec 06 (public room directory)"
+  },
+  {
+    "default": false,
+    "description": "Create, vote in, and display Matrix polls, with creator-only poll closure.",
+    "key": "polls",
+    "owner": "Day-2 Spec 03 (polls)"
+  },
+  {
+    "default": false,
+    "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
+    "key": "crypto_key_files",
+    "owner": "Spec 44 (crypto key backup and import/export)"
+  },
+  {
+    "default": false,
+    "description": "Register this iOS device with APNs and the Matrix push gateway. Requires a correctly signed build and configured APNs provider.",
+    "key": "ios_push_notifications",
+    "owner": "Spec 11 (push notifications)"
+  },
+  {
+    "default": false,
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"

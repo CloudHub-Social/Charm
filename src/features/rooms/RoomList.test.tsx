@@ -13,6 +13,7 @@ const featureFlagMocks = vi.hoisted(() => ({
   roomListUnreadFilter: false,
   roomListMessagePreview: false,
   spaceRailManagement: false,
+  roomDirectory: false,
 }));
 
 vi.mock("@/featureFlags", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/featureFlags", () => ({
     if (key === "room_list_unread_filter") return featureFlagMocks.roomListUnreadFilter;
     if (key === "room_list_message_preview") return featureFlagMocks.roomListMessagePreview;
     if (key === "space_rail_management") return featureFlagMocks.spaceRailManagement;
+    if (key === "room_directory") return featureFlagMocks.roomDirectory;
     return false;
   },
 }));
@@ -68,6 +70,11 @@ const listSpaceHierarchy = vi.fn().mockResolvedValue([]);
 const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
 const getRoomDetails = vi.fn();
 const joinRoom = vi.fn().mockResolvedValue(undefined);
+const searchPublicRooms = vi.fn().mockResolvedValue({
+  rooms: [],
+  next_batch: null,
+  total_room_count_estimate: 0,
+});
 const knockRoom = vi.fn().mockResolvedValue(undefined);
 // Never resolves — these tests don't care about the header profile chip
 // (see useOwnProfile.test.tsx for that), just that rendering it doesn't blow up.
@@ -93,6 +100,7 @@ vi.mock("@/lib/matrix", () => ({
   removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
+  searchPublicRooms: (...args: unknown[]) => searchPublicRooms(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
   onSelfProfileUpdate: (...args: unknown[]) => onSelfProfileUpdate(...args),
@@ -156,6 +164,7 @@ afterEach(() => {
   featureFlagMocks.roomListUnreadFilter = false;
   featureFlagMocks.roomListMessagePreview = false;
   featureFlagMocks.spaceRailManagement = false;
+  featureFlagMocks.roomDirectory = false;
 });
 
 async function openEnabledRemoveFromSpace(roomName: string) {
@@ -194,6 +203,19 @@ describe("RoomList", () => {
       "title",
       "Search messages (⌘/Ctrl+F)",
     );
+  });
+
+  it("opens the public room browser only when its feature flag is enabled", async () => {
+    const { unmount } = renderRoomList(<RoomList {...roomListProps()} />);
+    expect(screen.queryByRole("button", { name: "Browse public rooms" })).not.toBeInTheDocument();
+
+    unmount();
+    featureFlagMocks.roomDirectory = true;
+    renderRoomList(<RoomList {...roomListProps()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse public rooms" }));
+
+    expect(await screen.findByRole("dialog", { name: "Browse public rooms" })).toBeInTheDocument();
+    await waitFor(() => expect(searchPublicRooms).toHaveBeenCalledWith(null));
   });
 
   it("labels unresolved space mode as space instead of Home", () => {

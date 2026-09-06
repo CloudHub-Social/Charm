@@ -1,8 +1,11 @@
 import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
+import { useAtomValue } from "jotai";
+import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
+import { ChatVisibilityContext } from "./chatVisibility";
 
 export type MobileView = "list" | "detail";
 
@@ -15,6 +18,8 @@ interface AppShellProps {
   content: ReactNode;
   /** Whether the Settings destination is currently active in mobile navigation. */
   isSettingsActive?: boolean;
+  /** Whether a room-owned modal currently obscures the active chat. */
+  chatObscured?: boolean;
   /** The right-hand room-info panel, or `null` when closed — desktop-only; not shown on mobile (Day-2 per the spec's non-goals). */
   rightPanel: ReactNode | null;
   /** The currently selected room id, or `null` — drives the mobile list-vs-detail view. */
@@ -48,10 +53,26 @@ export function AppShell({
   mobileView,
   onMobileViewChange,
   isSettingsActive = false,
+  chatObscured = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const chatVisible =
+    !isSettingsActive &&
+    !chatObscured &&
+    !verificationOverlayOpen &&
+    (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
+
+  useEffect(() => {
+    if (chatVisible) return;
+    // Upload ownership survives navigation, but hidden playback must not.
+    contentRef.current?.querySelectorAll<HTMLMediaElement>("audio, video").forEach((media) => {
+      media.pause();
+    });
+  }, [chatVisible]);
 
   useEffect(() => {
     onMobileViewChange(activeRoomId ? "detail" : "list");
@@ -62,54 +83,68 @@ export function AppShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoomId, selectionRequestId]);
 
-  if (layout === "desktop") {
-    return (
-      <div className="flex h-[100dvh]">
-        {spaceRail}
-        {roomList}
-        {content}
-        {rightPanel}
-      </div>
-    );
-  }
-
   return (
-    <div className="flex h-[100dvh] flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
-        {mobileView === "detail" && activeRoomId ? (
-          (rightPanel ?? content)
+    <div className={layout === "desktop" ? "flex h-[100dvh]" : "flex h-[100dvh] flex-col"}>
+      {layout === "desktop" && spaceRail}
+      {layout === "desktop" && roomList}
+      {/* This keyed owner stays in the same parent across breakpoints so a
+          rotation cannot abort admitted attachment or voice uploads. */}
+      <div
+        key="chat-content"
+        ref={contentRef}
+        hidden={
+          layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null)
+        }
+        className={
+          layout === "desktop"
+            ? "contents"
+            : "h-full min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
+        }
+      >
+        <ChatVisibilityContext.Provider value={chatVisible}>
+          {content}
+        </ChatVisibilityContext.Provider>
+      </div>
+      {layout === "desktop" && rightPanel}
+      {layout === "mobile" &&
+        (mobileView === "detail" && activeRoomId ? (
+          rightPanel && (
+            <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
+              {rightPanel}
+            </div>
+          )
         ) : (
-          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
+          <div className="flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
             {spaceRail}
             {roomList}
           </div>
+        ))}
+      {layout === "mobile" &&
+        (!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
+          <nav
+            className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+            aria-label="Primary"
+          >
+            <button
+              type="button"
+              aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+              onClick={() => onMobileViewChange("list")}
+            >
+              <MessageSquare className="size-5" aria-hidden="true" />
+              Chats
+            </button>
+            <button
+              type="button"
+              aria-current={isSettingsActive ? "page" : undefined}
+              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+              onClick={() => openSettings("account")}
+            >
+              <SettingsIcon className="size-5" aria-hidden="true" />
+              Settings
+            </button>
+          </nav>
         )}
-      </div>
-      {(!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
-        <nav
-          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
-          aria-label="Primary"
-        >
-          <button
-            type="button"
-            aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
-            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
-            onClick={() => onMobileViewChange("list")}
-          >
-            <MessageSquare className="size-5" aria-hidden="true" />
-            Chats
-          </button>
-          <button
-            type="button"
-            aria-current={isSettingsActive ? "page" : undefined}
-            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
-            onClick={() => openSettings("account")}
-          >
-            <SettingsIcon className="size-5" aria-hidden="true" />
-            Settings
-          </button>
-        </nav>
-      )}
     </div>
   );
 }

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build:tauri",
     "frontendDist": "../dist"
   },
   "app": {
@@ -24,7 +24,7 @@
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' asset: http://asset.localhost data:",
-        "media-src": "'self' asset: http://asset.localhost",
+        "media-src": "'self' asset: http://asset.localhost blob:",
         "font-src": "'self'"
       },
       "assetProtocol": {
@@ -42,6 +42,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "resources": [
+      "../NOTICE",
+      "../LICENSING.md",
+      "../THIRD_PARTY_NOTICES.md"
+    ],
+    "macOS": {
+      "entitlements": "Entitlements.plist"
+    },
     "android": {
       "versionCode": 1003
     },
@@ -64,6 +74,9 @@
           "charm"
         ]
       }
+    },
+    "notifications": {
+      "exposePushTokenEvents": false
     }
   }
 }

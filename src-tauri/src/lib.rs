@@ -1233,17 +1233,20 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_window_state::Builder::new().build());
 
-    #[cfg(target_os = "ios")]
-    let builder = builder.plugin(push::ios::init());
-
-    builder
+    let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build());
+
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_notifications::init());
+    #[cfg(not(target_os = "ios"))]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
+    builder
         .manage(matrix::MatrixState::default())
         .on_page_load(|webview, payload| {
             if webview.label() == "main"
@@ -1510,6 +1513,17 @@ pub fn run() {
             matrix::timeline::load_timeline_around_event,
             matrix::search::search_messages,
             matrix::send::send_message,
+            matrix::polls::create_poll,
+            matrix::polls::vote_on_poll,
+            matrix::polls::end_poll,
+            matrix::polls::retry_poll_end,
+            matrix::polls::retry_poll_vote,
+            matrix::polls::discard_poll_vote,
+            matrix::polls::discard_poll_end,
+            matrix::polls::get_pending_poll_vote,
+            matrix::polls::get_pending_poll_end,
+            matrix::polls::get_pending_poll_relations,
+            matrix::polls::confirm_poll_end_synced,
             matrix::send::send_attachment,
             matrix::send::forward_message,
             matrix::send::cancel_attachment_upload,
@@ -1530,6 +1544,8 @@ pub fn run() {
             matrix::actions::get_edit_history,
             matrix::actions::get_reaction_details,
             matrix::commands::run_command,
+            matrix::key_management::export_room_keys,
+            matrix::key_management::import_room_keys,
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
@@ -1563,6 +1579,7 @@ pub fn run() {
             matrix::spaces::list_manageable_space_children,
             matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
+            matrix::room_directory::search_public_rooms,
             matrix::spaces::knock_room,
             matrix::spaces::create_space,
             matrix::spaces::set_space_parent,
@@ -1623,6 +1640,8 @@ pub fn run() {
             matrix::notifications::set_sound_enabled,
             matrix::shell::set_focused_room,
             matrix::shell::set_badge_count,
+            matrix::shell::request_notification_permission,
+            matrix::shell::is_notification_permission_granted,
             matrix::shell::is_desktop_platform,
             matrix::shell::get_autostart,
             matrix::shell::set_autostart,
@@ -1637,6 +1656,7 @@ pub fn run() {
             matrix::bookmarks::list_bookmarks,
             matrix::link_preview::get_url_preview,
             push::register_push,
+            push::refresh_push_registration,
             push::unregister_push,
             push::get_push_status
         ])

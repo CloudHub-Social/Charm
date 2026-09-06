@@ -73,6 +73,16 @@ describe("resolveFlag", () => {
     ).toBe(true);
   });
 
+  it("lets a trusted remote false veto the iOS push override", () => {
+    expect(
+      resolveFlag(
+        "ios_push_notifications",
+        { ios_push_notifications: true },
+        { ios_push_notifications: false },
+      ),
+    ).toBe(false);
+  });
+
   it("has a catalog key for every exported flag key", () => {
     // FEATURE_FLAG_KEYS is derived from the record; this also fails to compile
     // if the record and the ts-rs union drift (the record is typed by it).

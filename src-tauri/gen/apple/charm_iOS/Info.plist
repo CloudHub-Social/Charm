@@ -30,7 +30,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Charm needs camera access for video calls.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Charm needs microphone access for voice and video calls.</string>
+	<string>Charm uses the microphone to record voice messages you choose to send and for calls.</string>
 	<!-- Spec 11: lets the app receive remote (APNs) notifications, including
 	     while backgrounded, and run the Notification Service Extension that
 	     mutates content before display. -->

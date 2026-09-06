@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, MessageCircle, Paperclip, Send, Type, X } from "lucide-react";
+import { ChevronDown, MessageCircle, Paperclip, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
+import { isMessageSendingCommand } from "./slashCommands";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
@@ -15,6 +16,7 @@ import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray } from "./UploadTray";
+import { VoiceRecorder } from "./VoiceRecorder";
 import {
   activeReplyTargetAtomFamily,
   editingEventIdAtomFamily,
@@ -32,6 +34,7 @@ import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import {
   attachmentUploadPayload,
+  handleAttachmentDragOver,
   hasDraggedFiles,
   useAttachmentUploads,
 } from "./useAttachmentUploads";
@@ -57,6 +60,9 @@ import { useRoomTombstone } from "./useRoomTombstone";
 import type { ChatShellProps } from "./ChatShellProps";
 import { LoadingOlderHeader } from "./LoadingOlderHeader";
 import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
+import { PollComposerControls } from "./PollComposerControls";
+import { PollRecoveryTray } from "./PollRecoveryTray";
+import { ComposerSendButton } from "./ComposerSendButton";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -185,6 +191,7 @@ export function ChatShell({
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  const voiceRecordingEnabled = useFlag("voice_recording");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
   const jumpToDateEnabled = useFlag("jump_to_date");
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
@@ -196,6 +203,7 @@ export function ChatShell({
   const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
+  const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
   const [dateJumpTarget, setDateJumpTarget] = useState<{
     eventId: string;
@@ -508,10 +516,8 @@ export function ChatShell({
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }, [activeRoomId]);
-  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(
-    activeRoomId,
-    roomMutationsBlockedRef,
-  );
+  const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
+    useAttachmentUploads(activeRoomId, roomMutationsBlockedRef);
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);
@@ -569,7 +575,7 @@ export function ChatShell({
   // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes
   // through this separate path, not `onSubmit` — the same "scroll to the
   // user's own new message" gap applies here and was missed by the fix
-  // above. Gated on both `parsed.command === "me"` *and* the command
+  // above. Gated on the command being message-producing *and* the command
   // actually succeeding: most slash commands (`/topic`, `/invite`, `/kick`,
   // `/ban`, ...) never append a `RoomMessageSummary` even on success, and a
   // failed `/me` (bad args, no permission) doesn't either — scrolling
@@ -577,7 +583,7 @@ export function ChatShell({
   // at-bottom/read) for a command that sent nothing.
   async function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
     const succeeded = await handleSlashCommand(parsed);
-    if (parsed.command === "me" && succeeded) scrollToPresentAfterOwnSend();
+    if (isMessageSendingCommand(parsed) && succeeded) scrollToPresentAfterOwnSend();
   }
 
   // Files stage for an optional caption when `media_send_polish` is on;
@@ -615,6 +621,7 @@ export function ChatShell({
   }
 
   async function handleAttachClick() {
+    if (voiceCaptureActive) return;
     if (isWebBuild()) {
       attachmentInputRef.current?.click();
       return;
@@ -660,11 +667,6 @@ export function ChatShell({
     setFileDragActive(true);
   }
 
-  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
-  }
-
   function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
     if (!mediaSendPolishEnabled) return;
     event.preventDefault();
@@ -696,7 +698,7 @@ export function ChatShell({
       data-testid="chat-shell"
       className="relative flex min-w-0 flex-1 flex-col"
       onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
+      onDragOver={handleAttachmentDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
@@ -978,6 +980,8 @@ export function ChatShell({
         </div>
       )}
 
+      <PollRecoveryTray key={room.room_id} roomId={room.room_id} />
+
       <UploadTray
         uploads={uploads}
         onDismiss={dismissUpload}
@@ -1081,6 +1085,7 @@ export function ChatShell({
             <button
               aria-label="Attach"
               onClick={handleAttachClick}
+              disabled={voiceCaptureActive}
               className={cn(
                 "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
                 mobile ? "size-11 rounded-full" : "size-9 rounded-md",
@@ -1088,6 +1093,13 @@ export function ChatShell({
             >
               <Paperclip size={18} />
             </button>
+            <PollComposerControls
+              key={roomId}
+              roomId={roomId}
+              mode={composerMode}
+              mobile={mobile}
+              mutationsBlocked={roomMutationsBlocked}
+            />
             <Composer
               accountId={currentUserId}
               key={`${room.room_id}-${editingEventId ?? "new"}`}
@@ -1111,6 +1123,7 @@ export function ChatShell({
               onTypingInput={handleTypingInput}
               onBlur={stopTyping}
               onEmptyChange={setIsComposerEmpty}
+              onEditLastMessage={() => messageActionController.editLastMessage(messages)}
               showFormattingToolbar={!mobile || showMobileFormatting}
             />
             {mobile && (
@@ -1132,19 +1145,21 @@ export function ChatShell({
               Disabled while there's no text to send — this composer has no
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
-            <button
-              type="button"
-              aria-label="Send"
-              onClick={() => composerRef.current?.submit()}
+            <ComposerSendButton
+              mobile={mobile}
               disabled={isComposerEmpty}
-              className={cn(
-                "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
-                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
-              )}
-            >
-              <Send size={16} />
-            </button>
+              onClick={() => composerRef.current?.submit()}
+            />
           </div>
+          {voiceRecordingEnabled && !roomMutationsBlocked && (
+            <VoiceRecorder
+              key={`${currentUserId}:${room.room_id}`}
+              mobile={layout === "mobile"}
+              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
+              onClearFailedUpload={dismissFailedUploadForFile}
+              onCaptureChange={setVoiceCaptureActive}
+            />
+          )}
         </div>
       )}
       {!mobile && participants.length > 0 && (

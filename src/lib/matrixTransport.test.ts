@@ -226,6 +226,13 @@ describe("matrix web transport", () => {
       { room_id_or_alias: "#space-room:example.org" },
     ],
     [
+      "search_public_rooms",
+      { query: "matrix", since: "page-2", limit: 12 },
+      "POST",
+      "/api/rooms/directory/search",
+      { query: "matrix", since: "page-2", limit: 12 },
+    ],
+    [
       "knock_room",
       { roomIdOrAlias: "!knock:example.org", reason: "please" },
       "POST",
@@ -240,6 +247,88 @@ describe("matrix web transport", () => {
       { body: "hi", formatted_body: null, mentions: null },
     ],
     [
+      "create_poll",
+      {
+        roomId: "!r:example.org",
+        question: "Lunch?",
+        options: ["Pizza", "Tacos"],
+        disclosed: true,
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls",
+      { question: "Lunch?", options: ["Pizza", "Tacos"], disclosed: true },
+    ],
+    [
+      "vote_on_poll",
+      { roomId: "!r:example.org", pollEventId: "$poll", answerId: "0" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote",
+      { answer_id: "0" },
+    ],
+    [
+      "get_pending_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote",
+      undefined,
+    ],
+    [
+      "get_pending_poll_relations",
+      { roomId: "!r:example.org" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/poll-relations/pending",
+      undefined,
+    ],
+    [
+      "retry_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-vote" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote/txn-vote/retry",
+      undefined,
+    ],
+    [
+      "discard_poll_vote",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-vote" },
+      "DELETE",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/vote/txn-vote",
+      undefined,
+    ],
+    [
+      "end_poll",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end",
+      undefined,
+    ],
+    [
+      "get_pending_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end",
+      undefined,
+    ],
+    [
+      "retry_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-end" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end/txn-end/retry",
+      undefined,
+    ],
+    [
+      "discard_poll_end",
+      { roomId: "!r:example.org", pollEventId: "$poll", transactionId: "txn-end" },
+      "DELETE",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end/txn-end",
+      undefined,
+    ],
+    [
+      "confirm_poll_end_synced",
+      { roomId: "!r:example.org", pollEventId: "$poll" },
+      "DELETE",
+      "/api/rooms/!r%3Aexample.org/polls/%24poll/end",
+      undefined,
+    ],
+    [
       "send_reply",
       { roomId: "!r:example.org", inReplyToEventId: "$e", body: "reply" },
       "POST",
@@ -252,6 +341,41 @@ describe("matrix web transport", () => {
       "POST",
       "/api/rooms/!r%3Aexample.org/events/%24e/edit",
       { new_body: "edited" },
+    ],
+    [
+      "edit_message",
+      {
+        roomId: "!r:example.org",
+        eventId: "$e",
+        newBody: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/events/%24e/edit",
+      {
+        new_body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+    ],
+    [
+      "send_reply",
+      {
+        roomId: "!r:example.org",
+        inReplyToEventId: "$e",
+        body: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/reply",
+      {
+        in_reply_to_event_id: "$e",
+        body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
     ],
     [
       "can_redact",
@@ -314,7 +438,12 @@ describe("matrix web transport", () => {
       { roomId: "!r:example.org", command: "join", args: ["#room:example.org"] },
       "POST",
       "/api/rooms/!r%3Aexample.org/command",
-      { command: "join", args: ["#room:example.org"] },
+      {
+        command: "join",
+        args: ["#room:example.org"],
+        in_reply_to_event_id: null,
+        mention_ids: null,
+      },
     ],
     [
       "send_read_receipt",
@@ -529,6 +658,21 @@ describe("matrix web transport", () => {
       { display_name: "Alice Here", avatar_url: "mxc://example.org/avatar" },
     ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
+    ["get_ignored_users", {}, "GET", "/api/account/ignored-users", undefined],
+    [
+      "ignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/ignore",
+      "@alice:example.org",
+    ],
+    [
+      "unignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/unignore",
+      "@alice:example.org",
+    ],
     [
       "get_account_data",
       { eventType: "social.cloudhub.charm.onboarding" },
@@ -900,6 +1044,22 @@ describe("matrix web transport", () => {
       "https://api.example/api/rooms/!r%3Aexample.org/attachments?txn_id=txn1",
     );
     expect(calls[2][1].body).toBeInstanceOf(FormData);
+  });
+
+  it("carries voice metadata alongside the file in the existing multipart upload", async () => {
+    const file = new File(["audio"], "Voice message.webm", { type: "audio/webm" });
+    const voice = { duration_ms: 1200, waveform: [0.1, 0.8] };
+    await invoke("send_attachment", {
+      roomId: "!r:example.org",
+      filePath: file,
+      txnId: "voice-1",
+      voice,
+    });
+    const [url, options] = lastFetch();
+    expect(url).toBe("https://api.example/api/rooms/!r%3Aexample.org/attachments?txn_id=voice-1");
+    const form = options.body as FormData;
+    expect(form.get("voice")).toBe(JSON.stringify(voice));
+    expect(form.get("file")).toBeInstanceOf(File);
   });
 
   it("preserves OAuth session metadata from the web profile endpoint", async () => {

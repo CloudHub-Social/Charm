@@ -2,9 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import type { ReactElement } from "react";
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
+import { ChatVisibilityContext } from "@/features/shell/chatVisibility";
 import type {
   ReactionToggleResult,
   ReceiptUpdate,
@@ -44,13 +45,34 @@ function render(ui: ReactElement) {
 }
 
 const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
-const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+const mockUseFlag = vi.hoisted(() => vi.fn<(key: string) => boolean>(() => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 vi.mock("@/featureFlags", () => ({
-  useFlag: () => mockUseFlag(),
+  useFlag: (key: string) => mockUseFlag(key),
   useFeatureFlagPersistenceVersion: () => 0,
+}));
+
+vi.mock("./VoiceRecorder", () => ({
+  VoiceRecorder: ({
+    mobile,
+    onCaptureChange,
+  }: {
+    mobile: boolean;
+    onCaptureChange?: (capturing: boolean) => void;
+  }) => {
+    useEffect(() => () => onCaptureChange?.(false), [onCaptureChange]);
+    return (
+      <button
+        type="button"
+        data-testid="voice-gesture-mode"
+        onClick={() => onCaptureChange?.(true)}
+      >
+        {mobile ? "mobile" : "desktop"}
+      </button>
+    );
+  },
 }));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -101,6 +123,7 @@ const addBookmark = vi.fn().mockResolvedValue(undefined);
 const removeBookmark = vi.fn().mockResolvedValue(undefined);
 const getEventAtTimestamp = vi.fn().mockResolvedValue("$date-target");
 const loadTimelineAroundEvent = vi.fn().mockResolvedValue(false);
+const getPendingPollRelations = vi.fn().mockResolvedValue([]);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -271,6 +294,14 @@ vi.mock("@/lib/matrix", () => ({
   removeBookmark: (...args: unknown[]) => removeBookmark(...args),
   getEventAtTimestamp: (...args: unknown[]) => getEventAtTimestamp(...args),
   loadTimelineAroundEvent: (...args: unknown[]) => loadTimelineAroundEvent(...args),
+  getPendingPollRelations: (...args: unknown[]) => getPendingPollRelations(...args),
+  getPendingPollVote: vi.fn().mockResolvedValue(null),
+  getPendingPollEnd: vi.fn().mockResolvedValue(null),
+  confirmPollEndSynced: vi.fn().mockResolvedValue(undefined),
+  retryPollVote: vi.fn(),
+  discardPollVote: vi.fn(),
+  retryPollEnd: vi.fn(),
+  discardPollEnd: vi.fn(),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -348,6 +379,7 @@ function summary(
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    poll: null,
     is_undecrypted: false,
     ...overrides,
   };
@@ -444,6 +476,37 @@ describe("ChatShell", () => {
     virtuosoStartReached = undefined;
     virtuosoAtBottomStateChange = undefined;
     virtuosoScrollToIndexMock.mockReset();
+  });
+
+  it("uses mobile voice gestures without enabling the mobile chat redesign", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockImplementation((key) => key !== "mobile_chat_redesign");
+    renderChatShell();
+    expect(await screen.findByTestId("voice-gesture-mode")).toHaveTextContent("mobile");
+  });
+
+  it("keeps a stopped voice preview mounted when room settings covers the chat", async () => {
+    mockUseFlag.mockImplementation((key) => key === "voice_recording");
+    const store = createStore();
+    renderChatShell(store);
+    expect(await screen.findByTestId("voice-gesture-mode")).toBeInTheDocument();
+
+    act(() => {
+      store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });
+    });
+
+    expect(screen.getByTestId("voice-gesture-mode")).toBeInTheDocument();
+  });
+
+  it("does not open the attachment picker while voice capture is active", async () => {
+    mockUseFlag.mockImplementation((key) => key === "voice_recording");
+    renderChatShell();
+    fireEvent.click(await screen.findByTestId("voice-gesture-mode"));
+
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+    expect(attachButton).toBeDisabled();
+    fireEvent.click(attachButton);
+    expect(openFileDialog).not.toHaveBeenCalled();
   });
 
   it("marks the exhausted start of history as all caught up", async () => {
@@ -904,6 +967,34 @@ describe("ChatShell", () => {
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("does not mark new messages read while retained chat content is hidden", async () => {
+    const store = createStore();
+    const view = (visible: boolean) => (
+      <JotaiProvider store={store}>
+        <ChatVisibilityContext.Provider value={visible}>
+          <ChatShell room={room} currentUserId="@me:localhost" />
+        </ChatVisibilityContext.Provider>
+      </JotaiProvider>
+    );
+    const { rerender } = render(view(true));
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalled());
+    rerender(view(false));
+    markRoomRead.mockClear();
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$hidden", sender: "@alice:localhost", body: "unseen arrival" }),
+        ],
+      });
+    });
+    await screen.findByText("unseen arrival");
+    fireAtBottomStateChange(true);
+    expect(markRoomRead).not.toHaveBeenCalled();
+    rerender(view(true));
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
   // Real bottom-anchoring / sticky-bottom-on-arrival behavior is now
@@ -5131,6 +5222,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5368,6 +5460,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5455,6 +5548,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         undefined,
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
@@ -5504,6 +5598,7 @@ describe("ChatShell", () => {
         undefined,
         expect.any(Boolean),
         expect.any(AbortSignal),
+        undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
   });
