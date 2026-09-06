@@ -6,14 +6,13 @@ members = ["src-tauri", "crates/charm-web-server"]
 # iOS and lazily registers its scene delegate after UIKit tries to resolve the
 # static Info.plist entry. Tauri 2.11.5 also keeps generated IPC futures inline
 # in release builds; large Matrix commands then overflow iOS's main-thread
-# stack before Tokio can move them. Pin standalone, auditable backports until
-# compatible releases exist. The Tauri branch is the published crate rather
-# than the upstream workspace, so all of its dependencies remain registry
-# packages with the versions already recorded in this lockfile.
+# stack before Tokio can move them. Pin narrow, auditable backports until
+# compatible releases exist. Only the proc-macro crate is patched for the IPC
+# fix so Tauri's published native iOS archive remains on its known-good path.
 # https://github.com/tauri-apps/tao/pull/1245
 [patch.crates-io]
 tao = { git = "https://github.com/Just-Insane/tao", rev = "b3c73f064541011f6a99704982485a662d6b0561" }
-tauri = { git = "https://github.com/Just-Insane/tauri", rev = "030023ec37782eae93b11e55c286aa1e8a7d2699" }
+tauri-macros = { git = "https://github.com/Just-Insane/tauri", rev = "33cc42413974783edd5c7590c0b8a3b22f3b5472" }
 
 # `src-tauri` remains buildable standalone (`cd src-tauri && cargo build`) —
 # Tauri's CLI expects to run from that directory. This root manifest only
