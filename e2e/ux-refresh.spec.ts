@@ -141,6 +141,15 @@ test("UX refresh rail prioritizes unread people without double-counting overflow
   await captureSnapshot(page, "ux-refresh-navigation-rail");
   await captureSnapshot(page, "ux-refresh-desktop-1440x900");
 
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "light";
+  });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await captureSnapshot(page, "ux-refresh-light-1440x900");
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "dark";
+  });
+
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.getByRole("button", { name: "Show members" }).click();
   await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();

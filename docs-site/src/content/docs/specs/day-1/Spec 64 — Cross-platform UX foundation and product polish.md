@@ -38,7 +38,8 @@ Charm combines:
 
 - Discord-like conversational clarity and restrained message chrome;
 - Sable-like personalization and people-first navigation; and
-- Charm's own purple, mint, yellow, and speech-bubble identity.
+- Charm's existing visual identity, refined through its own purple, mint, yellow,
+  and speech-bubble details rather than replaced by a borrowed theme.
 
 Sable and Discord are references only. Do not copy their code, assets, branding,
 or proprietary iconography.
@@ -204,7 +205,8 @@ change so reviewers can judge the product as a coherent whole. It includes:
 4. The real Activity destination and active-account/settings entry.
 5. Fresh-install Modern/Bubbles/IRC selection, settings, authentication,
    reauthentication, onboarding, and shared portalled-surface treatment.
-6. Deterministic desktop, medium, tablet, and compact CI screenshot journeys.
+6. Deterministic dark and light desktop, medium, tablet, and compact CI screenshot
+   journeys.
 
 This boundary does not silently pull Day-2 product work into a visual PR. Native
 calling and multi-account switching remain owned by Specs 02 and 09 respectively;
@@ -214,8 +216,8 @@ spec rather than introduce another parallel navigation or composer.
 
 ## Acceptance criteria
 
-1. CI captures deterministic Linux screenshots at 1440×900, 1024×768, 768×1024,
-   and 390×844 using real Charm fixtures.
+1. CI captures deterministic Linux screenshots at 1440×900 in both dark and light
+   themes, plus 1024×768, 768×1024, and 390×844 using real Charm fixtures.
 2. Rail fixtures cover zero, one, three, and more than three unread DMs; Activity;
    folders; selected spaces; muted rooms; large counts; and long names.
    Multiple/offline-account states join this matrix with Day-2 Spec 09.
