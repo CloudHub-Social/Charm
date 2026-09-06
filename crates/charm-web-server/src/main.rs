@@ -75,6 +75,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..AppState::default()
     };
 
+    // Reserve the serving address before taking crypto-writer ownership. A
+    // replacement that cannot bind must not fence a healthy old instance.
+    let addr =
+        std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("failed to bind {addr}: {e}");
+            return Err(e.into());
+        }
+    };
+
     spawn_pending_revocation_sweeper(state.sessions.clone(), persistence.clone());
     if let Some(crypto_backup) = crypto_backup.as_deref() {
         crypto_backup.activate_writer().await.map_err(|e| {
@@ -163,17 +175,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_expired_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
     }
 
-    let addr =
-        std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(listener) => listener,
-        Err(e) => {
-            // Same reasoning as the persistence error above: log it as an
-            // ERROR before returning so it reaches Sentry, not just stdout.
-            tracing::error!("failed to bind {addr}: {e}");
-            return Err(e.into());
-        }
-    };
+    if let Some(crypto_backup) = crypto_backup.as_deref() {
+        crypto_backup.commit_writer().await.map_err(|e| {
+            tracing::error!("failed to commit durable crypto snapshot writer: {e}");
+            format!("failed to commit durable crypto snapshot writer: {e}")
+        })?;
+    }
     tracing::info!("charm-web-server listening on {addr}");
 
     let shutdown_state = state.clone();

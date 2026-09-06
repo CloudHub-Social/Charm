@@ -205,6 +205,18 @@ describe("RecoverySetupCard", () => {
     expect(screen.getByText(/Set up or restore cross-signing/)).toBeInTheDocument();
   });
 
+  it("offers repair without requiring local cross-signing keys", async () => {
+    getPendingRecoverySetup.mockRejectedValue(
+      new Error(
+        "Protected recovery state was retained; repair the interrupted setup before signing out.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady={false} recoveryDisabled />);
+
+    expect(await screen.findByRole("button", { name: "Repair interrupted setup" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Set up recovery" })).toBeDisabled();
+  });
+
   it("keeps the generated recovery key visible until the user confirms it is saved", async () => {
     const { client, unmount } = renderWithProviders(
       <RecoverySetupCard enabled crossSigningReady recoveryDisabled />,

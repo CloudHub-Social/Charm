@@ -601,6 +601,16 @@ impl PersistenceStore {
         token: &str,
         expected: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
     ) -> Result<bool, String> {
+        self.clear_pending_recovery_if_unchanged_at(token, expected, unix_time_ms())
+            .await
+    }
+
+    async fn clear_pending_recovery_if_unchanged_at(
+        &self,
+        token: &str,
+        expected: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        now_ms: u64,
+    ) -> Result<bool, String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         for _ in 0..5 {
@@ -608,7 +618,11 @@ impl PersistenceStore {
                 .read_one_with_version_result(token)
                 .await?
                 .ok_or("The persisted session is no longer available.")?;
-            if entry.recovery_setup_active
+            let live_claim = entry.recovery_setup_active
+                && entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+            if live_claim
                 || entry
                     .pending_recovery
                     .as_ref()
@@ -630,6 +644,47 @@ impl PersistenceStore {
             }
         }
         Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    /// Replaces the token pair in an admitted teardown record before a
+    /// revocation retry. This is the durable quarantine for a refreshed live
+    /// token whose first homeserver logout attempt failed: startup will see
+    /// the teardown marker and retry this exact newest pair instead of losing
+    /// it with the process or deleting the record after revoking only an
+    /// older persisted token.
+    pub async fn persist_teardown_revocation(
+        &self,
+        token: &str,
+        homeserver_url: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Err("The admitted teardown record is no longer available.".into());
+            };
+            if !entry.recovery_teardown_started || entry.recovery_teardown_revoked {
+                return Err("The session teardown is no longer eligible for revocation retry.".into());
+            }
+            entry.homeserver_url = homeserver_url.to_string();
+            entry.session = session.clone();
+            if let Some((store_key, passphrase)) = crypto {
+                entry.crypto_store_key = Some(store_key.to_string());
+                entry.crypto_passphrase = Some(passphrase.to_string());
+            }
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode the teardown revocation retry.".to_string())?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not persist the teardown revocation retry.".into()),
+            }
+        }
+        Err("Session teardown changed concurrently; retry revocation.".into())
     }
 
     /// Persists an issued credential only while `owner` still holds the
@@ -2901,6 +2956,95 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn expired_recovery_claim_allows_conditional_seed_cleanup() {
+        let dir = scratch_dir("expired-conditional-recovery-cleanup");
+        let mut store = PersistenceStore::new_for_test(&dir, [76u8; 32]);
+        store.durable_session_backend = true;
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": false
+        }))
+        .unwrap();
+        store
+            .save(
+                "expired-conditional-token",
+                "https://example.invalid",
+                &dummy_session("@expired-conditional:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .save_pending_recovery("expired-conditional-token", Some(&pending))
+            .await
+            .unwrap();
+        store
+            .claim_pending_recovery("expired-conditional-token", &pending, "expired-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .clear_pending_recovery_if_unchanged_at(
+                "expired-conditional-token",
+                &pending,
+                u64::MAX,
+            )
+            .await
+            .unwrap());
+        assert!(store
+            .pending_recovery("expired-conditional-token")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn teardown_retry_persists_the_newest_live_token_pair() {
+        let dir = scratch_dir("durable-teardown-retry");
+        let store = PersistenceStore::new_for_test(&dir, [77u8; 32]);
+        let token = "durable-teardown-token";
+        store
+            .save(
+                token,
+                "https://old.example.invalid",
+                &dummy_session("@teardown:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store.begin_recovery_safe_teardown(token).await.unwrap();
+        let mut refreshed = dummy_session("@teardown:example.invalid");
+        refreshed.tokens.access_token = "newest-live-access-token".into();
+        refreshed.tokens.refresh_token = Some("newest-live-refresh-token".into());
+
+        store
+            .persist_teardown_revocation(
+                token,
+                "https://new.example.invalid",
+                &refreshed,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let persisted = store.read_one(token).await.unwrap();
+        assert!(persisted.recovery_teardown_started);
+        assert_eq!(persisted.homeserver_url, "https://new.example.invalid");
+        assert_eq!(
+            persisted.session.tokens.access_token,
+            "newest-live-access-token"
+        );
+        assert_eq!(
+            persisted.session.tokens.refresh_token.as_deref(),
+            Some("newest-live-refresh-token")
+        );
     }
 
     #[tokio::test]

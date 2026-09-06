@@ -4,6 +4,8 @@ pub use async_trait::async_trait;
 use matrix_sdk::{encryption::recovery::RecoveryState, Client};
 use rand::{distr::Alphanumeric, RngExt};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::State;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -306,13 +308,16 @@ pub async fn setup_with_custody(
     };
     let mut pending = custody.claim(&pending).await?;
     let resumed_after_server_mutation = pending.server_mutation_started;
-    let operation = async {
+    let mutation_started = Arc::new(AtomicBool::new(pending.server_mutation_started));
+    let operation_mutation_started = Arc::clone(&mutation_started);
+    let operation = async move {
         custody.checkpoint().await?;
         // From this point onward an SDK call can create or replace remote
         // recovery state. Persist the custody boundary first so cancellation,
         // a failed follow-up checkpoint, or a failed result write cannot make
         // logout delete the crypto store that can finish the operation.
         pending.server_mutation_started = true;
+        operation_mutation_started.store(true, Ordering::Release);
         custody.save_claimed(&pending).await?;
         if !client.encryption().backups().are_enabled().await {
             match client.encryption().recovery().enable_backup().await {
@@ -383,7 +388,11 @@ pub async fn setup_with_custody(
             result = &mut operation => break result,
             _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
                 if let Err(error) = custody.renew().await {
-                    break Err(error);
+                    break Err(if mutation_started.load(Ordering::Acquire) {
+                        repairable_setup_error(error)
+                    } else {
+                        error
+                    });
                 }
             }
         }

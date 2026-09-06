@@ -2523,7 +2523,34 @@ async fn logout(
                         // A racing refresh on another instance either loses
                         // the conditional write or is re-read and revoked;
                         // no unconditional delete can erase an unrevoked pair.
-                        if let Err(error) = persistence.finish_recovery_safe_teardown(&token).await
+                        let durable_retry = if revoked.is_err() {
+                            let matrix_session = session.client.matrix_auth().session();
+                            let live_crypto = live_crypto
+                                .as_ref()
+                                .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                            match matrix_session {
+                                Some(matrix_session) => persistence
+                                    .persist_teardown_revocation(
+                                        &token,
+                                        session.client.homeserver().as_str(),
+                                        &matrix_session,
+                                        live_crypto,
+                                    )
+                                    .await,
+                                None => Err("the live Matrix token pair is unavailable".into()),
+                            }
+                        } else {
+                            Ok(())
+                        };
+                        if let Err(error) = durable_retry {
+                            tracing::warn!(
+                                "failed to durably quarantine the newest Matrix token; retaining it in memory: {error}"
+                            );
+                            state
+                                .sessions
+                                .retain_for_revocation(token.clone(), Arc::clone(&session));
+                        } else if let Err(error) =
+                            persistence.finish_recovery_safe_teardown(&token).await
                         {
                             tracing::warn!(
                                 "failed to finish persisted session logout; retained teardown tombstone: {error}"
@@ -2557,15 +2584,14 @@ async fn logout(
                         .sessions
                         .retain_for_revocation(token.clone(), Arc::clone(&session));
                 }
-                state.sessions.forget_evicted_presence(&token);
             } else if let Some(persistence) = &state.persistence {
                 if let Err(error) = persistence.finish_recovery_safe_teardown(&token).await {
                     tracing::warn!(
                         "failed to finish persisted session logout; retained teardown tombstone: {error}"
                     );
                 }
-                state.sessions.forget_evicted_presence(&token);
             }
+            state.sessions.forget_evicted_presence(&token);
         });
     }
     // `remove` must be given a cookie matching the *original* cookie's

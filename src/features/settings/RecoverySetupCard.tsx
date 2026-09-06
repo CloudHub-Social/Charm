@@ -238,7 +238,7 @@ export function RecoverySetupCard({
           Could not reopen pending recovery. Reopen Settings when online before signing out.
         </p>
       )}
-      {repairAvailable && !(enabled && recoveryDisabled) && (
+      {repairAvailable && (
         <SettingsCard heading="Recovery repair required">
           <SettingTile>
             <p className="mb-3 text-sm text-muted-foreground">
