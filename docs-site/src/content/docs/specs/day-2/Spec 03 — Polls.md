@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Polls
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent.
