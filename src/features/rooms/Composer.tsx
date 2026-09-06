@@ -1,6 +1,6 @@
 import { Extension, generateText, type JSONContent } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
-import { PluginKey } from "@tiptap/pm/state";
+import { PluginKey, TextSelection } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { guardedStarterKit } from "./guardedStarterKit";
 import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
@@ -511,7 +511,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     if (!editor || composerParityEnabled) return;
     // Exit the active code block without converting or deleting authored code.
-    if (editor.isActive("codeBlock")) editor.commands.exitCode();
+    if (editor.isActive("codeBlock") && !editor.commands.exitCode()) {
+      const { state } = editor;
+      let codeBlockDepth = state.selection.$from.depth;
+      while (
+        codeBlockDepth > 0 &&
+        state.selection.$from.node(codeBlockDepth).type.name !== "codeBlock"
+      ) {
+        codeBlockDepth -= 1;
+      }
+      if (codeBlockDepth > 0) {
+        const insertAt = state.selection.$from.after(codeBlockDepth);
+        const paragraph = state.schema.nodes.paragraph.create();
+        const transaction = state.tr.insert(insertAt, paragraph);
+        editor.view.dispatch(
+          transaction.setSelection(TextSelection.create(transaction.doc, insertAt + 1)),
+        );
+      }
+    }
     const { state } = editor;
     // Change future typing marks only; unsetMark would strip a selected draft.
     const marks = (state.storedMarks ?? state.selection.$from.marks()).filter(

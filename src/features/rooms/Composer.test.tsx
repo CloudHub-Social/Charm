@@ -186,6 +186,39 @@ describe("Composer", () => {
       expect(editable).toHaveTextContent("new text");
     },
   );
+
+  it("moves a middle-of-code-block caret to plain text when the flag is disabled", async () => {
+    flags.composerParity = true;
+    const props = {
+      roomId: "!kill-code-middle:example.org",
+      mode: "edit" as const,
+      initialHtml: "<pre><code>authored</code></pre>",
+      placeholder: "Message",
+      onSubmit: vi.fn(),
+      onSlashCommand: vi.fn(),
+      onEscape: vi.fn(),
+      onTypingInput: vi.fn(),
+    };
+    const view = render(<Composer {...props} />);
+    const editable = await screen.findByLabelText("Message");
+    const codeText = editable.querySelector("code")?.firstChild;
+    expect(codeText).toBeInstanceOf(Text);
+    const range = document.createRange();
+    range.setStart(codeText!, 3);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    flags.composerParity = false;
+    view.rerender(<Composer {...props} />);
+    pasteText(editable, "plain", true);
+
+    expect(editable.querySelector("code")).toHaveTextContent("authored");
+    expect(editable.querySelector("code")).not.toHaveTextContent("plain");
+    expect(editable).toHaveTextContent("plain");
+  });
+
   it("edits on bare ArrowUp only while the send composer is truly empty", async () => {
     const onEditLastMessage = vi.fn(() => true);
     render(
