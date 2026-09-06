@@ -154,6 +154,20 @@ pub trait RecoveryCustody: Send + Sync {
     async fn clear_claimed(&self) -> Result<(), String> {
         self.save(None).await
     }
+    /// Clears exactly the observed no-op seed. Web overrides this with an
+    /// object-version CAS so a concurrent setup cannot have its newer
+    /// mutation marker or claim erased by a stale reader.
+    async fn clear_if_unchanged(&self, expected: &PendingRecoverySetup) -> Result<bool, String> {
+        let current = self.load().await?;
+        if current
+            .as_ref()
+            .is_none_or(|current| !current.has_same_custody(expected))
+        {
+            return Ok(false);
+        }
+        self.save(None).await?;
+        Ok(true)
+    }
     /// Claims the empty pending slot and returns the canonical winner. Web
     /// implementations override this with a cross-process conditional write;
     /// native callers are serialized by the account recovery lock.
@@ -212,7 +226,9 @@ pub async fn pending_summary(
     // Clear it instead of comparing it with state another client may have
     // created later and surfacing an impossible repair action.
     if !pending.server_mutation_started {
-        custody.save(None).await?;
+        if !custody.clear_if_unchanged(&pending).await? {
+            return Err("Protected recovery state changed concurrently; retry.".into());
+        }
         return Ok(None);
     }
     // The seed was committed BEFORE SDK enable. This also recovers a key when

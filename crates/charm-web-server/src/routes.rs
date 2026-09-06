@@ -5630,6 +5630,14 @@ impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody
             )
             .await
     }
+    async fn clear_if_unchanged(
+        &self,
+        expected: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<bool, String> {
+        self.persistence
+            .clear_pending_recovery_if_unchanged(self.token, expected)
+            .await
+    }
     async fn release(&self) -> Result<(), String> {
         let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
         let writer_release = self.persistence.release_recovery_writer_lease(owner).await;

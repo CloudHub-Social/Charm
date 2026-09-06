@@ -136,6 +136,28 @@ describe("RecoverySetupCard", () => {
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
   });
 
+  it("treats empty custody after a lost repair response as completed", async () => {
+    getPendingRecoverySetup
+      .mockRejectedValueOnce(
+        new Error(
+          "Pending recovery no longer matches the account's current secret storage. Restart recovery setup.",
+        ),
+      )
+      .mockResolvedValue(null);
+    repairInterruptedRecoverySetup.mockRejectedValue(new Error("response lost"));
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Repair interrupted setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Repair incomplete setup" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Repair incomplete setup" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Could not repair the incomplete setup/)).not.toBeInTheDocument();
+  });
+
   it("does not offer an unsafe repair for a stale issued recovery key", async () => {
     getPendingRecoverySetup.mockRejectedValue(
       new Error(

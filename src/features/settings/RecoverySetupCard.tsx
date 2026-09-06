@@ -159,12 +159,16 @@ export function RecoverySetupCard({
         if (summary) {
           setRecoveryKey(summary.recovery_key);
           setRoomKeysBackedUp(summary.room_keys_backed_up);
-          setRepairAvailable(false);
-          setRepairOpen(false);
-          setSetupOpen(false);
-          setSetupError(null);
-          return;
         }
+        // A lost repair response followed by empty custody means the repair
+        // already completed. Close the stale affordance instead of asking the
+        // user to repeat a destructive recovery operation.
+        setRepairAvailable(false);
+        setRepairOpen(false);
+        setSetupOpen(false);
+        setSetupError(null);
+        void queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY });
+        return;
       } catch {
         // Keep the repair error generic and the protected state untouched.
       }

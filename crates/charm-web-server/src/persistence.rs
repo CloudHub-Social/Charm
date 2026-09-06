@@ -582,6 +582,44 @@ impl PersistenceStore {
         Err("Protected recovery storage changed concurrently; retry.".into())
     }
 
+    /// Clears only the exact pre-mutation seed observed by a reader. A live
+    /// setup claim or changed custody record wins and is left untouched.
+    pub async fn clear_pending_recovery_if_unchanged(
+        &self,
+        token: &str,
+        expected: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<bool, String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_setup_active
+                || entry
+                    .pending_recovery
+                    .as_ref()
+                    .is_none_or(|current| !current.has_same_custody(expected))
+            {
+                return Ok(false);
+            }
+            entry.pending_recovery = None;
+            entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery cleanup.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(true),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically clear protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
     /// Persists an issued credential only while `owner` still holds the
     /// setup lease. This fences a stalled worker after another process has
     /// taken over its expired claim.
@@ -2800,6 +2838,48 @@ mod tests {
             .await
             .is_err());
         assert!(store.read_one("pending-token").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn conditional_seed_cleanup_refuses_a_live_setup_claim() {
+        let dir = scratch_dir("conditional-recovery-cleanup");
+        let store = PersistenceStore::new_for_test(&dir, [75u8; 32]);
+        let session = dummy_session("@conditional:example.invalid");
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": false
+        }))
+        .unwrap();
+        store
+            .save(
+                "conditional-token",
+                "https://example.invalid",
+                &session,
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .save_pending_recovery("conditional-token", Some(&pending))
+            .await
+            .unwrap();
+        store
+            .claim_pending_recovery("conditional-token", &pending, "active-owner")
+            .await
+            .unwrap();
+
+        assert!(!store
+            .clear_pending_recovery_if_unchanged("conditional-token", &pending)
+            .await
+            .unwrap());
+        assert!(store
+            .pending_recovery("conditional-token")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
