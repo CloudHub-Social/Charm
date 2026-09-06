@@ -93,14 +93,26 @@ function PushTransportTile() {
               Turn off push notifications
             </Button>
           ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void handleEnable()}
-              disabled={register.isPending}
-            >
-              Turn on push notifications
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              {status.endpoint_present && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => unregister.mutate()}
+                  disabled={unregister.isPending}
+                >
+                  Turn off push notifications
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleEnable()}
+                disabled={register.isPending}
+              >
+                Turn on push notifications
+              </Button>
+            </div>
           )
         ) : undefined
       }

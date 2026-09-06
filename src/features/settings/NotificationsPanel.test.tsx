@@ -267,6 +267,23 @@ describe("NotificationsPanel", () => {
     expect(registerPush).not.toHaveBeenCalled();
   });
 
+  it("offers turn-off alongside retry when a staged endpoint remains", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "apns",
+      registered: false,
+      endpoint_present: true,
+      last_error: "Homeserver rejected push refresh",
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(await screen.findByRole("button", { name: "Turn on push notifications" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off push notifications" }));
+
+    await waitFor(() => expect(unregisterPush).toHaveBeenCalledTimes(1));
+    expect(registerPush).not.toHaveBeenCalled();
+  });
+
   it("suggests installing a UnifiedPush distributor when Android push registration fails", async () => {
     getPushStatus.mockResolvedValue({
       transport: "none",
