@@ -53,6 +53,13 @@ targets:
         NSMicrophoneUsageDescription: Charm uses the microphone to record voice messages you choose to send and for calls.
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
+        # The Matrix SSO endpoint redirects Safari to charm://sso-callback.
+        # Keep the generated plist aligned with the deep-link plugin's mobile
+        # scheme declaration in tauri.conf.json.
+        CFBundleURLTypes:
+          - CFBundleURLName: charm
+            CFBundleURLSchemes:
+              - charm
         # iOS 27 requires scene lifecycle adoption to be declared statically.
         # Tao supplies this delegate and completes the runtime configuration.
         UIApplicationSceneManifest:
