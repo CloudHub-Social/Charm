@@ -45,7 +45,7 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
 // itself, so it's enabled here the same way `ChatShell.test.tsx` enables
 // its own flags. The one test that specifically checks the flagged-off
 // fallback (below) overrides this per-test.
-const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+const mockUseFlag = vi.hoisted(() => vi.fn<(key: string) => boolean>(() => true));
 vi.mock("@/featureFlags", () => ({ useFlag: (key: string) => mockUseFlag(key) }));
 
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {
