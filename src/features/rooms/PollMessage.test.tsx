@@ -627,8 +627,8 @@ describe("PollMessage", () => {
       <PollMessage
         message={pollMessage({
           answers: [
-            { id: "pizza", text: "Pizza", votes: 2, selected_by_me: false },
-            { id: "salad", text: "Salad", votes: 0, selected_by_me: false },
+            { id: "0", text: "Pizza", votes: 3, selected_by_me: false },
+            { id: "1", text: "Tacos", votes: 1, selected_by_me: true },
           ],
         })}
         roomId="!room:example.org"
@@ -638,6 +638,33 @@ describe("PollMessage", () => {
 
     expect(getPendingPollVote).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /Pizza/ })).toBeEnabled();
+  });
+
+  it("discards a failed vote after its answer is removed by an edit", async () => {
+    getPendingPollVote.mockResolvedValueOnce({
+      transaction_id: "txn-removed-answer",
+      answer_id: "1",
+      failed: true,
+    });
+    render(
+      <PollMessage
+        message={pollMessage({
+          answers: [{ id: "0", text: "Pizza", votes: 2, selected_by_me: false }],
+          edited: true,
+        })}
+        roomId="!room:example.org"
+        own={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(discardPollVote).toHaveBeenCalledWith(
+        "!room:example.org",
+        "$poll",
+        "txn-removed-answer",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Retry vote" })).not.toBeInTheDocument();
   });
 
   it("retries a transient pending-close lookup failure while the row stays mounted", async () => {

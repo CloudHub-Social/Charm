@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -51,6 +51,11 @@ export function PollMessage({
   const poll = message.poll;
   const hasPoll = poll != null;
   const pollEnded = poll?.ended ?? false;
+  const pollAnswerRevision = JSON.stringify(poll?.answers.map((answer) => answer.id) ?? []);
+  const pollAnswerIds = useMemo(
+    () => new Set<string>(JSON.parse(pollAnswerRevision) as string[]),
+    [pollAnswerRevision],
+  );
   const accountId = rowActions?.currentUserId ?? message.sender;
   const closeKey = pollCloseKey(accountId, roomId, message.event_id);
   // Timeline snapshots are the bounded reconciliation signal for a queued
@@ -97,10 +102,11 @@ export function PollMessage({
           setError((current) => (current === "Your vote could not be sent." ? null : current));
           return;
         }
-        // A response to an already-ended poll can never become valid. Do
-        // not offer a retry that would send a stale relation after another
-        // client closed the poll; release the durable queue lock instead.
-        if (pollEnded && pending.failed) {
+        const answerWasRemoved = hasPoll && !pollAnswerIds.has(pending.answer_id);
+        // A response to an ended poll or an answer removed by an edit can
+        // never become valid. Do not offer a retry that would send a stale
+        // relation; release the durable queue lock instead.
+        if ((pollEnded || answerWasRemoved) && pending.failed) {
           try {
             const discarded = await discardPollVote(
               roomId,
@@ -146,7 +152,7 @@ export function PollMessage({
       active = false;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [hasPoll, message.event_id, pollEnded, recoveryOnly, roomId, voteRecheck]);
+  }, [hasPoll, message.event_id, pollAnswerIds, pollEnded, recoveryOnly, roomId, voteRecheck]);
   useEffect(() => {
     if (!voteTransactionId || voteFailed) return;
     const timeout = window.setTimeout(() => setVoteRecheck((revision) => revision + 1), 2_000);

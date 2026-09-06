@@ -89,12 +89,15 @@ admit an ignored vote or duplicate close; only explicitly discarding a failed
 close removes that fence. A retry whose failed local echo has disappeared also
 clears the fence: there is no longer a transaction the client can retry, and
 retaining its acknowledgement would permanently lock the poll. Retry otherwise
-uses the existing transaction rather than creating a second end event. The backend also consults the SDK's persistent local
+uses the existing transaction rather than creating a second end event; a retry
+transport error clears the temporary acknowledgement before it propagates. The backend also consults the SDK's persistent local
 echoes to reject votes and deduplicate close requests while an end is queued,
 including after a UI remount.
 Queued vote transaction IDs are restored from those same local echoes, so an
 asynchronous homeserver rejection remains visible and can be retried or discarded
-after a remount or restart. Poll-specific vote and close recovery operations share
+after a remount or restart. If another client edits away the selected answer, a
+failed local response is discard-only because retrying its obsolete answer ID can
+never affect the current aggregate. Poll-specific vote and close recovery operations share
 the per-poll mutation lock, preventing one window from discarding an echo while
 another window retries it. Disabling the rollout hides creation and ordinary poll
 interaction, but a recovery-only controller remains mounted behind the fallback
