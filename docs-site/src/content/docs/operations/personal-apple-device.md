@@ -26,9 +26,15 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    Record the full SHA; simulator CI is repository evidence, not physical-device proof.
 2. Use a disposable worktree or copy. Do not edit a shared checkout or reuse an
    uncommitted generated Xcode scheme.
-3. With the repository owner's dependency-install confirmation, bootstrap the clean
-   worktree with `pnpm install --frozen-lockfile`. The generated Xcode pre-build phase
-   invokes the repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
+3. Inspect `node_modules` before bootstrapping dependencies. If it is a working
+   symlink created by Charm's `post-checkout` hook and the worktree and symlink-target
+   `pnpm-lock.yaml` files are identical, reuse it and do not run an install. If
+   `node_modules` is absent, obtain the repository owner's dependency-install
+   confirmation and run `pnpm install --frozen-lockfile`. If the symlink is broken or
+   the lockfiles differ, stop: remove only that worktree's symlink (never its target;
+   an agent also needs deletion authorization), then obtain dependency-install
+   confirmation before installing. The generated Xcode pre-build phase invokes the
+   repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
 4. Ensure Xcode is signed in with the device owner's Apple Account and the required
    Rust iOS targets are installed.
 5. Prepare the standalone mobile bundle and open the generated project with
