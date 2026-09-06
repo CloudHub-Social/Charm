@@ -208,6 +208,13 @@ pub async fn pending_summary(
             room_keys_backed_up: pending.room_keys_backed_up,
         }));
     }
+    // No SDK mutation began, so this seed never owned server recovery state.
+    // Clear it instead of comparing it with state another client may have
+    // created later and surfacing an impossible repair action.
+    if !pending.server_mutation_started {
+        custody.save(None).await?;
+        return Ok(None);
+    }
     // The seed was committed BEFORE SDK enable. This also recovers a key when
     // the process died between server-side enablement and the local result save.
     match pending_seed_state(client, &pending).await? {
@@ -739,6 +746,22 @@ mod tests {
             .await
             .is_err());
         assert!(custody.load().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn pre_mutation_seed_is_cleared_without_offering_repair() {
+        let (_server, client) = client_with_current_recovery_key().await;
+        let mut seed = pending();
+        seed.recovery_key = None;
+        seed.room_keys_backed_up = false;
+        seed.server_mutation_started = false;
+        let custody = MemoryCustody {
+            pending: Mutex::new(Some(seed)),
+            fail_save: false,
+        };
+
+        assert!(pending_summary(&client, &custody).await.unwrap().is_none());
+        assert!(custody.load().await.unwrap().is_none());
     }
 
     #[tokio::test]

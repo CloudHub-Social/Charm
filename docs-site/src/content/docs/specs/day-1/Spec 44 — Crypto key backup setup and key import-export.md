@@ -65,7 +65,10 @@ interrupted result write. This implementation and its regressions await CI.
   `M_UNKNOWN_TOKEN` response) is confirmed, so a crash or transient outage cannot orphan a
   still-valid token. A session whose initial durable save never landed is quarantined outside
   the browser-authentication map and retained in memory for revocation retries rather than
-  dropping its only token-bearing client after a transient homeserver failure.
+  dropping its only token-bearing client after a transient homeserver failure, whether that
+  failure occurs during idle eviction or explicit logout. A claimed seed is cleared as a no-op
+  when no SDK/server mutation began, so later account recovery state cannot turn it into an
+  impossible repair prompt.
   Interrupted-backup repair retains its distributed lease while working, propagates local
   disable failures, and never chooses a remote backup from a latest-version query. If a committed
   create request lost its response and local identity is unavailable, repair preserves the server

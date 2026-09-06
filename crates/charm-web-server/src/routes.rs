@@ -2521,8 +2521,7 @@ async fn logout(
                         // A racing refresh on another instance either loses
                         // the conditional write or is re-read and revoked;
                         // no unconditional delete can erase an unrevoked pair.
-                        if let Err(error) =
-                            persistence.finish_recovery_safe_teardown(&token).await
+                        if let Err(error) = persistence.finish_recovery_safe_teardown(&token).await
                         {
                             tracing::warn!(
                                 "failed to finish persisted session logout; retained teardown tombstone: {error}"
@@ -2537,12 +2536,16 @@ async fn logout(
                         }
                     } else if let Err(error) = revoked {
                         // No durable token exists to retry. The browser cookie
-                        // is still cleared and this live session stays removed;
-                        // retain the crypto store rather than deleting custody
-                        // after an unconfirmed homeserver revocation.
+                        // is still cleared and this live session stays outside
+                        // the authentication map; quarantine its token-bearing
+                        // client for the periodic revocation retry rather than
+                        // dropping the only remaining revocation capability.
                         tracing::warn!(
-                            "failed to revoke non-persisted Matrix session: {error}"
+                            "failed to revoke non-persisted Matrix session; retaining it for retry: {error}"
                         );
+                        state
+                            .sessions
+                            .retain_for_revocation(token.clone(), Arc::clone(&session));
                     }
                 } else if let Err(error) = revoked {
                     tracing::warn!("failed to revoke non-persisted Matrix session: {error}");
