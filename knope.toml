@@ -36,11 +36,19 @@ type = "Command"
 command = "git switch -c release"
 
 [[workflows.steps]]
+type = "Command"
+command = "node scripts/validate-changeset-packages.mjs"
+
+[[workflows.steps]]
 type = "PrepareRelease"
 
 [[workflows.steps]]
 type = "Command"
-command = "node scripts/sync-android-version-code.mjs && git add src-tauri/tauri.conf.json"
+command = "node scripts/validate-changeset-packages.mjs --expect-consumed"
+
+[[workflows.steps]]
+type = "Command"
+command = "node scripts/sync-android-version-code.mjs $version && git add src-tauri/tauri.conf.json"
 
 [[workflows.steps]]
 type = "Command"
@@ -86,5 +94,5 @@ repo = "Charm"
 # The <!-- commit:$commit_hash --> marker is used by prepare-release.yml
 change_templates = [
   "### $summary <!-- commit:$commit_hash -->\n\n$details",
-  "* $summary <!-- commit:$commit_hash -->",
+  "- $summary <!-- commit:$commit_hash -->",
 ]

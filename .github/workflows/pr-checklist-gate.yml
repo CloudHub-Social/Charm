@@ -142,19 +142,48 @@ jobs:
                   per_page: 100,
                 },
               );
-              const hasChangeset = files.some(
+              const addedChangesets = files.filter(
                 (file) =>
                   file.status === "added" &&
                   /^\.changeset\/.+\.md$/.test(file.filename) &&
                   file.filename !== ".changeset/README.md",
               );
-              if (!hasChangeset) {
+              if (addedChangesets.length === 0) {
                 failures.push(
                   "No changeset was added by this PR. Run `pnpm run " +
                   "document-change`, add `.changeset/<name>.md`, or ask a " +
                   "maintainer to apply the `internal` label for a " +
                   "non-user-facing change."
                 );
+              } else {
+                for (const file of addedChangesets) {
+                  const response = await github.rest.repos.getContent({
+                    ...context.repo,
+                    path: file.filename,
+                    ref: head.sha,
+                  });
+                  const data = response.data;
+                  const content =
+                    !Array.isArray(data) && data.type === "file" && data.content
+                      ? Buffer.from(data.content, data.encoding).toString("utf8")
+                      : "";
+                  const frontmatter =
+                    /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1] ?? "";
+                  const packageLines = frontmatter
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+
+                  if (
+                    packageLines.length !== 1 ||
+                    !/^default:\s*(major|minor|patch)$/.test(packageLines[0])
+                  ) {
+                    failures.push(
+                      `${file.filename} must target Knope's default package ` +
+                      'with "default: major|minor|patch".'
+                    );
+                  }
+                }
               }
             }
 
