@@ -279,7 +279,8 @@ fn spawn_idle_session_sweeper(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let evicted = sessions.sweep_idle(idle_timeout).await;
+            let mut evicted = sessions.take_pending_revocations();
+            evicted.extend(sessions.sweep_idle(idle_timeout).await);
             if evicted.is_empty() {
                 continue;
             }
@@ -296,8 +297,10 @@ fn spawn_idle_session_sweeper(
                         charm_web_server::persistence::revoke_matrix_session(&session.client).await
                     {
                         tracing::warn!(
-                            "failed to revoke never-persisted idle session before eviction: {error}"
+                            "failed to revoke never-persisted idle session; retaining it for retry: {error}"
                         );
+                        sessions.retain_for_revocation(token, session);
+                        continue;
                     }
                     let live_crypto = session
                         .persisted_crypto

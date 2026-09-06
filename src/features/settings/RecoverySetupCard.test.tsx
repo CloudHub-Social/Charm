@@ -136,6 +136,22 @@ describe("RecoverySetupCard", () => {
     await waitFor(() => expect(repairInterruptedRecoverySetup).toHaveBeenCalledOnce());
   });
 
+  it("does not offer an unsafe repair for a stale issued recovery key", async () => {
+    getPendingRecoverySetup.mockRejectedValue(
+      new Error(
+        "The saved recovery key no longer matches the account's current secret storage. Keep the key for your records and sign in again before starting a new recovery setup.",
+      ),
+    );
+    renderWithProviders(<RecoverySetupCard enabled crossSigningReady recoveryDisabled={false} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not reopen pending recovery",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Repair interrupted setup" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("offers repair when setup discovers that pending recovery was replaced", async () => {
     setupRecovery.mockRejectedValue(
       new Error(

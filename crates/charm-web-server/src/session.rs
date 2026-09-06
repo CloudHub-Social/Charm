@@ -1134,6 +1134,12 @@ type SessionLifecycleLocks =
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     lifecycle_locks: Arc<SessionLifecycleLocks>,
+    /// Never-persisted sessions whose homeserver token could not yet be
+    /// revoked. These are deliberately kept outside `inner`: retaining the
+    /// only revocable client must not make its browser cookie usable again
+    /// after idle eviction. The periodic sweeper drains this quarantine and
+    /// retries revocation until the homeserver confirms it.
+    pending_revocations: Arc<std::sync::Mutex<HashMap<String, Arc<Session>>>>,
     /// The presence choice an idle-evicted session had at the instant
     /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
     /// was recorded at — populated there, consumed once by
@@ -1393,6 +1399,25 @@ impl SessionStore {
             .await
             .iter()
             .map(|(token, session)| (token.clone(), Arc::clone(session)))
+            .collect()
+    }
+
+    /// Quarantines an idle-evicted, never-persisted session for a later
+    /// homeserver revocation retry without restoring browser access to it.
+    pub fn retain_for_revocation(&self, token: String, session: Arc<Session>) {
+        self.pending_revocations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token, session);
+    }
+
+    /// Takes every quarantined revocation retry for the periodic sweeper.
+    /// A failed attempt is put back with [`Self::retain_for_revocation`].
+    pub fn take_pending_revocations(&self) -> Vec<(String, Arc<Session>)> {
+        self.pending_revocations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
             .collect()
     }
 
@@ -2017,6 +2042,22 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Acquire),
             "idle eviction must revoke the detached search worker"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_revocation_retry_is_quarantined_outside_browser_sessions() {
+        let store = SessionStore::new();
+        let token = "never-persisted-token".to_string();
+        let session = Arc::new(dummy_session("@revocation:example.org").await);
+
+        store.retain_for_revocation(token.clone(), Arc::clone(&session));
+
+        assert!(store.get(&token).await.is_none());
+        let retry = store.take_pending_revocations();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].0, token);
+        assert!(Arc::ptr_eq(&retry[0].1, &session));
+        assert!(store.take_pending_revocations().is_empty());
     }
 
     #[tokio::test]

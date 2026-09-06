@@ -23,6 +23,8 @@ import { RECOVERY_STATUS_QUERY_KEY } from "./useDevices";
 
 const REPLACED_PENDING_RECOVERY_ERROR =
   "Pending recovery no longer matches the account's current secret storage.";
+const STALE_ISSUED_RECOVERY_ERROR =
+  "The saved recovery key no longer matches the account's current secret storage.";
 
 function setupFailureGuidance(error: unknown): string {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
@@ -90,6 +92,9 @@ export function RecoverySetupCard({
         if (message.includes(REPLACED_PENDING_RECOVERY_ERROR)) {
           setRepairAvailable(true);
           setPendingReadError(false);
+        } else if (message.includes(STALE_ISSUED_RECOVERY_ERROR)) {
+          setRepairAvailable(false);
+          setPendingReadError(true);
         } else {
           setPendingReadError(true);
         }

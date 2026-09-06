@@ -13,6 +13,8 @@ use super::{persistence, MatrixState};
 
 const REPAIR_REQUIRED_GUIDANCE: &str =
     "Protected recovery state was retained; repair the interrupted setup before signing out.";
+const STALE_ISSUED_KEY_GUIDANCE: &str =
+    "The saved recovery key no longer matches the account's current secret storage. Keep the key for your records and sign in again before starting a new recovery setup.";
 
 fn repairable_setup_error(message: impl AsRef<str>) -> String {
     format!("{} {REPAIR_REQUIRED_GUIDANCE}", message.as_ref())
@@ -189,7 +191,7 @@ pub async fn pending_summary(
         match storage.open_secret_store(recovery_key).await {
             Ok(_) => {}
             Err(error) if secret_storage_error_is_definitively_stale(&error) => {
-                return Err("Pending recovery no longer matches the account's current secret storage. Restart recovery setup.".into());
+                return Err(STALE_ISSUED_KEY_GUIDANCE.into());
             }
             // The issued key is already encrypted in account-bound local
             // custody. A transient/offline lookup must not hide that only
@@ -385,7 +387,7 @@ pub async fn acknowledge(
             match issued_key_is_stale(client, &pending).await {
                 Ok(false) => return custody.save(None).await,
                 Ok(true) => {
-                    return Err("Pending recovery no longer matches the account's current secret storage. Restart recovery setup.".into());
+                    return Err(STALE_ISSUED_KEY_GUIDANCE.into());
                 }
                 Err(error) => return Err(error),
             }
@@ -976,18 +978,25 @@ mod tests {
     async fn replaced_secret_storage_rejects_the_cached_recovery_key() {
         let (_server, client) = client_with_current_recovery_key().await;
         let mut stale = pending();
-        stale.recovery_key =
-            Some("DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd".into());
+        let stale_recovery_key =
+            "DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd".to_string();
+        stale.recovery_key = Some(stale_recovery_key.clone());
         let custody = MemoryCustody {
             pending: Mutex::new(Some(stale.clone())),
             fail_save: false,
         };
 
         assert!(issued_key_is_stale(&client, &stale).await.unwrap());
-        assert!(pending_summary(&client, &custody).await.is_err());
-        assert!(acknowledge(&client, &custody, ISSUED_KEY.into())
-            .await
-            .is_err());
+        assert_eq!(
+            pending_summary(&client, &custody).await.unwrap_err(),
+            STALE_ISSUED_KEY_GUIDANCE
+        );
+        assert_eq!(
+            acknowledge(&client, &custody, stale_recovery_key)
+                .await
+                .unwrap_err(),
+            STALE_ISSUED_KEY_GUIDANCE
+        );
         assert!(custody.load().await.unwrap().is_some());
     }
 
