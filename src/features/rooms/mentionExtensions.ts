@@ -25,7 +25,7 @@ function isValidMatrixId(id: string, sigil: string): boolean {
     (character) => character === ":" || /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
   );
   const invalidServerName = Array.from(serverName).some(
-    (character) => /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
+    (character) => character === "\\" || /\s/u.test(character) || character.charCodeAt(0) <= 0x1f,
   );
   // URL parsing normalizes `https://example.org:` to `https://example.org/`,
   // but Matrix's `server-name = host [ ":" port ]` requires at least one

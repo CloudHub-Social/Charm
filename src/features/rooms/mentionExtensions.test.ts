@@ -110,6 +110,7 @@ describe("UserMention", () => {
     "https://matrix.to/#/@alice:example.org:99999",
     "https://matrix.to/#/%40alice%3Aexample.org%20",
     "https://matrix.to/#/%40alice%3Aexample%09.org",
+    "https://matrix.to/#/%40alice%3Aexample.org%5C",
   ])("rejects a pill whose server name is malformed: %s", (href) => {
     const anchor = document.createElement("a");
     anchor.setAttribute("href", href);

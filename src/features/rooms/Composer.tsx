@@ -36,10 +36,17 @@ import { useFlag } from "@/featureFlags";
 
 export type ComposerMode = "send" | "edit" | "reply";
 
-function resolveEditorPlainShortcodes(editor: Editor): string {
+function resolveEditorPlainShortcodes(editor: Editor, renderMentionIds = false): string {
   function resolveNode(node: JSONContent, insideCodeBlock = false): JSONContent {
     const codeBlock = insideCodeBlock || node.type === "codeBlock";
     const inlineCode = node.marks?.some((mark) => mark.type === "code") ?? false;
+    if (
+      renderMentionIds &&
+      (node.type === "userMention" || node.type === "roomMention") &&
+      typeof node.attrs?.id === "string"
+    ) {
+      return { type: "text", text: node.attrs.id };
+    }
     return {
       ...node,
       ...(node.text && !codeBlock && !inlineCode
@@ -182,21 +189,6 @@ function collectMentionIds(editor: Editor): string[] {
     return true;
   });
   return ids;
-}
-
-/**
- * Same text as `editor.getText()`, except `userMention`/`roomMention` nodes
- * are rendered as their bare Matrix id rather than their display label — see
- * `submit()`'s slash-command arg parsing for why this matters.
- */
-function textWithMentionIds(editor: Editor): string {
-  return editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n", (node) => {
-    if (node.type.name === "userMention" || node.type.name === "roomMention") {
-      return typeof node.attrs.id === "string" ? node.attrs.id : "";
-    }
-    if (node.type.name === "hardBreak") return "\n";
-    return "";
-  });
 }
 
 /**
@@ -557,8 +549,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // node's `id` attr for this parsing pass in both send and reply modes; the
     // regular send path doesn't need it since `m.mentions` is populated
     // separately via `collectMentionIds`.
-    const commandText =
-      mode !== "edit" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
+    const commandText = mode !== "edit" ? resolveEditorPlainShortcodes(editor, true) : rawPlainText;
     const slash =
       mode !== "edit" ? parseSlashCommand(commandText.trim(), composerParityEnabled) : null;
     if (slash) {

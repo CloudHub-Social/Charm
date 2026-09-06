@@ -536,6 +536,42 @@ describe("Composer", () => {
     expect(onSlashCommand).toHaveBeenCalledWith({ command: "me", args: ["👋"] });
   });
 
+  it.each([
+    ["inline code", "<p>/plain <code>:smile:</code></p>"],
+    ["a code block", "<pre><code>/plain :smile:</code></pre>"],
+  ])("preserves shortcode literals in %s slash-command text", async (_kind, html) => {
+    flags.composerParity = true;
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!slash-code-shortcode:example.org"
+        mode="send"
+        placeholder="Message general"
+        onSubmit={vi.fn()}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message general");
+    fireEvent.paste(editable, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/html" ? html : type === "text/plain" ? "/plain :smile:" : "",
+        types: ["text/html", "text/plain"],
+      },
+    });
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(onSlashCommand).toHaveBeenCalledWith({
+        command: "plain",
+        args: [":smile:"],
+        text: ":smile:",
+      }),
+    );
+  });
+
   it("preserves shortcode literals in code while expanding surrounding text", async () => {
     const onSubmit = vi.fn();
     render(
