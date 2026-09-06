@@ -42,6 +42,7 @@ import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
+import type { RecoverySetupSummary } from "@bindings/RecoverySetupSummary";
 import type { RoomKeyExportSummary } from "@bindings/RoomKeyExportSummary";
 import type { RoomKeyImportSummary } from "@bindings/RoomKeyImportSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
@@ -666,6 +667,24 @@ export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
 
 export function recoveryStatus(): Promise<RecoveryStatusSummary> {
   return invoke("recovery_status");
+}
+
+/** Creates Matrix secret storage and key backup, returning the recovery key the user must save. */
+export function setupRecovery(passphrase?: string): Promise<RecoverySetupSummary> {
+  return invoke("setup_recovery", { passphrase }, { captureOnError: false });
+}
+
+export function getPendingRecoverySetup(): Promise<RecoverySetupSummary | null> {
+  return invoke("get_pending_recovery_setup", {}, { captureOnError: false });
+}
+
+export function acknowledgeRecoverySetup(recoveryKey: string): Promise<void> {
+  return invoke("acknowledge_recovery_setup", { recoveryKey }, { captureOnError: false });
+}
+
+/** Deletes an unusable backup left by an interrupted first-time setup. */
+export function repairInterruptedRecoverySetup(): Promise<void> {
+  return invoke("repair_interrupted_recovery_setup", {}, { captureOnError: false });
 }
 
 // captureOnError: false — a wrong/invalid recovery key is an expected user-input

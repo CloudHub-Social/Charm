@@ -301,6 +301,11 @@ async fn clear_local_session_locked(
         eprintln!("failed to unregister push during logout/deactivate: {e}");
     }
 
+    // A recovery credential is not a login credential. Failure to remove it
+    // must not prevent revocation of the stored Matrix/OAuth session below.
+    if super::recovery_custody::clear_native_pending(&account_key).is_err() {
+        tracing::warn!("Could not remove protected pending recovery during local session cleanup");
+    }
     // Cleared *before* the awaited teardown below, not after: `state.client`
     // is what `MatrixState::require_client` hands to any other Tauri command
     // that happens to run concurrently, and by this point the persisted

@@ -5,6 +5,7 @@
     "message_pinning",
     "presence_privacy_controls",
     "user_profile_cards",
+    "crypto_backup_setup",
     "crypto_key_files"
   ],
   "features": [

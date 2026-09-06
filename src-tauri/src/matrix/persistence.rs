@@ -1013,6 +1013,7 @@ fn discard_cancelled_account_store_with(
 pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> Result<(), String> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     validate_cancelled_account_key(account_key)?;
+    let pending = super::recovery_custody::clear_native_pending(account_key);
     let marker = mark_cancelled_account_cleanup(app, account_key);
     let cleanup = discard_cancelled_account_session_with(
         || clear_session(account_key),
@@ -1022,7 +1023,7 @@ pub fn discard_cancelled_account_session(app: &AppHandle, account_key: &str) -> 
     // Shutdown can win this lock before a pending finalization. Retain intent
     // even when no artifacts exist yet, so that finalization cannot commit.
     // Normal full-wipe callers clear it only after their search cleanup succeeds.
-    marker.and(cleanup)
+    pending.and(marker).and(cleanup)
 }
 
 fn discard_cancelled_account_session_with(

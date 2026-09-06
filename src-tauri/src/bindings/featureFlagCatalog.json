@@ -181,6 +181,12 @@
   },
   {
     "default": false,
+    "description": "Set up Matrix secret storage and server-side encrypted room-key backup.",
+    "key": "crypto_backup_setup",
+    "owner": "Spec 44 (crypto key backup and import/export)"
+  },
+  {
+    "default": false,
     "description": "Import or export standard passphrase-encrypted Matrix room-key files.",
     "key": "crypto_key_files",
     "owner": "Spec 44 (crypto key backup and import/export)"

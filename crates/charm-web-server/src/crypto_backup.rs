@@ -37,6 +37,14 @@ const DOPPLER_DOWNLOAD_URL: &str = "https://api.doppler.com/v3/configs/config/se
 const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 const RETAIN_COMMITTED_GENERATIONS: usize = 3;
 const ACTIVE_WRITER_PATH: &str = "control/active-writer";
+
+fn cas_retry_delay(attempt: usize) -> Duration {
+    let base_ms = 10_u64 << attempt.min(4);
+    let jitter_ms = u64::from(rand::random::<u8>() % 11);
+    Duration::from_millis(base_ms + jitter_ms)
+}
+const WRITER_MUTATION_LEASE_MS: u64 = 120_000;
+const WRITER_ACTIVATION_RETRIES: usize = 150;
 // Only the crypto database is irreplaceable. Room/state/event-cache/media
 // stores are rebuilt from the homeserver after restore; backing them up would
 // multiply storage and transfer cost without preventing a recovery-key prompt.
@@ -103,6 +111,24 @@ struct SnapshotFile {
     name: String,
     sha256: String,
     size: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ActiveWriterFence {
+    writer_id: String,
+    #[serde(default)]
+    mutation_owner: Option<String>,
+    #[serde(default)]
+    mutation_expires_at_ms: Option<u64>,
+}
+
+impl ActiveWriterFence {
+    fn mutation_is_live(&self, now_ms: u64) -> bool {
+        self.mutation_owner.is_some()
+            && self
+                .mutation_expires_at_ms
+                .is_some_and(|expires| expires > now_ms)
+    }
 }
 
 pub struct CryptoBackupStore {
@@ -178,14 +204,29 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
-        self.store
-            .put(
-                &ObjectPath::from(ACTIVE_WRITER_PATH),
-                PutPayload::from(self.writer_id.clone()),
-            )
-            .await
-            .map_err(|error| format!("failed to publish crypto snapshot writer fence: {error}"))?;
-        Ok(())
+        for attempt in 0..WRITER_ACTIVATION_RETRIES {
+            let current = self.active_writer_fence().await?;
+            if current
+                .as_ref()
+                .is_some_and(|(fence, _)| fence.mutation_is_live(unix_time_ms()))
+            {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            let fence = ActiveWriterFence {
+                writer_id: self.writer_id.clone(),
+                mutation_owner: None,
+                mutation_expires_at_ms: None,
+            };
+            if self
+                .write_active_writer_fence(&fence, current.map(|(_, version)| version))
+                .await?
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
+        }
+        Err("timed out waiting for an active recovery mutation before writer handoff".into())
     }
 
     #[cfg(test)]
@@ -324,7 +365,9 @@ impl CryptoBackupStore {
         Ok(())
     }
 
-    async fn active_writer_id(&self) -> Result<Option<String>, String> {
+    async fn active_writer_fence(
+        &self,
+    ) -> Result<Option<(ActiveWriterFence, object_store::UpdateVersion)>, String> {
         if !self.enforce_writer_fence {
             return Ok(None);
         }
@@ -337,14 +380,61 @@ impl CryptoBackupStore {
                 ));
             }
         };
+        let version = object_store::UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
         let bytes = result.bytes().await.map_err(|error| error.to_string())?;
-        let writer = std::str::from_utf8(&bytes)
+        let raw = std::str::from_utf8(&bytes)
             .map_err(|error| format!("crypto snapshot writer fence is not UTF-8: {error}"))?
             .trim();
-        if writer.is_empty() {
+        if raw.is_empty() {
             return Err("crypto snapshot writer fence is empty".to_string());
         }
-        Ok(Some(writer.to_string()))
+        // Accept the original plain writer-id format during rolling upgrades.
+        let fence = serde_json::from_str(raw).unwrap_or_else(|_| ActiveWriterFence {
+            writer_id: raw.to_string(),
+            mutation_owner: None,
+            mutation_expires_at_ms: None,
+        });
+        Ok(Some((fence, version)))
+    }
+
+    async fn write_active_writer_fence(
+        &self,
+        fence: &ActiveWriterFence,
+        current: Option<object_store::UpdateVersion>,
+    ) -> Result<bool, String> {
+        let mode = current.map_or(object_store::PutMode::Create, object_store::PutMode::Update);
+        let payload = serde_json::to_vec(fence)
+            .map_err(|error| format!("failed to encode crypto writer fence: {error}"))?;
+        let options = object_store::PutOptions {
+            mode,
+            ..Default::default()
+        };
+        match self
+            .store
+            .put_opts(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from(payload),
+                options,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => Ok(false),
+            Err(error) => Err(format!(
+                "failed to publish crypto snapshot writer fence: {error}"
+            )),
+        }
+    }
+
+    async fn active_writer_id(&self) -> Result<Option<String>, String> {
+        Ok(self
+            .active_writer_fence()
+            .await?
+            .map(|(fence, _)| fence.writer_id))
     }
 
     async fn is_active_writer(&self) -> Result<bool, String> {
@@ -355,6 +445,96 @@ impl CryptoBackupStore {
             .active_writer_id()
             .await?
             .is_some_and(|active| active == self.writer_id))
+    }
+
+    /// Recovery setup is not a best-effort background snapshot: mutating
+    /// Matrix secret storage from a superseded deployment instance would make
+    /// its local crypto changes non-durable. Fail closed at that boundary.
+    pub async fn require_active_writer(&self) -> Result<(), String> {
+        if self.is_active_writer().await? {
+            Ok(())
+        } else {
+            Err("This server instance is no longer the active crypto writer; retry.".into())
+        }
+    }
+
+    pub async fn acquire_recovery_mutation(&self, owner: &str) -> Result<(), String> {
+        if !self.enforce_writer_fence {
+            return Ok(());
+        }
+        for attempt in 0..5 {
+            let current = self
+                .active_writer_fence()
+                .await?
+                .ok_or("No active crypto snapshot writer.")?;
+            let (mut fence, version) = current;
+            if fence.writer_id != self.writer_id {
+                return Err(
+                    "This server instance is no longer the active crypto writer; retry.".into(),
+                );
+            }
+            if fence.mutation_is_live(unix_time_ms())
+                && fence.mutation_owner.as_deref() != Some(owner)
+            {
+                return Err("Another recovery mutation is already active; retry.".into());
+            }
+            fence.mutation_owner = Some(owner.to_string());
+            fence.mutation_expires_at_ms = Some(unix_time_ms() + WRITER_MUTATION_LEASE_MS);
+            if self
+                .write_active_writer_fence(&fence, Some(version))
+                .await?
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
+        }
+        Err("Crypto writer ownership changed concurrently; retry recovery setup.".into())
+    }
+
+    pub async fn renew_recovery_mutation(&self, owner: &str) -> Result<(), String> {
+        self.acquire_recovery_mutation(owner).await
+    }
+
+    pub async fn require_recovery_mutation(&self, owner: &str) -> Result<(), String> {
+        if !self.enforce_writer_fence {
+            return Ok(());
+        }
+        let (fence, _) = self
+            .active_writer_fence()
+            .await?
+            .ok_or("No active crypto snapshot writer.")?;
+        if fence.writer_id == self.writer_id
+            && fence.mutation_owner.as_deref() == Some(owner)
+            && fence.mutation_is_live(unix_time_ms())
+        {
+            Ok(())
+        } else {
+            Err("Recovery mutation no longer owns the active crypto writer; retry.".into())
+        }
+    }
+
+    pub async fn release_recovery_mutation(&self, owner: &str) -> Result<(), String> {
+        if !self.enforce_writer_fence {
+            return Ok(());
+        }
+        for attempt in 0..5 {
+            let Some((mut fence, version)) = self.active_writer_fence().await? else {
+                return Ok(());
+            };
+            if fence.writer_id != self.writer_id || fence.mutation_owner.as_deref() != Some(owner) {
+                return Ok(());
+            }
+            fence.mutation_owner = None;
+            fence.mutation_expires_at_ms = None;
+            if self
+                .write_active_writer_fence(&fence, Some(version))
+                .await?
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(cas_retry_delay(attempt)).await;
+        }
+        Err("Could not release the recovery writer lease; it will expire safely.".into())
     }
 
     async fn remove_uncommitted_generation(
@@ -770,6 +950,15 @@ fn random_identifier() -> String {
         .collect()
 }
 
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 fn create_restore_temp_dir(destination_dir: &Path) -> Result<PathBuf, String> {
     let parent = destination_dir
         .parent()
@@ -920,8 +1109,34 @@ mod tests {
             true,
         );
         assert!(!writer.is_active_writer().await.unwrap());
+        assert!(writer.require_active_writer().await.is_err());
         writer.activate_writer().await.unwrap();
         assert!(writer.is_active_writer().await.unwrap());
+        writer.require_active_writer().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_mutation_lease_is_owned_and_released_atomically() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let writer = CryptoBackupStore::new_for_test_with_store(
+            [44; 32],
+            "active-writer",
+            Arc::clone(&backend),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [44; 32],
+            "replacement-writer",
+            backend,
+            true,
+        );
+        writer.activate_writer().await.unwrap();
+        writer.acquire_recovery_mutation("request-a").await.unwrap();
+        writer.require_recovery_mutation("request-a").await.unwrap();
+        assert!(writer.acquire_recovery_mutation("request-b").await.is_err());
+        assert!(!replacement.is_active_writer().await.unwrap());
+        writer.release_recovery_mutation("request-a").await.unwrap();
+        assert!(writer.require_recovery_mutation("request-a").await.is_err());
     }
 
     #[test]

@@ -384,6 +384,15 @@ pub fn router(state: AppState) -> Router {
             "/api/verification/recovery",
             get(get_recovery_status).post(recover_from_key),
         )
+        .route("/api/verification/recovery/setup", post(setup_recovery))
+        .route(
+            "/api/verification/recovery/setup/repair",
+            post(repair_interrupted_recovery_setup),
+        )
+        .route(
+            "/api/verification/recovery/pending",
+            get(get_pending_recovery_setup).post(acknowledge_recovery_setup),
+        )
         .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
             post(accept_verification),
@@ -2431,33 +2440,54 @@ async fn logout(
     require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
-        // Teardown is a security boundary, not request-scoped work. Axum may
-        // cancel this handler as soon as the initiating tab disconnects; keep
-        // local revocation, sync abortion, and persisted-token deletion owned
-        // by a detached task, while still awaiting it during the normal path.
-        let state = state.clone();
-        let cleanup = tokio::spawn(async move {
-        // Captured before the live-session branch below moves `session`
-        // into a spawned task — this is the fallback `persistence.remove`
-        // needs at the very end to still clean up this session's crypto
-        // store even when no persisted blob exists to read it from (e.g.
-        // `finish_login`'s own initial `persistence.save` failed, which it
-        // explicitly tolerates — the live session still has an on-disk
-        // crypto store in that case, just never a matching blob for
-        // `PersistenceStore::remove`'s own `read_one` to find it through).
-        let mut live_crypto = None;
-        // Stop the live sync loop *before* removing the persisted entry
-        // below, not after. Its `repersist_if_token_changed` can re-save a
-        // refreshed token at any sync iteration — removing the persisted
-        // entry first would leave a window where an in-flight sync
-        // iteration resurrects it with a freshly "current" token right
-        // before this handler gets to abort the loop that raced it.
-        // Aborting first narrows that window (not eliminates it —
-        // `abort()` cancels at the task's next await point, not
-        // synchronously mid-poll — but from "the rest of this handler's
-        // lifetime" down to "whatever's already in flight at this instant").
-        if let Some(session) = state.sessions.remove(&token).await {
-            live_crypto = session.persisted_crypto.clone();
+        // Recovery setup and logout may land on different web instances.
+        // Admit teardown through the versioned persisted session before
+        // removing any live state: a pending credential vetoes logout, while
+        // a successful marker makes every later recovery claim/update fail.
+        if let Some(persistence) = &state.persistence {
+            if let Some(pending) = persistence
+                .pending_recovery_for_teardown(&token)
+                .await
+                .map_err(ApiError::bad_request)?
+                .filter(|pending| pending.has_issued_key())
+            {
+                // A valid issued key must remain in custody until explicit
+                // acknowledgement. A definitively stale key, however, can
+                // never be acknowledged; validate it with the live/restored
+                // encrypted session and CAS-clear only that same record so
+                // logout cannot be trapped forever after another client
+                // replaces the account's default secret storage.
+                let client = match state.sessions.get(&token).await {
+                    Some(session) => Some(session.client.clone()),
+                    None => {
+                        persistence
+                            .restore_client_for_recovery_validation(&token)
+                            .await
+                    }
+                };
+                if let Some(client) = client {
+                    if charm_lib::matrix::recovery_custody::issued_key_is_stale(&client, &pending)
+                        .await
+                        .map_err(ApiError::bad_request)?
+                    {
+                        persistence
+                            .discard_stale_pending_recovery(&token, &pending)
+                            .await
+                            .map_err(ApiError::bad_request)?;
+                    }
+                }
+            }
+            persistence
+                .begin_recovery_safe_teardown(&token)
+                .await
+                .map_err(ApiError::bad_request)?;
+        }
+        // Authentication must end before the success response, including
+        // for sessions without a durable teardown marker. Slow custody work
+        // remains protected by the session lock below, but cannot leave the
+        // old cookie usable while detached cleanup is waiting for that lock.
+        let live_session = state.sessions.invalidate_for_logout(&token).await;
+        if let Some(session) = &live_session {
             if let Some(handle) = session
                 .sync_handle
                 .lock()
@@ -2466,86 +2496,67 @@ async fn logout(
             {
                 handle.abort();
             }
-            // Revoke the access token on the homeserver too — otherwise it
-            // stays valid indefinitely after "logout" only clears local
-            // server-side state, unlike the desktop app (which calls the
-            // same `matrix_auth().logout()`). Spawned rather than awaited
-            // inline so a slow/unreachable homeserver doesn't block the
-            // response to the browser; best-effort, same as desktop's other
-            // fire-and-forget homeserver calls (e.g. `set_presence_online`).
-            tokio::spawn(async move {
-                let _ = session.client.matrix_auth().logout().await;
-            });
-            // See the matching call in the `else` branch below — harmless
-            // even in the (normal) case where this token was never
-            // idle-evicted and so never had an entry to begin with.
-            state.sessions.forget_evicted_presence(&token);
-        } else if let Some(persistence) = &state.persistence {
-            // No live in-memory `Session` for this token — either it was
-            // never loaded (a startup `restore_all` failure/timeout) or it
-            // was idle-evicted (see `session::SessionStore::sweep_idle`).
-            // Either way there's still a persisted access/refresh token that
-            // would otherwise stay valid at the homeserver forever, since
-            // nothing below this rebuilds a `Client` to revoke it — only
-            // deletes the local persisted copy. Restore just far enough to
-            // call `logout()` on the homeserver before that persisted copy
-            // is gone. `restore_client_for_revocation`, not the full
-            // `restore_by_token` — revoking a token needs no crypto identity
-            // at all, and `restore_by_token` now deliberately fails closed
-            // when a session's crypto store is missing/unopenable (to stop a
-            // *live* session from silently continuing under a fresh, empty
-            // crypto identity — see `build_client_for_restore`'s doc
-            // comment), which would otherwise skip this homeserver
-            // revocation entirely for exactly that session and leave its
-            // token valid forever even though the browser's logout
-            // succeeded. The restore itself is awaited (not spawned) and
-            // *before* the unconditional `remove` below — it reads the same
-            // persisted object `remove` is about to delete, so this has to
-            // run first, not race it — and it's already bounded by
-            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
-            // on *that* part. The actual `logout()` call is spawned rather
-            // than awaited, same as the live-session branch above and for
-            // the same reason: it's a second, independent network call with
-            // no timeout of its own, so awaiting it inline here would let a
-            // slow/unreachable homeserver hang this response even after the
-            // bounded restore already succeeded. No presence to carry
-            // forward here — this session is being logged out, not restored
-            // for continued use.
-            if let Some(client) = persistence.restore_client_for_revocation(&token).await {
-                tokio::spawn(async move {
-                    let _ = client.matrix_auth().logout().await;
-                });
-            }
-            // This token's cached presence (if any — see
-            // `SessionStore::evicted_presence`) is now meaningless: the
-            // persisted session it would have restored into is about to be
-            // deleted below. Drop it immediately instead of leaving it to
-            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
-            state.sessions.forget_evicted_presence(&token);
         }
-        // Removed unconditionally, whether or not a live in-memory session
-        // was found above — not nested inside that `if let Some(session)`.
-        // A persisted entry can outlive its `SessionStore` entry (e.g.
-        // `restore_all` timed out or failed on it at startup — see
-        // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
-        // can still hold a cookie for a token this process never actually
-        // loaded a `Session` for. Skipping this removal in that case would
-        // leave the cookie's session persisted indefinitely: a later restart
-        // (once the homeserver/network issue that caused the earlier
-        // restore failure has cleared) would restore and start syncing an
-        // account the user believes they already logged out of.
-        if let Some(persistence) = &state.persistence {
-            let live_crypto = live_crypto
-                .as_ref()
-                .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
-            if let Err(e) = persistence.remove(&token, live_crypto).await {
-                tracing::warn!("failed to remove persisted session on logout: {e}");
+        // Teardown is a security boundary, not request-scoped work. Axum may
+        // cancel this handler as soon as the initiating tab disconnects; keep
+        // local revocation, sync abortion, and persisted-token deletion owned
+        // by a detached task. The durable teardown marker above already blocks
+        // later authentication, so a slow homeserver must not delay the logout
+        // response while the bounded revocation attempt finishes.
+        let state = state.clone();
+        let _cleanup = tokio::spawn(async move {
+            if let Some(session) = live_session {
+                let _recovery_guard = session.recovery_setup_lock.lock().await;
+                let live_crypto = session.persisted_crypto.clone();
+                let revoked = crate::persistence::revoke_matrix_session(&session.client).await;
+                if let Some(persistence) = &state.persistence {
+                    let durable_token_exists = persistence
+                        .has_persisted_object(&token)
+                        .await
+                        .unwrap_or(true);
+                    if durable_token_exists {
+                        // The live client revokes the newest in-memory token,
+                        // while the version-fenced helper revokes and marks
+                        // whichever exact token pair is currently durable.
+                        // A racing refresh on another instance either loses
+                        // the conditional write or is re-read and revoked;
+                        // no unconditional delete can erase an unrevoked pair.
+                        if let Err(error) =
+                            persistence.finish_recovery_safe_teardown(&token).await
+                        {
+                            tracing::warn!(
+                                "failed to finish persisted session logout; retained teardown tombstone: {error}"
+                            );
+                        }
+                    } else if revoked.is_ok() {
+                        let live_crypto = live_crypto
+                            .as_ref()
+                            .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                        if let Err(error) = persistence.remove(&token, live_crypto).await {
+                            tracing::warn!("failed to remove persisted session on logout: {error}");
+                        }
+                    } else if let Err(error) = revoked {
+                        // No durable token exists to retry. The browser cookie
+                        // is still cleared and this live session stays removed;
+                        // retain the crypto store rather than deleting custody
+                        // after an unconfirmed homeserver revocation.
+                        tracing::warn!(
+                            "failed to revoke non-persisted Matrix session: {error}"
+                        );
+                    }
+                } else if let Err(error) = revoked {
+                    tracing::warn!("failed to revoke non-persisted Matrix session: {error}");
+                }
+                state.sessions.forget_evicted_presence(&token);
+            } else if let Some(persistence) = &state.persistence {
+                if let Err(error) = persistence.finish_recovery_safe_teardown(&token).await {
+                    tracing::warn!(
+                        "failed to finish persisted session logout; retained teardown tombstone: {error}"
+                    );
+                }
+                state.sessions.forget_evicted_presence(&token);
             }
-        }
         });
-        if let Err(error) = cleanup.await {
-            tracing::warn!("logout cleanup task failed: {error}");
-        }
     }
     // `remove` must be given a cookie matching the *original* cookie's
     // path — `Cookie::from(SESSION_COOKIE)` alone defaults to no path,
@@ -5556,11 +5567,454 @@ struct RecoverFromKeyRequest {
     recovery_key: String,
 }
 
+struct WebRecoveryCustody<'a> {
+    persistence: &'a crate::persistence::PersistenceStore,
+    token: &'a str,
+    session: &'a Session,
+    owner: Option<&'a str>,
+}
+
+#[charm_lib::matrix::recovery_custody::async_trait]
+impl charm_lib::matrix::recovery_custody::RecoveryCustody for WebRecoveryCustody<'_> {
+    async fn load(
+        &self,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        self.persistence.pending_recovery(self.token).await
+    }
+    async fn save(
+        &self,
+        pending: Option<&charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    ) -> Result<(), String> {
+        self.persistence
+            .save_pending_recovery(self.token, pending)
+            .await
+    }
+    async fn claim(
+        &self,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        let claimed = self
+            .persistence
+            .claim_pending_recovery(self.token, pending, owner)
+            .await?;
+        if let Err(error) = self.persistence.acquire_recovery_writer_lease(owner).await {
+            let _ = self
+                .persistence
+                .release_pending_recovery_claim(self.token, owner)
+                .await;
+            return Err(error);
+        }
+        Ok(claimed)
+    }
+    async fn save_claimed(
+        &self,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<(), String> {
+        self.persistence
+            .save_claimed_pending_recovery(
+                self.token,
+                pending,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
+    async fn clear_claimed(&self) -> Result<(), String> {
+        self.persistence
+            .clear_claimed_pending_recovery(
+                self.token,
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
+    async fn release(&self) -> Result<(), String> {
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        let writer_release = self.persistence.release_recovery_writer_lease(owner).await;
+        let custody_release = self
+            .persistence
+            .release_pending_recovery_claim(self.token, owner)
+            .await;
+        writer_release.and(custody_release)
+    }
+    async fn renew(&self) -> Result<(), String> {
+        let owner = self.owner.ok_or("Recovery setup has no request owner.")?;
+        self.persistence.renew_recovery_writer_lease(owner).await?;
+        self.persistence
+            .renew_pending_recovery_claim(self.token, owner)
+            .await
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        if !self.persistence.has_crypto_backup() {
+            return Err(
+                "Durable encrypted crypto snapshots are required for recovery setup.".into(),
+            );
+        }
+        if self
+            .session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed during recovery setup.".into());
+        }
+        self.persistence
+            .require_recovery_writer_lease(
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await?;
+        let matrix_session = self
+            .session
+            .client
+            .matrix_auth()
+            .session()
+            .ok_or("No Matrix session.")?;
+        let crypto = self
+            .session
+            .persisted_crypto
+            .as_ref()
+            .ok_or("No durable crypto store.")?;
+        self.persistence
+            .snapshot_crypto_store(
+                self.token,
+                &matrix_session,
+                Some((&crypto.store_key, &crypto.passphrase)),
+            )
+            .await?;
+        // The writer fence can change while the snapshot is uploading. A
+        // superseded writer deliberately skips its commit, so recheck before
+        // allowing recovery setup to mutate server-side secret storage.
+        self.persistence
+            .require_recovery_writer_lease(
+                self.owner.ok_or("Recovery setup has no request owner.")?,
+            )
+            .await
+    }
+}
+
+async fn get_pending_recovery_setup(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let _guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
+    let summary =
+        if let (Some(persistence), Some(cookie)) = (&state.persistence, jar.get(SESSION_COOKIE)) {
+            charm_lib::matrix::recovery_custody::pending_summary(
+                &session.client,
+                &WebRecoveryCustody {
+                    persistence,
+                    token: cookie.value(),
+                    session: &session,
+                    owner: None,
+                },
+            )
+            .await
+            .map_err(ApiError::bad_request)?
+        } else {
+            None
+        };
+    Ok(([("cache-control", "no-store")], Json(summary)))
+}
+
+#[derive(Deserialize)]
+struct AcknowledgeRecoveryRequest {
+    recovery_key: String,
+}
+
+async fn acknowledge_recovery_setup(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    Json(request): Json<AcknowledgeRecoveryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let _guard = session.recovery_setup_lock.lock().await;
+    require_open_recovery_session(&session)?;
+    let persistence = state
+        .persistence
+        .as_ref()
+        .ok_or_else(|| ApiError::bad_request("Protected recovery storage is unavailable."))?;
+    let cookie = jar
+        .get(SESSION_COOKIE)
+        .ok_or_else(|| ApiError::unauthorized("Not signed in."))?;
+    charm_lib::matrix::recovery_custody::acknowledge(
+        &session.client,
+        &WebRecoveryCustody {
+            persistence,
+            token: cookie.value(),
+            session: &session,
+            owner: None,
+        },
+        request.recovery_key,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(([("cache-control", "no-store")], Json(())))
+}
+
+async fn repair_interrupted_recovery_setup(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let guard = Arc::clone(&session.recovery_setup_lock).lock_owned().await;
+    require_open_recovery_session(&session)?;
+    let persistence = state
+        .persistence
+        .as_ref()
+        .ok_or_else(|| ApiError::bad_request("Protected recovery storage is unavailable."))?;
+    let cookie = jar
+        .get(SESSION_COOKIE)
+        .ok_or_else(|| ApiError::unauthorized("Not signed in."))?;
+    if !session.crypto_store_open || session.persisted_crypto.is_none() {
+        return Err(ApiError::bad_request(
+            "Sign in again with durable encrypted storage before repairing recovery.",
+        ));
+    }
+
+    // Transfer the destructive repair to an owned task so an HTTP disconnect
+    // cannot leave its cross-process claim held until lease expiry.
+    let repair_persistence = Arc::clone(persistence);
+    let repair_session = Arc::clone(&session);
+    let repair_token = cookie.value().to_string();
+    let repair_owner = format!("{:032x}", rand::random::<u128>());
+    tokio::spawn(async move {
+        let _guard = guard;
+        if repair_session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed; recovery repair was not started.".to_string());
+        }
+        charm_lib::matrix::recovery_custody::repair_interrupted_setup(
+            &repair_session.client,
+            &WebRecoveryCustody {
+                persistence: &repair_persistence,
+                token: &repair_token,
+                session: &repair_session,
+                owner: Some(&repair_owner),
+            },
+        )
+        .await
+    })
+    .await
+    .map_err(|_| ApiError::bad_request("Recovery repair task failed."))?
+    .map_err(ApiError::bad_request)?;
+    Ok(([("cache-control", "no-store")], Json(())))
+}
+
+#[cfg(test)]
+mod repair_recovery_origin_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn rejects_a_cross_origin_bodyless_repair_before_session_lookup() {
+        let response = super::router(AppState::default())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/verification/recovery/setup/repair")
+                    .header("origin", "https://attacker.example")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+}
+
+#[derive(Deserialize)]
+struct SetupRecoveryRequest {
+    passphrase: Option<String>,
+}
+
+fn require_open_recovery_session(session: &Session) -> Result<(), ApiError> {
+    if session
+        .session_closed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::unauthorized(
+            "Session closed; recovery operation was not started.",
+        ));
+    }
+    Ok(())
+}
+
+async fn setup_recovery(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    Json(request): Json<SetupRecoveryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    if !state.crypto_backup_setup_enabled {
+        return Err(ApiError::not_found("recovery setup is not enabled"));
+    }
+    charm_lib::matrix::verification::validate_recovery_passphrase(request.passphrase.as_deref())
+        .map_err(ApiError::bad_request)?;
+    let guard = Arc::clone(&session.recovery_setup_lock).lock_owned().await;
+    require_open_recovery_session(&session)?;
+    // Never mutate server-side recovery from a legacy in-memory-only session.
+    // Verify persistence before enabling anything, not only after issuing a key.
+    let (Some(persistence), Some(matrix_session), Some(crypto), Some(cookie)) = (
+        &state.persistence,
+        session.client.matrix_auth().session(),
+        session.persisted_crypto.as_ref(),
+        jar.get(SESSION_COOKIE),
+    ) else {
+        return Err(ApiError::bad_request(
+            "Sign in again with durable encrypted storage before setting up recovery.",
+        ));
+    };
+    if !session.crypto_store_open {
+        return Err(ApiError::bad_request(
+            "Encrypted storage is unavailable; recovery setup was not started.",
+        ));
+    }
+    persistence
+        .snapshot_crypto_store(
+            cookie.value(),
+            &matrix_session,
+            Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
+        )
+        .await
+        .map_err(|_| {
+            ApiError::bad_request(
+                "Could not persist encrypted storage; recovery setup was not started.",
+            )
+        })?;
+    // Once setup claims its distributed admission bit, request cancellation
+    // must not strand that bit forever. Transfer the mutation to an owned task
+    // before claiming it; dropping the HTTP future then detaches the task, which
+    // still runs setup's success/error release path.
+    let setup_persistence = Arc::clone(persistence);
+    let setup_session = Arc::clone(&session);
+    let setup_token = cookie.value().to_string();
+    let setup_owner = format!("{:032x}", rand::random::<u128>());
+    let setup_passphrase = request.passphrase;
+    let summary = tokio::spawn(async move {
+        let _guard = guard;
+        if setup_session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Session closed; recovery operation was not started.".to_string());
+        }
+        charm_lib::matrix::recovery_custody::setup_with_custody(
+            &setup_session.client,
+            &WebRecoveryCustody {
+                persistence: &setup_persistence,
+                token: &setup_token,
+                session: &setup_session,
+                owner: Some(&setup_owner),
+            },
+            setup_passphrase,
+        )
+        .await
+    })
+    .await
+    .map_err(|_| ApiError::bad_request("Recovery setup task failed."))?
+    .map_err(ApiError::bad_request)?;
+    Ok(([("cache-control", "no-store")], Json(summary)))
+}
+
+#[cfg(test)]
+mod recovery_setup_route_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn recovery_setup_requires_authentication_and_server_rollout() {
+        for (authenticated, enabled, expected) in [
+            (false, false, StatusCode::UNAUTHORIZED),
+            (false, true, StatusCode::UNAUTHORIZED),
+            (true, false, StatusCode::NOT_FOUND),
+            (true, true, StatusCode::BAD_REQUEST),
+        ] {
+            let state = AppState {
+                crypto_backup_setup_enabled: enabled,
+                ..AppState::default()
+            };
+            if authenticated {
+                let client = matrix_sdk::Client::builder()
+                    .homeserver_url("http://localhost:1")
+                    .build()
+                    .await
+                    .unwrap();
+                state
+                    .sessions
+                    .insert(
+                        "test-session".into(),
+                        crate::session::Session::new(client, "@test:localhost".into(), None, false),
+                    )
+                    .await;
+            }
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/verification/recovery/setup")
+                .header("content-type", "application/json")
+                .header("x-charm-operation-id", "test-recovery-setup");
+            if authenticated {
+                request = request.header("cookie", format!("{SESSION_COOKIE}=test-session"));
+            }
+            // Enabled+authenticated reaches shared validation, not network I/O.
+            let response = router(state)
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(r#"{"passphrase":"short"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_mutations_reject_cross_origin_requests_before_session_lookup() {
+        for (uri, body) in [
+            (
+                "/api/verification/recovery/setup",
+                r#"{"passphrase":"private phrase"}"#,
+            ),
+            (
+                "/api/verification/recovery",
+                r#"{"recovery_key":"private key"}"#,
+            ),
+        ] {
+            let response = router(AppState::default())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("origin", "https://attacker.example")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+}
+
 async fn recover_from_key(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: CookieJar,
     Json(request): Json<RecoverFromKeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let token = jar
         .get(SESSION_COOKIE)
         .map(|cookie| cookie.value().to_string())

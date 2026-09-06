@@ -1,5 +1,6 @@
 import type { Decorator, Preview } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mocked, sb } from "storybook/test";
 import "@fontsource/manrope/400.css";
 import "@fontsource/manrope/500.css";
 import "@fontsource/manrope/600.css";
@@ -8,6 +9,11 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "../src/styles/tokens.css";
 import { featureFlagTestHooks } from "../src/featureFlags";
+import { getPendingRecoverySetup } from "../src/lib/matrix";
+
+// Stories have no credential backend. Preserve the other Matrix implementations
+// while making the ordinary, no-pending-recovery state explicit.
+sb.mock(import("../src/lib/matrix.ts"), { spy: true });
 
 // Stories document shipped UI states, including features that default off
 // while they are being staged for rollout.
@@ -51,6 +57,9 @@ const withTheme: Decorator = (Story, context) => {
 };
 
 const preview: Preview = {
+  beforeEach() {
+    mocked(getPendingRecoverySetup).mockResolvedValue(null);
+  },
   globalTypes: {
     theme: {
       description: "Design-system theme",

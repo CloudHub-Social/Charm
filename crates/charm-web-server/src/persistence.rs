@@ -62,6 +62,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
@@ -99,8 +100,63 @@ const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const SNAPSHOT_READY_ATTEMPTS: usize = 5;
 const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Confirms that a Matrix session is revoked before its last durable token
+/// copy may be deleted. `M_UNKNOWN_TOKEN` is also confirmation: a previous
+/// attempt may have reached the homeserver and crashed before local cleanup.
+pub async fn revoke_matrix_session(client: &matrix_sdk::Client) -> Result<(), String> {
+    match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error))
+            if matches!(
+                error.client_api_error_kind(),
+                Some(ErrorKind::UnknownToken(_))
+            ) =>
+        {
+            Ok(())
+        }
+        Ok(Err(error)) => Err(format!("Could not revoke the Matrix session: {error}")),
+        Err(_) => Err(format!(
+            "Matrix session revocation timed out after {RESTORE_TIMEOUT:?}"
+        )),
+    }
+}
+const RECOVERY_SETUP_LEASE_MS: u64 = 5 * 60 * 1000;
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
+    #[serde(default)]
+    pending_recovery: Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    /// Cross-process admission bit for destructive session teardown. Recovery
+    /// setup claims and updates fail once this is set; teardown refuses to set
+    /// it while a recovery credential is pending.
+    #[serde(default)]
+    recovery_teardown_started: bool,
+    /// The exact token pair in this object has been revoked. Once set by a
+    /// conditional write, refresh re-saves may no longer replace it before
+    /// the tombstone is physically deleted.
+    #[serde(default)]
+    recovery_teardown_revoked: bool,
+    /// True only while a setup request owns the cross-process mutation slot.
+    #[serde(default)]
+    recovery_setup_active: bool,
+    /// Start of the active pre-issuance lease. A crashed worker may be
+    /// replaced after the lease expires; issued credentials remain blocked
+    /// until the client explicitly acknowledges custody.
+    #[serde(default)]
+    recovery_setup_claimed_at_ms: Option<u64>,
+    /// Random request identity used to fence renew/release writes from a
+    /// worker whose expired lease was replaced by another process.
+    #[serde(default)]
+    recovery_setup_owner: Option<String>,
     token: String,
     homeserver_url: String,
     session: MatrixSession,
@@ -432,6 +488,456 @@ impl PersistenceStore {
         self
     }
 
+    pub fn has_crypto_backup(&self) -> bool {
+        self.crypto_backup.is_some()
+    }
+
+    async fn update_existing_object(
+        &self,
+        path: &ObjectPath,
+        json: Vec<u8>,
+        version: object_store::UpdateVersion,
+    ) -> Result<(), object_store::Error> {
+        let options = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        match self
+            .store
+            .put_opts(path, PutPayload::from(json.clone()), options)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(object_store::Error::NotImplemented { .. }) => {
+                // LocalFileSystem, used for local development and these
+                // single-process tests, has no conditional writes. The
+                // per-token lock still preserves its in-process ordering.
+                self.store
+                    .put(path, PutPayload::from(json))
+                    .await
+                    .map(|_| ())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn pending_recovery(
+        &self,
+        token: &str,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        let (entry, _) = self
+            .read_one_with_version_result(token)
+            .await?
+            .ok_or("The persisted session is no longer available.")?;
+        Ok(entry.pending_recovery)
+    }
+
+    /// Logout-specific custody read. A live session whose initial persistence
+    /// write failed has no object, which means it has no durable recovery
+    /// credential to veto teardown. Storage errors remain fail-closed.
+    pub async fn pending_recovery_for_teardown(
+        &self,
+        token: &str,
+    ) -> Result<Option<charm_lib::matrix::recovery_custody::PendingRecoverySetup>, String> {
+        Ok(self
+            .read_one_with_version_result(token)
+            .await?
+            .and_then(|(entry, _)| entry.pending_recovery))
+    }
+
+    pub async fn save_pending_recovery(
+        &self,
+        token: &str,
+        pending: Option<&charm_lib::matrix::recovery_custody::PendingRecoverySetup>,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started && pending.is_some() {
+                return Err("Session teardown has already started.".into());
+            }
+            entry.pending_recovery = pending.cloned();
+            if pending.is_none() {
+                // Acknowledgement is also a definitive release if the earlier
+                // best-effort admission cleanup encountered transient storage
+                // failure after returning the issued key.
+                entry.recovery_setup_active = false;
+                entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
+            }
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json =
+                serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically persist protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    /// Persists an issued credential only while `owner` still holds the
+    /// setup lease. This fences a stalled worker after another process has
+    /// taken over its expired claim.
+    pub async fn save_claimed_pending_recovery(
+        &self,
+        token: &str,
+        pending: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.pending_recovery = Some(pending.clone());
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery result.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically persist protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    pub async fn clear_claimed_pending_recovery(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.pending_recovery = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery cleanup.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically clear protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    /// Atomically transitions `pending_recovery` from empty to populated and
+    /// returns whichever seed won. The object-store version precondition is
+    /// the cross-instance serialization boundary; a losing process reloads
+    /// the canonical seed instead of overwriting it.
+    pub async fn claim_pending_recovery(
+        &self,
+        token: &str,
+        candidate: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
+    ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
+        self.claim_pending_recovery_at(token, candidate, owner, unix_time_ms())
+            .await
+    }
+
+    async fn claim_pending_recovery_at(
+        &self,
+        token: &str,
+        candidate: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        owner: &str,
+        now_ms: u64,
+    ) -> Result<charm_lib::matrix::recovery_custody::PendingRecoverySetup, String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started {
+                return Err("Session teardown has already started.".into());
+            }
+            if entry.recovery_setup_active {
+                let issued = entry
+                    .pending_recovery
+                    .as_ref()
+                    .is_some_and(|pending| pending.has_issued_key());
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+                if issued || lease_live {
+                    return Err("Recovery setup is already in progress.".into());
+                }
+            }
+            let selected = entry.pending_recovery.unwrap_or_else(|| candidate.clone());
+            entry.pending_recovery = Some(selected.clone());
+            entry.recovery_setup_active = true;
+            entry.recovery_setup_claimed_at_ms = Some(now_ms);
+            entry.recovery_setup_owner = Some(owner.to_string());
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json =
+                serde_json::to_vec(&blob).map_err(|_| "Could not encode protected recovery.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(selected),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not atomically claim protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery storage changed concurrently; retry.".into())
+    }
+
+    pub async fn renew_pending_recovery_claim(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        self.renew_pending_recovery_claim_at(token, owner, unix_time_ms())
+            .await
+    }
+
+    async fn renew_pending_recovery_claim_at(
+        &self,
+        token: &str,
+        owner: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let (mut entry, version) = self
+                .read_one_with_version_result(token)
+                .await?
+                .ok_or("The persisted session is no longer available.")?;
+            if entry.recovery_teardown_started
+                || !entry.recovery_setup_active
+                || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Err("Recovery setup admission is no longer owned by this request.".into());
+            }
+            entry.recovery_setup_claimed_at_ms = Some(now_ms);
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery renewal.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not renew recovery setup admission.".into()),
+            }
+        }
+        Err("Recovery setup renewal changed concurrently; retry.".into())
+    }
+
+    pub async fn release_pending_recovery_claim(
+        &self,
+        token: &str,
+        owner: &str,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if !entry.recovery_setup_active || entry.recovery_setup_owner.as_deref() != Some(owner)
+            {
+                return Ok(());
+            }
+            entry.recovery_setup_active = false;
+            entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode protected recovery release.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not release recovery setup admission.".into()),
+            }
+        }
+        Err("Recovery setup state changed concurrently; retry.".into())
+    }
+
+    /// Atomically admits session teardown only when no recovery setup request
+    /// is active. A crashed pre-issuance claim expires, while an issued key
+    /// keeps teardown blocked until explicit client acknowledgement. The lease,
+    /// custody, and teardown state share one versioned object, so setup and
+    /// logout on different instances have one CAS winner.
+    pub async fn begin_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
+        self.begin_recovery_safe_teardown_at(token, unix_time_ms())
+            .await
+    }
+
+    /// Clears definitively replaced recovery custody after the live Matrix
+    /// client has proved it no longer matches the account's current SSSS.
+    /// The compare-and-swap identity prevents that validation from deleting
+    /// a newer credential written by a concurrent setup request.
+    pub async fn discard_stale_pending_recovery(
+        &self,
+        token: &str,
+        stale: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+    ) -> Result<(), String> {
+        self.discard_stale_pending_recovery_at(token, stale, unix_time_ms())
+            .await
+    }
+
+    async fn discard_stale_pending_recovery_at(
+        &self,
+        token: &str,
+        stale: &charm_lib::matrix::recovery_custody::PendingRecoverySetup,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if entry.recovery_setup_active {
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+                if lease_live {
+                    return Err("Recovery setup is completing; retry sign out.".into());
+                }
+                entry.recovery_setup_active = false;
+                entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
+            }
+            let Some(current) = &entry.pending_recovery else {
+                return Ok(());
+            };
+            if !current.has_same_custody(stale) {
+                return Err("Pending recovery changed; retry sign out.".into());
+            }
+            entry.pending_recovery = None;
+            entry.recovery_setup_claimed_at_ms = None;
+            entry.recovery_setup_owner = None;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode stale recovery cleanup.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not clear stale protected recovery.".into()),
+            }
+        }
+        Err("Protected recovery changed concurrently; retry sign out.".into())
+    }
+
+    async fn begin_recovery_safe_teardown_at(
+        &self,
+        token: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            let custody_required = entry
+                .pending_recovery
+                .as_ref()
+                .is_some_and(|pending| pending.requires_custody());
+            if custody_required {
+                return Err("Recovery setup is completing; retry sign out.".into());
+            }
+            if entry.recovery_setup_active {
+                let lease_live = entry.recovery_setup_claimed_at_ms.is_some_and(|claimed| {
+                    now_ms.saturating_sub(claimed) < RECOVERY_SETUP_LEASE_MS
+                });
+                if lease_live {
+                    return Err("Recovery setup is completing; retry sign out.".into());
+                }
+                entry.recovery_setup_active = false;
+                entry.recovery_setup_claimed_at_ms = None;
+                entry.recovery_setup_owner = None;
+            }
+            if entry.recovery_teardown_started {
+                return Ok(());
+            }
+            entry.recovery_teardown_started = true;
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob)
+                .map_err(|_| "Could not encode the session teardown marker.")?;
+            match self.update_existing_object(&path, json, version).await {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(_) => return Err("Could not safely begin session teardown.".into()),
+            }
+        }
+        Err("Session recovery state changed concurrently; retry sign out.".into())
+    }
+
+    pub async fn require_active_crypto_writer(&self) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.require_active_writer().await
+    }
+
+    pub async fn acquire_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.acquire_recovery_mutation(owner).await
+    }
+
+    pub async fn renew_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.renew_recovery_mutation(owner).await
+    }
+
+    pub async fn require_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.require_recovery_mutation(owner).await
+    }
+
+    pub async fn release_recovery_writer_lease(&self, owner: &str) -> Result<(), String> {
+        let backup = self
+            .crypto_backup
+            .as_ref()
+            .ok_or("Durable encrypted crypto snapshots are required for recovery setup.")?;
+        backup.release_recovery_mutation(owner).await
+    }
+
     pub async fn snapshot_crypto_store(
         &self,
         token: &str,
@@ -658,6 +1164,16 @@ impl PersistenceStore {
     /// review finding on #280). A read is far cheaper than the write this
     /// deliberately stays split from.
     pub(crate) async fn exists(&self, token: &str) -> Result<bool, String> {
+        Ok(self
+            .read_one_with_version_result(token)
+            .await?
+            .is_some_and(|(entry, _)| !entry.recovery_teardown_started))
+    }
+
+    /// Includes teardown tombstones. Logout uses this only to distinguish a
+    /// durable token that must be retained for a revocation retry from a live
+    /// session whose initial persistence write never succeeded.
+    pub(crate) async fn has_persisted_object(&self, token: &str) -> Result<bool, String> {
         Ok(self.read_one_with_version_result(token).await?.is_some())
     }
 
@@ -749,6 +1265,12 @@ impl PersistenceStore {
         // here claiming a single 15s bound.
         let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
             let entry = self.read_one(token).await?;
+            if entry.recovery_teardown_started {
+                if let Err(error) = self.finish_recovery_safe_teardown(token).await {
+                    tracing::warn!("failed to finish teardown for persisted session: {error}");
+                }
+                return None;
+            }
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             let user_id = entry.session.meta.user_id.clone();
             match restore_one(&entry, initial_presence, self.crypto_backup.as_deref()).await {
@@ -829,6 +1351,99 @@ impl PersistenceStore {
             Err(_) => {
                 tracing::warn!(
                     "restoring a client for revocation timed out after {RESTORE_TIMEOUT:?}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Completes a previously admitted teardown without deleting the only
+    /// durable token copy before homeserver revocation is confirmed. Safe to
+    /// retry after a crash: an already-revoked token returns `M_UNKNOWN_TOKEN`,
+    /// which [`revoke_matrix_session`] treats as confirmation.
+    pub(crate) async fn finish_recovery_safe_teardown(&self, token: &str) -> Result<(), String> {
+        let lock = self.token_write_lock(token);
+        let guard = lock.lock().await;
+        for _ in 0..5 {
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            if !entry.recovery_teardown_started {
+                return Err("Session teardown was not durably admitted.".into());
+            }
+            if !entry.recovery_teardown_revoked {
+                let homeserver_url = entry.homeserver_url.clone();
+                let session = entry.session.clone();
+                let client = tokio::time::timeout(RESTORE_TIMEOUT, async move {
+                    let client = matrix_sdk::Client::builder()
+                        .homeserver_url(&homeserver_url)
+                        .build()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    client
+                        .matrix_auth()
+                        .restore_session(session, matrix_sdk::store::RoomLoadSettings::default())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok::<_, String>(client)
+                })
+                .await
+                .map_err(|_| {
+                    format!("Rebuilding the persisted session timed out after {RESTORE_TIMEOUT:?}")
+                })??;
+                revoke_matrix_session(&client).await?;
+                entry.recovery_teardown_revoked = true;
+                let path = object_path_for_token(token);
+                let blob = self.encrypt(&entry, &path)?;
+                let json = serde_json::to_vec(&blob)
+                    .map_err(|_| "Could not encode the revoked session tombstone.".to_string())?;
+                match self.update_existing_object(&path, json, version).await {
+                    Ok(_) => {}
+                    Err(object_store::Error::Precondition { .. }) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not fence the revoked session tombstone: {error}"
+                        ));
+                    }
+                }
+            }
+            drop(guard);
+            return self.remove(token, None).await;
+        }
+        Err("Session tokens changed concurrently during revocation; retry teardown.".into())
+    }
+
+    /// Rebuilds the persisted encrypted client without an initial sync,
+    /// solely to validate recovery custody before automatic expiry. Unlike
+    /// the revoke-only client above, this must open the original crypto store
+    /// because secret-storage validation depends on that identity.
+    pub(crate) async fn restore_client_for_recovery_validation(
+        &self,
+        token: &str,
+    ) -> Option<matrix_sdk::Client> {
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            let client = build_client_for_restore(&entry, self.crypto_backup.as_deref())
+                .await
+                .ok()?;
+            client
+                .matrix_auth()
+                .restore_session(
+                    entry.session,
+                    matrix_sdk::store::RoomLoadSettings::default(),
+                )
+                .await
+                .ok()?;
+            Some(client)
+        })
+        .await;
+
+        match outcome {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    "restoring a client for recovery validation timed out after \
+                     {RESTORE_TIMEOUT:?}"
                 );
                 None
             }
@@ -950,6 +1565,12 @@ impl PersistenceStore {
             let path = object_path_for_token(token);
             let blob = self.encrypt(
                 &PersistedSession {
+                    pending_recovery: None,
+                    recovery_teardown_started: false,
+                    recovery_teardown_revoked: false,
+                    recovery_setup_active: false,
+                    recovery_setup_claimed_at_ms: None,
+                    recovery_setup_owner: None,
                     token: token.to_string(),
                     homeserver_url: homeserver_url.to_string(),
                     session: session.clone(),
@@ -1007,6 +1628,15 @@ impl PersistenceStore {
             // transient error here would leave the old, already-invalidated
             // token on disk with no future call ever retrying the write.
             let existing = self.read_one_with_version_result(token).await?;
+            if existing
+                .as_ref()
+                .is_some_and(|(entry, _)| entry.recovery_teardown_revoked)
+            {
+                tracing::info!(
+                    "skipped a re-save for a persisted session whose teardown token was revoked"
+                );
+                return Ok(());
+            }
             let (last_seen_unix, existing_version) = match &existing {
                 Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
                 // `RetryInitialSave` creating a genuinely new object (nothing
@@ -1042,6 +1672,24 @@ impl PersistenceStore {
                     crypto_store_key,
                     crypto_passphrase,
                     last_seen_unix,
+                    pending_recovery: existing
+                        .as_ref()
+                        .and_then(|(entry, _)| entry.pending_recovery.clone()),
+                    recovery_teardown_started: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_teardown_started),
+                    recovery_teardown_revoked: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_teardown_revoked),
+                    recovery_setup_active: existing
+                        .as_ref()
+                        .is_some_and(|(entry, _)| entry.recovery_setup_active),
+                    recovery_setup_claimed_at_ms: existing
+                        .as_ref()
+                        .and_then(|(entry, _)| entry.recovery_setup_claimed_at_ms),
+                    recovery_setup_owner: existing
+                        .as_ref()
+                        .and_then(|(entry, _)| entry.recovery_setup_owner.clone()),
                 },
                 &path,
             )?;
@@ -1437,6 +2085,69 @@ impl PersistenceStore {
             if sessions.is_genuinely_active(&entry.token, max_age).await {
                 continue;
             }
+            if let Some(pending) = entry
+                .pending_recovery
+                .as_ref()
+                .filter(|pending| pending.requires_custody())
+            {
+                // Valid recovery custody vetoes expiry. Custody made unusable
+                // by another client's secret-storage replacement can never be
+                // completed, so validate it with the encrypted live/restored
+                // client and CAS-clear only that exact stale record.
+                let client = match sessions.get(&entry.token).await {
+                    Some(session) => Some(session.client.clone()),
+                    None => {
+                        self.restore_client_for_recovery_validation(&entry.token)
+                            .await
+                    }
+                };
+                let Some(client) = client else {
+                    tracing::warn!(
+                        "skipped expiry teardown because pending recovery could not be validated"
+                    );
+                    continue;
+                };
+                match charm_lib::matrix::recovery_custody::pending_recovery_is_replaced(
+                    &client, pending,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        if let Err(error) = self
+                            .discard_stale_pending_recovery(&entry.token, pending)
+                            .await
+                        {
+                            tracing::warn!(
+                                "skipped expiry teardown because stale recovery custody could not \
+                                 be cleared safely: {error}"
+                            );
+                            continue;
+                        }
+                    }
+                    Ok(false) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            "skipped expiry teardown because pending recovery validation was \
+                             inconclusive: {error}"
+                        );
+                        continue;
+                    }
+                }
+            }
+            // Expiry is destructive session teardown just like explicit
+            // logout: it aborts the resident sync loop, revokes the Matrix
+            // token, and deletes the persisted session. Admit that teardown
+            // through the same cross-instance CAS boundary before any of
+            // those effects. An in-flight recovery setup or an issued key
+            // still awaiting custody must keep both the live and persisted
+            // session intact so the user can finish saving it.
+            if let Err(error) = self.begin_recovery_safe_teardown(&entry.token).await {
+                tracing::warn!(
+                    "skipped expiry teardown for a persisted session because protected recovery \
+                     is still active: {error}"
+                );
+                continue;
+            }
             // A token that reaches here can still be resident in
             // `SessionStore` — the only way that happens is `sweep_idle`'s
             // pending-verification/unpersisted-room exemptions, which pin a
@@ -1445,8 +2156,8 @@ impl PersistenceStore {
             // the persisted entry below to revoke, not after: that live
             // session's own sync loop keeps running for as long as it
             // stays resident, and a token refresh it repersists
-            // mid-revocation — the homeserver round trip below
-            // (`restore_client_for_revocation` plus `logout()`) can take
+            // mid-revocation — the fenced helper's homeserver round trip
+            // (client restore plus `logout()`) can take
             // real time — would silently land a *new* access/refresh token
             // pair on disk for a token this sweep is about to revoke and
             // delete using the *old* one it already read, orphaning the
@@ -1484,83 +2195,16 @@ impl PersistenceStore {
                     handle.abort();
                 }
             }
-            // Removal only happens after a *confirmed* revocation — never
-            // on a best-effort basis. Deleting the local record before the
-            // homeserver has actually invalidated the access token would
-            // leave that token valid indefinitely with no persisted copy
-            // left for a later sweep to retry revoking (Codex review
-            // finding on #280): a temporarily unreachable homeserver or a
-            // failed `logout()` call must leave this entry exactly as it
-            // was, not silently treat "couldn't revoke" the same as
-            // "revoked".
-            let Some(client) = self.restore_client_for_revocation(&entry.token).await else {
+            // Re-read and revoke through the admitted tombstone's CAS loop,
+            // rather than using this sweep's stale `entry` snapshot. A
+            // concurrent token refresh can resave after admission; the
+            // fenced helper revokes that newest durable pair and records a
+            // revocation tombstone before deletion.
+            if let Err(error) = self.finish_recovery_safe_teardown(&entry.token).await {
                 tracing::warn!(
-                    "could not rebuild a client to revoke an expired persisted session's \
-                     access token; leaving it for the next sweep to retry"
+                    "failed to finish teardown for an expired persisted session; leaving its \
+                     fenced record for a later sweep: {error}"
                 );
-                continue;
-            };
-            // Bounded, unlike `routes::logout`'s equivalent call (which
-            // can afford to `tokio::spawn` it fire-and-forget because
-            // there's a live HTTP response to send regardless): this
-            // runs serially in a background sweep with nothing else
-            // racing it, so an unbounded `await` here would let one
-            // slow/unresponsive homeserver stall every other expired
-            // session behind it in the same sweep (Codex review finding
-            // on #280).
-            match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        "failed to revoke access token for an expired persisted session, \
-                         leaving it for the next sweep to retry: {e}"
-                    );
-                    continue;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "timed out revoking access token for an expired persisted session \
-                         after {RESTORE_TIMEOUT:?}, leaving it for the next sweep to retry"
-                    );
-                    continue;
-                }
-            }
-            // The access token was just revoked above — a subsequent sweep
-            // can no longer retry that step (`restore_client_for_revocation`
-            // will correctly fail to rebuild a client from a now-dead
-            // token, so this entry would otherwise be stuck forever, never
-            // reaching this `remove` call again). Retry the local delete a
-            // few times in-place before giving up, so only a persistently
-            // failing store (not one transient error) leaves an orphaned
-            // record behind (Codex review finding on #280, "remember
-            // successful revocation across delete retries").
-            const MAX_REMOVE_ATTEMPTS: u32 = 3;
-            let mut removed = false;
-            for attempt in 0..MAX_REMOVE_ATTEMPTS {
-                match self.remove(&entry.token, None).await {
-                    Ok(()) => {
-                        removed = true;
-                        break;
-                    }
-                    Err(e) if attempt + 1 < MAX_REMOVE_ATTEMPTS => {
-                        tracing::warn!(
-                            "failed to remove an expired persisted session after revoking \
-                             its access token (attempt {}/{MAX_REMOVE_ATTEMPTS}), retrying: {e}",
-                            attempt + 1
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "failed to remove an expired persisted session after revoking \
-                             its access token; its Matrix session is dead but the local \
-                             record could not be cleaned up and will not be retried by a \
-                             later sweep (the token can no longer be re-revoked) — manual \
-                             cleanup may be needed: {e}"
-                        );
-                    }
-                }
-            }
-            if !removed {
                 continue;
             }
             swept += 1;
@@ -1619,7 +2263,24 @@ impl PersistenceStore {
         // responds at all can't block startup indefinitely either.
         let now = now_unix();
         let max_age_secs = max_age.as_secs();
-        let entries = self.read_all().await.into_iter().filter(|entry| {
+        let entries = self.read_all().await;
+        let teardown_tokens = entries
+            .iter()
+            .filter(|entry| entry.recovery_teardown_started)
+            .map(|entry| entry.token.clone());
+        futures_util::stream::iter(teardown_tokens)
+            .for_each_concurrent(Some(8), |token| async move {
+                if let Err(error) = self.finish_recovery_safe_teardown(&token).await {
+                    tracing::warn!(
+                        "failed to finish startup teardown for persisted session: {error}"
+                    );
+                }
+            })
+            .await;
+        let entries = entries.into_iter().filter(|entry| {
+            if entry.recovery_teardown_started {
+                return false;
+            }
             let expired = entry_is_expired(entry.last_seen_unix, now, max_age_secs);
             if expired {
                 tracing::info!(
@@ -1980,6 +2641,12 @@ pub(crate) async fn save_with_last_seen_for_test(
     last_seen_unix: u64,
 ) {
     let entry = PersistedSession {
+        pending_recovery: None,
+        recovery_teardown_started: false,
+        recovery_teardown_revoked: false,
+        recovery_setup_active: false,
+        recovery_setup_claimed_at_ms: None,
+        recovery_setup_owner: None,
         token: token.to_string(),
         homeserver_url: "https://example.invalid".to_string(),
         session: MatrixSession {
@@ -2033,6 +2700,633 @@ mod tests {
                 refresh_token: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn teardown_custody_read_allows_a_never_persisted_live_session() {
+        let dir = scratch_dir("teardown-custody-missing");
+        let store = PersistenceStore::new_for_test(&dir, [74u8; 32]);
+
+        assert!(store
+            .pending_recovery_for_teardown("never-saved")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_is_encrypted_retained_on_resave_and_never_resurrected() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[73; 32])),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": "protected-key-not-plaintext",
+            "room_keys_backed_up": true
+        }))
+        .unwrap();
+        let session = dummy_session("@pending:example.invalid");
+        for token in ["pending-token", "other-token"] {
+            store
+                .save(
+                    token,
+                    "https://example.invalid",
+                    &session,
+                    None,
+                    SaveMode::FreshLogin,
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .save_pending_recovery("pending-token", Some(&pending))
+            .await
+            .unwrap();
+        let bytes = shared
+            .get(&object_path_for_token("pending-token"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let raw = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!raw.contains("protected-seed-not-plaintext"));
+        assert!(!raw.contains("protected-key-not-plaintext"));
+        store
+            .save(
+                "pending-token",
+                "https://example.invalid",
+                &session,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(store.pending_recovery("pending-token").await.unwrap()).unwrap(),
+            serde_json::to_value(&pending).unwrap()
+        );
+        assert!(store
+            .pending_recovery("other-token")
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .save_pending_recovery("pending-token", None)
+            .await
+            .unwrap();
+        store
+            .save(
+                "pending-token",
+                "https://example.invalid",
+                &session,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .pending_recovery("pending-token")
+            .await
+            .unwrap()
+            .is_none());
+        store.remove("pending-token", None).await.unwrap();
+        assert!(store
+            .save_pending_recovery("pending-token", Some(&pending))
+            .await
+            .is_err());
+        assert!(store.read_one("pending-token").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_instances_claim_one_canonical_recovery_seed() {
+        let key_bytes = [74u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "pending-claim-token",
+                "https://example.invalid",
+                &dummy_session("@pending-claim:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let candidate_a = serde_json::from_value(serde_json::json!({
+            "passphrase": "seed-a",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        let candidate_b = serde_json::from_value(serde_json::json!({
+            "passphrase": "seed-b",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+
+        let (claim_a, claim_b) = tokio::join!(
+            process_a.claim_pending_recovery("pending-claim-token", &candidate_a, "owner-a"),
+            process_b.claim_pending_recovery("pending-claim-token", &candidate_b, "owner-b"),
+        );
+        assert_ne!(claim_a.is_ok(), claim_b.is_ok(), "only one setup may run");
+        let winning_owner = if claim_a.is_ok() {
+            "owner-a"
+        } else {
+            "owner-b"
+        };
+        let winner = claim_a.or(claim_b).unwrap();
+        assert_eq!(
+            serde_json::to_value(&winner).unwrap(),
+            serde_json::to_value(
+                process_a
+                    .pending_recovery("pending-claim-token")
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap()
+        );
+        process_a
+            .release_pending_recovery_claim("pending-claim-token", winning_owner)
+            .await
+            .unwrap();
+        let retry = process_b
+            .claim_pending_recovery("pending-claim-token", &candidate_b, "owner-retry")
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(retry).unwrap(),
+            serde_json::to_value(winner).unwrap(),
+            "a later retry must adopt the durable winner"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_instance_teardown_and_recovery_claim_have_one_winner() {
+        let key_bytes = [75u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let setup_process = new_process();
+        let logout_process = new_process();
+        setup_process
+            .save(
+                "teardown-race-token",
+                "https://example.invalid",
+                &dummy_session("@teardown-race:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let candidate = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+
+        let (claim, teardown) = tokio::join!(
+            setup_process.claim_pending_recovery("teardown-race-token", &candidate, "setup-owner",),
+            logout_process.begin_recovery_safe_teardown("teardown-race-token"),
+        );
+        assert_ne!(
+            claim.is_ok(),
+            teardown.is_ok(),
+            "exactly one admission must win"
+        );
+
+        let durable = setup_process.read_one("teardown-race-token").await.unwrap();
+        if claim.is_ok() {
+            assert!(durable.pending_recovery.is_some());
+            assert!(!durable.recovery_teardown_started);
+            assert!(durable.recovery_setup_active);
+        } else {
+            assert!(durable.pending_recovery.is_none());
+            assert!(durable.recovery_teardown_started);
+            assert!(!durable.recovery_setup_active);
+            assert!(setup_process
+                .save_pending_recovery("teardown-race-token", Some(&candidate))
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn teardown_tombstone_is_not_an_existing_authenticated_session() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "tombstoned-session-token",
+                "https://example.invalid",
+                &dummy_session("@tombstoned:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        assert!(store.exists("tombstoned-session-token").await.unwrap());
+
+        store
+            .begin_recovery_safe_teardown("tombstoned-session-token")
+            .await
+            .unwrap();
+
+        assert!(!store.exists("tombstoned-session-token").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn inactive_pending_recovery_does_not_trap_logout() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[76u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "failed-setup-token",
+                "https://example.invalid",
+                &dummy_session("@failed-setup:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("failed-setup-token", &pending, "setup-owner")
+            .await
+            .unwrap();
+        assert!(store
+            .begin_recovery_safe_teardown("failed-setup-token")
+            .await
+            .is_err());
+        store
+            .release_pending_recovery_claim("failed-setup-token", "setup-owner")
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("failed-setup-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_mutation_marker_blocks_logout_after_setup_release() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[79u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "mutated-setup-token",
+                "https://example.invalid",
+                &dummy_session("@mutated-setup:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("mutated-setup-token", &pending, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .save_claimed_pending_recovery("mutated-setup-token", &pending, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("mutated-setup-token", "setup-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .begin_recovery_safe_teardown("mutated-setup-token")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn recovery_claim_renewal_and_owner_fencing_survive_takeover() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[78u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "expired-claim-token",
+                "https://example.invalid",
+                &dummy_session("@expired-claim:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery_at("expired-claim-token", &pending, "owner-a", 1_000)
+            .await
+            .unwrap();
+        store
+            .renew_pending_recovery_claim_at(
+                "expired-claim-token",
+                "owner-a",
+                1_000 + RECOVERY_SETUP_LEASE_MS - 1,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .claim_pending_recovery_at(
+                "expired-claim-token",
+                &pending,
+                "owner-b",
+                1_000 + RECOVERY_SETUP_LEASE_MS,
+            )
+            .await
+            .is_err());
+        store
+            .claim_pending_recovery_at(
+                "expired-claim-token",
+                &pending,
+                "owner-b",
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS,
+            )
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("expired-claim-token", "owner-a")
+            .await
+            .unwrap();
+        assert!(store
+            .begin_recovery_safe_teardown_at(
+                "expired-claim-token",
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS + 1,
+            )
+            .await
+            .is_err());
+        assert!(store
+            .save_claimed_pending_recovery("expired-claim-token", &pending, "owner-a")
+            .await
+            .is_err());
+        store
+            .release_pending_recovery_claim("expired-claim-token", "owner-b")
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown_at(
+                "expired-claim-token",
+                1_000 + 2 * RECOVERY_SETUP_LEASE_MS + 1,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn issued_key_blocks_logout_until_client_acknowledgement() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[77u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "issued-key-token",
+                "https://example.invalid",
+                &dummy_session("@issued-key:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let seed = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": null,
+            "room_keys_backed_up": false
+        }))
+        .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("issued-key-token", &seed, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .save_claimed_pending_recovery("issued-key-token", &issued, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("issued-key-token", "setup-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .begin_recovery_safe_teardown_at(
+                "issued-key-token",
+                unix_time_ms().saturating_add(RECOVERY_SETUP_LEASE_MS),
+            )
+            .await
+            .is_err());
+        store
+            .save_pending_recovery("issued-key-token", None)
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("issued-key-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_issued_cleanup_only_discards_the_validated_record() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[80u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "stale-key-token",
+                "https://example.invalid",
+                &dummy_session("@stale-key:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        let replacement = serde_json::from_value(serde_json::json!({
+            "passphrase": "other-seed",
+            "recovery_key": "replacement-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery("stale-key-token", &issued, "setup-owner")
+            .await
+            .unwrap();
+        store
+            .release_pending_recovery_claim("stale-key-token", "setup-owner")
+            .await
+            .unwrap();
+
+        assert!(store
+            .discard_stale_pending_recovery("stale-key-token", &replacement)
+            .await
+            .is_err());
+        store
+            .discard_stale_pending_recovery("stale-key-token", &issued)
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("stale-key-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_issued_cleanup_recovers_an_expired_setup_lease() {
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&[81u8; 32])),
+            store: shared,
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        store
+            .save(
+                "expired-stale-key-token",
+                "https://example.invalid",
+                &dummy_session("@expired-stale:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        let issued = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed",
+            "recovery_key": "issued-key",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .claim_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                "crashed-owner",
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(store
+            .discard_stale_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                1_000 + RECOVERY_SETUP_LEASE_MS - 1,
+            )
+            .await
+            .is_err());
+        store
+            .discard_stale_pending_recovery_at(
+                "expired-stale-key-token",
+                &issued,
+                1_000 + RECOVERY_SETUP_LEASE_MS,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("expired-stale-key-token")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_requires_conditional_writes() {
+        let dir = scratch_dir("pending-no-cas");
+        let store = PersistenceStore::new_for_test(&dir, [74; 32]);
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed", "recovery_key": null, "room_keys_backed_up": false
+        }))
+        .unwrap();
+        store
+            .save(
+                "pending",
+                "https://example.invalid",
+                &dummy_session("@pending:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .save_pending_recovery("pending", Some(&pending))
+            .await
+            .is_err());
+        assert!(store.pending_recovery("pending").await.unwrap().is_none());
     }
 
     /// Full path a given token's object lives at under `dir` — same layout
@@ -2735,6 +4029,112 @@ mod tests {
         assert!(store.restore_by_token("never-saved", None).await.is_none());
     }
 
+    #[tokio::test]
+    async fn restore_by_token_retains_a_teardown_tombstone_when_revocation_fails() {
+        let dir = scratch_dir("restore-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [51u8; 32]);
+        store
+            .save(
+                "tok-teardown",
+                "https://example.invalid",
+                &dummy_session("@teardown:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-teardown")
+            .await
+            .unwrap();
+
+        assert!(store.restore_by_token("tok-teardown", None).await.is_none());
+        assert!(store.read_one("tok-teardown").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn confirmed_revocation_removes_a_teardown_tombstone() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let dir = scratch_dir("finish-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [53u8; 32]);
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server.mock_versions().ok().expect(1).mount().await;
+        server.mock_logout().ok().expect(1).mount().await;
+        let session = client.matrix_auth().session().expect("mock client session");
+        store
+            .save(
+                "tok-finish-teardown",
+                &server.uri(),
+                &session,
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-finish-teardown")
+            .await
+            .unwrap();
+
+        store
+            .finish_recovery_safe_teardown("tok-finish-teardown")
+            .await
+            .unwrap();
+        assert!(store.read_one("tok-finish-teardown").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn revoked_teardown_tombstone_cannot_be_replaced_by_a_resave() {
+        let dir = scratch_dir("revoked-teardown-resave");
+        let store = PersistenceStore::new_for_test(&dir, [54u8; 32]);
+        let token = "tok-revoked-teardown";
+        let original = dummy_session("@revoked:example.invalid");
+        store
+            .save(
+                token,
+                "https://example.invalid",
+                &original,
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store.begin_recovery_safe_teardown(token).await.unwrap();
+
+        let (mut tombstone, version) = store
+            .read_one_with_version_result(token)
+            .await
+            .unwrap()
+            .unwrap();
+        tombstone.recovery_teardown_revoked = true;
+        let path = object_path_for_token(token);
+        let blob = store.encrypt(&tombstone, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .update_existing_object(&path, json, version)
+            .await
+            .unwrap();
+
+        let mut refreshed = original;
+        refreshed.tokens.access_token = "replacement-access-token".into();
+        store
+            .save(
+                token,
+                "https://example.invalid",
+                &refreshed,
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+
+        let persisted = store.read_one(token).await.unwrap();
+        assert!(persisted.recovery_teardown_revoked);
+        assert_eq!(persisted.session.tokens.access_token, "test-access-token");
+    }
+
     /// A persisted entry whose homeserver can't actually be reached (dead
     /// domain, network down) must drop out to `None` the same way
     /// `restore_all` drops an unrestorable entry rather than propagating the
@@ -2856,6 +4256,12 @@ mod tests {
     #[test]
     fn persisted_crypto_from_entry_is_populated_regardless_of_whether_it_was_opened() {
         let entry = PersistedSession {
+            pending_recovery: None,
+            recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
+            recovery_setup_active: false,
+            recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@laura:example.invalid"),
@@ -2875,6 +4281,12 @@ mod tests {
     #[test]
     fn persisted_crypto_from_entry_is_none_when_the_entry_never_had_a_store() {
         let entry = PersistedSession {
+            pending_recovery: None,
+            recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
+            recovery_setup_active: false,
+            recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-legacy".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@mallory:example.invalid"),
@@ -2892,6 +4304,12 @@ mod tests {
     /// without waiting real wall-clock time.
     async fn save_with_last_seen(store: &PersistenceStore, token: &str, last_seen_unix: u64) {
         let entry = PersistedSession {
+            pending_recovery: None,
+            recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
+            recovery_setup_active: false,
+            recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: token.to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@sweep-target:example.invalid"),
@@ -3000,6 +4418,137 @@ mod tests {
             "a stale session must stay persisted until its revocation is confirmed, not \
              deleted on a best-effort basis"
         );
+    }
+
+    /// Expiry has the same destructive consequences as explicit logout and
+    /// therefore must honor the same recovery-custody admission boundary.
+    /// An in-progress server mutation without an issued key keeps the session
+    /// available even when its ordinary activity timestamp is stale.
+    #[tokio::test]
+    async fn sweep_expired_preserves_a_stale_session_with_pending_recovery_custody() {
+        let dir = scratch_dir("sweep-expired-pending-recovery");
+        let store = PersistenceStore::new_for_test(&dir, [55u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(
+            &store,
+            "tok-pending-recovery",
+            now.saturating_sub(sixty_days),
+        )
+        .await;
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": null,
+            "room_keys_backed_up": false,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .save_pending_recovery("tok-pending-recovery", Some(&pending))
+            .await
+            .unwrap();
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &crate::session::SessionStore::new(),
+            )
+            .await;
+
+        assert_eq!(swept, 0);
+        let retained = store
+            .read_one("tok-pending-recovery")
+            .await
+            .expect("pending recovery session must remain persisted");
+        assert!(retained.pending_recovery.is_some());
+        assert!(
+            !retained.recovery_teardown_started,
+            "a custody veto must happen before expiry writes a teardown tombstone"
+        );
+    }
+
+    /// A key invalidated by a replacement secret-storage setup can no longer
+    /// be acknowledged. Expiry may clear that exact stale custody record, but
+    /// only after validating it through the live encrypted Matrix client.
+    #[tokio::test]
+    async fn sweep_expired_clears_definitively_stale_issued_recovery_before_teardown() {
+        use matrix_sdk::ruma::events::secret_storage::key::{
+            SecretStorageEncryptionAlgorithm, SecretStorageKeyEventContent,
+            SecretStorageV1AesHmacSha2Properties,
+        };
+        use matrix_sdk::ruma::serde::Base64;
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        server
+            .mock_get_default_secret_storage_key()
+            .ok(client.user_id().unwrap(), "current")
+            .mount()
+            .await;
+        server
+            .mock_get_secret_storage_key()
+            .ok(
+                client.user_id().unwrap(),
+                &SecretStorageKeyEventContent::new(
+                    "current".into(),
+                    SecretStorageEncryptionAlgorithm::V1AesHmacSha2(
+                        SecretStorageV1AesHmacSha2Properties::new(
+                            Some(Base64::parse("xv5b6/p3ExEw++wTyfSHEg==").unwrap()),
+                            Some(
+                                Base64::parse("ujBBbXahnTAMkmPUX2/0+VTfUh63pGyVRuBcDMgmJC8=")
+                                    .unwrap(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .mount()
+            .await;
+
+        let dir = scratch_dir("sweep-expired-stale-issued-recovery");
+        let store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(
+            &store,
+            "tok-stale-issued-recovery",
+            now_unix().saturating_sub(sixty_days),
+        )
+        .await;
+        let pending = serde_json::from_value(serde_json::json!({
+            "passphrase": "protected-seed-not-plaintext",
+            "recovery_key": "DsTj 3yST y93F SLpB jJsz eAXc 2XzA ygD3 w69H fGaN TKBj jXEd",
+            "room_keys_backed_up": true,
+            "server_mutation_started": true
+        }))
+        .unwrap();
+        store
+            .save_pending_recovery("tok-stale-issued-recovery", Some(&pending))
+            .await
+            .unwrap();
+
+        let sessions = crate::session::SessionStore::new();
+        let session = crate::session::Session::new(client, "@test:localhost".into(), None, false);
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backdated;
+        sessions
+            .insert("tok-stale-issued-recovery".into(), session)
+            .await;
+
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        let retained = store
+            .read_one("tok-stale-issued-recovery")
+            .await
+            .expect("failed revocation keeps the teardown record retryable");
+        assert!(retained.pending_recovery.is_none());
+        assert!(retained.recovery_teardown_started);
+        assert!(sessions.get("tok-stale-issued-recovery").await.is_none());
     }
 
     /// Regression test for two related review findings on #280. Codex
@@ -3693,6 +5242,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_all_retains_unconfirmed_teardown_tombstones() {
+        let dir = scratch_dir("restore-all-teardown-tombstone");
+        let store = PersistenceStore::new_for_test(&dir, [52u8; 32]);
+        store
+            .save(
+                "tok-teardown-all",
+                "https://example.invalid",
+                &dummy_session("@teardown-all:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+        store
+            .begin_recovery_safe_teardown("tok-teardown-all")
+            .await
+            .unwrap();
+
+        let restored = store
+            .restore_all(std::time::Duration::from_secs(30 * 24 * 60 * 60))
+            .await;
+        assert!(restored.is_empty());
+        assert!(store.read_one("tok-teardown-all").await.is_some());
+    }
+
+    #[tokio::test]
     async fn is_expired_reflects_last_seen_against_max_age() {
         let dir = scratch_dir("is-expired");
         let store = PersistenceStore::new_for_test(&dir, [47u8; 32]);
@@ -3782,6 +5357,12 @@ mod tests {
         let dir = scratch_dir("sweep-expired-legacy-backfill");
         let store = PersistenceStore::new_for_test(&dir, [44u8; 32]);
         let entry = PersistedSession {
+            pending_recovery: None,
+            recovery_teardown_started: false,
+            recovery_teardown_revoked: false,
+            recovery_setup_active: false,
+            recovery_setup_claimed_at_ms: None,
+            recovery_setup_owner: None,
             token: "tok-legacy-no-timestamp".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
             session: dummy_session("@legacy:example.invalid"),

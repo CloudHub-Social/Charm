@@ -69,6 +69,29 @@ describe("matrix web transport", () => {
   });
 
   it.each([
+    [
+      "setup_recovery",
+      { passphrase: "test-passphrase" },
+      "POST",
+      "/api/verification/recovery/setup",
+      { passphrase: "test-passphrase" },
+    ],
+    ["setup_recovery", {}, "POST", "/api/verification/recovery/setup", { passphrase: null }],
+    ["get_pending_recovery_setup", {}, "GET", "/api/verification/recovery/pending", undefined],
+    [
+      "acknowledge_recovery_setup",
+      { recoveryKey: "saved-key" },
+      "POST",
+      "/api/verification/recovery/pending",
+      { recovery_key: "saved-key" },
+    ],
+    [
+      "repair_interrupted_recovery_setup",
+      {},
+      "POST",
+      "/api/verification/recovery/setup/repair",
+      undefined,
+    ],
     ["discover_homeserver", { input: "matrix.org" }, "POST", "/api/auth/discover", "matrix.org"],
     [
       "login",

@@ -1,10 +1,10 @@
 use futures_util::StreamExt;
-use matrix_sdk::encryption::recovery::RecoveryState;
+use matrix_sdk::encryption::recovery::{EnableProgress, RecoveryState};
 use matrix_sdk::encryption::verification::{Emoji, SasState, Verification};
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use super::account::{retry_uia_with_session, UiaCommandError};
@@ -200,6 +200,13 @@ pub enum RecoveryStatusSummary {
     Incomplete,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RecoverySetupSummary {
+    pub recovery_key: String,
+    pub room_keys_backed_up: bool,
+}
+
 impl From<RecoveryState> for RecoveryStatusSummary {
     fn from(state: RecoveryState) -> Self {
         match state {
@@ -222,6 +229,108 @@ pub async fn recovery_status(
 /// Core logic behind [`recovery_status`].
 pub fn recovery_status_impl(client: &Client) -> RecoveryStatusSummary {
     client.encryption().recovery().state().into()
+}
+
+const MIN_RECOVERY_PASSPHRASE_CHARS: usize = 8;
+const MAX_RECOVERY_PASSPHRASE_BYTES: usize = 1024;
+
+pub fn validate_recovery_passphrase(passphrase: Option<&str>) -> Result<(), String> {
+    let Some(passphrase) = passphrase else {
+        return Ok(());
+    };
+    if passphrase.chars().count() < MIN_RECOVERY_PASSPHRASE_CHARS {
+        return Err(format!(
+            "Passphrase must be at least {MIN_RECOVERY_PASSPHRASE_CHARS} characters."
+        ));
+    }
+    if passphrase.len() > MAX_RECOVERY_PASSPHRASE_BYTES {
+        return Err("Passphrase is too long.".to_string());
+    }
+    Ok(())
+}
+
+/// Creates Matrix secret storage and server-side room-key backup for an
+/// account that does not have recovery configured yet. The generated recovery
+/// key is the only secret returned to the frontend and must be shown until the
+/// user confirms that it has been saved. It is never logged.
+#[tauri::command]
+pub async fn setup_recovery(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    passphrase: Option<String>,
+) -> Result<RecoverySetupSummary, String> {
+    let enabled = app.path().app_data_dir().is_ok_and(|directory| {
+        crate::feature_flags::flag(
+            &directory,
+            crate::feature_flags::FeatureFlagKey::CryptoBackupSetup,
+        )
+    });
+    if !enabled {
+        return Err("Recovery setup is not enabled.".to_string());
+    }
+
+    let _guard = state.login_completion_lock.lock().await;
+    let client = state.require_client().await?;
+    super::recovery_custody::setup_with_custody(
+        &client,
+        &super::recovery_custody::NativeRecoveryCustody::for_client(&client)?,
+        passphrase,
+    )
+    .await
+}
+
+pub(crate) async fn enable_recovery_impl(
+    client: &Client,
+    passphrase: Option<&str>,
+) -> Result<RecoverySetupSummary, String> {
+    let recovery = client.encryption().recovery();
+    let enable = recovery.enable().wait_for_backups_to_upload();
+    let mut progress = enable.subscribe_to_progress();
+    let progress_task = tokio::spawn(async move {
+        let mut room_keys_backed_up = true;
+        while let Some(update) = progress.next().await {
+            match update {
+                Ok(EnableProgress::RoomKeyUploadError) | Err(_) => {
+                    room_keys_backed_up = false;
+                }
+                Ok(EnableProgress::Done { .. }) => return room_keys_backed_up,
+                _ => {}
+            }
+        }
+        // Stream closure alone is not a backup failure. Preserve success
+        // unless the SDK explicitly reported an upload error above.
+        room_keys_backed_up
+    });
+    let result = match passphrase {
+        Some(passphrase) => enable.with_passphrase(passphrase).await,
+        None => enable.await,
+    };
+
+    match result {
+        Ok(recovery_key) => {
+            let room_keys_backed_up = progress_task.await.unwrap_or(false);
+            tracing::info!(
+                room_keys_backed_up,
+                "recovery setup and initial room-key backup attempt completed"
+            );
+            Ok(RecoverySetupSummary {
+                recovery_key,
+                room_keys_backed_up,
+            })
+        }
+        Err(matrix_sdk::encryption::recovery::RecoveryError::BackupExistsOnServer) => {
+            progress_task.abort();
+            Err(
+                "A server-side key backup already exists. Restore the existing recovery instead."
+                    .to_string(),
+            )
+        }
+        Err(error) => {
+            progress_task.abort();
+            tracing::error!(error = %error, "recovery setup failed");
+            Err("Could not set up recovery and room-key backup.".to_string())
+        }
+    }
 }
 
 /// Restores this device's secrets (cross-signing keys, and the key-backup
@@ -542,5 +651,21 @@ pub fn sas_state_to_update(sas_state: SasState) -> Option<SasUpdateEvent> {
             reason: info.reason().to_string(),
         }),
         SasState::Created { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod recovery_setup_tests {
+    use super::*;
+
+    #[test]
+    fn optional_recovery_passphrase_is_bounded() {
+        assert!(validate_recovery_passphrase(None).is_ok());
+        assert!(validate_recovery_passphrase(Some("correct horse battery staple")).is_ok());
+        assert!(validate_recovery_passphrase(Some("short")).is_err());
+        assert!(
+            validate_recovery_passphrase(Some(&"x".repeat(MAX_RECOVERY_PASSPHRASE_BYTES + 1)))
+                .is_err()
+        );
     }
 }

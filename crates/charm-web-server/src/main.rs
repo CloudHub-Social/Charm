@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let state = AppState {
+        crypto_backup_setup_enabled: std::env::var("CHARM_WEB_CRYPTO_BACKUP_SETUP").as_deref()
+            == Ok("1"),
         persistence: persistence.clone(),
         space_hierarchy_reorganization: std::env::var(SPACE_HIERARCHY_REORGANIZATION_ENV)
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
@@ -277,12 +279,40 @@ fn spawn_idle_session_sweeper(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let evicted = sessions.sweep_idle(idle_timeout).await;
+            let mut evicted = sessions.take_pending_revocations();
+            evicted.extend(sessions.sweep_idle(idle_timeout).await);
             if evicted.is_empty() {
                 continue;
             }
             tracing::info!("evicting {} idle session(s)", evicted.len());
             for (token, session) in evicted {
+                let initial_save_never_landed = session
+                    .awaiting_initial_persistence
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if initial_save_never_landed {
+                    // After SessionStore's bounded retry grace, there is no
+                    // durable token to restore later. Revoke the live token
+                    // before dropping the only client that still owns it.
+                    if let Err(error) =
+                        charm_web_server::persistence::revoke_matrix_session(&session.client).await
+                    {
+                        tracing::warn!(
+                            "failed to revoke never-persisted idle session; retaining it for retry: {error}"
+                        );
+                        sessions.retain_for_revocation(token, session);
+                        continue;
+                    }
+                    let live_crypto = session
+                        .persisted_crypto
+                        .as_ref()
+                        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                    if let Err(error) = persistence.remove(&token, live_crypto).await {
+                        tracing::warn!(
+                            "failed to remove never-persisted idle session storage: {error}"
+                        );
+                    }
+                    continue;
+                }
                 // `sweep_idle` already aborted this session's sync loop
                 // synchronously, before it ever returned this list — see
                 // that function's doc comment for why the abort itself

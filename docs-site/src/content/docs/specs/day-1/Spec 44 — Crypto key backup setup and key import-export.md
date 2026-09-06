@@ -10,69 +10,105 @@ sidebar:
 
 **Workstream:** dependency-ordered security slices. Extends Spec 25 (persistent crypto state &
 recovery-key-sufficient verification), which shipped recovery-key **restore** but
-not first-time **setup** or manual key file I/O.
+not first-time **setup**. Manual key-file import/export shipped separately behind
+its own default-off flag.
 
 ## Current implementation status
 
+Web setup now requires an actually opened encrypted crypto store and a successful
+durable snapshot before mutating server-side recovery. Legacy or ephemeral sessions
+must sign in again first. UI passphrase bounds match Rust Unicode scalar and UTF-8
+byte counts. Pending recovery now uses account-bound native protected storage or
+the web session's existing encrypted record, not component state as its sole copy.
+The seed is committed before SDK enablement; it can reopen secret storage after an
+interrupted result write. This implementation and its regressions await CI.
+
+- **First-time key backup / 4S setup:** implemented behind the default-off
+  `crypto_backup_setup` feature flag. The flow requires this session to hold all
+  local cross-signing private keys, delegates secret storage and backup creation
+  to matrix-rust-sdk, waits for the initial room-key upload, and keeps the
+  generated recovery key visible until the user confirms it is saved.
+  Disabling the rollout hides the entry point and prevents new submissions, but
+  does not unmount an in-flight setup or discard an issued recovery key. Both
+  flag-transition cases have regressions pending CI. Web companion setup uses an
+  authenticated POST route and the shared native validation/zeroization boundary,
+  with a separate default-off server gate (`CHARM_WEB_CRYPTO_BACKUP_SETUP=1`).
+  Route authorization, rollout, and transport regressions await CI; live creation
+  and cross-session restore remain release gates.
+  Pending credentials are retrieved directly after remount, even when rollout is
+  disabled, and removed only after matching-key acknowledgement or explicit
+  session/device-data removal. A protected write failure prevents setup from
+  starting. If a crash creates a server backup before its usable key reaches the
+  durable snapshot, the resumed flow offers an explicit repair confirmation that
+  lets matrix-sdk delete the backup only when its persisted local key identifies the
+  exact version. If that identity is unavailable, repair preserves the server backup
+  and clears only Charm's local custody marker. Repair checkpoints the resulting state
+  and preserves custody on any uncertain failure. Backups with an issued recovery key
+  are never eligible for repair. Every post-mutation failure exposes the same repair
+  confirmation instead of relying on one SDK error string. Web setup and repair hold a
+  renewable, compare-and-swap writer lease across the Matrix mutation and its durable
+  checkpoint; a replacement deployment waits for that lease before taking the snapshot
+  writer fence. The web repair POST also enforces the configured
+  origin allowlist before session lookup. The web deployment must provide encrypted crypto snapshots and an
+  object backend supporting conditional updates (such as the configured S3 store);
+  local-file-only persistence fails closed for setup. Session refresh preserves
+  the pending record with compare-and-swap; removed sessions are not resurrected.
+  Browser local storage, query/mutation caches, and SDK raw custom state values
+  never hold the pending credential. Save the key before logout, web session
+  expiry, or device-data removal; automatic expiry uses the same protected teardown
+  admission as logout and will not remove a session while recovery custody is pending.
+  If another client makes an issued key definitively stale by replacing secret storage,
+  the settings UI requires a new sign-in instead of offering the pre-issuance repair action;
+  expiry conditionally clears only that exact custody record before teardown. Unavailable
+  or inconclusive validation remains fail-closed. Once teardown is admitted, the encrypted
+  session tombstone retains its Matrix tokens until homeserver revocation (or an
+  `M_UNKNOWN_TOKEN` response) is confirmed, so a crash or transient outage cannot orphan a
+  still-valid token. A session whose initial durable save never landed is quarantined outside
+  the browser-authentication map and retained in memory for revocation retries rather than
+  dropping its only token-bearing client after a transient homeserver failure.
+  Interrupted-backup repair retains its distributed lease while working, propagates local
+  disable failures, and never chooses a remote backup from a latest-version query. If a committed
+  create request lost its response and local identity is unavailable, repair preserves the server
+  backup and clears only Charm's local marker so restore and sign-out remain available.
+  Real-account interrupted-setup/restart/restore
+  verification remains a release gate; CI regressions cover offline retrieval,
+  acknowledgement failure, remount, encrypted storage, token isolation, resave,
+  and deletion without resurrection.
 - **Manual encrypted room-key import/export:** implemented behind the default-off
   `crypto_key_files` feature flag. Charm delegates the interoperable encrypted
   file format to matrix-rust-sdk and uses Rust-owned native pickers so selected
-  file paths and key material never enter frontend IPC. These native-only controls
-  are hidden in web builds, even when the flag is enabled. While a transfer is
-  pending, Cancel, close, Escape, and outside dismissal cannot hide its dialog;
-  a session-scoped provider also keeps progress and completion visible across
-  Settings closure, tab changes, and browser Back/hash navigation. Credentials
-  stay in that owner's local state, not query/mutation caches, and are cleared on
-  completion or session teardown. Dismissal becomes available again after the
-  native command settles. These lifecycle regressions await CI.
-  After the picker and before SDK key access, the native command revalidates the
-  active user/device and the feature flag. It clones the current client, releases
-  the global client mutex, and retains only session-transition exclusion until
-  SDK file work finishes, including when the invoking future is dropped.
-  iOS imports use security-scoped in-place document access before Charm's bounded
-  snapshot; Android import remains unavailable until bounded content-URI streaming
-  is implemented. Passphrases enter zeroizing storage before validation or
-  any early return. New exports require at least eight Unicode code points;
-  imports accept existing short or empty passphrases without imposing a new
-  strength policy. Both paths enforce the same 1024-byte UTF-8 limit in the UI
-  and native command. Real-device iOS file-provider export remains a manual gate;
-  the pinned dialog plugin's save implementation does not consume FileAccessMode.
-- **First-time key backup / 4S setup:** not yet implemented. Existing recovery-key
-  restore still covers only accounts whose server-side recovery is already set up.
-- **Trust shields, blacklist-unverified-devices, and QR verification:** not yet
-  implemented.
+  paths and key material never enter frontend IPC. Native-only controls stay
+  hidden in web builds. A session-scoped owner keeps transfer progress and
+  completion visible across Settings closure and navigation; credentials are
+  cleared on completion or session teardown. Native commands revalidate the
+  active user, device, and feature flag after the picker and before SDK key
+  access. iOS imports use security-scoped document access; Android import remains
+  unavailable until bounded content-URI streaming is implemented. Exports require
+  at least eight Unicode code points, while imports accept existing short or empty
+  passphrases; both enforce a 1024-byte UTF-8 ceiling.
+- **Trust shields, blacklist-unverified-devices, and QR verification:** remain to
+  be implemented.
 
 ## Problem & why now
-
-Native key imports reject zero or more than 1,000,000 PBKDF2 rounds before
-client admission; matrix-rust-sdk still authenticates and decrypts the file.
-Native key imports read from one opened file into a private, size-bounded
-encrypted snapshot before acquiring account-transfer exclusion. The SDK imports
-that snapshot rather than reopening the user-selected pathname. Temporary
-ciphertext is removed when the owned transfer completes or fails; plaintext keys
-are not written to the staging file. iOS opens the selected document in place;
-Android does not expose import until Charm can bound reads from provider URIs.
-Regression execution remains in CI.
 
 Charm 2.0's crypto is strong on verification and restore: SAS verification,
 cross-signing bootstrap, recovery-key restore, and reset are all present
 (`DevicesPanel.tsx`, `VerificationOverlay.tsx`, `useDevices.ts`). But the parity
 audit (2026-07-13) found two real gaps against Charm 1.0:
 
-1. **First-time key backup / 4S setup is missing.** Charm 2.0's recovery card
+1. **First-time key backup / 4S setup was missing.** Charm 2.0's recovery card
    renders **only** when `recoveryState === "incomplete"` (i.e. a backup already
    exists to restore from — `DevicesPanel.tsx:245`). There is no path for the
    `disabled` state: a user who has never set up key backup cannot *create* a
-   recovery key / enable server-side key backup from Charm 2.0 at all. Charm 1.0 has
-   this (`components/Devices.tsx:60-122` secret-storage bootstrap, `LocalBackup.tsx`).
-   This is the more important of the two — without it, new users never establish a
-   backup, so a lost device = lost message history.
+   recovery key / enable server-side key backup from Charm 2.0 at all. Charm now
+   provides this staged flow through matrix-rust-sdk; it remains default-off while
+   CI and live-account recovery gates are completed.
 2. **Manual megolm key export/import was missing.** Charm 1.0 exports/imports
    encrypted `.txt` room-key files (`LocalBackup.tsx:40-47,188-190` —
    `exportRoomKeysAsJson` + `encryptMegolmKeyFile` → `cinny-keys.txt`, and the
-   import side). Charm 2.0 now provides this as a default-off, staged feature.
-   This is the offline/manual escape hatch when server backup isn't trusted or
-   available.
+   import side). Charm 2.0 now provides the same offline/manual escape hatch
+   through native, SDK-backed commands when server backup is unavailable or not
+   desired.
 
 Two further items — per-message/user **trust shields** in the timeline and a
 **blacklist-unverified-devices** setting — the owner confirmed (2026-07-13) as
@@ -134,19 +170,19 @@ negotiation). Reuse whatever QR-generation/scanning the login flow (MSC4108,
 
 ## Data flow
 
-New IPC: `setup_key_backup(passphrase?) -> recovery_key`,
+New IPC: `setup_recovery(passphrase?) -> recovery_key`,
 `export_room_keys(passphrase) -> completed`, and
 `import_room_keys(passphrase) -> { completed, imported_count, total_count }`. All
-are thin wrappers over matrix-rust-sdk crypto operations. Import/export file paths
-are selected and consumed entirely on the Rust side through native pickers; neither
-paths nor raw key material cross frontend IPC. Only the future recovery key string
-that the user must save will cross that boundary.
+are thin wrappers over matrix-rust-sdk crypto operations. Import/export paths are
+selected and consumed entirely on the Rust side; neither paths nor raw key material
+cross frontend IPC. Only the recovery key string the user must save crosses that
+boundary.
 
 ## API/contract changes
 
-New IPC commands as above (ts-rs bindings). Import/export expose only completion
-and aggregate key counts. Reuse Spec 20's `UiaCommandError` for the UIA-gated
-setup. Small DTO additions will be needed for per-message/user trust state.
+New IPC commands as above (ts-rs bindings). Reuse Spec 20's `UiaCommandError` for
+the UIA-gated setup. Optional small DTO additions for per-message/user trust state
+if the shields are included.
 
 ## Testing strategy
 
