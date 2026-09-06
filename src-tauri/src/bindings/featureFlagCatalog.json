@@ -169,6 +169,12 @@
   },
   {
     "default": false,
+    "description": "Use extended composer formatting and command controls.",
+    "key": "composer_parity",
+    "owner": "Spec 43 (composer parity)"
+  },
+  {
+    "default": false,
     "description": "Record, preview, and send voice messages from the composer.",
     "key": "voice_recording",
     "owner": "Spec 41 (voice message recording)"

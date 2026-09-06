@@ -182,7 +182,9 @@ export function IrcMessageRow({
             ref={(el) => registerActionsRef(rowKey, el)}
             accountId={currentUserId ?? ""}
             isOwn={own}
-            canEdit={own && !message.poll}
+            canEdit={
+              own && !message.poll && message.text_editable === true && message.media === null
+            }
             canReply={!message.poll}
             canRedact={canRedact}
             canPin={canPin}

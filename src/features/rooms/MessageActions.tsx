@@ -38,7 +38,7 @@ export interface MessageActionsProps {
   isOwn: boolean;
   /** Defaults to true; disable for event types the reply backend cannot target. */
   canReply?: boolean;
-  /** Defaults to `isOwn`; disable for event types without an edit composer. */
+  /** Explicit backend text-edit capability; unknown/non-text events fail closed. */
   canEdit?: boolean;
   canRedact: boolean;
   onReply: () => void;
@@ -150,7 +150,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     {
       isOwn,
       canReply = true,
-      canEdit = isOwn,
+      canEdit = false,
       accountId,
       canRedact,
       onReply,
@@ -330,7 +330,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                     Reply
                   </DropdownMenuItem>
                 )}
-                {canEdit && (
+                {isOwn && canEdit && (
                   <DropdownMenuItem
                     onSelect={onEdit}
                     disabled={disableRelationActions || isUndecrypted}

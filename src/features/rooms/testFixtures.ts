@@ -50,6 +50,7 @@ export function makeMessageSummary(
     media: null,
     poll: null,
     is_undecrypted: false,
+    text_editable: true,
     ...overrides,
   };
 }

@@ -68,6 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .as_deref()
             == Ok("1"),
+        composer_parity_enabled: std::env::var("CHARM_WEB_COMPOSER_PARITY").as_deref()
+            == Ok("1"),
         ..AppState::default()
     };
 

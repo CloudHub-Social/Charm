@@ -103,6 +103,14 @@ fn caption_from(body: &str, filename: Option<&str>) -> Option<String> {
         .map(|_| body.to_string())
 }
 
+/// Text composers must not treat an unmodeled message's fallback body as text.
+pub(crate) fn is_text_editable(msgtype: &MessageType) -> bool {
+    matches!(
+        msgtype,
+        MessageType::Text(_) | MessageType::Emote(_) | MessageType::Notice(_)
+    )
+}
+
 /// Builds the `media` field for a `RoomMessageSummary` from a `MessageType` —
 /// pure and synchronous, no cache/network access, since it only reads fields
 /// already present on the deserialized event.
@@ -356,6 +364,11 @@ pub struct RoomMessageSummary {
     /// MSC3381 poll state already aggregated by matrix-sdk-ui. `None` for
     /// ordinary messages and unsupported message-like event types.
     pub poll: Option<PollSummary>,
+    /// Whether the resolved message is text, emote, or notice. Absence from
+    /// an older server is unknown, never permission to edit a fallback body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text_editable: Option<bool>,
     /// `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
     /// signal for "this is the undecrypted placeholder", set server-side.
     /// Never derive this by comparing `body` against the placeholder text: a
@@ -986,6 +999,7 @@ async fn timeline_item_to_summary(
         in_reply_to: None,
         media: None,
         poll: None,
+        text_editable: Some(false),
         is_undecrypted: false,
     };
 
@@ -997,6 +1011,7 @@ async fn timeline_item_to_summary(
             reactions,
             in_reply_to,
             media: message_type_to_media(message.msgtype()),
+            text_editable: Some(is_text_editable(message.msgtype())),
             ..base
         }),
         MsgLikeKind::Redacted => Some(RoomMessageSummary {
@@ -1162,6 +1177,7 @@ mod notification_dedup_tests {
             send_state: SendState::Sent,
             media: None,
             poll: None,
+            text_editable: Some(true),
             is_undecrypted: false,
         }
     }

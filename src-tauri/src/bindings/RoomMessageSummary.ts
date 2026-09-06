@@ -53,6 +53,11 @@ media: MediaContent | null,
  */
 poll: PollSummary | null,
 /**
+ * Whether the resolved message is text, emote, or notice. Absence from
+ * an older server is unknown, never permission to edit a fallback body.
+ */
+text_editable?: boolean, 
+/**
  * `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
  * signal for "this is the undecrypted placeholder", set server-side.
  * Never derive this by comparing `body` against the placeholder text: a
