@@ -314,20 +314,20 @@ account-bound signing material:
    rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
    ```
 
-3. Open the generated iOS project from this repo:
-
-   ```sh
-   pnpm tauri ios dev --open
-   ```
-
-   For a release-style archive/build flow instead:
+3. Prepare the standalone iOS build and open the generated Xcode project:
 
    ```sh
    pnpm tauri ios build --open
    ```
 
+   Do not use `pnpm tauri ios dev --open` for the daily-driver install: that
+   development path can depend on the local Vite server and stop working when
+   the Mac process exits.
+
 4. In Xcode, select the `charm_iOS` target, then **Signing & Capabilities**.
-   Enable **Automatically manage signing** and choose the owner's Personal Team.
+   Enable **Automatically manage signing**, choose the owner's Personal Team,
+   and set the scheme's **Run** configuration to **Release** under **Product →
+   Scheme → Edit Scheme…**.
 5. Connect the iPad or iPhone, select it as the run destination, unlock it, and press
    **Run** in Xcode. If iOS blocks the developer app on first launch, approve the
    developer under the device's VPN & Device Management / Developer App settings,
