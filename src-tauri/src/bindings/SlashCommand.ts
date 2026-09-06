@@ -5,4 +5,4 @@
  * Mirrors the frontend's static command list (name/args hint/description) —
  * this enum is just the resolved-command wire type, not the help text.
  */
-export type SlashCommand = "me" | "topic" | "invite" | "kick" | "ban";
+export type SlashCommand = "me" | "notice" | "topic" | "invite" | "kick" | "ban";

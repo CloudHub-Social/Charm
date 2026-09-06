@@ -49,6 +49,7 @@ export function makeMessageSummary(
     send_state: { state: "sent" },
     media: null,
     is_undecrypted: false,
+    text_editable: true,
     ...overrides,
   };
 }

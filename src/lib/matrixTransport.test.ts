@@ -261,6 +261,41 @@ describe("matrix web transport", () => {
       { new_body: "edited" },
     ],
     [
+      "edit_message",
+      {
+        roomId: "!r:example.org",
+        eventId: "$e",
+        newBody: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/events/%24e/edit",
+      {
+        new_body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: ["@alice:example.org"],
+      },
+    ],
+    [
+      "send_reply",
+      {
+        roomId: "!r:example.org",
+        inReplyToEventId: "$e",
+        body: "secret",
+        formattedBody: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/reply",
+      {
+        in_reply_to_event_id: "$e",
+        body: "secret",
+        formatted_body: '<span data-mx-spoiler="">secret</span>',
+        mentions: null,
+      },
+    ],
+    [
       "can_redact",
       { roomId: "!r:example.org", targetSender: "@alice:example.org" },
       "GET",
@@ -321,7 +356,12 @@ describe("matrix web transport", () => {
       { roomId: "!r:example.org", command: "join", args: ["#room:example.org"] },
       "POST",
       "/api/rooms/!r%3Aexample.org/command",
-      { command: "join", args: ["#room:example.org"] },
+      {
+        command: "join",
+        args: ["#room:example.org"],
+        in_reply_to_event_id: null,
+        mention_ids: null,
+      },
     ],
     [
       "send_read_receipt",
@@ -536,6 +576,21 @@ describe("matrix web transport", () => {
       { display_name: "Alice Here", avatar_url: "mxc://example.org/avatar" },
     ],
     ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
+    ["get_ignored_users", {}, "GET", "/api/account/ignored-users", undefined],
+    [
+      "ignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/ignore",
+      "@alice:example.org",
+    ],
+    [
+      "unignore_user",
+      { userId: "@alice:example.org" },
+      "POST",
+      "/api/account/ignored-users/unignore",
+      "@alice:example.org",
+    ],
     [
       "get_account_data",
       { eventType: "social.cloudhub.charm.onboarding" },

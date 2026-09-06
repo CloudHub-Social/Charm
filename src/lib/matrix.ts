@@ -539,8 +539,16 @@ export function runCommand(
   roomId: string,
   command: SlashCommand,
   args: string[],
+  inReplyToEventId?: string | null,
+  mentionIds?: string[] | null,
 ): Promise<CommandResult> {
-  return invoke("run_command", { roomId, command, args });
+  return invoke("run_command", {
+    roomId,
+    command,
+    args,
+    inReplyToEventId: inReplyToEventId ?? null,
+    mentionIds: mentionIds ?? null,
+  });
 }
 
 export function onTimelineUpdate(
@@ -549,8 +557,14 @@ export function onTimelineUpdate(
   return listen<RoomTimelineUpdate>("timeline:update", (e) => callback(e.payload));
 }
 
-export function editMessage(roomId: string, eventId: string, newBody: string): Promise<void> {
-  return invoke("edit_message", { roomId, eventId, newBody });
+export function editMessage(
+  roomId: string,
+  eventId: string,
+  newBody: string,
+  formattedBody: string | null = null,
+  mentions: string[] | null = null,
+): Promise<void> {
+  return invoke("edit_message", { roomId, eventId, newBody, formattedBody, mentions });
 }
 
 export function redactEvent(
@@ -587,8 +601,14 @@ export function toggleReaction(
 }
 
 /** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
-export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
-  return invoke("send_reply", { roomId, inReplyToEventId, body });
+export function sendReply(
+  roomId: string,
+  inReplyToEventId: string,
+  body: string,
+  formattedBody: string | null = null,
+  mentions: string[] | null = null,
+): Promise<string> {
+  return invoke("send_reply", { roomId, inReplyToEventId, body, formattedBody, mentions });
 }
 
 /**
