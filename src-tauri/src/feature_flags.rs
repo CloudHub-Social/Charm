@@ -179,6 +179,8 @@ define_feature_flag_keys!(
         RoomDirectory,
         /// Day-2 Spec 03 creation, voting, and creator-only closure of polls.
         Polls,
+        /// Spec 44 first-time secret storage and server-side room-key backup setup.
+        CryptoBackupSetup,
         /// Spec 44 encrypted manual megolm key-file import and export.
         CryptoKeyFiles,
         /// Spec 11 APNs device registration and Matrix pusher lifecycle on iOS.
@@ -227,6 +229,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::VoiceRecording => false,
             FeatureFlagKey::RoomDirectory => false,
             FeatureFlagKey::Polls => false,
+            FeatureFlagKey::CryptoBackupSetup => false,
             FeatureFlagKey::CryptoKeyFiles => false,
             FeatureFlagKey::IosPushNotifications => false,
             FeatureFlagKey::AppearanceParity => false,
@@ -329,6 +332,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::Polls => {
                 "Create, vote in, and display Matrix polls, with creator-only poll closure."
             }
+            FeatureFlagKey::CryptoBackupSetup => {
+                "Set up Matrix secret storage and server-side encrypted room-key backup."
+            }
             FeatureFlagKey::CryptoKeyFiles => {
                 "Import or export standard passphrase-encrypted Matrix room-key files."
             }
@@ -387,6 +393,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::VoiceRecording => "Spec 41 (voice message recording)",
             FeatureFlagKey::RoomDirectory => "Day-2 Spec 06 (public room directory)",
             FeatureFlagKey::Polls => "Day-2 Spec 03 (polls)",
+            FeatureFlagKey::CryptoBackupSetup => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::CryptoKeyFiles => "Spec 44 (crypto key backup and import/export)",
             FeatureFlagKey::IosPushNotifications => "Spec 11 (push notifications)",
             FeatureFlagKey::AppearanceParity => "Spec 47 (appearance customization)",
@@ -429,6 +436,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::VoiceRecording => "voice_recording",
             FeatureFlagKey::RoomDirectory => "room_directory",
             FeatureFlagKey::Polls => "polls",
+            FeatureFlagKey::CryptoBackupSetup => "crypto_backup_setup",
             FeatureFlagKey::CryptoKeyFiles => "crypto_key_files",
             FeatureFlagKey::IosPushNotifications => "ios_push_notifications",
             FeatureFlagKey::AppearanceParity => "appearance_parity",

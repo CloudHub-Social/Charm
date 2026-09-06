@@ -231,6 +231,7 @@ pub struct Session {
     /// same first page. Caching per-room here, scoped to this session (never
     /// shared across sessions, keeping the same "session A can't see
     /// session B's state" isolation every other field on `Session` has).
+    pub recovery_setup_lock: Arc<Mutex<()>>,
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, Arc<Timeline>>>,
     /// Most recently requested historical jump per room. A slower earlier
     /// `/context` response must not replace the timeline selected by a newer
@@ -588,6 +589,7 @@ impl Session {
                 charm_lib::matrix::presence::PresenceStateDto::default(),
             )),
             sync_handle: std::sync::Mutex::new(None),
+            recovery_setup_lock: Arc::new(Mutex::new(())),
             timelines: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
@@ -1132,6 +1134,12 @@ type SessionLifecycleLocks =
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     lifecycle_locks: Arc<SessionLifecycleLocks>,
+    /// Never-persisted sessions whose homeserver token could not yet be
+    /// revoked. These are deliberately kept outside `inner`: retaining the
+    /// only revocable client must not make its browser cookie usable again
+    /// after idle eviction. The periodic sweeper drains this quarantine and
+    /// retries revocation until the homeserver confirms it.
+    pending_revocations: Arc<std::sync::Mutex<HashMap<String, Arc<Session>>>>,
     /// The presence choice an idle-evicted session had at the instant
     /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
     /// was recorded at — populated there, consumed once by
@@ -1304,6 +1312,18 @@ impl SessionStore {
         self.remove_matching(token, None).await
     }
 
+    /// Immediately invalidates an explicit browser logout before its HTTP
+    /// response returns. Recovery setup may still own its per-session lock,
+    /// so the caller must wait on that lock in detached cleanup before
+    /// revoking the homeserver token or deleting custody-bearing storage.
+    pub async fn invalidate_for_logout(&self, token: &str) -> Option<Arc<Session>> {
+        let session = self.inner.write().await.remove(token);
+        if let Some(session) = &session {
+            self.finalize_live_removal(session);
+        }
+        session
+    }
+
     pub async fn remove_if_current(
         &self,
         token: &str,
@@ -1317,47 +1337,56 @@ impl SessionStore {
         token: &str,
         expected: Option<&Arc<std::sync::atomic::AtomicBool>>,
     ) -> Option<Arc<Session>> {
-        // Revoke admission atomically with removal. Existing holders may keep
-        // an `Arc<Session>` after it leaves the map, so publish the closed bit
-        // before releasing the map lock; no detached worker can mistake the
-        // removed session for a live one.
+        // Select the admitted instance without holding the global map across
+        // recovery setup. Teardown then waits for that instance's custody
+        // transaction and revalidates identity before revoking it.
+        let admitted = {
+            let sessions = self.inner.read().await;
+            let session = sessions.get(token)?.clone();
+            if expected.is_some_and(|closed| !Arc::ptr_eq(&session.session_closed, closed)) {
+                return None;
+            }
+            session
+        };
+        let _recovery_guard = admitted.recovery_setup_lock.lock().await;
         let session = {
             let mut sessions = self.inner.write().await;
-            if expected.is_some_and(|closed| {
-                !sessions
-                    .get(token)
-                    .is_some_and(|session| Arc::ptr_eq(&session.session_closed, closed))
+            if !sessions.get(token).is_some_and(|current| {
+                Arc::ptr_eq(current, &admitted)
+                    && expected.is_none_or(|closed| Arc::ptr_eq(&current.session_closed, closed))
             }) {
                 return None;
             }
             let session = sessions.remove(token);
-            if let Some(session) = &session {
-                session
-                    .session_closed
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
             session
         };
         if let Some(removed) = &session {
-            // `remove` is the permanent-session boundary used by explicit
-            // logout, cross-instance revocation, and expiry. Keep encrypted
-            // search-index deletion here so none of those callers can leave
-            // decrypted message content orphaned on local disk. Idle eviction
-            // deliberately uses `sweep_idle` instead and preserves the index
-            // for a later persisted-session restore.
-            // Own the slow teardown independently of the caller. In
-            // particular, an HTTP request disappearing while a WebSocket send
-            // is backpressured must not strand decrypted state or skip the
-            // invalidation event.
-            let removed = Arc::clone(removed);
-            tokio::spawn(async move {
-                let _send_guard = removed.socket_send_lock.write().await;
-                let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
-                delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
-            });
+            self.finalize_live_removal(removed);
         }
 
         session
+    }
+
+    fn finalize_live_removal(&self, removed: &Arc<Session>) {
+        removed
+            .session_closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        // `remove` is the permanent-session boundary used by explicit
+        // logout, cross-instance revocation, and expiry. Keep encrypted
+        // search-index deletion here so none of those callers can leave
+        // decrypted message content orphaned on local disk. Idle eviction
+        // deliberately uses `sweep_idle` instead and preserves the index
+        // for a later persisted-session restore.
+        // Own the slow teardown independently of the caller. In
+        // particular, an HTTP request disappearing while a WebSocket send
+        // is backpressured must not strand decrypted state or skip the
+        // invalidation event.
+        let removed = Arc::clone(removed);
+        tokio::spawn(async move {
+            let _send_guard = removed.socket_send_lock.write().await;
+            let _ = removed.events.send(ServerEvent::SessionInvalidated(()));
+            delete_message_search_index(&removed, crate::crypto_store::data_root_path()).await;
+        });
     }
 
     /// Stable snapshot of the currently-live sessions for graceful process
@@ -1370,6 +1399,25 @@ impl SessionStore {
             .await
             .iter()
             .map(|(token, session)| (token.clone(), Arc::clone(session)))
+            .collect()
+    }
+
+    /// Quarantines an idle-evicted, never-persisted session for a later
+    /// homeserver revocation retry without restoring browser access to it.
+    pub fn retain_for_revocation(&self, token: String, session: Arc<Session>) {
+        self.pending_revocations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token, session);
+    }
+
+    /// Takes every quarantined revocation retry for the periodic sweeper.
+    /// A failed attempt is put back with [`Self::retain_for_revocation`].
+    pub fn take_pending_revocations(&self) -> Vec<(String, Arc<Session>)> {
+        self.pending_revocations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
             .collect()
     }
 
@@ -1393,7 +1441,22 @@ impl SessionStore {
         let mut inner = self.inner.write().await;
         let mut evicted = Vec::new();
         inner.retain(|token, session| {
+            // Hold admission through revocation. An in-flight recovery must
+            // retain its crypto store and pending credential until it settles.
+            let Ok(_recovery) = session.recovery_setup_lock.try_lock() else {
+                return true;
+            };
+            let retrying_initial_save = session
+                .awaiting_initial_persistence
+                .load(std::sync::atomic::Ordering::Acquire)
+                && session.idle_for() < idle_timeout.saturating_mul(2);
             if session.has_open_connection()
+                // An initial save can fail while the live client still owns
+                // the only Matrix access token. Evicting that client would
+                // make a later browser logout unable to revoke the token and
+                // discard the retry path. Bound that grace to twice the idle
+                // timeout; the sweeper then revokes instead of persisting it.
+                || retrying_initial_save
                 || session.has_pending_verification_events()
                 || session.has_unpersisted_encrypted_room()
                 || session.idle_for() < idle_timeout
@@ -1665,6 +1728,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_logout_invalidates_before_recovery_cleanup_can_finish() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@logout-boundary:example.org").await)
+            .await;
+        let session = store.get(&token).await.expect("live session");
+        let recovery_guard = session.recovery_setup_lock.lock().await;
+
+        let removed = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            store.invalidate_for_logout(&token),
+        )
+        .await
+        .expect("logout invalidation must not wait for recovery cleanup")
+        .expect("removed session");
+        assert!(Arc::ptr_eq(&removed, &session));
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(store.get(&token).await.is_none());
+
+        drop(recovery_guard);
+    }
+
+    #[tokio::test]
     async fn removing_a_session_revokes_its_detached_decrypted_work() {
         let store = SessionStore::new();
         let token = store
@@ -1754,6 +1842,57 @@ mod tests {
             .expect("blocking worker completed")
             .expect("OS watchdog released the lock because the async runtime stopped progressing");
         teardown.await.expect("teardown completed");
+    }
+
+    #[tokio::test]
+    async fn removal_waits_for_recovery_without_blocking_unrelated_session_lookups() {
+        let store = Arc::new(SessionStore::new());
+        let token = store
+            .create(dummy_session("@recovering:example.org").await)
+            .await;
+        let other = store
+            .create(dummy_session("@other:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        let guard = session.recovery_setup_lock.lock().await;
+        let removal = tokio::spawn({
+            let store = Arc::clone(&store);
+            let token = token.clone();
+            async move { store.remove(&token).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!removal.is_finished());
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), store.get(&other))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        drop(guard);
+        assert!(removal.await.unwrap().is_some());
+        assert!(session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(store.get(&token).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_sweep_preserves_admitted_recovery() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@recovering:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        let guard = session.recovery_setup_lock.lock().await;
+        assert!(store.sweep_idle(std::time::Duration::ZERO).await.is_empty());
+        assert!(!session
+            .session_closed
+            .load(std::sync::atomic::Ordering::Acquire));
+        drop(guard);
+        assert_eq!(store.sweep_idle(std::time::Duration::ZERO).await.len(), 1);
     }
 
     #[tokio::test]
@@ -1906,6 +2045,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_revocation_retry_is_quarantined_outside_browser_sessions() {
+        let store = SessionStore::new();
+        let token = "never-persisted-token".to_string();
+        let session = Arc::new(dummy_session("@revocation:example.org").await);
+
+        store.retain_for_revocation(token.clone(), Arc::clone(&session));
+
+        assert!(store.get(&token).await.is_none());
+        let retry = store.take_pending_revocations();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].0, token);
+        assert!(Arc::ptr_eq(&retry[0].1, &session));
+        assert!(store.take_pending_revocations().is_empty());
+    }
+
+    #[tokio::test]
     async fn an_open_websocket_connection_prevents_eviction_regardless_of_idle_time() {
         let store = SessionStore::new();
         let idle_timeout = std::time::Duration::from_secs(60);
@@ -1927,6 +2082,31 @@ mod tests {
              long ago its last HTTP request was"
         );
         assert!(store.get(&token).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unpersisted_session_gets_a_bounded_retry_window_before_eviction() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+        let token = store
+            .create(dummy_session("@unpersisted:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout + idle_timeout / 2);
+        session
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(evicted.is_empty());
+        assert!(store.get(&token).await.is_some());
+
+        backdate(&session, idle_timeout * 3);
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0, token);
+        assert!(store.get(&token).await.is_none());
     }
 
     #[tokio::test]
