@@ -193,6 +193,7 @@ export type {
   ReactionToggleResult,
   ReceiptTypeDto,
   ReceiptUpdate,
+  RecoverySetupSummary,
   RecoveryStatusSummary,
   RegisterRequest,
   RegistrationAuthResponse,
