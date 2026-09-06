@@ -31,10 +31,17 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    invokes the repository-local Tauri CLI, so an unbootstrapped worktree cannot build.
 4. Ensure Xcode is signed in with the device owner's Apple Account and the required
    Rust iOS targets are installed.
-5. Open the generated `src-tauri/gen/apple/charm.xcodeproj` project. If regeneration
-   is required, the device owner runs `pnpm tauri ios dev --open`; automated agents
-   do not invoke Tauri/Xcode device builds or perform signing actions. Documentation
-   changes still follow the validation policy in `docs-site/AGENTS.md`.
+5. Prepare the standalone mobile bundle and open the generated project with
+   `pnpm tauri ios build --open`. This outer Tauri build is required: it generates
+   the frontend bundle and the untracked assets consumed by Xcode. Do not use
+   `pnpm tauri ios dev --open` for a daily-driver install because that path can depend
+   on the development server.
+6. In Xcode, edit the `charm_iOS` scheme so its **Run** build configuration is
+   **Release**, then use that scheme for the physical-device install (or archive and
+   install the Release build when Xcode offers that path for the selected Personal
+   Team). Automated agents do not invoke Tauri/Xcode device builds or perform signing
+   actions. Documentation changes still follow the validation policy in
+   `docs-site/AGENTS.md`.
 
 ## Personal Team signing
 
