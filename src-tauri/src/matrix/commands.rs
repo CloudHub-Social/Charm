@@ -4,12 +4,12 @@
 //! command name + args cross IPC, so this module never has to re-implement
 //! quoting/escaping rules for raw composer text.
 
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+use matrix_sdk::ruma::events::{room::message::RoomMessageEventContent, Mentions};
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 use super::MatrixState;
@@ -29,6 +29,7 @@ fn get_room(client: &Client, room_id: &str) -> Result<matrix_sdk::Room, String> 
 #[serde(rename_all = "snake_case")]
 pub enum SlashCommand {
     Me,
+    Notice,
     Topic,
     Invite,
     Kick,
@@ -81,19 +82,69 @@ fn me_text_from_args(args: &[String]) -> Result<String, CommandResult> {
     }
 }
 
+fn notice_content_from_args(args: &[String]) -> Result<RoomMessageEventContent, CommandResult> {
+    let text = args.join(" ");
+    if text.trim().is_empty() {
+        return Err(bad_args("/notice needs text to send"));
+    }
+    Ok(RoomMessageEventContent::notice_plain(text))
+}
+
+fn add_mentions(
+    content: RoomMessageEventContent,
+    mention_ids: Option<Vec<String>>,
+) -> Result<RoomMessageEventContent, String> {
+    let Some(mention_ids) = mention_ids.filter(|ids| !ids.is_empty()) else {
+        return Ok(content);
+    };
+    let user_ids = mention_ids
+        .into_iter()
+        .map(|id| UserId::parse(id).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(content.add_mentions(Mentions::with_user_ids(user_ids)))
+}
+
+pub fn require_command_feature(
+    command: SlashCommand,
+    composer_parity_enabled: bool,
+) -> Result<(), String> {
+    if command == SlashCommand::Notice && !composer_parity_enabled {
+        return Err("Composer parity is disabled".to_string());
+    }
+    Ok(())
+}
+
 /// Runs a resolved slash command against `room_id`. `args` is the
 /// whitespace-split remainder of the command line after the `/word` (e.g.
 /// `/kick @bob:example.org spamming` -> `args = ["@bob:example.org",
 /// "spamming"]`); each arm below documents which positions it reads.
 #[tauri::command]
 pub async fn run_command(
+    app: tauri::AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<String>,
+    mention_ids: Option<Vec<String>>,
 ) -> Result<CommandResult, String> {
+    let composer_parity_enabled = app.path().app_data_dir().is_ok_and(|directory| {
+        crate::feature_flags::flag(
+            &directory,
+            crate::feature_flags::FeatureFlagKey::ComposerParity,
+        )
+    });
+    require_command_feature(command, composer_parity_enabled)?;
     let client = state.require_client().await?;
-    run_command_impl(&client, &room_id, command, args).await
+    run_command_impl(
+        &client,
+        &room_id,
+        command,
+        args,
+        in_reply_to_event_id.as_deref(),
+        mention_ids,
+    )
+    .await
 }
 
 /// Core logic behind [`run_command`], taking a plain `&Client` so it's
@@ -103,31 +154,57 @@ pub async fn run_command_impl(
     room_id: &str,
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<&str>,
+    mention_ids: Option<Vec<String>>,
 ) -> Result<CommandResult, String> {
     let room = get_room(client, room_id)?;
     // `/me` already goes through the serialized send helper below. Every
     // other command mutates room state or membership directly, so keep the
     // same admission lock across its homeserver action: either the command
     // starts first or a sync-driven room barrier rejects it.
-    let _mutation_guard = if command == SlashCommand::Me {
+    let _mutation_guard = if matches!(command, SlashCommand::Me | SlashCommand::Notice) {
         None
     } else {
         Some(super::actions::lock_room_mutation(room_id).await?)
     };
 
     match command {
+        SlashCommand::Notice => {
+            let content = match notice_content_from_args(&args) {
+                Ok(content) => content,
+                Err(result) => return Ok(result),
+            };
+            let content = add_mentions(content, mention_ids)?;
+            if let Some(event_id) = in_reply_to_event_id {
+                super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
+                    .await?;
+            } else {
+                super::send::send_and_capture_transaction_id(
+                    client,
+                    &room,
+                    AnyMessageLikeEventContent::RoomMessage(content),
+                )
+                .await?;
+            }
+            Ok(CommandResult::Success)
+        }
         SlashCommand::Me => {
             let text = match me_text_from_args(&args) {
                 Ok(text) => text,
                 Err(result) => return Ok(result),
             };
-            let content = RoomMessageEventContent::emote_plain(text);
-            super::send::send_and_capture_transaction_id(
-                client,
-                &room,
-                AnyMessageLikeEventContent::RoomMessage(content),
-            )
-            .await?;
+            let content = add_mentions(RoomMessageEventContent::emote_plain(text), mention_ids)?;
+            if let Some(event_id) = in_reply_to_event_id {
+                super::actions::send_room_message_reply_impl(client, room_id, event_id, content)
+                    .await?;
+            } else {
+                super::send::send_and_capture_transaction_id(
+                    client,
+                    &room,
+                    AnyMessageLikeEventContent::RoomMessage(content),
+                )
+                .await?;
+            }
             Ok(CommandResult::Success)
         }
         SlashCommand::Topic => {
@@ -184,6 +261,47 @@ pub async fn run_command_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use matrix_sdk::ruma::events::room::message::{AddMentions, ForwardThread, ReplyMetadata};
+    use matrix_sdk::ruma::{event_id, user_id};
+
+    #[test]
+    fn notice_is_a_literal_matrix_notice_not_a_text_message() {
+        let content = notice_content_from_args(&["<b>literal</b>".to_owned()]).unwrap();
+        let json = serde_json::to_value(content).unwrap();
+        assert_eq!(json["msgtype"], "m.notice");
+        assert_eq!(json["body"], "<b>literal</b>");
+        assert!(json.get("formatted_body").is_none());
+    }
+
+    #[test]
+    fn notice_rejects_missing_or_blank_text() {
+        assert!(notice_content_from_args(&[]).is_err());
+        assert!(notice_content_from_args(&["  ".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn reply_relations_preserve_message_command_subtypes() {
+        let metadata = ReplyMetadata::new(
+            event_id!("$original:example.org"),
+            user_id!("@alice:example.org"),
+            None,
+        );
+        for (content, expected_type) in [
+            (RoomMessageEventContent::emote_plain("waves"), "m.emote"),
+            (
+                RoomMessageEventContent::notice_plain("heads up"),
+                "m.notice",
+            ),
+        ] {
+            let reply = content.make_reply_to(metadata, ForwardThread::No, AddMentions::Yes);
+            let json = serde_json::to_value(reply).unwrap();
+            assert_eq!(json["msgtype"], expected_type);
+            assert_eq!(
+                json["m.relates_to"]["m.in_reply_to"]["event_id"],
+                "$original:example.org"
+            );
+        }
+    }
 
     #[test]
     fn me_with_empty_args_is_bad_args() {
@@ -232,6 +350,18 @@ mod tests {
     }
 
     #[test]
+    fn notice_mentions_are_encoded_for_notification_routing() {
+        let content = add_mentions(
+            RoomMessageEventContent::notice_plain("hello"),
+            Some(vec!["@alice:example.org".into()]),
+        )
+        .unwrap();
+        assert!(content
+            .mentions
+            .is_some_and(|mentions| mentions.user_ids.contains(user_id!("@alice:example.org"))));
+    }
+
+    #[test]
     fn command_result_serializes_tagged_status() {
         let json = serde_json::to_value(CommandResult::PermissionDenied {
             message: "nope".to_string(),
@@ -239,5 +369,12 @@ mod tests {
         .unwrap();
         assert_eq!(json["status"], "permission_denied");
         assert_eq!(json["message"], "nope");
+    }
+
+    #[test]
+    fn notice_requires_composer_parity_at_command_boundaries() {
+        assert!(require_command_feature(SlashCommand::Notice, false).is_err());
+        assert!(require_command_feature(SlashCommand::Notice, true).is_ok());
+        assert!(require_command_feature(SlashCommand::Me, false).is_ok());
     }
 }

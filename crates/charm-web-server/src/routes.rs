@@ -26,8 +26,7 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{
     DiscoverHomeserverResponse, LoginRequest, RegisterRequest, RegistrationAuthResponse,
 };
-use charm_lib::matrix::commands::run_command_impl;
-use charm_lib::matrix::commands::SlashCommand;
+use charm_lib::matrix::commands::{require_command_feature, run_command_impl, SlashCommand};
 use charm_lib::matrix::devices::{
     delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
     list_devices_impl,
@@ -326,6 +325,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/rooms/{room_id}/profile/me", put(set_room_profile))
         .route("/api/profile/display-name", put(set_display_name))
+        .route("/api/account/ignored-users", get(get_ignored_users))
+        .route("/api/account/ignored-users/ignore", post(ignore_user))
+        .route("/api/account/ignored-users/unignore", post(unignore_user))
         .route(
             "/api/account/deactivate-url",
             get(get_account_deactivate_url),
@@ -3635,6 +3637,8 @@ async fn send_message(
 struct ReplyRequest {
     in_reply_to_event_id: String,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 }
 
 async fn send_reply(
@@ -3649,6 +3653,8 @@ async fn send_reply(
         &room_id,
         &request.in_reply_to_event_id,
         request.body,
+        request.formatted_body,
+        request.mentions,
     )
     .await
     .map_err(ApiError::bad_request)?;
@@ -3658,6 +3664,8 @@ async fn send_reply(
 #[derive(Debug, Deserialize)]
 struct EditMessageRequest {
     new_body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 }
 
 async fn edit_message(
@@ -3667,9 +3675,16 @@ async fn edit_message(
     Json(request): Json<EditMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    edit_message_impl(&session.client, &room_id, &event_id, request.new_body)
-        .await
-        .map_err(ApiError::bad_request)?;
+    edit_message_impl(
+        &session.client,
+        &room_id,
+        &event_id,
+        request.new_body,
+        request.formatted_body,
+        request.mentions,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3887,6 +3902,8 @@ async fn discard_failed_message(
 struct RunCommandRequest {
     command: SlashCommand,
     args: Vec<String>,
+    in_reply_to_event_id: Option<String>,
+    mention_ids: Option<Vec<String>>,
 }
 
 async fn run_command(
@@ -3896,21 +3913,30 @@ async fn run_command(
     Json(request): Json<RunCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let result = run_command_impl(&session.client, &room_id, request.command, request.args)
-        .await
-        .map_err(|e| {
-            // `run_command_impl`'s `get_room` helper fails with exactly this
-            // message shape for a missing room (see `commands.rs`) — map
-            // that case to 404, consistent with every other room-scoped
-            // route (`get_timeline_page`, `send_message`, etc.), rather than
-            // lumping it in with genuine bad-request failures (bad args,
-            // permission errors, send-queue failures).
-            if e == format!("room {room_id} not found") {
-                ApiError::not_found(e)
-            } else {
-                ApiError::bad_request(e)
-            }
-        })?;
+    require_command_feature(request.command, state.composer_parity_enabled)
+        .map_err(ApiError::bad_request)?;
+    let result = run_command_impl(
+        &session.client,
+        &room_id,
+        request.command,
+        request.args,
+        request.in_reply_to_event_id.as_deref(),
+        request.mention_ids,
+    )
+    .await
+    .map_err(|e| {
+        // `run_command_impl`'s `get_room` helper fails with exactly this
+        // message shape for a missing room (see `commands.rs`) — map
+        // that case to 404, consistent with every other room-scoped
+        // route (`get_timeline_page`, `send_message`, etc.), rather than
+        // lumping it in with genuine bad-request failures (bad args,
+        // permission errors, send-queue failures).
+        if e == format!("room {room_id} not found") {
+            ApiError::not_found(e)
+        } else {
+            ApiError::bad_request(e)
+        }
+    })?;
     Ok(Json(result))
 }
 
@@ -5358,6 +5384,41 @@ async fn set_avatar(
         .upload_avatar(&mime, body.to_vec())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_ignored_users(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let users = charm_lib::matrix::account::fetch_ignored_user_ids(&session.client)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(users))
+}
+
+async fn ignore_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(user_id): Json<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    charm_lib::matrix::account::ignore_user_impl(&session.client, &user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn unignore_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(user_id): Json<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    charm_lib::matrix::account::unignore_user_impl(&session.client, &user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -7190,6 +7251,41 @@ mod redact_request_uri_for_sentry_tests {
 
     use super::redacted_route_uri;
     use crate::AppState;
+
+    #[tokio::test]
+    async fn ignored_user_routes_require_the_callers_session() {
+        for (method, uri, body) in [
+            ("GET", "/api/account/ignored-users", ""),
+            (
+                "POST",
+                "/api/account/ignored-users/ignore",
+                "\"@alice:example.org\"",
+            ),
+            (
+                "POST",
+                "/api/account/ignored-users/unignore",
+                "\"@alice:example.org\"",
+            ),
+        ] {
+            let response = super::router(AppState::default())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("x-charm-operation-id", "test-ignored-users")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{method} {uri}"
+            );
+        }
+    }
 
     #[test]
     fn a_matched_route_template_has_no_room_or_event_id_left() {

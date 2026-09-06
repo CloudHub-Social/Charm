@@ -34,6 +34,8 @@ pub struct AppState {
     pub encrypted_local_message_search_enabled: bool,
     /// Companion-side half of the default-off recovery setup rollout.
     pub crypto_backup_setup_enabled: bool,
+    /// Server-side half of Spec 43's extended composer command kill switch.
+    pub composer_parity_enabled: bool,
 }
 
 /// Test-only, crate-wide lock for tests that read/write process env vars
