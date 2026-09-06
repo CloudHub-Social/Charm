@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
+import { MobileSpacesView } from "./MobileSpacesView";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
 import { MessageSearchDialog } from "./MessageSearchDialog";
@@ -741,11 +742,13 @@ export function RoomsScreen({
     mobileRoute:
       primaryDestination === "activity"
         ? "activity"
-        : contextPanel
-          ? "context-panel"
-          : mobileView === "detail"
-            ? "conversation"
-            : "room-list",
+        : primaryDestination === "spaces"
+          ? "spaces"
+          : contextPanel
+            ? "context-panel"
+            : mobileView === "detail"
+              ? "conversation"
+              : "room-list",
   };
 
   return (
@@ -753,7 +756,14 @@ export function RoomsScreen({
       <AppShell
         primaryDestination={navigationState.destination}
         onSelectChats={() => {
-          if (primaryDestination === "activity") selectHome();
+          if (primaryDestination !== "activity" && primaryDestination !== "spaces") return;
+          setPrimaryDestination(
+            roomListMode === "dms"
+              ? "direct-messages"
+              : roomListMode === "space"
+                ? "space"
+                : "home",
+          );
         }}
         onSelectActivity={() => {
           setPrimaryDestination("activity");
@@ -761,6 +771,27 @@ export function RoomsScreen({
           setMembersDrawerOpen(false);
           setPinnedMessagesDrawerOpen(false);
         }}
+        onSelectSpaces={() => {
+          setPrimaryDestination("spaces");
+          setMobileView("list");
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+        }}
+        mobileSpacesContent={
+          <MobileSpacesView
+            rooms={joinedRooms}
+            activeMode={roomListMode}
+            activeSpaceId={selectedSpaceId}
+            showAllRooms={showAllRooms}
+            onSelectHome={selectHome}
+            onSelectDms={selectDms}
+            onSelectSpace={selectSpace}
+            onCreateJoin={() => {
+              setCreateSpaceParentId(null);
+              setCreateJoinDialogOpen(true);
+            }}
+          />
+        }
         destinationContent={
           <ActivityView
             rooms={rooms}

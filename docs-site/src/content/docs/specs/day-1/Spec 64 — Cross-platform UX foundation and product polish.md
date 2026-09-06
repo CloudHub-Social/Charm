@@ -27,21 +27,23 @@ The legacy shell remains the rollback path while `ux_refresh_v1` is disabled.
 
 <img
   src="/design/spec-64/sable-forward-desktop.png"
-  alt="Sable-forward desktop direction with a warm aubergine rail, charcoal room list, ink conversation canvas, and people-first unread-DM shortcuts"
+  alt="Charm desktop direction with a warm aubergine rail, charcoal room list, ink conversation canvas, and people-first unread-DM shortcuts"
 />
 
 This concept is directional rather than pixel evidence. Approved Storybook
 fixtures provide the measured component contract. Deterministic CI screenshots
 and native artifacts replace the concept as implementation evidence lands.
 
-Charm combines:
+Charm's visual goal is a polished, calm, native-feeling chat product. Discord,
+Sable, and well-designed native clients are useful starting references, not a
+template Charm should follow. The product combines:
 
 - Discord-like conversational clarity and restrained message chrome;
 - Sable-like personalization and people-first navigation; and
 - Charm's existing visual identity, refined through its own purple, mint, yellow,
   and speech-bubble details rather than replaced by a borrowed theme.
 
-Sable and Discord are references only. Do not copy their code, assets, branding,
+Reference products are references only. Do not copy their code, assets, branding,
 or proprietary iconography.
 
 The unread-DM behavior follows the public
@@ -126,12 +128,13 @@ Spec 09 supplies that route.
 The production shell will replace scattered visibility booleans with typed state
 equivalent to:
 
-- `PrimaryDestination` — Home, Direct Messages, Activity, or Space;
+- `PrimaryDestination` — Home, Direct Messages, Activity, the compact Spaces
+  root, or an individual Space;
 - `AppNavigationState` — active account, destination, space, room, contextual
   panel, and mobile route;
 - `ContextPanelKind` — the currently implemented members or pinned-messages
   panel, or none; future routes extend the union when their owning specs ship;
-- `MobileRoute` — Activity, room list, conversation, or contextual detail;
+- `MobileRoute` — Activity, Spaces, room list, conversation, or contextual detail;
 - `RailAttentionItem` — one account-scoped actionable rail shortcut; and
 - `PanePreferences` — versioned device-local pane sizes and open state.
 
@@ -139,8 +142,30 @@ Responsive behavior:
 
 - **Wide (≥1200px):** rail, room sidebar, conversation, and optional context panel.
 - **Medium (768–1199px):** rail, sidebar, and conversation; context content overlays.
-- **Compact (&lt;768px):** one pushed pane at a time, native back behavior, safe-area
-  and software-keyboard handling, and bottom navigation for top-level destinations.
+- **Compact (&lt;768px):** one pushed pane at a time, safe-area and
+  software-keyboard handling, a full-width Chats root, a separate Spaces root,
+  bottom navigation for top-level destinations, explicit back controls, and a
+  leading-edge swipe back from conversation detail.
+
+### Platform-adaptive, product-cohesive
+
+Charm does not make every platform pixel-identical. It keeps identity and behavior
+cohesive while using the navigation container people expect on each device:
+
+- every platform shares the same information architecture, room state, wording,
+  typography, color roles, selection hierarchy, icon family, and motion character;
+- desktop and tablet use the space rail, resizable room sidebar, toolbars, pointer
+  hover, keyboard shortcuts, and optional contextual panel;
+- phones use full-width root lists, a restrained bottom tab bar, pushed detail,
+  edge-back gestures, larger touch targets, safe areas, and no permanently visible
+  desktop rail;
+- platform integrations may add native menus, haptics, share sheets, notification
+  actions, or window chrome through Specs 60 and 61, but those enhancements must
+  preserve the same destinations and state model rather than create a parallel UI.
+
+This is progressive adaptation, not platform theming: a conversation, unread
+state, draft, upload, or selected space must remain recognizable and intact as the
+same user moves between web, desktop, tablet, iOS, and Android.
 
 Breakpoint transitions preserve deep links, active room, draft, scroll anchor,
 call shelf, media playback ownership, and account isolation. Opening or closing a
@@ -205,8 +230,8 @@ change so reviewers can judge the product as a coherent whole. It includes:
 4. The real Activity destination and active-account/settings entry.
 5. Fresh-install Modern/Bubbles/IRC selection, settings, authentication,
    reauthentication, onboarding, and shared portalled-surface treatment.
-6. Deterministic dark and light desktop, medium, tablet, and compact CI screenshot
-   journeys.
+6. Deterministic dark and light desktop, medium, tablet, and compact Chats,
+   Spaces, conversation, and Activity CI screenshot journeys.
 
 This boundary does not silently pull Day-2 product work into a visual PR. Native
 calling and multi-account switching remain owned by Specs 02 and 09 respectively;

@@ -16,13 +16,15 @@ export function ActivityView({ rooms, onSelectRoom }: ActivityViewProps) {
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--ux-content-bg)] text-foreground pt-[env(safe-area-inset-top)]">
-      <header className="flex min-h-18 items-center justify-between border-b border-[var(--ux-shell-border)] px-5 sm:px-8">
+      <header className="flex min-h-20 items-end justify-between border-b border-[var(--ux-shell-border)] px-5 pb-3 sm:min-h-18 sm:items-center sm:px-8 sm:pb-0">
         <div className="min-w-0">
           <div className="flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-[var(--ux-selection)] text-[var(--ux-selection-strong)]">
+            <span className="hidden size-9 items-center justify-center rounded-xl bg-[var(--ux-selection)] text-[var(--ux-selection-strong)] sm:flex">
               <Bell className="size-4.5" aria-hidden="true" />
             </span>
-            <h1 className="text-lg font-bold tracking-[-0.015em]">Activity</h1>
+            <h1 className="text-2xl font-bold tracking-[-0.025em] sm:text-lg sm:tracking-[-0.015em]">
+              Activity
+            </h1>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Invites, notifications, and conversations that need you.
@@ -67,7 +69,7 @@ export function ActivityView({ rooms, onSelectRoom }: ActivityViewProps) {
                   key={room.room_id}
                   type="button"
                   onClick={() => onSelectRoom(room.room_id)}
-                  className="group flex min-h-18 w-full items-center gap-3 rounded-2xl border border-transparent bg-[var(--ux-content-raised)] px-4 py-3 text-left shadow-[0_10px_30px_rgba(0,0,0,0.08)] transition hover:-translate-y-px hover:border-[var(--ux-shell-border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ux-shell-focus)]"
+                  className="group flex min-h-18 w-full items-center gap-3 rounded-2xl border border-transparent bg-[var(--ux-content-raised)] px-4 py-3 text-left shadow-[0_6px_20px_rgba(0,0,0,0.06)] transition active:scale-[0.99] active:opacity-75 sm:hover:-translate-y-px sm:hover:border-[var(--ux-shell-border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ux-shell-focus)]"
                 >
                   <Avatar size="lg" className="size-11">
                     <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />

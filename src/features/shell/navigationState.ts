@@ -1,8 +1,8 @@
-export type PrimaryDestination = "home" | "direct-messages" | "activity" | "space";
+export type PrimaryDestination = "home" | "direct-messages" | "activity" | "spaces" | "space";
 
 export type ContextPanelKind = "members" | "pinned-messages" | null;
 
-export type MobileRoute = "room-list" | "conversation" | "context-panel" | "activity";
+export type MobileRoute = "room-list" | "conversation" | "context-panel" | "activity" | "spaces";
 
 export interface AppNavigationState {
   destination: PrimaryDestination;

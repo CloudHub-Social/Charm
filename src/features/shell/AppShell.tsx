@@ -1,5 +1,5 @@
-import { Bell, MessageSquare, Settings as SettingsIcon } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useDrag } from "@use-gesture/react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useFlag } from "@/featureFlags";
 import { useAtomValue } from "jotai";
@@ -9,12 +9,13 @@ import { ChatVisibilityContext } from "./chatVisibility";
 import type { PrimaryDestination } from "./navigationState";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { usePanePreferences } from "./usePanePreferences";
+import { MobileBottomNav } from "./MobileBottomNav";
 import { cn } from "@/lib/utils";
 
 export type MobileView = "list" | "detail";
 
 interface AppShellProps {
-  /** The dedicated spaces rail, shown beside the room list on desktop and mobile list views. */
+  /** The dedicated spaces rail, shown beside the room list on desktop. */
   spaceRail: ReactNode;
   /** The rooms rail (`RoomList`) — rendered as the sidebar on desktop, and as the "Chats" tab's list on mobile. */
   roomList: ReactNode;
@@ -40,16 +41,17 @@ interface AppShellProps {
   onMobileViewChange: (view: MobileView) => void;
   primaryDestination?: PrimaryDestination;
   destinationContent?: ReactNode;
+  /** Full-width compact Spaces root; the desktop rail remains mounted only on desktop. */
+  mobileSpacesContent?: ReactNode;
   onSelectChats?: () => void;
   onSelectActivity?: () => void;
+  onSelectSpaces?: () => void;
 }
 
 /**
  * Switches between the desktop sidebar layout (rooms rail + content side by
- * side) and a mobile bottom navigation with Chats and Settings destinations at
- * the `useAdaptiveLayout` breakpoint — Spec 10.
- * Bottom-nav is Day-1; swipe gestures and haptics are Day-2 (see the spec's
- * non-goals).
+ * side) and a compact, platform-adaptive root with pushed conversation detail,
+ * edge-swipe back, and bottom navigation at the `useAdaptiveLayout` breakpoint.
  */
 export function AppShell({
   spaceRail,
@@ -64,8 +66,10 @@ export function AppShell({
   chatObscured = false,
   primaryDestination = "home",
   destinationContent = null,
+  mobileSpacesContent = null,
   onSelectChats,
   onSelectActivity,
+  onSelectSpaces,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
@@ -75,13 +79,58 @@ export function AppShell({
   const { openSettings } = useSettingsNavigation();
   const { preferences, setRoomSidebarWidth } = usePanePreferences();
   const contentRef = useRef<HTMLDivElement>(null);
+  const [mobileDragX, setMobileDragX] = useState(0);
+  const [mobileDragging, setMobileDragging] = useState(false);
   const showingActivity = primaryDestination === "activity";
+  const showingMobileSpaces = layout === "mobile" && primaryDestination === "spaces";
   const chatVisible =
     !showingActivity &&
+    !showingMobileSpaces &&
     !isSettingsActive &&
     !chatObscured &&
     !verificationOverlayOpen &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
+  const mobileBackGestureEnabled =
+    uxRefreshEnabled &&
+    layout === "mobile" &&
+    mobileView === "detail" &&
+    !!activeRoomId &&
+    rightPanel === null &&
+    !isSettingsActive &&
+    !showingActivity;
+  const bindMobileBack = useDrag(
+    ({
+      first,
+      last,
+      initial: [startX],
+      movement: [x, y],
+      velocity: [velocityX],
+      direction: [xDirection],
+      cancel,
+    }) => {
+      if (!mobileBackGestureEnabled) return;
+      if (first && startX > 28) {
+        cancel();
+        return;
+      }
+      if (x < 0 || Math.abs(y) > Math.abs(x)) {
+        if (last) {
+          setMobileDragging(false);
+          setMobileDragX(0);
+        }
+        return;
+      }
+      const nextX = Math.min(120, x);
+      setMobileDragging(!last);
+      setMobileDragX(nextX);
+      if (!last) return;
+      if (nextX >= 72 || (velocityX > 0.35 && xDirection > 0)) {
+        onMobileViewChange("list");
+      }
+      setMobileDragX(0);
+    },
+    { filterTaps: true, threshold: 4 },
+  );
 
   useEffect(() => {
     if (chatVisible) return;
@@ -135,15 +184,22 @@ export function AppShell({
         ref={contentRef}
         hidden={
           showingActivity ||
+          showingMobileSpaces ||
           (layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null))
         }
-        className={
+        className={cn(
           layout === "desktop"
             ? uxRefreshEnabled
               ? "flex min-w-0 flex-1 [&>div]:min-w-0"
               : "contents"
-            : "h-full min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0"
-        }
+            : "h-full min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] will-change-transform [&>div]:h-full [&>div]:w-full [&>div]:border-l-0",
+          layout === "mobile" && !mobileDragging && "transition-transform duration-150",
+        )}
+        style={{
+          transform: mobileDragX > 0 ? `translateX(${mobileDragX}px)` : undefined,
+          touchAction: mobileBackGestureEnabled ? "pan-y" : undefined,
+        }}
+        {...(mobileBackGestureEnabled ? bindMobileBack() : {})}
       >
         <ChatVisibilityContext.Provider value={chatVisible}>
           {content}
@@ -163,6 +219,8 @@ export function AppShell({
       {layout === "mobile" &&
         (showingActivity ? (
           destinationContent
+        ) : showingMobileSpaces ? (
+          mobileSpacesContent
         ) : mobileView === "detail" && activeRoomId ? (
           rightPanel && (
             <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
@@ -172,13 +230,13 @@ export function AppShell({
         ) : (
           <div
             className={cn(
-              "flex min-h-0 flex-1 pt-[env(safe-area-inset-top)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0",
+              "flex min-h-0 flex-1 pt-[env(safe-area-inset-top)]",
               uxRefreshEnabled
-                ? "[&>aside:first-child]:w-20 [&>aside:last-child]:w-[calc(100%-80px)]"
-                : "[&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)]",
+                ? "[&>aside]:w-full [&>aside]:border-r-0"
+                : "[&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0",
             )}
           >
-            {spaceRail}
+            {!uxRefreshEnabled && spaceRail}
             {roomList}
           </div>
         ))}
@@ -188,55 +246,26 @@ export function AppShell({
           !mobileChatLayoutEnabled ||
           mobileView === "list" ||
           !activeRoomId) && (
-          <nav
-            className={cn(
-              "flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]",
-              uxRefreshEnabled &&
-                "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] px-2 pt-1",
-            )}
-            aria-label="Primary"
-          >
-            <button
-              type="button"
-              aria-current={
-                (
-                  uxRefreshEnabled
-                    ? !showingActivity && !isSettingsActive
-                    : mobileView === "list" && !isSettingsActive
-                )
-                  ? "page"
-                  : undefined
-              }
-              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
-              onClick={() => {
-                onSelectChats?.();
-                onMobileViewChange("list");
-              }}
-            >
-              <MessageSquare className="size-5" aria-hidden="true" />
-              Chats
-            </button>
-            {uxRefreshEnabled && onSelectActivity && (
-              <button
-                type="button"
-                aria-current={showingActivity ? "page" : undefined}
-                className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
-                onClick={onSelectActivity}
-              >
-                <Bell className="size-5" aria-hidden="true" />
-                Activity
-              </button>
-            )}
-            <button
-              type="button"
-              aria-current={isSettingsActive ? "page" : undefined}
-              className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-xs text-muted-foreground aria-[current=page]:bg-[var(--ux-selection)] aria-[current=page]:text-foreground"
-              onClick={() => openSettings("account")}
-            >
-              <SettingsIcon className="size-5" aria-hidden="true" />
-              Settings
-            </button>
-          </nav>
+          <MobileBottomNav
+            refresh={uxRefreshEnabled}
+            chatsActive={
+              uxRefreshEnabled
+                ? !showingActivity && !showingMobileSpaces && !isSettingsActive
+                : mobileView === "list" && !isSettingsActive
+            }
+            activityActive={showingActivity}
+            spacesActive={showingMobileSpaces}
+            settingsActive={isSettingsActive}
+            showActivity={uxRefreshEnabled && !!onSelectActivity}
+            showSpaces={uxRefreshEnabled && !!onSelectSpaces}
+            onSelectChats={() => {
+              onSelectChats?.();
+              onMobileViewChange("list");
+            }}
+            onSelectActivity={onSelectActivity}
+            onSelectSpaces={onSelectSpaces}
+            onSelectSettings={() => openSettings("account")}
+          />
         )}
     </div>
   );
