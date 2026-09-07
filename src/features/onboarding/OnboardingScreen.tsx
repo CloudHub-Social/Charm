@@ -89,7 +89,7 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
           Skip
         </Button>
       </div>
-      <div className="motion-safe:transition-opacity motion-safe:duration-200 flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6 sm:items-center">
+      <div className="motion-safe:transition-opacity motion-safe:duration-200 flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
         {pane === "orientation" && (
           <OrientationPane onNext={next} nextDisabled={verificationStatusPending} />
         )}

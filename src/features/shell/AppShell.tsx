@@ -211,7 +211,7 @@ export function AppShell({
         !showingActivity &&
         rightPanel &&
         (uxRefreshEnabled ? (
-          <div className="z-30 h-full shrink-0 shadow-[-18px_0_45px_rgba(0,0,0,0.18)] max-xl:absolute max-xl:inset-y-0 max-xl:right-0 xl:shadow-none [&>div]:h-full">
+          <div className="z-30 h-full shrink-0 shadow-[-18px_0_45px_rgba(0,0,0,0.18)] max-[1199px]:absolute max-[1199px]:inset-y-0 max-[1199px]:right-0 min-[1200px]:shadow-none [&>div]:h-full">
             {rightPanel}
           </div>
         ) : (
