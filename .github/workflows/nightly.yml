@@ -1640,13 +1640,25 @@ jobs:
               || [ ! -s "$manifest_input" ]; then
               # A failed first upload can leave the rolling release without a
               # manifest. Start from the checked-in canonical source instead
-              # of permanently wedging subsequent nightly publication.
-              echo '::warning::existing iOS nightly has no usable source manifest; rebuilding it from the template'
-              manifest_input=.github/templates/altstore-source.json
+              # of permanently wedging subsequent nightly publication. Rebuild
+              # its entries from retained metadata so cleanup preserves the
+              # rollback IPAs after a transient manifest-upload failure.
+              echo '::warning::existing iOS nightly has no usable source manifest; recovering it from retained metadata'
               manifest_recovered=true
             fi
             gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
               > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
+            if [ "$manifest_recovered" = true ]; then
+              metadata_dir="$RUNNER_TEMP/recovered-ios-metadata"
+              mkdir -p "$metadata_dir"
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                --pattern 'Charm-*-ios-arm64.ipa.build-metadata.txt' --dir "$metadata_dir" --clobber || true
+              gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+                > "$RUNNER_TEMP/available-ios-nightly-assets.json"
+              node scripts/recover-altstore-source.mjs .github/templates/altstore-source.json "$metadata_dir" \
+                "$RUNNER_TEMP/available-ios-nightly-assets.json" "$manifest_input" \
+                "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            fi
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease \
               --target "$GITHUB_SHA" --title 'Charm iOS nightly' \
