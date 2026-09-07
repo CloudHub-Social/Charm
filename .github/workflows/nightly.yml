@@ -1216,11 +1216,16 @@ jobs:
           fi
 
   ios:
-    name: iOS (tauri ios build, simulator target)
-    runs-on: macos-latest
+    name: iOS (simulator and unsigned sideload IPA)
+    # Device IPA export needs the same Xcode 27/iOS 27 SDK proven by the
+    # release-evidence workflow; macos-latest currently selects Xcode 26.
+    runs-on: xcode-27
     permissions:
       contents: read
       issues: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     # See the macOS job's HAS_SCCACHE_CREDS/HAS_SENTRY_CREDS comments.
     env:
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
@@ -1231,6 +1236,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Select and record Xcode 27
+        run: |
+          set -euo pipefail
+          current_version=$(xcodebuild -version | awk '/^Xcode / { print $2 }')
+          if [[ "$current_version" == 27.* ]]; then
+            developer_dir=$(xcode-select -p)
+          else
+            xcode_app=$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' -print | sort | tail -1)
+            [ -n "$xcode_app" ] || { echo "::error::Xcode 27 is required, found $current_version"; exit 1; }
+            developer_dir="$xcode_app/Contents/Developer"
+          fi
+          export DEVELOPER_DIR="$developer_dir"
+          xcodebuild -version | tee .xcode-version.txt
+          [[ "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" == 27.* ]] || {
+            echo "::error::selected Xcode is not 27.x"
+            exit 1
+          }
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+
       - name: Enable Swift bridge symbol repair
         run: echo "$GITHUB_WORKSPACE/scripts/xcode27-swiftrs-tools" >> "$GITHUB_PATH"
 
@@ -1240,7 +1264,7 @@ jobs:
           # Without this, Xcode 27 reaches the final arm64 link and fails with
           # undefined _register_plugin/_init_plugin_* symbols.
           components: llvm-tools-preview
-          targets: aarch64-apple-ios-sim
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
@@ -1263,6 +1287,8 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm check:ios-config
+      - run: node --test scripts/configure-sideload-ios.test.mjs
 
       - name: Compute build id
         id: build-id
@@ -1270,6 +1296,18 @@ jobs:
           SHA: ${{ github.sha }}
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
+
+      - name: Configure Sentry release environment
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          REQUIRE_VITE_SENTRY_DSN: "true"
+          WRITE_RUST_DEBUG_ENV: "true"
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       # NOT a step-level `env:` on the build command below, unlike every
       # other platform job in this workflow. `pnpm tauri ios build` shells
@@ -1300,6 +1338,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
           SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           BUILD_ID: ${{ steps.build-id.outputs.build-id }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
         run: |
           set -euo pipefail
           cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -1325,6 +1364,8 @@ jobs:
             fi
             if [ "$HAS_SENTRY_CREDS" = "true" ]; then
               echo 'CARGO_PROFILE_RELEASE_DEBUG = "1"'
+              echo "SENTRY_DSN = \"${SENTRY_DSN}\""
+              echo 'SENTRY_ENVIRONMENT = "development"'
             fi
             echo "BUILD_ID = \"${BUILD_ID}\""
           } >> "$config"
@@ -1334,7 +1375,11 @@ jobs:
       # signing identity configured for CI, and simulator builds don't need
       # one — compile verification only, not a distributable IPA. Release
       # mode (no --debug), same as every other job in this workflow.
-      - run: pnpm tauri ios build --target aarch64-sim --ci
+      - name: Build unsigned release simulator app
+        env:
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_ENVIRONMENT: development
+        run: VITE_SENTRY_RELEASE="${SENTRY_RELEASE:-}" pnpm tauri ios build --target aarch64-sim --ci
 
       - name: Resolve Apple debug-file directories
         id: apple-debug-files
@@ -1385,6 +1430,147 @@ jobs:
             --log-level info \
             "${paths[@]}"
 
+      - name: Build and validate unsigned arm64 sideload IPA
+        id: sideload-ipa
+        env:
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_ENVIRONMENT: development
+        run: |
+          set -euo pipefail
+          version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          build="$GITHUB_RUN_NUMBER"
+          sha_short="${GITHUB_SHA:0:7}"
+          node scripts/configure-sideload-ios.mjs "$GITHUB_WORKSPACE" "$version" "$build"
+          VITE_SENTRY_RELEASE="${SENTRY_RELEASE:-}" pnpm tauri ios build --target aarch64 --no-sign --ci
+          ipa=$(find src-tauri/gen/apple/build -type f -path '*/arm64/*.ipa' -print -quit)
+          [ -n "$ipa" ] || { echo '::error::unsigned arm64 IPA was not produced'; exit 1; }
+          asset="Charm-${version}-nightly.${build}.${sha_short}-ios-arm64.ipa"
+          mkdir -p .artifacts/ios-sideload
+          cp "$ipa" ".artifacts/ios-sideload/$asset"
+          ipa=".artifacts/ios-sideload/$asset"
+          unzip -t "$ipa" >/dev/null
+          app_count=$(unzip -Z1 "$ipa" | grep -Ec '^Payload/[^/]+\.app/Info\.plist$' || true)
+          [ "$app_count" -eq 1 ] || { echo "::error::expected one app Info.plist, found $app_count"; exit 1; }
+          if unzip -Z1 "$ipa" | grep -Eq '/embedded\.mobileprovision$'; then
+            echo '::error::sideload IPA must not contain a publisher provisioning profile'
+            exit 1
+          fi
+          unzip -p "$ipa" 'Payload/*.app/Info.plist' > .artifacts/ios-sideload/Info.plist
+          [ "$(plutil -extract CFBundleIdentifier raw -o - .artifacts/ios-sideload/Info.plist)" = social.cloudhub.charm ] || exit 1
+          [ "$(plutil -extract CFBundleShortVersionString raw -o - .artifacts/ios-sideload/Info.plist)" = "$version" ] || exit 1
+          [ "$(plutil -extract CFBundleVersion raw -o - .artifacts/ios-sideload/Info.plist)" = "$build" ] || exit 1
+          if plutil -extract UIBackgroundModes json -o - .artifacts/ios-sideload/Info.plist 2>/dev/null | grep -q remote-notification; then
+            echo '::error::sideload IPA retains unsupported remote-notification mode'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/charm-ios-sideload"
+          ditto -x -k "$ipa" "$RUNNER_TEMP/charm-ios-sideload"
+          app_path=$(find "$RUNNER_TEMP/charm-ios-sideload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)
+          [ -n "$app_path" ] || { echo '::error::unpacked sideload IPA has no app bundle'; exit 1; }
+          executable=$(plutil -extract CFBundleExecutable raw -o - .artifacts/ios-sideload/Info.plist)
+          lipo -archs "$app_path/$executable" | grep -qx arm64
+          if codesign -dvv "$app_path" 2>&1 | grep -q '^Authority='; then
+            echo '::error::sideload IPA must not carry a publisher signing authority'
+            exit 1
+          fi
+          ditto "$app_path" .artifacts/ios-sideload/Charm.app
+          # Release assets are downloaded by basename, so record that same
+          # portable filename instead of the runner-only artifacts path.
+          (cd .artifacts/ios-sideload && shasum -a 256 "$asset" > "${asset}.sha256")
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "version=$version"
+            echo "build=$build"
+            echo "asset=$asset"
+            echo "size=$(stat -f%z "$ipa")"
+            xcodebuild -version
+          } > ".artifacts/ios-sideload/${asset}.build-metadata.txt"
+          {
+            echo "path=$ipa"
+            echo "asset=$asset"
+            echo "version=$version"
+            echo "build=$build"
+            echo "size=$(stat -f%z "$ipa")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve device Apple debug-file directories
+        id: device-apple-debug-files
+        run: |
+          set -euo pipefail
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          paths=(
+            "$target_dir/aarch64-apple-ios/release"
+            "src-tauri/gen/apple/build/arm64"
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              existing+=("$path")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo '::error::No device Apple debug-file directories found'
+            exit 1
+          fi
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${existing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload device Apple debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          DEBUG_FILE_PATHS: ${{ steps.device-apple-debug-files.outputs.paths }}
+        run: |
+          set -euo pipefail
+          paths=()
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done <<< "$DEBUG_FILE_PATHS"
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "${paths[@]}"
+
+      - name: Generate sideload IPA SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .artifacts/ios-sideload/Charm.app
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: .artifacts/ios-sideload/${{ steps.sideload-ipa.outputs.asset }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest unsigned sideload IPA
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.sideload-ipa.outputs.path }}
+
+      - name: Upload sideload IPA artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # This intentionally does not begin with `nightly-`: the dated
+          # desktop/Android publisher downloads that broad prefix.
+          name: ios-sideload
+          path: |
+            .artifacts/ios-sideload/*.ipa
+            .artifacts/ios-sideload/*.ipa.sha256
+            .artifacts/ios-sideload/*.ipa.spdx.json
+            .artifacts/ios-sideload/*.ipa.build-metadata.txt
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Track failure as a GitHub issue
         if: failure() && github.ref == 'refs/heads/main'
         env:
@@ -1398,6 +1584,216 @@ jobs:
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
             gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  publish-ios-nightly:
+    name: Publish iOS sideload nightly
+    needs: [ios]
+    if: needs.ios.result == 'success' && github.ref == 'refs/heads/main'
+    # Both a scheduled run and a maintainer dispatch can complete the build
+    # together. They share one rolling release and manifest, so serialize the
+    # read-modify-upload-retention sequence rather than letting either run
+    # overwrite the other's release assets.
+    concurrency:
+      group: ios-nightly-publication
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    environment: nightly-signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-sideload
+          path: artifacts
+
+      - name: Publish IPA, integrity files, and AltStore source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          tag=ios-nightly
+          ipa=$(find artifacts -maxdepth 1 -type f -name 'Charm-*-ios-arm64.ipa' -print -quit)
+          [ -n "$ipa" ] || { echo '::error::sideload IPA artifact missing'; exit 1; }
+          asset=$(basename "$ipa")
+          checksum="${ipa}.sha256"
+          sbom="${ipa}.spdx.json"
+          metadata="${ipa}.build-metadata.txt"
+          [ -s "$checksum" ] && [ -s "$sbom" ] && [ -s "$metadata" ] || {
+            echo '::error::sideload integrity artifact missing'
+            exit 1
+          }
+          version=$(sed -n 's/^version=//p' "$metadata")
+          build=$(sed -n 's/^build=//p' "$metadata")
+          [ -n "$version" ] && [ -n "$build" ] || { echo '::error::sideload metadata is incomplete'; exit 1; }
+          manifest_recovered=false
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            manifest_input="$RUNNER_TEMP/previous-altstore-source.json"
+            if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern altstore-source.json --output "$manifest_input" --clobber \
+              || [ ! -s "$manifest_input" ]; then
+              # A failed first upload can leave the rolling release without a
+              # manifest. Start from the checked-in canonical source instead
+              # of permanently wedging subsequent nightly publication. Rebuild
+              # its entries from retained metadata so cleanup preserves the
+              # rollback IPAs after a transient manifest-upload failure.
+              echo '::warning::existing iOS nightly has no usable source manifest; recovering it from retained metadata'
+              manifest_recovered=true
+            fi
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+              > "$RUNNER_TEMP/available-ios-nightly-assets.json"
+            jq -r '.assets[].name' "$RUNNER_TEMP/available-ios-nightly-assets.json" \
+              > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
+            if [ "$manifest_recovered" = true ]; then
+              metadata_dir="$RUNNER_TEMP/recovered-ios-metadata"
+              mkdir -p "$metadata_dir"
+              if [ "$(jq '[.assets[] | select(.name | endswith(".ipa.build-metadata.txt"))] | length' "$RUNNER_TEMP/available-ios-nightly-assets.json")" -gt 0 ]; then
+                gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                  --pattern 'Charm-*-ios-arm64.ipa.build-metadata.txt' --dir "$metadata_dir" --clobber
+              fi
+              node scripts/recover-altstore-source.mjs .github/templates/altstore-source.json "$metadata_dir" \
+                "$RUNNER_TEMP/available-ios-nightly-assets.json" "$manifest_input" \
+                "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            fi
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease \
+              --target "$GITHUB_SHA" --title 'Charm iOS nightly' \
+              --notes 'Rolling unsigned Charm IPA for AltStore and SideStore.'
+            manifest_input=.github/templates/altstore-source.json
+            : > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
+          fi
+          # Without a prior manifest, an older re-run cannot be recognized by
+          # the normal manifest ordering guard below. The asset filenames are
+          # immutable and include their numeric build, so use the retained
+          # IPAs as the authority before reconstructing the manifest.
+          if [ "$manifest_recovered" = true ]; then
+            highest_published_build=$(node -e 'const fs = require("node:fs"); const assets = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").filter(Boolean); const builds = assets.flatMap((name) => { const match = name.match(/^Charm-\d+\.\d+\.\d+-nightly\.(\d+)\.[0-9a-f]{7}-ios-arm64\.ipa$/); return match ? [BigInt(match[1])] : []; }); if (builds.length > 0) console.log(builds.reduce((highest, candidate) => highest > candidate ? highest : candidate).toString());' "$RUNNER_TEMP/available-ios-nightly-assets.txt")
+            if [ -n "$highest_published_build" ] && node -e 'process.exit(BigInt(process.argv[1]) < BigInt(process.argv[2]) ? 0 : 1)' "$build" "$highest_published_build"; then
+              echo "::notice::build $build is older than retained iOS nightly build $highest_published_build; leaving ios-nightly unchanged"
+              exit 0
+            fi
+          fi
+          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$asset"
+          manifest="$RUNNER_TEMP/altstore-source.json"
+          marketing_version="Charm ${version} nightly.${build} (${GITHUB_SHA:0:7})"
+          node scripts/update-altstore-source.mjs .github/templates/altstore-source.json "$manifest_input" \
+            "$RUNNER_TEMP/available-ios-nightly-assets.txt" "$manifest" "$version" "$build" \
+            "$(stat -c%s "$ipa")" "$download_url" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marketing_version"
+          VERSION="$version" BUILD="$build" jq -e '
+            .identifier == "social.cloudhub.charm.ios-nightly.source" and
+            .apps[0].bundleIdentifier == "social.cloudhub.charm" and
+            (.apps[0].appPermissions.entitlements | length == 0) and
+            any(.apps[0].versions[]; .version == env.VERSION and .buildVersion == env.BUILD)
+          ' "$manifest" >/dev/null
+          # A maintainer can rerun an older completed workflow after newer
+          # builds have published. Do not roll the stable source URL, tag, or
+          # three-build retention window backward in that case.
+          if [ "$(jq -r '.apps[0].versions[0].buildVersion' "$manifest")" != "$build" ]; then
+            echo "::notice::build $build is older than the published iOS nightly; leaving ios-nightly unchanged"
+            exit 0
+          fi
+          signature_assets=()
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            export GNUPGHOME="$RUNNER_TEMP/gnupg"
+            mkdir -p "$GNUPGHOME"
+            chmod 700 "$GNUPGHOME"
+            printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+            key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+            for file in "$ipa" "$checksum" "$sbom" "$metadata" "$manifest"; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$key_id" --detach-sign --armor "$file"
+              signature_assets+=("${file}.asc")
+            done
+            # A rolling source retains three releases. Keep each exported key
+            # under its immutable key ID so a rotation does not make the
+            # preceding retained builds' signatures unverifiable.
+            signing_key="$RUNNER_TEMP/charm-ios-nightly-signing-key-${key_id}.asc"
+            gpg --batch --armor --export "$key_id" > "$signing_key"
+            signature_assets+=("$signing_key")
+          fi
+          # `--clobber` replaces a re-run's IPA and sidecars but leaves
+          # detached signatures untouched. Remove this build's old signatures
+          # before any replacement so a failed upload cannot publish bytes
+          # alongside a signature for their predecessor.
+          for stale in \
+            "${asset}.asc" "${asset}.sha256.asc" "${asset}.spdx.json.asc" "${asset}.build-metadata.txt.asc"; do
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$stale"; then
+              gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$stale" --yes
+            fi
+          done
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$ipa" "$checksum" "$sbom" "$metadata"
+          remote_size=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$asset\") | .size")
+          [ "$remote_size" = "$(stat -c%s "$ipa")" ] || {
+            echo '::error::remote IPA size does not match the locally verified artifact'
+            exit 1
+          }
+          # The canonical manifest is deliberately uploaded last: every IPA it
+          # references is already present and size-verified when clients see it.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq altstore-source.json.asc; then
+            gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" altstore-source.json.asc --yes
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$manifest#altstore-source.json" "${signature_assets[@]}"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" \
+            -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          cat > "$RUNNER_TEMP/ios-nightly-notes.md" <<EOF
+          Rolling unsigned arm64 iOS/iPadOS build from commit $GITHUB_SHA.
+
+          Install from the attached AltStore source manifest. AltStore or SideStore
+          signs it with the device owner's Personal Team; this is not an Apple-signed
+          distribution channel. Killed-state remote push is unavailable.
+
+          Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "Charm iOS nightly — $marketing_version" \
+            --notes-file "$RUNNER_TEMP/ios-nightly-notes.md"
+          jq -r '.apps[0].versions[].downloadURL | split("/")[-1]' "$manifest" > "$RUNNER_TEMP/retained-ios-assets.txt"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | while IFS= read -r existing; do
+                case "$existing" in
+                  Charm-*-ios-arm64.ipa)
+                    if ! grep -Fxq "$existing" "$RUNNER_TEMP/retained-ios-assets.txt"; then
+                      base="${existing%.ipa}"
+                      gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$existing" --yes
+                      for stale in \
+                        "${base}.ipa.sha256" "${base}.ipa.spdx.json" "${base}.ipa.build-metadata.txt" \
+                        "${base}.ipa.asc" "${base}.ipa.sha256.asc" "${base}.ipa.spdx.json.asc" "${base}.ipa.build-metadata.txt.asc"; do
+                        if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$stale"; then
+                          gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$stale" --yes
+                        fi
+                      done
+                    fi
+                    ;;
+                esac
+              done
+
+  track-ios-sideload-publication-failure:
+    name: Track iOS sideload publication failure
+    needs: [publish-ios-nightly]
+    if: always() && github.ref == 'refs/heads/main' && needs.publish-ios-nightly.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title='Nightly build failure: iOS sideload publication'
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly iOS sideload publication failed. First occurrence: $run_url"
           fi
 
   publish-nightly:

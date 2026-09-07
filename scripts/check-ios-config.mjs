@@ -20,6 +20,7 @@ const plist = read("src-tauri/gen/apple/charm_iOS/Info.plist");
 const cargoLock = read("Cargo.lock");
 const cargoManifest = read("Cargo.toml");
 const swiftRsNmWrapper = read("scripts/xcode27-swiftrs-tools/nm");
+const altstoreSource = JSON.parse(read(".github/templates/altstore-source.json"));
 
 requireCondition(
   tauri.bundle?.iOS?.minimumSystemVersion === "15.0",
@@ -117,6 +118,27 @@ requireCondition(
 requireCondition(
   !/DEVELOPMENT_TEAM\s*=\s*[A-Z0-9]{10}\s*;/.test(committedAppleConfiguration),
   "a concrete Apple development team identifier was committed",
+);
+
+const altstoreApp = altstoreSource.apps?.[0];
+const plistString = (key) =>
+  plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]+)</string>`))?.[1];
+requireCondition(
+  altstoreSource.identifier === "social.cloudhub.charm.ios-nightly.source" &&
+    altstoreApp?.bundleIdentifier === "social.cloudhub.charm",
+  "AltStore source must identify the canonical Charm nightly app",
+);
+requireCondition(
+  Array.isArray(altstoreApp?.appPermissions?.entitlements) &&
+    altstoreApp.appPermissions.entitlements.length === 0,
+  "Personal Team AltStore source must not advertise APNs or App Group entitlements",
+);
+requireCondition(
+  altstoreApp?.appPermissions?.privacy?.NSCameraUsageDescription ===
+    plistString("NSCameraUsageDescription") &&
+    altstoreApp.appPermissions.privacy.NSMicrophoneUsageDescription ===
+      plistString("NSMicrophoneUsageDescription"),
+  "AltStore source privacy declarations must match Charm's iOS Info.plist",
 );
 
 if (errors.length > 0) {

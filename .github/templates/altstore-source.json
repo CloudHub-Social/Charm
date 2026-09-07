@@ -1,0 +1,33 @@
+{
+  "name": "Charm Nightly",
+  "identifier": "social.cloudhub.charm.ios-nightly.source",
+  "subtitle": "Unsigned iPhone and iPad builds",
+  "description": "Nightly Charm builds for AltStore and SideStore. Your Personal Team signs the app at installation time.",
+  "iconURL": "https://charm-docs.cloudhub.social/favicon.png",
+  "website": "https://github.com/CloudHub-Social/Charm",
+  "tintColor": "#5B4BFF",
+  "featuredApps": ["social.cloudhub.charm"],
+  "apps": [
+    {
+      "name": "Charm",
+      "bundleIdentifier": "social.cloudhub.charm",
+      "developerName": "CloudHub Social",
+      "subtitle": "Charm nightly for iOS and iPadOS",
+      "localizedDescription": "Unsigned nightly build for personal-device testing. AltStore or SideStore performs the final Personal Team signing. Remote notifications while the app is killed are unavailable in this channel.",
+      "iconURL": "https://charm-docs.cloudhub.social/favicon.png",
+      "tintColor": "#5B4BFF",
+      "category": "social",
+      "beta": true,
+      "screenshots": [],
+      "versions": [],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSCameraUsageDescription": "Charm needs camera access for video calls.",
+          "NSMicrophoneUsageDescription": "Charm uses the microphone to record voice messages you choose to send and for calls."
+        }
+      }
+    }
+  ],
+  "news": []
+}

@@ -46,11 +46,11 @@ same day. On-demand validation builds use the commit-qualified tag
 `nightly-YYYY-MM-DD-SHA`, so their binaries and source archives stay aligned;
 re-running the same commit updates that commit's release. These are
 release-profile builds for testing — not signed by a trusted publisher, not
-auto-updating, not for production use. iOS is intentionally not published here:
-signed cloud IPAs require protected Apple distribution credentials. A paid Apple
-Developer Program membership is **not** required to install a local Personal Team
-build on an owned iPhone or iPad; use the
-[personal-device runbook](docs-site/src/content/docs/operations/personal-apple-device.md).
+auto-updating, not for production use. iPhone and iPad builds are published through
+the separate rolling [`ios-nightly`](../../releases/tag/ios-nightly) prerelease so
+AltStore and SideStore can keep a stable source URL. A paid Apple Developer Program
+membership is **not** required: the device owner's Personal Team performs the final
+signing. See the [personal-device runbook](docs-site/src/content/docs/operations/personal-apple-device.md).
 
 Because the builds aren't signed by a certificate a trusted authority
 recognizes, each OS's normal "this isn't from a known publisher" gate needs
@@ -77,6 +77,13 @@ a one-time bypass per download:
   Android Gradle Plugin's own auto-generated debug keystore, which is
   regenerated fresh on every CI run — every "nightly" would need a manual
   uninstall+reinstall in that case.
+- **iOS / iPadOS**: install [AltStore](https://altstore.io) or
+  [SideStore](https://sidestore.io), then add this source URL:
+  `https://github.com/CloudHub-Social/Charm/releases/download/ios-nightly/altstore-source.json`.
+  The IPA is intentionally unsigned by Charm. The client re-signs it with your
+  Personal Team and must refresh it about every seven days. This sideload lane
+  deliberately excludes APNs and App Groups, so it supports foreground-resume sync
+  and local notifications but not killed-state remote push.
 
 ### Verifying a nightly download
 
@@ -98,6 +105,13 @@ if you grabbed everything.) SHA1 is provided because it was asked for, not
 because it adds any real security over SHA256 — SHA1 is broken for
 collision resistance. Treat `SHA256SUMS.txt` and the GPG signatures below as
 the actual integrity checks, and `SHA1SUMS.txt` as compatibility-only.
+
+The iOS sideload prerelease instead ships an IPA-specific `<filename>.ipa.sha256`,
+an SPDX SBOM, and a GitHub build provenance attestation. Verify the hash with
+`shasum -a 256 -c <filename>.ipa.sha256` before importing the source if you need an
+independent download check. When its GPG signature is present, import the attached
+versioned `charm-ios-nightly-signing-key-<key-id>.asc`; older retained iOS builds can
+require an earlier attached key after a signing-key rotation.
 
 **GPG signatures** — attached when `GPG_PRIVATE_KEY` is configured in the
 protected `nightly-signing` or `release-signing` environment (see below): every artifact gets its own detached
