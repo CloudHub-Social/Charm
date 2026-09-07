@@ -20,6 +20,33 @@ TestFlight, and App Store distribution, but is not a prerequisite for this lane.
 
 Do not describe the paid-program row as a blocker for a Personal Team build.
 
+## AltStore and SideStore nightly lane
+
+The rolling CI source is for personal-device testing without putting an Apple
+certificate, provisioning profile, or Apple Account credential in GitHub:
+
+`https://github.com/CloudHub-Social/Charm/releases/download/ios-nightly/altstore-source.json`
+
+Add that URL in AltStore or SideStore, then install the current Charm build. The IPA
+is built for arm64 and is intentionally unsigned by Charm; AltStore or SideStore
+re-signs it with the device owner's Personal Team. The source retains the current
+build and two earlier builds for rollback. Its build number increases with the CI
+run, while the displayed version tracks the repository version.
+
+This is a separate testing channel, not TestFlight or App Store distribution. It
+removes APNs, App Group, and remote-notification capabilities in the CI-only build
+overlay because a free Personal Team cannot provision them reliably. Camera and
+microphone prompts remain available. Foreground-resume sync, normal UI testing, and
+local notifications are in scope; remote delivery while Charm is backgrounded or
+killed is not.
+
+Before trusting a build, compare its attached `.ipa.sha256` file with
+`shasum -a 256 -c <filename>.ipa.sha256`, inspect the attached SPDX SBOM and GitHub
+provenance attestation, and record the source SHA and workflow URL from the release
+notes. Refresh before the Personal Team profile expires (normally about seven days)
+and install an earlier retained build over the same app for rollback; do not clear
+the Matrix store as a rollback technique.
+
 ## Select and prepare the source
 
 1. Select an exact `origin/main` commit whose required GitHub Actions checks pass.
@@ -98,7 +125,9 @@ The `iOS release evidence` workflow is a separate proof lane, not a distribution
 mechanism. On iOS-, Tauri-, Cargo-, authentication-, or persistence-affecting
 changes it selects Xcode 27, builds a release simulator app, installs and opens it,
 delivers `charm://sso-callback`, and verifies that the process remains alive. It also
-creates an unsigned arm64 device archive.
+creates an unsigned arm64 device archive. The nightly workflow independently builds
+and validates the distributable arm64 sideload IPA, then publishes it only through
+the `ios-nightly` prerelease after its checksum, SBOM, and provenance are available.
 
 The workflow retains these private CI artifacts for the exact commit:
 

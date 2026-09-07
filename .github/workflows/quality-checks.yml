@@ -92,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses|sync-android-version-code|validate-changeset-packages)\.mjs|license-texts/)|\.github/workflows/(pr-checklist-gate|quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|knope\.toml$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses|sync-android-version-code|validate-changeset-packages|check-ios-config|configure-sideload-ios|update-altstore-source)\.(mjs|test\.mjs)|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|release-builds|nightly)\.yml|scripts/configure-sentry-release-env\.sh)$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|knope\.toml$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -197,8 +197,10 @@ jobs:
       - id: frontend_install
         run: pnpm install --frozen-lockfile
 
-      - name: Check committed iOS configuration consistency
-        run: pnpm check:ios-config
+      - name: Check iOS configuration and sideload tooling
+        run: |
+          pnpm check:ios-config
+          node --test scripts/configure-sideload-ios.test.mjs
 
       # Licensing files and the Sable Call non-bundling boundary apply to every
       # deliverable, so verify them even when the changed-path filter skips the

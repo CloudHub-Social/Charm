@@ -20,6 +20,7 @@ const plist = read("src-tauri/gen/apple/charm_iOS/Info.plist");
 const cargoLock = read("Cargo.lock");
 const cargoManifest = read("Cargo.toml");
 const swiftRsNmWrapper = read("scripts/xcode27-swiftrs-tools/nm");
+const altstoreSource = JSON.parse(read(".github/templates/altstore-source.json"));
 
 requireCondition(
   tauri.bundle?.iOS?.minimumSystemVersion === "15.0",
@@ -117,6 +118,25 @@ requireCondition(
 requireCondition(
   !/DEVELOPMENT_TEAM\s*=\s*[A-Z0-9]{10}\s*;/.test(committedAppleConfiguration),
   "a concrete Apple development team identifier was committed",
+);
+
+const altstoreApp = altstoreSource.apps?.[0];
+requireCondition(
+  altstoreSource.identifier === "social.cloudhub.charm.ios-nightly.source" &&
+    altstoreApp?.bundleIdentifier === "social.cloudhub.charm",
+  "AltStore source must identify the canonical Charm nightly app",
+);
+requireCondition(
+  Array.isArray(altstoreApp?.appPermissions?.entitlements) &&
+    altstoreApp.appPermissions.entitlements.length === 0,
+  "Personal Team AltStore source must not advertise APNs or App Group entitlements",
+);
+requireCondition(
+  altstoreApp?.appPermissions?.privacy?.NSCameraUsageDescription ===
+    "Charm needs camera access for video calls." &&
+    altstoreApp.appPermissions.privacy.NSMicrophoneUsageDescription ===
+      "Charm uses the microphone to record voice messages you choose to send and for calls.",
+  "AltStore source privacy declarations must match Charm's iOS Info.plist",
 );
 
 if (errors.length > 0) {

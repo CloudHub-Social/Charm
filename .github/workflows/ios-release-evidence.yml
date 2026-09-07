@@ -45,7 +45,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
-          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml$)'
+          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
           if grep -Eq "$ios_pattern" <<< "$changed"; then
             echo 'ios=true' >> "$GITHUB_OUTPUT"
           else
@@ -111,6 +111,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:ios-config
+      - run: node --test scripts/configure-sideload-ios.test.mjs
 
       - name: Build unsigned release simulator app
         run: pnpm tauri ios build --target aarch64-sim --no-sign --ci
