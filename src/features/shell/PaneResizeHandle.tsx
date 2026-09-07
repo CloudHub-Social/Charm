@@ -17,7 +17,7 @@ export function PaneResizeHandle({
         type="button"
         aria-label="Resize room sidebar"
         title={`Room sidebar width: ${width}px (${MIN_ROOM_SIDEBAR_WIDTH}–${MAX_ROOM_SIDEBAR_WIDTH}px)`}
-        className="absolute inset-0 cursor-col-resize touch-none focus-visible:outline-none"
+        className="absolute inset-y-0 left-1/2 min-h-11 w-11 -translate-x-1/2 cursor-col-resize touch-none focus-visible:outline-none"
         onPointerDown={(event) => {
           startRef.current = { x: event.clientX, width };
           event.currentTarget.setPointerCapture(event.pointerId);

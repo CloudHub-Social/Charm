@@ -206,6 +206,7 @@ export function ChatShell({
   const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
   const userProfileCardsEnabled = useFlag("user_profile_cards");
   const mobile = layout === "mobile" && (mobileChatRedesignEnabled || uxRefreshEnabled);
+  const compactComposerControls = mobile || uxRefreshEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
@@ -1072,7 +1073,7 @@ export function ChatShell({
               disabled={voiceCaptureActive}
               className={cn(
                 "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
-                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+                compactComposerControls ? "size-11 rounded-full" : "size-9 rounded-md",
               )}
             >
               <Paperclip size={18} />
@@ -1132,7 +1133,7 @@ export function ChatShell({
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
             <ComposerSendButton
-              mobile={mobile}
+              mobile={compactComposerControls}
               disabled={isComposerEmpty}
               onClick={() => composerRef.current?.submit()}
             />
