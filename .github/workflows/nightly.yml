@@ -1659,16 +1659,7 @@ jobs:
           # immutable and include their numeric build, so use the retained
           # IPAs as the authority before reconstructing the manifest.
           if [ "$manifest_recovered" = true ]; then
-            highest_published_build=$(node - "$RUNNER_TEMP/available-ios-nightly-assets.txt" <<'NODE'
-const fs = require("node:fs");
-const assets = fs.readFileSync(process.argv[2], "utf8").trim().split("\n").filter(Boolean);
-const builds = assets.flatMap((name) => {
-  const match = name.match(/^Charm-\d+\.\d+\.\d+-nightly\.(\d+)\.[0-9a-f]{7}-ios-arm64\.ipa$/);
-  return match ? [BigInt(match[1])] : [];
-});
-if (builds.length > 0) console.log(builds.reduce((highest, candidate) => highest > candidate ? highest : candidate).toString());
-NODE
-)
+            highest_published_build=$(node -e 'const fs = require("node:fs"); const assets = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").filter(Boolean); const builds = assets.flatMap((name) => { const match = name.match(/^Charm-\d+\.\d+\.\d+-nightly\.(\d+)\.[0-9a-f]{7}-ios-arm64\.ipa$/); return match ? [BigInt(match[1])] : []; }); if (builds.length > 0) console.log(builds.reduce((highest, candidate) => highest > candidate ? highest : candidate).toString());' "$RUNNER_TEMP/available-ios-nightly-assets.txt")
             if [ -n "$highest_published_build" ] && node -e 'process.exit(BigInt(process.argv[1]) < BigInt(process.argv[2]) ? 0 : 1)' "$build" "$highest_published_build"; then
               echo "::notice::build $build is older than retained iOS nightly build $highest_published_build; leaving ios-nightly unchanged"
               exit 0
@@ -1693,14 +1684,6 @@ NODE
             echo "::notice::build $build is older than the published iOS nightly; leaving ios-nightly unchanged"
             exit 0
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
-            "$ipa" "$checksum" "$sbom" "$metadata"
-          remote_size=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq ".assets[] | select(.name == \"$asset\") | .size")
-          [ "$remote_size" = "$(stat -c%s "$ipa")" ] || {
-            echo '::error::remote IPA size does not match the locally verified artifact'
-            exit 1
-          }
           signature_assets=()
           if [ -n "$GPG_PRIVATE_KEY" ]; then
             export GNUPGHOME="$RUNNER_TEMP/gnupg"
@@ -1719,23 +1702,30 @@ NODE
             signing_key="$RUNNER_TEMP/charm-ios-nightly-signing-key-${key_id}.asc"
             gpg --batch --armor --export "$key_id" > "$signing_key"
             signature_assets+=("$signing_key")
-          else
-            # `--clobber` replaces a re-run's IPA and sidecars but does not
-            # remove their detached signatures. Never leave a signature for
-            # bytes published by a later unsigned run, nor a manifest
-            # signature for the newly generated rolling source. Keep the
-            # public key: retained earlier builds can still have valid
-            # signatures made with it.
-            for stale in \
-              "${asset}.asc" "${asset}.sha256.asc" "${asset}.spdx.json.asc" "${asset}.build-metadata.txt.asc" \
-              altstore-source.json.asc; do
-              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$stale"; then
-                gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$stale" --yes
-              fi
-            done
           fi
+          # `--clobber` replaces a re-run's IPA and sidecars but leaves
+          # detached signatures untouched. Remove this build's old signatures
+          # before any replacement so a failed upload cannot publish bytes
+          # alongside a signature for their predecessor.
+          for stale in \
+            "${asset}.asc" "${asset}.sha256.asc" "${asset}.spdx.json.asc" "${asset}.build-metadata.txt.asc"; do
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$stale"; then
+              gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$stale" --yes
+            fi
+          done
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$ipa" "$checksum" "$sbom" "$metadata"
+          remote_size=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$asset\") | .size")
+          [ "$remote_size" = "$(stat -c%s "$ipa")" ] || {
+            echo '::error::remote IPA size does not match the locally verified artifact'
+            exit 1
+          }
           # The canonical manifest is deliberately uploaded last: every IPA it
           # references is already present and size-verified when clients see it.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq altstore-source.json.asc; then
+            gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" altstore-source.json.asc --yes
+          fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
             "$manifest#altstore-source.json" "${signature_assets[@]}"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" \
