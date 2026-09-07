@@ -122,5 +122,7 @@ if (errors.length > 0) {
   process.stderr.write(`iOS configuration consistency check failed:\n${errors.map((error) => `- ${error}`).join("\n")}\n`);
   process.exitCode = 1;
 } else {
-  console.log("iOS configuration is consistent (iOS 15+, canonical ID, deep link, scene delegate, swift-rs 1.0.8).");
+  process.stdout.write(
+    "iOS configuration is consistent (iOS 15+, canonical ID, deep link, scene delegate, swift-rs 1.0.8).\n",
+  );
 }
