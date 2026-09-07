@@ -73,7 +73,8 @@ requireCondition(
   "project.yml and Info.plist must both declare the static TaoSceneDelegate",
 );
 
-const swiftRsBlock = cargoLock.match(/\[\[package\]\]\nname = "swift-rs"\n[\s\S]*?(?=\n\[\[package\]\]|$)/)?.[0] ?? "";
+const swiftRsBlock =
+  cargoLock.match(/\[\[package\]\]\nname = "swift-rs"\n[\s\S]*?(?=\n\[\[package\]\]|$)/)?.[0] ?? "";
 requireCondition(
   /version = "1\.0\.8"/.test(swiftRsBlock) &&
     /source = "registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index"/.test(swiftRsBlock),
@@ -119,7 +120,9 @@ requireCondition(
 );
 
 if (errors.length > 0) {
-  process.stderr.write(`iOS configuration consistency check failed:\n${errors.map((error) => `- ${error}`).join("\n")}\n`);
+  process.stderr.write(
+    `iOS configuration consistency check failed:\n${errors.map((error) => `- ${error}`).join("\n")}\n`,
+  );
   process.exitCode = 1;
 } else {
   process.stdout.write(
