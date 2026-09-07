@@ -1470,6 +1470,54 @@ jobs:
             echo "size=$(stat -f%z "$ipa")"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve device Apple debug-file directories
+        id: device-apple-debug-files
+        run: |
+          set -euo pipefail
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          paths=(
+            "$target_dir/aarch64-apple-ios/release"
+            "src-tauri/gen/apple/build/arm64"
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              existing+=("$path")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo '::error::No device Apple debug-file directories found'
+            exit 1
+          fi
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${existing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload device Apple debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          DEBUG_FILE_PATHS: ${{ steps.device-apple-debug-files.outputs.paths }}
+        run: |
+          set -euo pipefail
+          paths=()
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done <<< "$DEBUG_FILE_PATHS"
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "${paths[@]}"
+
       - name: Generate sideload IPA SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
@@ -1602,8 +1650,12 @@ jobs:
                 --local-user "$key_id" --detach-sign --armor "$file"
               signature_assets+=("${file}.asc")
             done
-            gpg --batch --armor --export "$key_id" > "$RUNNER_TEMP/charm-ios-nightly-signing-key.asc"
-            signature_assets+=("$RUNNER_TEMP/charm-ios-nightly-signing-key.asc")
+            # A rolling source retains three releases. Keep each exported key
+            # under its immutable key ID so a rotation does not make the
+            # preceding retained builds' signatures unverifiable.
+            signing_key="$RUNNER_TEMP/charm-ios-nightly-signing-key-${key_id}.asc"
+            gpg --batch --armor --export "$key_id" > "$signing_key"
+            signature_assets+=("$signing_key")
           else
             # `--clobber` replaces a re-run's IPA and sidecars but does not
             # remove their detached signatures. Never leave a signature for

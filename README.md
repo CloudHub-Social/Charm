@@ -109,7 +109,9 @@ the actual integrity checks, and `SHA1SUMS.txt` as compatibility-only.
 The iOS sideload prerelease instead ships an IPA-specific `<filename>.ipa.sha256`,
 an SPDX SBOM, and a GitHub build provenance attestation. Verify the hash with
 `shasum -a 256 -c <filename>.ipa.sha256` before importing the source if you need an
-independent download check.
+independent download check. When its GPG signature is present, import the attached
+versioned `charm-ios-nightly-signing-key-<key-id>.asc`; older retained iOS builds can
+require an earlier attached key after a signing-key rotation.
 
 **GPG signatures** — attached when `GPG_PRIVATE_KEY` is configured in the
 protected `nightly-signing` or `release-signing` environment (see below): every artifact gets its own detached
