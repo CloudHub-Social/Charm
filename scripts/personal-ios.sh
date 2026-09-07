@@ -7,6 +7,21 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source_root=$(cd "$script_dir/.." && pwd)
 command_name=${1:-}
 
+# Personal Team values belong in this ignored file, never in the repository.
+# Its `:=` assignments make command-line environment values win over the
+# convenience defaults kept on one developer machine.
+local_config=${CHARM_IOS_LOCAL_CONFIG:-"$script_dir/personal-ios.env.local"}
+if [[ -f $local_config ]]; then
+  # shellcheck source=/dev/null
+  source "$local_config"
+fi
+
+# A local config file assigns shell variables; make the build-mode override
+# available to the nested pnpm process as well.
+if [[ -n ${VITE_SENTRY_ENVIRONMENT:-} ]]; then
+  export VITE_SENTRY_ENVIRONMENT
+fi
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/personal-ios.sh <prepare|build-install|collect-logs>
@@ -14,14 +29,16 @@ Usage: scripts/personal-ios.sh <prepare|build-install|collect-logs>
 Required for prepare/build-install:
   CHARM_APPLE_TEAM_ID    10-character Personal Team identifier
   CHARM_IOS_BUNDLE_ID    unique development bundle identifier
-  CHARM_IOS_DEVICE_ID    connected device UUID/UDID
   DEVELOPER_DIR          Xcode 27 developer directory
 
 Optional:
+  CHARM_IOS_DEVICE_ID    install only on this connected physical device;
+                         otherwise install on every connected physical device
   CHARM_IOS_COMMIT       exact commit to prepare (default: HEAD)
   CHARM_IOS_WORK_DIR     reusable prepared worktree path
   CHARM_NODE_MODULES_DIR compatible existing node_modules directory
   CHARM_IOS_LOG_DIR      evidence output for collect-logs
+  VITE_SENTRY_ENVIRONMENT build environment (local defaults use development)
 USAGE
 }
 
@@ -46,11 +63,49 @@ validate_xcode() {
 validate_inputs() {
   require_env CHARM_APPLE_TEAM_ID
   require_env CHARM_IOS_BUNDLE_ID
-  require_env CHARM_IOS_DEVICE_ID
   validate_xcode
   [[ $CHARM_APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]] || fail "CHARM_APPLE_TEAM_ID must be a 10-character uppercase identifier"
   [[ $CHARM_IOS_BUNDLE_ID =~ ^[A-Za-z0-9.-]+$ ]] || fail "CHARM_IOS_BUNDLE_ID is not a valid bundle identifier"
   [[ $CHARM_IOS_BUNDLE_ID != social.cloudhub.charm ]] || fail "use a unique Personal Team bundle identifier, never the canonical identifier"
+}
+
+install_device_ids=()
+
+resolve_install_devices() {
+  install_device_ids=()
+  if [[ -n ${CHARM_IOS_DEVICE_ID:-} ]]; then
+    install_device_ids=("$CHARM_IOS_DEVICE_ID")
+    return
+  fi
+
+  local devices_json
+  devices_json=$(mktemp -t charm-personal-ios-devices.XXXXXX.json)
+  if ! DEVELOPER_DIR="$DEVELOPER_DIR" /usr/bin/xcrun devicectl list devices --json-output "$devices_json" >/dev/null 2>&1; then
+    unlink "$devices_json"
+    fail "could not list connected Apple devices"
+  fi
+
+  while IFS= read -r device_id; do
+    [[ -n $device_id ]] && install_device_ids+=("$device_id")
+  done < <(
+    node -e '
+      const fs = require("node:fs");
+      const devices = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).result?.devices ?? [];
+      for (const device of devices) {
+        const properties = device.properties ?? {};
+        if (
+          properties.connection?.state === "connected" &&
+          properties.hardware?.reality === "physical" &&
+          typeof device.identifier === "string"
+        ) {
+          console.log(device.identifier);
+        }
+      }
+    ' "$devices_json"
+  )
+  unlink "$devices_json"
+
+  ((${#install_device_ids[@]} > 0)) || fail "no connected physical iPhone or iPad was found"
 }
 
 commit_sha() {
@@ -125,7 +180,7 @@ validate_prepared_worktree() {
 
 build_install() {
   validate_inputs
-  local worktree sha output_root build_log app_path metadata profile_plist
+  local worktree sha output_root build_log app_path profile_plist device_id device_root
   if [[ -n ${CHARM_IOS_WORK_DIR:-} ]]; then
     worktree=$CHARM_IOS_WORK_DIR
     [[ -f "$worktree/.charm-personal-ios.json" ]] || fail "CHARM_IOS_WORK_DIR is not a prepared Personal Team worktree"
@@ -155,8 +210,13 @@ build_install() {
   app_path=$(find "$worktree/src-tauri/gen/apple" -type d -path '*.xcarchive/Products/Applications/*.app' -print -quit)
   [[ -n $app_path ]] || fail "the signed .app was not found in the fresh Xcode archive; see $build_log"
 
-  xcrun devicectl device install app --device "$CHARM_IOS_DEVICE_ID" "$app_path" | tee "$output_root/install.log"
-  xcrun devicectl device process launch --device "$CHARM_IOS_DEVICE_ID" --terminate-existing "$CHARM_IOS_BUNDLE_ID" | tee "$output_root/launch.log"
+  resolve_install_devices
+  for device_id in "${install_device_ids[@]}"; do
+    device_root="$output_root/devices/$device_id"
+    mkdir -p "$device_root"
+    xcrun devicectl device install app --device "$device_id" "$app_path" | tee "$device_root/install.log"
+    xcrun devicectl device process launch --device "$device_id" --terminate-existing "$CHARM_IOS_BUNDLE_ID" | tee "$device_root/launch.log"
+  done
 
   profile_plist="$output_root/embedded.mobileprovision.plist"
   if [[ -f "$app_path/embedded.mobileprovision" ]]; then
@@ -166,12 +226,12 @@ build_install() {
     printf 'commit=%s\n' "$sha"
     "$DEVELOPER_DIR/usr/bin/xcodebuild" -version
     printf 'bundle_id=%s\n' "$CHARM_IOS_BUNDLE_ID"
-    printf 'device_id=%s\n' "$CHARM_IOS_DEVICE_ID"
+    printf 'device_ids=%s\n' "${install_device_ids[*]}"
     printf 'app_path=%s\n' "$app_path"
     [[ -f $profile_plist ]] && /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist" || true
   } > "$output_root/build-metadata.txt"
 
-  printf 'Installed and launched %s from %s\n' "$CHARM_IOS_BUNDLE_ID" "$sha"
+  printf 'Installed and launched %s from %s on %s\n' "$CHARM_IOS_BUNDLE_ID" "$sha" "${install_device_ids[*]}"
   printf 'Evidence: %s\n' "$output_root"
 }
 
