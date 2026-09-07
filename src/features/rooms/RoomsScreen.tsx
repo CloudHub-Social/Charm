@@ -92,6 +92,7 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const roomInvitesEnabled = useFlag("room_invites");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   // Day-2 Spec 04 (message pinning). `ChatShell` already hides the header
   // button/menu entry that would set `pinnedMessagesDrawerOpen` while this is
   // off, but gating the panel's render here too means a previously-set atom
@@ -178,6 +179,16 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
+
+  useEffect(() => {
+    if (
+      uxRefreshEnabled ||
+      (primaryDestination !== "activity" && primaryDestination !== "spaces")
+    ) {
+      return;
+    }
+    setPrimaryDestination("home");
+  }, [primaryDestination, uxRefreshEnabled]);
 
   useEffect(() => {
     if (!quickSwitcherEnabled) return;
@@ -517,7 +528,7 @@ export function RoomsScreen({
   useEffect(() => {
     function syncFocusedRoom() {
       const isShowingChat =
-        primaryDestination !== "activity" &&
+        (primaryDestination !== "activity" || !uxRefreshEnabled) &&
         !settingsSection &&
         !roomSettingsTarget &&
         document.hasFocus() &&
@@ -531,7 +542,15 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView, primaryDestination]);
+  }, [
+    focusedRoomId,
+    settingsSection,
+    roomSettingsTarget,
+    layout,
+    mobileView,
+    primaryDestination,
+    uxRefreshEnabled,
+  ]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -827,7 +846,7 @@ export function RoomsScreen({
             }}
             onSelectSpace={selectSpace}
             activityActive={primaryDestination === "activity"}
-            activityCount={activityAttentionCount(rooms)}
+            activityCount={activityAttentionCount(roomInvitesEnabled ? rooms : joinedRooms)}
             onSelectActivity={() => {
               setPrimaryDestination("activity");
               setMobileView("list");
