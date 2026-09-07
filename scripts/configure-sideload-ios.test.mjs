@@ -69,11 +69,15 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
   try {
     const template = join(root, ".github/templates/altstore-source.json");
     const output = join(directory, "altstore-source.json");
+    const availableAssets = join(directory, "available-assets.txt");
+    writeFileSync(availableAssets, "");
     execFileSync(
       process.execPath,
       [
         join(root, "scripts/update-altstore-source.mjs"),
         template,
+        template,
+        availableAssets,
         output,
         "0.1.3",
         "123",
@@ -90,17 +94,22 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
     assert.equal(source.apps[0].versions[0].minOSVersion, "15.0");
     assert.deepEqual(source.apps[0].appPermissions.entitlements, []);
 
-    source.apps[0].versions.push(
-      { buildVersion: "122" },
-      { buildVersion: "121" },
-      { buildVersion: "120" },
-    );
+    source.apps[0].name = "Stale Charm";
+    source.apps[0].versions.push({ buildVersion: "122" }, { buildVersion: "121" });
     writeFileSync(output, `${JSON.stringify(source)}\n`);
+    writeFileSync(
+      availableAssets,
+      ["Charm.ipa", "Charm.ipa.sha256", "Charm.ipa.spdx.json", "Charm.ipa.build-metadata.txt"].join(
+        "\n",
+      ),
+    );
     execFileSync(
       process.execPath,
       [
         join(root, "scripts/update-altstore-source.mjs"),
+        template,
         output,
+        availableAssets,
         output,
         "0.1.3",
         "124",
@@ -114,8 +123,9 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
     const updated = JSON.parse(readFileSync(output, "utf8"));
     assert.deepEqual(
       updated.apps[0].versions.map((entry) => entry.buildVersion),
-      ["124", "123", "122"],
+      ["124", "123"],
     );
+    assert.equal(updated.apps[0].name, "Charm");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -126,7 +136,9 @@ test("rejects nonportable AltStore release metadata", () => {
   try {
     const template = join(root, ".github/templates/altstore-source.json");
     const output = join(directory, "altstore-source.json");
-    const args = [template, output, "0.1.3", "123", "456"];
+    const availableAssets = join(directory, "available-assets.txt");
+    writeFileSync(availableAssets, "");
+    const args = [template, template, availableAssets, output, "0.1.3", "123", "456"];
     const run = (downloadURL, date) =>
       spawnSync(
         process.execPath,

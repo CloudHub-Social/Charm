@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const [
   templatePath,
+  previousManifestPath,
+  availableAssetsPath,
   outputPath,
   version,
   buildVersion,
@@ -15,6 +17,8 @@ const [
 
 if (
   !templatePath ||
+  !previousManifestPath ||
+  !availableAssetsPath ||
   !outputPath ||
   !version ||
   !buildVersion ||
@@ -24,7 +28,7 @@ if (
   !marketingVersion
 ) {
   throw new Error(
-    "usage: update-altstore-source.mjs <template> <output> <version> <build> <size> <download-url> <date> <marketing-version>",
+    "usage: update-altstore-source.mjs <template> <previous-manifest> <available-assets> <output> <version> <build> <size> <download-url> <date> <marketing-version>",
   );
 }
 if (!/^\d+\.\d+\.\d+$/.test(version)) {
@@ -54,6 +58,28 @@ if (app.appPermissions?.entitlements?.length !== 0) {
   throw new Error("Personal Team sideload source must not advertise unsupported entitlements");
 }
 
+const previous = JSON.parse(readFileSync(previousManifestPath, "utf8"));
+const previousApp = previous.apps?.[0];
+if (!previousApp || previousApp.bundleIdentifier !== "social.cloudhub.charm") {
+  throw new Error("previous AltStore source must contain canonical Charm as apps[0]");
+}
+const availableAssets = new Set(
+  readFileSync(availableAssetsPath, "utf8").split("\n").filter(Boolean),
+);
+
+function hasCompleteReleaseAssets(candidate) {
+  if (typeof candidate?.downloadURL !== "string" || !URL.canParse(candidate.downloadURL)) {
+    return false;
+  }
+  const asset = new URL(candidate.downloadURL).pathname.split("/").at(-1);
+  if (!asset?.endsWith(".ipa")) {
+    return false;
+  }
+  return [asset, `${asset}.sha256`, `${asset}.spdx.json`, `${asset}.build-metadata.txt`].every(
+    (name) => availableAssets.has(name),
+  );
+}
+
 const entry = {
   version,
   buildVersion,
@@ -64,8 +90,10 @@ const entry = {
   minOSVersion: "15.0",
   localizedDescription: `${marketingVersion}. Personal Team signing is required; killed-state remote push is unavailable.`,
 };
-const current = Array.isArray(app.versions) ? app.versions : [];
-const remaining = current.filter((candidate) => candidate.buildVersion !== buildVersion);
+const current = Array.isArray(previousApp.versions) ? previousApp.versions : [];
+const remaining = current.filter(
+  (candidate) => candidate.buildVersion !== buildVersion && hasCompleteReleaseAssets(candidate),
+);
 app.versions = [entry, ...remaining].slice(0, 3);
 
 writeFileSync(outputPath, `${JSON.stringify(source, null, 2)}\n`);

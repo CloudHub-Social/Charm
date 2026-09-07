@@ -1619,16 +1619,20 @@ jobs:
               echo '::warning::existing iOS nightly has no usable source manifest; rebuilding it from the template'
               manifest_input=.github/templates/altstore-source.json
             fi
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+              > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --prerelease \
               --target "$GITHUB_SHA" --title 'Charm iOS nightly' \
               --notes 'Rolling unsigned Charm IPA for AltStore and SideStore.'
             manifest_input=.github/templates/altstore-source.json
+            : > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
           fi
           download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$asset"
           manifest="$RUNNER_TEMP/altstore-source.json"
           marketing_version="Charm ${version} nightly.${build} (${GITHUB_SHA:0:7})"
-          node scripts/update-altstore-source.mjs "$manifest_input" "$manifest" "$version" "$build" \
+          node scripts/update-altstore-source.mjs .github/templates/altstore-source.json "$manifest_input" \
+            "$RUNNER_TEMP/available-ios-nightly-assets.txt" "$manifest" "$version" "$build" \
             "$(stat -c%s "$ipa")" "$download_url" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marketing_version"
           VERSION="$version" BUILD="$build" jq -e '
             .identifier == "social.cloudhub.charm.ios-nightly.source" and
