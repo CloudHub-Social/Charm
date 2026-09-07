@@ -56,7 +56,10 @@ jobs:
     name: iOS release build and smoke test
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    # `macos-latest` currently defaults to Xcode 26.6. The dedicated preview
+    # image is the only hosted runner that supplies the Xcode 27 / iOS 27 SDK
+    # required by this release-evidence lane.
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
