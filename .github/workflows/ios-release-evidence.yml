@@ -120,7 +120,7 @@ jobs:
           # Tauri 2.11 writes the simulator bundle to `build/arm64-sim`, not
           # Xcode's conventional `*-iphonesimulator` product directory.
           simulator_app=src-tauri/gen/apple/build/arm64-sim/Charm.app
-          [ -n "$simulator_app" ] || { echo '::error::release simulator .app not found'; exit 1; }
+          [ -d "$simulator_app" ] || { echo '::error::release simulator .app not found'; exit 1; }
           mkdir -p .artifacts/ios/simulator
           ditto "$simulator_app" .artifacts/ios/simulator/Charm.app
           device_id=$(xcrun simctl list devices available -j | node -e '

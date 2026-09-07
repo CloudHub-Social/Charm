@@ -59,14 +59,17 @@ commit_sha() {
 
 find_compatible_node_modules() {
   local selected_root=$1
+  local candidate candidate_lock source_lock
+  source_lock=$(shasum -a 256 "$selected_root/pnpm-lock.yaml" | awk '{print $1}')
   if [[ -n ${CHARM_NODE_MODULES_DIR:-} ]]; then
     [[ -d $CHARM_NODE_MODULES_DIR ]] || fail "CHARM_NODE_MODULES_DIR does not exist: $CHARM_NODE_MODULES_DIR"
+    candidate_lock=$(dirname "$CHARM_NODE_MODULES_DIR")/pnpm-lock.yaml
+    [[ -f $candidate_lock ]] || fail "CHARM_NODE_MODULES_DIR must belong to a checkout with pnpm-lock.yaml"
+    [[ $(shasum -a 256 "$candidate_lock" | awk '{print $1}') == "$source_lock" ]] || fail "CHARM_NODE_MODULES_DIR does not match the selected commit's pnpm-lock.yaml"
     printf '%s\n' "$(cd "$CHARM_NODE_MODULES_DIR" && pwd -P)"
     return
   fi
 
-  local candidate candidate_lock source_lock
-  source_lock=$(shasum -a 256 "$selected_root/pnpm-lock.yaml" | awk '{print $1}')
   for candidate in "$source_root"/../Charm*/node_modules; do
     [[ -d $candidate ]] || continue
     candidate_lock=$(dirname "$candidate")/pnpm-lock.yaml
@@ -93,12 +96,31 @@ prepare_worktree() {
   if [[ ! -e "$worktree/node_modules" ]]; then
     ln -s "$node_modules" "$worktree/node_modules"
   fi
-  CHARM_IOS_COMMIT=$sha node "$source_root/scripts/configure-personal-ios.mjs" \
+  CHARM_IOS_COMMIT=$sha node "$worktree/scripts/configure-personal-ios.mjs" \
     "$worktree" "$CHARM_APPLE_TEAM_ID" "$CHARM_IOS_BUNDLE_ID"
 
   printf 'Prepared disposable iOS worktree:\n%s\n' "$worktree"
   printf 'Run evidence will be written inside that disposable worktree.\n'
   PREPARED_WORKTREE=$worktree
+}
+
+validate_prepared_worktree() {
+  local worktree=$1 marker expected_sha actual_sha recorded_team recorded_bundle recorded_commit
+  marker=$worktree/.charm-personal-ios.json
+  expected_sha=$(commit_sha)
+  actual_sha=$(git -C "$worktree" rev-parse HEAD) || fail "CHARM_IOS_WORK_DIR is not a Git worktree: $worktree"
+  IFS=$'\t' read -r recorded_team recorded_bundle recorded_commit < <(
+    node -e '
+      const fs = require("node:fs");
+      const marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      if (![marker.teamId, marker.bundleId, marker.commit].every((value) => typeof value === "string")) process.exit(1);
+      process.stdout.write(`${marker.teamId}\t${marker.bundleId}\t${marker.commit}\n`);
+    ' "$marker"
+  ) || fail "CHARM_IOS_WORK_DIR has invalid Personal Team metadata"
+  [[ $recorded_team == "$CHARM_APPLE_TEAM_ID" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different Apple Team"
+  [[ $recorded_bundle == "$CHARM_IOS_BUNDLE_ID" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different bundle identifier"
+  [[ $recorded_commit == "$actual_sha" ]] || fail "CHARM_IOS_WORK_DIR metadata does not match its checked-out commit"
+  [[ $recorded_commit == "$expected_sha" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different selected commit"
 }
 
 build_install() {
@@ -107,6 +129,7 @@ build_install() {
   if [[ -n ${CHARM_IOS_WORK_DIR:-} ]]; then
     worktree=$CHARM_IOS_WORK_DIR
     [[ -f "$worktree/.charm-personal-ios.json" ]] || fail "CHARM_IOS_WORK_DIR is not a prepared Personal Team worktree"
+    validate_prepared_worktree "$worktree"
   else
     prepare_worktree
     worktree=$PREPARED_WORKTREE
