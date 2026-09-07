@@ -1638,9 +1638,15 @@ jobs:
             .identifier == "social.cloudhub.charm.ios-nightly.source" and
             .apps[0].bundleIdentifier == "social.cloudhub.charm" and
             (.apps[0].appPermissions.entitlements | length == 0) and
-            .apps[0].versions[0].version == env.VERSION and
-            .apps[0].versions[0].buildVersion == env.BUILD
+            any(.apps[0].versions[]; .version == env.VERSION and .buildVersion == env.BUILD)
           ' "$manifest" >/dev/null
+          # A maintainer can rerun an older completed workflow after newer
+          # builds have published. Do not roll the stable source URL, tag, or
+          # three-build retention window backward in that case.
+          if [ "$(jq -r '.apps[0].versions[0].buildVersion' "$manifest")" != "$build" ]; then
+            echo "::notice::build $build is older than the published iOS nightly; leaving ios-nightly unchanged"
+            exit 0
+          fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
             "$ipa" "$checksum" "$sbom" "$metadata"
           remote_size=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
@@ -1689,7 +1695,7 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" \
             -f sha="$GITHUB_SHA" -F force=true >/dev/null
           cat > "$RUNNER_TEMP/ios-nightly-notes.md" <<EOF
-          Rolling unsigned arm64 iOS/iPadOS build from commit ${GITHUB_SHA:0:7}.
+          Rolling unsigned arm64 iOS/iPadOS build from commit $GITHUB_SHA.
 
           Install from the attached AltStore source manifest. AltStore or SideStore
           signs it with the device owner's Personal Team; this is not an Apple-signed

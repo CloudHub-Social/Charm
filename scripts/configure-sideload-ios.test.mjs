@@ -126,6 +126,42 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
       ["124", "123"],
     );
     assert.equal(updated.apps[0].name, "Charm");
+    writeFileSync(
+      availableAssets,
+      [
+        "Charm.ipa",
+        "Charm.ipa.sha256",
+        "Charm.ipa.spdx.json",
+        "Charm.ipa.build-metadata.txt",
+        "Charm-new.ipa",
+        "Charm-new.ipa.sha256",
+        "Charm-new.ipa.spdx.json",
+        "Charm-new.ipa.build-metadata.txt",
+      ].join("\n"),
+    );
+
+    execFileSync(
+      process.execPath,
+      [
+        join(root, "scripts/update-altstore-source.mjs"),
+        template,
+        output,
+        availableAssets,
+        output,
+        "0.1.3",
+        "122",
+        "458",
+        "https://github.com/CloudHub-Social/Charm/releases/download/ios-nightly/Charm-old.ipa",
+        "2026-09-09T00:00:00Z",
+        "Charm 0.1.3 nightly.122",
+      ],
+      { stdio: "pipe" },
+    );
+    const staleRerun = JSON.parse(readFileSync(output, "utf8"));
+    assert.deepEqual(
+      staleRerun.apps[0].versions.map((entry) => entry.buildVersion),
+      ["124", "123", "122"],
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -92,8 +92,18 @@ const entry = {
 };
 const current = Array.isArray(previousApp.versions) ? previousApp.versions : [];
 const remaining = current.filter(
-  (candidate) => candidate.buildVersion !== buildVersion && hasCompleteReleaseAssets(candidate),
+  (candidate) =>
+    candidate.buildVersion !== buildVersion &&
+    typeof candidate.buildVersion === "string" &&
+    /^\d+$/.test(candidate.buildVersion) &&
+    hasCompleteReleaseAssets(candidate),
 );
-app.versions = [entry, ...remaining].slice(0, 3);
+app.versions = [entry, ...remaining]
+  .sort((left, right) => {
+    const leftBuild = BigInt(left.buildVersion);
+    const rightBuild = BigInt(right.buildVersion);
+    return leftBuild === rightBuild ? 0 : leftBuild > rightBuild ? -1 : 1;
+  })
+  .slice(0, 3);
 
 writeFileSync(outputPath, `${JSON.stringify(source, null, 2)}\n`);
