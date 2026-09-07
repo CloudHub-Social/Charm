@@ -1,10 +1,10 @@
+import { useAtomValue } from "jotai";
 import { MessageSquareIcon, PenSquareIcon, SettingsIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useFlag } from "@/featureFlags";
 import { useAppearance } from "@/features/appearance/useAppearance";
-import { readLocalMirror } from "@/features/appearance/persistence";
-import type { MessageLayout } from "@/features/appearance/atoms";
+import { appearancePersistenceStateAtom, type MessageLayout } from "@/features/appearance/atoms";
 import { cn } from "@/lib/utils";
 
 interface OrientationPaneProps {
@@ -16,14 +16,13 @@ interface OrientationPaneProps {
 export function OrientationPane({ onNext, nextDisabled }: OrientationPaneProps) {
   const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const { messageLayout, setMessageLayout } = useAppearance();
-  const freshAppearanceRef = useRef(readLocalMirror() === null);
+  const appearancePersistenceState = useAtomValue(appearancePersistenceStateAtom);
 
   useEffect(() => {
-    if (uxRefreshEnabled && freshAppearanceRef.current) {
+    if (uxRefreshEnabled && appearancePersistenceState === false) {
       setMessageLayout("discord");
-      freshAppearanceRef.current = false;
     }
-  }, [setMessageLayout, uxRefreshEnabled]);
+  }, [appearancePersistenceState, setMessageLayout, uxRefreshEnabled]);
 
   const layouts: { value: MessageLayout; label: string; description: string }[] = [
     { value: "discord", label: "Modern", description: "Warm, open, and easy to scan" },
@@ -61,7 +60,7 @@ export function OrientationPane({ onNext, nextDisabled }: OrientationPaneProps) 
           <legend className="mb-3 text-sm font-bold text-foreground">
             Choose your conversation style
           </legend>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-2 sm:gap-3 sm:grid-cols-3">
             {layouts.map((layout) => {
               const selected = messageLayout === layout.value;
               return (
@@ -71,14 +70,14 @@ export function OrientationPane({ onNext, nextDisabled }: OrientationPaneProps) 
                   aria-pressed={selected}
                   onClick={() => setMessageLayout(layout.value)}
                   className={cn(
-                    "flex min-h-32 flex-col rounded-2xl border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ux-shell-focus)]",
+                    "flex min-h-20 flex-col rounded-2xl border p-3 text-left transition sm:min-h-32 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ux-shell-focus)]",
                     selected
                       ? "border-[var(--ux-shell-focus)] bg-[var(--ux-selection)]"
                       : "border-[var(--ux-shell-border)] bg-[var(--ux-content-raised)] hover:border-[var(--ux-shell-border-strong)]",
                   )}
                 >
                   <span
-                    className="mb-3 flex h-12 w-full flex-col justify-center gap-1 rounded-xl bg-[var(--ux-content-bg)] px-2"
+                    className="mb-2 flex h-9 w-full flex-col justify-center gap-1 rounded-xl bg-[var(--ux-content-bg)] px-2 sm:mb-3 sm:h-12"
                     aria-hidden="true"
                   >
                     <span

@@ -31,10 +31,11 @@ export function MobileBottomNav({
   return (
     <nav
       className={cn(
-        "flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]",
+        "group flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]",
         refresh &&
           "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] px-2 pt-1 backdrop-blur-xl",
       )}
+      data-ux-refresh={refresh || undefined}
       aria-label="Primary"
     >
       <Tab icon={MessageSquare} label="Chats" active={chatsActive} onClick={onSelectChats} />

@@ -12,7 +12,11 @@ interface ActivityViewProps {
 export function ActivityView({ rooms, onSelectRoom }: ActivityViewProps) {
   const items = activityRooms(rooms);
   const inviteCount = items.filter((room) => room.membership === "invite").length;
-  const notificationCount = items.reduce((sum, room) => sum + room.unread_count, 0);
+  const notificationCount = items.reduce(
+    (sum, room) =>
+      room.membership === "invite" ? sum : sum + Math.max(1, room.unread_count),
+    0,
+  );
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--ux-content-bg)] text-foreground pt-[env(safe-area-inset-top)]">

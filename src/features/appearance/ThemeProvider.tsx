@@ -2,6 +2,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, useEffect } from "react";
 import {
   autoplayGifsAtom,
+  appearancePersistenceStateAtom,
   clockFormatAtom,
   dateFormatAtom,
   densityAtom,
@@ -64,6 +65,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setHideMembershipEvents = useSetAtom(hideMembershipEventsAtom);
   const setShowHiddenEvents = useSetAtom(showHiddenEventsAtom);
   const setGroupPresenceRing = useSetAtom(groupPresenceRingAtom);
+  const setAppearancePersistenceState = useSetAtom(appearancePersistenceStateAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +81,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       // newer localStorage write.
       const state = mergeAppearance(pickNewerEnvelope(persisted, local));
       if (cancelled) return;
+      setAppearancePersistenceState(persisted !== null || local !== null);
       setClockFormat(state.clockFormat);
       setFontFamily(state.fontFamily);
       setMessageSpacing(state.messageSpacing);
@@ -108,6 +111,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setMessageSpacing,
     setDateFormat,
     setAutoplayGifs,
+    setAppearancePersistenceState,
     setDensity,
     setFontSize,
     setGroupPresenceRing,

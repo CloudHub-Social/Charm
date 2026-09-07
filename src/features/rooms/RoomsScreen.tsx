@@ -794,7 +794,7 @@ export function RoomsScreen({
         }
         destinationContent={
           <ActivityView
-            rooms={rooms}
+            rooms={roomInvitesEnabled ? rooms : joinedRooms}
             onSelectRoom={(roomId) => {
               const room = rooms.find((candidate) => candidate.room_id === roomId);
               if (!room) return;

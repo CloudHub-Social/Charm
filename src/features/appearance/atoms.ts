@@ -110,3 +110,5 @@ export const stripExifOnUploadAtom = atom<boolean>(DEFAULT_APPEARANCE.stripExifO
 export const hideMembershipEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.hideMembershipEvents);
 export const showHiddenEventsAtom = atom<boolean>(DEFAULT_APPEARANCE.showHiddenEvents);
 export const groupPresenceRingAtom = atom<boolean>(DEFAULT_APPEARANCE.groupPresenceRing);
+/** Null until ThemeProvider has reconciled localStorage and the native store. */
+export const appearancePersistenceStateAtom = atom<boolean | null>(null);

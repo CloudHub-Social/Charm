@@ -37,4 +37,21 @@ describe("ActivityView", () => {
     render(<ActivityView rooms={[]} onSelectRoom={vi.fn()} />);
     expect(screen.getByText("You’re all caught up")).toBeInTheDocument();
   });
+
+  it("counts marked-unread conversations as a notification", () => {
+    render(
+      <ActivityView
+        rooms={[
+          makeRoomSummary({
+            room_id: "!marked:test",
+            name: "Marked unread",
+            is_marked_unread: true,
+          }),
+        ]}
+        onSelectRoom={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("1 notification")).toBeInTheDocument();
+  });
 });

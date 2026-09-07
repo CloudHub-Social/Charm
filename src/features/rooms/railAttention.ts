@@ -46,7 +46,7 @@ export function deriveRailAttention(
   const unreadRooms = rooms
     .map((room, index) => ({ room, index }))
     .filter(({ room }) => room.is_direct && !room.is_space && room.has_unread)
-    .toSorted((a, b) => {
+    .sort((a, b) => {
       const aTimestamp = a.room.last_activity_ts;
       const bTimestamp = b.room.last_activity_ts;
       if (aTimestamp === bTimestamp) return a.index - b.index;
