@@ -47,7 +47,7 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
    `rustup` commands before building:
 
    ```sh
-   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+   rustup target add aarch64-apple-ios
    rustup component add llvm-tools-preview
    ```
 

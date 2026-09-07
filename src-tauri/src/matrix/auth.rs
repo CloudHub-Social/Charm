@@ -2,6 +2,7 @@
 //! and session restore. QR login is its own module (`qr_login`) — its
 //! multi-stage device-code flow doesn't fit this file's shape.
 
+use matrix_sdk::authentication::oauth::OAuthSession;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::{
@@ -1077,9 +1078,9 @@ pub(crate) async fn build_client(
 /// file` for the now-missing `tmp-*` path. Drop every handle owned by the
 /// temporary client, then restore the same session into a client opened at
 /// the permanent path before installing callbacks or starting sync.
-struct ReopenRelocatedMatrixClientError {
-    client: Option<Client>,
-    message: String,
+pub(crate) struct ReopenRelocatedMatrixClientError {
+    pub(crate) client: Option<Client>,
+    pub(crate) message: String,
 }
 
 async fn reopen_relocated_matrix_client(
@@ -1107,6 +1108,41 @@ async fn reopen_relocated_matrix_client(
         return Err(ReopenRelocatedMatrixClientError {
             client: Some(client),
             message: format!("login was saved, but its session could not be restored: {error}"),
+        });
+    }
+
+    Ok(client)
+}
+
+/// OAuth counterpart to [`reopen_relocated_matrix_client`]. QR login uses an
+/// OAuth session rather than Matrix Auth, but it has the same SQLite handle
+/// hazard after its temporary store is renamed into the permanent account
+/// directory.
+pub(crate) async fn reopen_relocated_oauth_client(
+    app: &AppHandle,
+    client: Client,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &OAuthSession,
+) -> Result<Client, ReopenRelocatedMatrixClientError> {
+    drop(client);
+
+    let client = build_client(app, homeserver_url, account_key)
+        .await
+        .map_err(|error| ReopenRelocatedMatrixClientError {
+            client: None,
+            message: format!(
+                "QR login was saved, but its account store could not be reopened: {error}"
+            ),
+        })?;
+    if let Err(error) = client
+        .oauth()
+        .restore_session(session.clone(), RoomLoadSettings::default())
+        .await
+    {
+        return Err(ReopenRelocatedMatrixClientError {
+            client: Some(client),
+            message: format!("QR login was saved, but its session could not be restored: {error}"),
         });
     }
 

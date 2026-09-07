@@ -152,6 +152,10 @@ jobs:
           ditto "$archive" .artifacts/ios/device/Charm.xcarchive
           find src-tauri/gen/apple target -type d -name '*.dSYM' -exec ditto {} .artifacts/ios/debug-symbols/ \; 2>/dev/null || true
           find src-tauri/gen/apple target -type f \( -name '*.bcsymbolmap' -o -name '*.dwarf' \) -exec cp {} .artifacts/ios/debug-symbols/ \; 2>/dev/null || true
+          # GitHub artifact uploads flatten POSIX modes. Package executable
+          # app/archive trees first so a downloaded artifact remains usable.
+          tar -C .artifacts/ios/simulator -cf .artifacts/ios/charm-ios-simulator-release.tar Charm.app
+          tar -C .artifacts/ios/device -cf .artifacts/ios/charm-ios-device-unsigned-xcarchive.tar Charm.xcarchive
           {
             echo "commit=$GITHUB_SHA"
             echo "runner_os=$RUNNER_OS"
@@ -177,13 +181,13 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: charm-ios-simulator-release
-          path: .artifacts/ios/simulator/Charm.app
+          path: .artifacts/ios/charm-ios-simulator-release.tar
           if-no-files-found: error
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: charm-ios-device-unsigned-xcarchive
-          path: .artifacts/ios/device/Charm.xcarchive
+          path: .artifacts/ios/charm-ios-device-unsigned-xcarchive.tar
           if-no-files-found: error
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

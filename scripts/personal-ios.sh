@@ -240,6 +240,7 @@ build_install() {
 
 collect_logs() {
   validate_xcode
+  export DEVELOPER_DIR
   require_env CHARM_IOS_DEVICE_ID
   local log_root
   log_root=${CHARM_IOS_LOG_DIR:-"${TMPDIR:-/tmp}/charm-personal-ios-logs/$(date -u +%Y%m%dT%H%M%SZ)"}
