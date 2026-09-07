@@ -19,7 +19,7 @@ use ts_rs::TS;
 
 use super::notifications::set_room_notification_mode;
 use super::timeline::message_type_preview_text;
-use super::{media, profiles, MatrixState};
+use super::{MatrixState, media, profiles};
 
 /// Truncation cap for [`LastMessagePreview::text`], applied in `char`s (not
 /// bytes) so multi-byte UTF-8 sequences never get split mid-codepoint. Chosen
@@ -858,7 +858,7 @@ pub async fn list_rooms(
         crate::feature_flags::flag(
             &dir,
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
-        )
+        ) || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::UxRefreshV1)
     });
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
@@ -1289,8 +1289,8 @@ mod tests {
 
     #[test]
     fn room_message_preview_extracts_sender_and_text_for_a_text_message() {
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1307,8 +1307,8 @@ mod tests {
 
     #[test]
     fn room_message_preview_summarizes_an_image_message() {
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1329,8 +1329,8 @@ mod tests {
 
     #[test]
     fn room_message_preview_is_none_for_a_non_message_event() {
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1343,8 +1343,8 @@ mod tests {
 
     #[test]
     fn room_message_preview_strips_the_rich_reply_fallback() {
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1362,8 +1362,8 @@ mod tests {
     #[test]
     fn room_message_preview_uses_the_replacement_content_for_an_edit() {
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1397,8 +1397,8 @@ mod tests {
         // a further fetch of the original event this preview path doesn't
         // do).
         use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
-        use matrix_sdk_test::event_factory::EventFactory;
         use matrix_sdk_test::ALICE;
+        use matrix_sdk_test::event_factory::EventFactory;
 
         let raw = EventFactory::new()
             .room(matrix_sdk::ruma::room_id!("!test:example.org"))
@@ -1468,7 +1468,7 @@ mod tests {
         use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
         use matrix_sdk_test::event_factory::EventFactory;
-        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+        use matrix_sdk_test::{ALICE, JoinedRoomBuilder};
 
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
         let child_id = matrix_sdk::ruma::room_id!("!child:example.org");

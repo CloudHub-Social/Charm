@@ -3,17 +3,17 @@
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
 use futures_util::StreamExt;
+use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::api::error::ErrorKind;
-use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use super::presence::PresenceStateDto;
 use super::{
-    ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms, search, shell,
-    verification, MatrixState,
+    MatrixState, ephemeral, persistence, presence, privacy_settings, profiles, room_admin, rooms,
+    search, shell, verification,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -79,7 +79,7 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
         crate::feature_flags::flag(
             &dir,
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
-        )
+        ) || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::UxRefreshV1)
     });
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
@@ -625,12 +625,14 @@ mod unopened_poll_notification_tests {
             "event_id": "$poll", "sender": "@alice:example.org",
             "origin_server_ts": 1, "content": content
         });
-        assert!(super::unopened_notification_content(
-            serde_json::from_value(event.clone()).unwrap(),
-            false,
-            None,
-        )
-        .is_none());
+        assert!(
+            super::unopened_notification_content(
+                serde_json::from_value(event.clone()).unwrap(),
+                false,
+                None,
+            )
+            .is_none()
+        );
         let mentions = serde_json::from_value(serde_json::json!({
             "user_ids": ["@bob:example.org"]
         }))
@@ -659,12 +661,14 @@ mod unopened_poll_notification_tests {
         event["content"]["m.relates_to"] = serde_json::json!({
             "rel_type": "m.replace", "event_id": "$original"
         });
-        assert!(super::unopened_notification_content(
-            serde_json::from_value(event).unwrap(),
-            true,
-            None,
-        )
-        .is_none());
+        assert!(
+            super::unopened_notification_content(
+                serde_json::from_value(event).unwrap(),
+                true,
+                None,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -687,12 +691,14 @@ mod unopened_poll_notification_tests {
                 }
             }
         });
-        assert!(super::unopened_notification_content(
-            serde_json::from_value(event).unwrap(),
-            true,
-            None,
-        )
-        .is_none());
+        assert!(
+            super::unopened_notification_content(
+                serde_json::from_value(event).unwrap(),
+                true,
+                None,
+            )
+            .is_none()
+        );
     }
 }
 
@@ -1500,7 +1506,7 @@ mod invite_notification_tests {
 
 #[cfg(test)]
 mod reconciled_sync_presence_tests {
-    use super::{initial_sync_presence, reconciled_sync_presence, PresenceStateDto};
+    use super::{PresenceStateDto, initial_sync_presence, reconciled_sync_presence};
 
     #[test]
     fn resumed_session_preserves_its_presence_choice() {

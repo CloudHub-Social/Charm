@@ -54,4 +54,21 @@ describe("ActivityView", () => {
 
     expect(screen.getByText("1 notification")).toBeInTheDocument();
   });
+
+  it("includes ordinary unread conversations without a highlight", () => {
+    render(
+      <ActivityView
+        rooms={[
+          makeRoomSummary({
+            room_id: "!ambient:test",
+            name: "Ambient unread",
+            has_unread: true,
+          }),
+        ]}
+        onSelectRoom={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Ambient unread/i })).toBeInTheDocument();
+  });
 });

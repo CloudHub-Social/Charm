@@ -2,8 +2,7 @@ import type { RoomSummary } from "@/lib/matrix";
 
 export function isActivityRoom(room: RoomSummary): boolean {
   return (
-    !room.is_space &&
-    (room.membership === "invite" || room.unread_count > 0 || room.is_marked_unread)
+    !room.is_space && (room.membership === "invite" || room.has_unread || room.is_marked_unread)
   );
 }
 

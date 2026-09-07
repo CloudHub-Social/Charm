@@ -81,8 +81,9 @@ export function AppShell({
   const contentRef = useRef<HTMLDivElement>(null);
   const [mobileDragX, setMobileDragX] = useState(0);
   const [mobileDragging, setMobileDragging] = useState(false);
-  const showingActivity = primaryDestination === "activity";
-  const showingMobileSpaces = layout === "mobile" && primaryDestination === "spaces";
+  const showingActivity = uxRefreshEnabled && primaryDestination === "activity";
+  const showingMobileSpaces =
+    uxRefreshEnabled && layout === "mobile" && primaryDestination === "spaces";
   const chatVisible =
     !showingActivity &&
     !showingMobileSpaces &&
