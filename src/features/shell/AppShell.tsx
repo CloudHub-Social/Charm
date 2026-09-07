@@ -6,11 +6,10 @@ import { useAtomValue } from "jotai";
 import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 import { ChatVisibilityContext } from "./chatVisibility";
-import type { PrimaryDestination } from "./navigationState";
+import { MIN_ROOM_SIDEBAR_WIDTH, type PrimaryDestination } from "./navigationState";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { usePanePreferences } from "./usePanePreferences";
 import { MobileBottomNav } from "./MobileBottomNav";
-import { MIN_ROOM_SIDEBAR_WIDTH } from "./navigationState";
 import { cn } from "@/lib/utils";
 
 export type MobileView = "list" | "detail";
