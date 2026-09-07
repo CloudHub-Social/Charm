@@ -123,6 +123,15 @@ jobs:
           [ -d "$simulator_app" ] || { echo '::error::release simulator .app not found'; exit 1; }
           mkdir -p .artifacts/ios/simulator
           ditto "$simulator_app" .artifacts/ios/simulator/Charm.app
+          device_id=''
+          dump_simulator_log() {
+            [ -n "$device_id" ] || return 0
+            echo '::group::Charm simulator logs after smoke-test failure'
+            xcrun simctl spawn "$device_id" log show --style compact --last 2m \
+              --predicate 'process == "Charm"' || true
+            echo '::endgroup::'
+          }
+          trap dump_simulator_log ERR
           device_id=$(xcrun simctl list devices available -j | node -e '
             let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => {
               const devices = Object.entries(JSON.parse(data).devices)
