@@ -1566,6 +1566,13 @@ jobs:
     name: Publish iOS sideload nightly
     needs: [ios]
     if: needs.ios.result == 'success' && github.ref == 'refs/heads/main'
+    # Both a scheduled run and a maintainer dispatch can complete the build
+    # together. They share one rolling release and manifest, so serialize the
+    # read-modify-upload-retention sequence rather than letting either run
+    # overwrite the other's release assets.
+    concurrency:
+      group: ios-nightly-publication
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: nightly-signing
     permissions:
