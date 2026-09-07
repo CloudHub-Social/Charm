@@ -13,8 +13,7 @@ export function ActivityView({ rooms, onSelectRoom }: ActivityViewProps) {
   const items = activityRooms(rooms);
   const inviteCount = items.filter((room) => room.membership === "invite").length;
   const notificationCount = items.reduce(
-    (sum, room) =>
-      room.membership === "invite" ? sum : sum + Math.max(1, room.unread_count),
+    (sum, room) => (room.membership === "invite" ? sum : sum + Math.max(1, room.unread_count)),
     0,
   );
 
