@@ -212,6 +212,7 @@ export function RoomList({
   const roomListSortFlagEnabled = useFlag("room_list_sort");
   const roomListTypingFlagEnabled = useFlag("room_list_typing_indicator");
   const roomDirectoryEnabled = useFlag("room_directory");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   // Called unconditionally (rules of hooks) — the `enabled` flag it's given
   // makes the disabled case a real kill switch (no subscription, no
   // cross-room typing processing), not just a discarded result; every read
@@ -733,9 +734,31 @@ export function RoomList({
 
   return (
     <TooltipProvider>
-      <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
-        <div className="flex items-center justify-between gap-2 p-4">
-          {ownProfile ? (
+      <aside
+        data-ux-room-list={uxRefreshEnabled ? "true" : undefined}
+        className={cn(
+          "flex w-[280px] shrink-0 flex-col border-r",
+          uxRefreshEnabled
+            ? "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)]"
+            : "border-border",
+        )}
+      >
+        <div
+          className={cn(
+            "flex items-center justify-between gap-2 p-4",
+            uxRefreshEnabled && "min-h-18 border-b border-[var(--ux-shell-border)]",
+          )}
+        >
+          {uxRefreshEnabled ? (
+            <div className="min-w-0">
+              <span className="block text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                Charm
+              </span>
+              <span className="block truncate text-lg font-bold tracking-[-0.015em] text-foreground">
+                {title}
+              </span>
+            </div>
+          ) : ownProfile ? (
             <div className="flex min-w-0 items-center gap-2">
               <Avatar size="sm">
                 <AvatarImage
@@ -792,7 +815,7 @@ export function RoomList({
                 </TooltipContent>
               </Tooltip>
             )}
-            {onOpenMessageSearch && (
+            {onOpenMessageSearch && !uxRefreshEnabled && (
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -827,19 +850,35 @@ export function RoomList({
                 <CommandIcon />
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Open settings"
-              onClick={() => openSettings("account")}
-            >
-              <SettingsIcon />
-            </Button>
+            {!uxRefreshEnabled && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Open settings"
+                onClick={() => openSettings("account")}
+              >
+                <SettingsIcon />
+              </Button>
+            )}
           </div>
         </div>
-        <div className="border-b border-border px-4 pb-3">
+        <div
+          className={cn(
+            "border-b px-4 pb-3",
+            uxRefreshEnabled
+              ? "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] pt-3"
+              : "border-border",
+          )}
+        >
           <div className="flex items-center justify-between gap-2">
-            <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
+            <h2
+              className={cn(
+                "truncate text-sm font-semibold text-foreground",
+                uxRefreshEnabled && "sr-only",
+              )}
+            >
+              {title}
+            </h2>
             {mode === "home" && (
               <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
                 <input
@@ -909,7 +948,7 @@ export function RoomList({
                 </select>
               </div>
             )}
-          <div className="mt-2 flex items-center gap-2">
+          <div className={cn("mt-2 flex items-center gap-2", uxRefreshEnabled && "mt-3")}>
             <div className="relative min-w-0 flex-1">
               <SearchIcon
                 className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
@@ -921,7 +960,11 @@ export function RoomList({
                 aria-label="Search rooms"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                className="h-8 pl-8 text-sm"
+                className={cn(
+                  "h-8 pl-8 text-sm",
+                  uxRefreshEnabled &&
+                    "h-11 rounded-xl border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-raised)]",
+                )}
               />
             </div>
           </div>
@@ -937,7 +980,7 @@ export function RoomList({
             </label>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto px-2 pb-2">
+        <div className={cn("flex-1 overflow-y-auto px-2 pb-2", uxRefreshEnabled && "px-3 pt-2")}>
           {loading ? (
             <output
               aria-label="Loading rooms"

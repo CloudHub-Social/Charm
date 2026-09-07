@@ -11,7 +11,7 @@ import { featureFlagTestHooks } from "../src/featureFlags";
 
 // Stories document shipped UI states, including features that default off
 // while they are being staged for rollout.
-featureFlagTestHooks.setCache({ rich_message_rendering: true });
+featureFlagTestHooks.setCache({ rich_message_rendering: true, ux_refresh_v1: true });
 
 // Charm is dark-first: the design tokens set the canvas background/foreground on
 // `body`, and `src/styles/tokens.css` keys its theme overrides off `[data-theme]`.

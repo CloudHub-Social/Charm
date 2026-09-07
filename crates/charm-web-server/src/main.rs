@@ -9,6 +9,7 @@ use std::sync::Arc;
 use charm_web_server::{observability, persistence::PersistenceStore, routes, sync_loop, AppState};
 
 const SPACE_HIERARCHY_REORGANIZATION_ENV: &str = "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
+const UX_REFRESH_V1_ENV: &str = "CHARM_FEATURE_UX_REFRESH_V1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         persistence: persistence.clone(),
         space_hierarchy_reorganization: std::env::var(SPACE_HIERARCHY_REORGANIZATION_ENV)
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
+        ux_refresh_v1: std::env::var(UX_REFRESH_V1_ENV)
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE")),
         registration_and_recovery_enabled: std::env::var("CHARM_WEB_REGISTRATION_AND_RECOVERY")
             .as_deref()
             == Ok("1"),
@@ -70,8 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .as_deref()
             == Ok("1"),
-        composer_parity_enabled: std::env::var("CHARM_WEB_COMPOSER_PARITY").as_deref()
-            == Ok("1"),
+        composer_parity_enabled: std::env::var("CHARM_WEB_COMPOSER_PARITY").as_deref() == Ok("1"),
         ..AppState::default()
     };
 
@@ -146,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sessions: state.sessions.clone(),
                     token: token.clone(),
                     include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+                    include_ux_room_metadata: state.ux_refresh_v1,
                     message_search: sync_loop::message_search_context(
                         &session,
                         state.encrypted_local_message_search_enabled,

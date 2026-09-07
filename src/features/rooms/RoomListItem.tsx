@@ -85,6 +85,7 @@ function RoomListItemImpl({
     !showNotificationCount && unread && ambientUnreadCountEnabled && room.unread_messages > 0;
   const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
   const messagePreviewEnabled = useFlag("room_list_message_preview");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const preview = room.last_message_preview;
   const previewSenderLabel =
     preview?.sender_display_name ?? preview?.sender_id.replace(/^@/, "").split(":")[0];
@@ -94,8 +95,15 @@ function RoomListItemImpl({
       onClick={onSelect}
       style={style}
       className={cn(
-        "flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
-        active ? "bg-accent" : "hover:bg-accent/50",
+        "relative flex min-h-11 w-full items-center gap-3 px-3 py-2 text-left transition-colors",
+        uxRefreshEnabled ? "min-h-15 rounded-xl" : "rounded-md",
+        active
+          ? uxRefreshEnabled
+            ? "bg-[var(--ux-selection)] text-foreground before:absolute before:inset-y-2 before:left-0 before:w-[3px] before:rounded-r-full before:bg-[var(--ux-shell-focus)]"
+            : "bg-accent"
+          : uxRefreshEnabled
+            ? "hover:bg-[var(--ux-selection-hover)]"
+            : "hover:bg-accent/50",
       )}
       {...dragHandleProps}
     >
@@ -117,7 +125,7 @@ function RoomListItemImpl({
           </GroupDmPresenceAvatar>
         )
       ) : (
-        <Avatar>
+        <Avatar className={cn(uxRefreshEnabled && "size-10")}>
           <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
           <AvatarFallback
             style={{ background: avatarColor(room.room_id) }}

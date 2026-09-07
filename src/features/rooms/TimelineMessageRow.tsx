@@ -7,6 +7,8 @@ import {
 } from "./timelineDividers";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import type { MessageActionController } from "./useMessageActionController";
+import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 
 interface TimelineMessageRowProps {
   index: number;
@@ -57,6 +59,7 @@ export function TimelineMessageRow({
   hasNoticesBefore = false,
   hasNoticesBeforeNext = false,
 }: TimelineMessageRowProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const own = message.sender === currentUserId;
   const { dateFormat } = useDisplayFormats();
   const prev = messages[index - 1];
@@ -72,17 +75,27 @@ export function TimelineMessageRow({
     // Flex containment keeps layout-row top margins inside Virtuoso's measured
     // item box, preserving bottom detection and prepend anchoring.
     <div
-      className={
-        highlightedEventId === message.event_id
-          ? "flex flex-col rounded-md bg-primary/10 pb-1 ring-2 ring-primary/60 transition-colors"
-          : "flex flex-col pb-1"
-      }
+      className={cn(
+        "flex flex-col pb-1",
+        uxRefreshEnabled && "mx-auto w-full max-w-[56rem]",
+        highlightedEventId === message.event_id &&
+          "rounded-md bg-primary/10 ring-2 ring-primary/60 transition-colors",
+      )}
       data-message-event-id={message.event_id}
       data-jump-highlighted={highlightedEventId === message.event_id || undefined}
     >
       {showDateDivider && (
-        <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-          {formatDateDividerLabel(message.timestamp_ms, undefined, undefined, dateFormat)}
+        <div
+          className={cn(
+            "my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground",
+            uxRefreshEnabled && "my-4",
+          )}
+        >
+          {uxRefreshEnabled && <span className="h-px flex-1 bg-[var(--ux-shell-border)]" />}
+          <span>
+            {formatDateDividerLabel(message.timestamp_ms, undefined, undefined, dateFormat)}
+          </span>
+          {uxRefreshEnabled && <span className="h-px flex-1 bg-[var(--ux-shell-border)]" />}
         </div>
       )}
       {index === unreadStartIndex && (

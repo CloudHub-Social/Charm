@@ -4,7 +4,7 @@ import { badgeAtom } from "@/features/shell/badgeAtom";
 import { SpaceRail } from "./SpaceRail";
 import { makeRoomSummary } from "./testFixtures";
 
-const rooms = [
+const baseRooms = [
   makeRoomSummary({ room_id: "!space:localhost", name: "Team", is_space: true }),
   makeRoomSummary({
     room_id: "!child-space:localhost",
@@ -13,12 +13,46 @@ const rooms = [
     parent_space_ids: ["!space:localhost"],
   }),
   makeRoomSummary({ room_id: "!solo:localhost", name: "Open Source", is_space: true }),
+];
+
+const unreadDms = [
   makeRoomSummary({
-    room_id: "!dm:localhost",
+    room_id: "!alice:localhost",
     name: "Alice",
     is_direct: true,
     has_unread: true,
     unread_count: 2,
+    last_activity_ts: 500,
+  }),
+  makeRoomSummary({
+    room_id: "!beatrice:localhost",
+    name: "Beatrice with a deliberately long display name",
+    is_direct: true,
+    has_unread: true,
+    last_activity_ts: 400,
+  }),
+  makeRoomSummary({
+    room_id: "!cam:localhost",
+    name: "Cam",
+    is_direct: true,
+    has_unread: true,
+    unread_count: 1,
+    last_activity_ts: 300,
+  }),
+  makeRoomSummary({
+    room_id: "!devon:localhost",
+    name: "Devon",
+    is_direct: true,
+    has_unread: true,
+    unread_count: 4,
+    last_activity_ts: 200,
+  }),
+  makeRoomSummary({
+    room_id: "!emery:localhost",
+    name: "Emery",
+    is_direct: true,
+    has_unread: true,
+    last_activity_ts: 100,
   }),
 ];
 
@@ -45,14 +79,18 @@ const meta = {
     ),
   ],
   args: {
-    rooms,
+    rooms: [...baseRooms, ...unreadDms.slice(0, 1)],
     activeMode: "home",
     activeSpaceId: null,
     showAllRooms: false,
     currentUserId: "@storybook:localhost",
     onSelectHome: () => {},
     onSelectDms: () => {},
+    onSelectRoom: () => {},
     onSelectSpace: () => {},
+    onSelectActivity: () => {},
+    activityCount: 5,
+    onOpenAccount: () => {},
     onCreateJoin: () => {},
   },
 } satisfies Meta<typeof SpaceRail>;
@@ -72,5 +110,25 @@ export const SpaceSelectedWithFolder: Story = {
   args: {
     activeMode: "space",
     activeSpaceId: "!space:localhost",
+  },
+};
+
+export const ActivitySelected: Story = {
+  args: { activityActive: true },
+};
+
+export const NoUnreadDirectMessages: Story = {
+  args: { rooms: baseRooms },
+};
+
+export const ThreeUnreadDirectMessages: Story = {
+  args: { rooms: [...baseRooms, ...unreadDms.slice(0, 3)] },
+};
+
+export const UnreadDirectMessageOverflow: Story = {
+  args: {
+    rooms: [...baseRooms, ...unreadDms],
+    activeMode: "dms",
+    activeRoomId: "!alice:localhost",
   },
 };

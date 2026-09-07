@@ -1,15 +1,29 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-09-06T15:15:11.422Z",
+  "generatedAt": "2026-09-06T20:18:58.617Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 50,
-    "follow-up": 1,
+    "follow-up": 2,
     "in-progress": 6,
     "planned": 20
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 537,
+      "title": "fix(ios): support Xcode 27 launch and SSO",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/537",
+      "detail": "Day-1 Spec 45 · draft"
+    },
+    {
+      "type": "pull-request",
+      "number": 540,
+      "title": "feat(ux): establish the Spec 64 navigation rail foundation",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/540",
+      "detail": "Day-1 Spec 64 · draft"
+    },
     {
       "type": "issue",
       "number": 416,
@@ -26,16 +40,16 @@
     },
     {
       "type": "issue",
-      "number": 526,
-      "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/526",
+      "number": 539,
+      "title": "Spec 64: cross-platform UX foundation and product polish",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/539",
       "detail": ""
     },
     {
       "type": "issue",
-      "number": 525,
-      "title": "feat(notifications): finish mobile notification controls and inbox parity",
-      "url": "https://github.com/CloudHub-Social/Charm/issues/525",
+      "number": 526,
+      "title": "release(mobile): produce upgradeable Android and self-signed iOS daily-driver builds",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/526",
       "detail": ""
     }
   ],
@@ -120,11 +134,12 @@
         "day-1-60",
         "day-1-61",
         "day-1-62",
-        "day-1-63"
+        "day-1-63",
+        "day-1-64"
       ],
       "counts": {
         "shipped": 20,
-        "follow-up": 1,
+        "follow-up": 2,
         "in-progress": 4,
         "planned": 11
       }
@@ -1450,8 +1465,16 @@
       "number": 45,
       "title": "Registration and password-reset flows",
       "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 537,
+          "title": "fix(ios): support Xcode 27 launch and SSO",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/537",
+          "state": "open",
+          "draft": true,
+          "updatedAt": "2026-09-06T20:17:02Z"
+        },
         {
           "number": 531,
           "title": "fix(auth): retain device across soft logout",
@@ -1809,6 +1832,33 @@
         }
       ],
       "issues": []
+    },
+    {
+      "id": "day-1-64",
+      "tier": "day-1",
+      "number": 64,
+      "title": "Cross-platform UX foundation and product polish",
+      "route": "/specs/day-1/spec-64--cross-platform-ux-foundation-and-product-polish/",
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 540,
+          "title": "feat(ux): establish the Spec 64 navigation rail foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/540",
+          "state": "open",
+          "draft": true,
+          "updatedAt": "2026-09-06T20:16:34Z"
+        }
+      ],
+      "issues": [
+        {
+          "number": 539,
+          "title": "Spec 64: cross-platform UX foundation and product polish",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/539",
+          "updatedAt": "2026-09-06T19:50:49Z",
+          "labels": []
+        }
+      ]
     },
     {
       "id": "day-2-01",

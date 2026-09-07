@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
+import { MobileSpacesView } from "./MobileSpacesView";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
 import { MessageSearchDialog } from "./MessageSearchDialog";
@@ -16,6 +17,13 @@ import {
 } from "@/features/settings/useSettingsNavigation";
 import { CrashRecoveryPrompt } from "@/observability/CrashRecoveryPrompt";
 import { AppShell, type MobileView } from "@/features/shell/AppShell";
+import type {
+  AppNavigationState,
+  ContextPanelKind,
+  PrimaryDestination,
+} from "@/features/shell/navigationState";
+import { ActivityView } from "@/features/activity/ActivityView";
+import { activityAttentionCount } from "@/features/activity/activityModel";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
@@ -84,6 +92,7 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const roomInvitesEnabled = useFlag("room_invites");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   // Day-2 Spec 04 (message pinning). `ChatShell` already hides the header
   // button/menu entry that would set `pinnedMessagesDrawerOpen` while this is
   // off, but gating the panel's render here too means a previously-set atom
@@ -114,6 +123,7 @@ export function RoomsScreen({
   const roomListUpdateRevisionRef = useRef(0);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
+  const [primaryDestination, setPrimaryDestination] = useState<PrimaryDestination>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
@@ -169,6 +179,16 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
+
+  useEffect(() => {
+    if (
+      uxRefreshEnabled ||
+      (primaryDestination !== "activity" && primaryDestination !== "spaces")
+    ) {
+      return;
+    }
+    setPrimaryDestination("home");
+  }, [primaryDestination, uxRefreshEnabled]);
 
   useEffect(() => {
     if (!quickSwitcherEnabled) return;
@@ -278,6 +298,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
+    setPrimaryDestination("home");
     setSelectedSpaceId(null);
   }
 
@@ -286,6 +307,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
+    setPrimaryDestination("direct-messages");
     setSelectedSpaceId(null);
   }
 
@@ -294,6 +316,7 @@ export function RoomsScreen({
     setProfileRoomPendingSelection(null);
     autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
+    setPrimaryDestination("space");
     setSelectedSpaceId(spaceId);
   }
 
@@ -355,6 +378,7 @@ export function RoomsScreen({
         selectSpace(parentSpaceId);
       } else {
         setRoomListMode("home");
+        setPrimaryDestination("home");
         setSelectedSpaceId(null);
         setShowAllRooms(true);
       }
@@ -504,6 +528,7 @@ export function RoomsScreen({
   useEffect(() => {
     function syncFocusedRoom() {
       const isShowingChat =
+        (primaryDestination !== "activity" || !uxRefreshEnabled) &&
         !settingsSection &&
         !roomSettingsTarget &&
         document.hasFocus() &&
@@ -517,7 +542,15 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
+  }, [
+    focusedRoomId,
+    settingsSection,
+    roomSettingsTarget,
+    layout,
+    mobileView,
+    primaryDestination,
+    uxRefreshEnabled,
+  ]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -562,6 +595,7 @@ export function RoomsScreen({
       // timelines. Bring that inbox into view and consume the deep link so
       // it cannot block normal room selection indefinitely.
       setRoomListMode("home");
+      setPrimaryDestination("home");
       setSelectedSpaceId(null);
       setMobileView("list");
       autoSelectSuppressedRef.current = { kind: "invite", roomId: match.room_id };
@@ -713,9 +747,92 @@ export function RoomsScreen({
     setPinnedMessagesDrawerOpen,
   ]);
 
+  const contextPanel: ContextPanelKind = pinnedMessagesDrawerOpen
+    ? "pinned-messages"
+    : membersDrawerOpen
+      ? "members"
+      : null;
+  const navigationState: AppNavigationState = {
+    destination: primaryDestination,
+    accountId: currentUserId,
+    spaceId: selectedSpaceId,
+    roomId: activeRoom?.room_id ?? null,
+    contextPanel,
+    mobileRoute:
+      primaryDestination === "activity"
+        ? "activity"
+        : primaryDestination === "spaces"
+          ? "spaces"
+          : contextPanel
+            ? "context-panel"
+            : mobileView === "detail"
+              ? "conversation"
+              : "room-list",
+  };
+
   return (
     <>
       <AppShell
+        primaryDestination={navigationState.destination}
+        onSelectChats={() => {
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+          if (primaryDestination === "activity" || primaryDestination === "spaces") {
+            setPrimaryDestination(
+              roomListMode === "dms"
+                ? "direct-messages"
+                : roomListMode === "space"
+                  ? "space"
+                  : "home",
+            );
+          }
+        }}
+        onSelectActivity={() => {
+          setPrimaryDestination("activity");
+          setMobileView("list");
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+        }}
+        onSelectSpaces={() => {
+          setPrimaryDestination("spaces");
+          setMobileView("list");
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+        }}
+        mobileSpacesContent={
+          <MobileSpacesView
+            rooms={joinedRooms}
+            activeMode={roomListMode}
+            activeSpaceId={selectedSpaceId}
+            showAllRooms={showAllRooms}
+            onSelectHome={selectHome}
+            onSelectDms={selectDms}
+            onSelectSpace={selectSpace}
+            onCreateJoin={() => {
+              setCreateSpaceParentId(null);
+              setCreateJoinDialogOpen(true);
+            }}
+          />
+        }
+        destinationContent={
+          <ActivityView
+            rooms={roomInvitesEnabled ? rooms : joinedRooms}
+            onSelectRoom={(roomId) => {
+              const room = rooms.find((candidate) => candidate.room_id === roomId);
+              if (!room) return;
+              if (room.membership === "invite") {
+                selectHome();
+                // Invites are actionable in the home inbox rather than as
+                // timelines. Keep the normal first-room auto-selection from
+                // replacing the inbox immediately after this explicit choice.
+                autoSelectSuppressedRef.current = { kind: "invite", roomId };
+                setMobileView("list");
+                return;
+              }
+              selectRoomInVisibleMode(room);
+            }}
+          />
+        }
         spaceRail={
           <SpaceRail
             rooms={joinedRooms}
@@ -723,9 +840,23 @@ export function RoomsScreen({
             activeSpaceId={selectedSpaceId}
             showAllRooms={showAllRooms}
             currentUserId={currentUserId}
+            activeRoomId={activeRoom?.room_id ?? null}
             onSelectHome={selectHome}
             onSelectDms={selectDms}
+            onSelectRoom={(roomId) => {
+              selectDms();
+              selectRoom(roomId);
+            }}
             onSelectSpace={selectSpace}
+            activityActive={primaryDestination === "activity"}
+            activityCount={activityAttentionCount(roomInvitesEnabled ? rooms : joinedRooms)}
+            onSelectActivity={() => {
+              setPrimaryDestination("activity");
+              setMobileView("list");
+              setMembersDrawerOpen(false);
+              setPinnedMessagesDrawerOpen(false);
+            }}
+            onOpenAccount={() => openSettings("account")}
             onCreateJoin={() => {
               setCreateSpaceParentId(null);
               setCreateJoinDialogOpen(true);
@@ -785,6 +916,9 @@ export function RoomsScreen({
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
             onNavigateToProfileRoom={navigateToProfileRoom}
+            onOpenMessageSearch={
+              messageSearchEnabled ? () => setMessageSearchOpen(true) : undefined
+            }
             currentTombstone={activeRoomDetails?.tombstone ?? null}
             currentRoomStateResolved={activeRoomStateResolved}
             onFollowRoomUpgrade={followRoomUpgrade}

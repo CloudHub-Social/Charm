@@ -3,6 +3,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useRoomDetails } from "./useRoomDetails";
 import { MemberList } from "./MemberList";
 import { withRoomMutationsDisabled } from "./roomMutationBarrier";
+import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 
 interface MembersDrawerProps {
   roomId: string;
@@ -26,13 +28,25 @@ export function MembersDrawer({
   onNavigateToRoom,
   mutationsBlocked = false,
 }: MembersDrawerProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const { data: details, isLoading, isError } = useRoomDetails(roomId);
   const renderedDetails =
     details && mutationsBlocked ? withRoomMutationsDisabled(details) : details;
 
   return (
-    <div className="flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80">
-      <div className="flex items-center justify-between border-b border-border p-4">
+    <div
+      className={cn(
+        "flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80",
+        uxRefreshEnabled &&
+          "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] md:w-[320px]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center justify-between border-b border-border p-4",
+          uxRefreshEnabled && "min-h-18 border-[var(--ux-shell-border)] px-5",
+        )}
+      >
         <h2 className="text-[15px] font-bold text-foreground">Members</h2>
         <button
           type="button"

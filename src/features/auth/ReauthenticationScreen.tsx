@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { logout, reauthenticatePassword, type LoginResponse } from "@/lib/matrix";
+import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 
 interface ReauthenticationScreenProps {
   session: LoginResponse;
@@ -16,6 +18,7 @@ export function ReauthenticationScreen({
   onReauthenticated,
   onUseAnotherAccount,
 }: ReauthenticationScreenProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -57,8 +60,20 @@ export function ReauthenticationScreen({
   };
 
   return (
-    <main className="flex min-h-[100dvh] items-center justify-center bg-background p-6">
-      <div className="w-full max-w-sm space-y-6">
+    <main
+      className={cn(
+        "flex min-h-[100dvh] items-center justify-center bg-background p-6",
+        uxRefreshEnabled &&
+          "bg-[radial-gradient(circle_at_top_left,var(--ux-selection),transparent_38%),var(--ux-content-bg)]",
+      )}
+    >
+      <div
+        className={cn(
+          "w-full max-w-sm space-y-6",
+          uxRefreshEnabled &&
+            "rounded-3xl border border-[var(--ux-shell-border)] bg-[var(--ux-content-raised)] p-7 shadow-[0_28px_90px_rgba(0,0,0,0.28)]",
+        )}
+      >
         <div className="space-y-2 text-center">
           <h1 className="text-xl font-semibold">Sign in again</h1>
           <p className="text-sm text-muted-foreground">

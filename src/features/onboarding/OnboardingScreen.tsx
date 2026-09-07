@@ -4,6 +4,8 @@ import { useCrossSigningStatus, useDevices } from "@/features/settings/useDevice
 import { OrientationPane } from "./OrientationPane";
 import { ProfilePane } from "./ProfilePane";
 import { VerifyDevicePane } from "./VerifyDevicePane";
+import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 
 interface OnboardingScreenProps {
   onDone: () => void;
@@ -32,6 +34,7 @@ type PaneKey = "orientation" | "verify" | "profile";
  * "verify" pane either query would have omitted a moment later.
  */
 export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const { data: crossSigningStatus, isPending: crossSigningStatusPending } =
     useCrossSigningStatus();
   const { data: devices, isPending: devicesPending } = useDevices();
@@ -74,13 +77,19 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+    <div
+      className={cn(
+        "fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+        uxRefreshEnabled &&
+          "bg-[radial-gradient(circle_at_top_left,var(--ux-selection),transparent_38%),var(--ux-content-bg)]",
+      )}
+    >
       <div className="flex justify-end p-4">
         <Button variant="ghost" size="sm" className="h-11" onClick={onDone}>
           Skip
         </Button>
       </div>
-      <div className="motion-safe:transition-opacity motion-safe:duration-200 flex flex-1 items-center justify-center p-6">
+      <div className="motion-safe:transition-opacity motion-safe:duration-200 flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
         {pane === "orientation" && (
           <OrientationPane onNext={next} nextDisabled={verificationStatusPending} />
         )}

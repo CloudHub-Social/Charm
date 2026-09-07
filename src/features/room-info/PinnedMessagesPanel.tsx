@@ -10,6 +10,7 @@ import {
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { isWebBuild } from "@/lib/platform";
 import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
 import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
@@ -82,6 +83,7 @@ export function PinnedMessagesPanel({
   onJumpToMessage,
 }: PinnedMessagesPanelProps) {
   const roomUpgradesEnabled = useFlag("room_upgrades") && !isWebBuild();
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const { data: details } = useRoomDetails(roomId);
   // Review fix: `details?.pinned_event_ids` is a fresh array reference on
   // every `room_details:update` (even one unrelated to pinning, e.g. a
@@ -205,8 +207,19 @@ export function PinnedMessagesPanel({
   }
 
   return (
-    <div className="flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80">
-      <div className="flex items-center justify-between border-b border-border p-4">
+    <div
+      className={cn(
+        "flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80",
+        uxRefreshEnabled &&
+          "border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] md:w-[320px]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center justify-between border-b border-border p-4",
+          uxRefreshEnabled && "min-h-18 border-[var(--ux-shell-border)] px-5",
+        )}
+      >
         <h2 className="text-[15px] font-bold text-foreground">Pinned messages</h2>
         <button
           type="button"

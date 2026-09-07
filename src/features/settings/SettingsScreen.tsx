@@ -18,6 +18,7 @@ import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
 import { isWebBuild } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 
 const DevicesPanel = lazy(() =>
   import("./DevicesPanel").then((mod) => ({ default: mod.DevicesPanel })),
@@ -117,6 +118,7 @@ function SettingsBody({
   // Tauri-only either way.
   const { enabled: dndActive } = useFocusMode();
   const presencePrivacyControlsEnabled = useFlag("presence_privacy_controls");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const sectionFlagEnabled = (flagGated: (typeof SECTIONS)[number]["flagGated"]) => {
     if (!flagGated) return true;
     if (flagGated === "focus_mode") return focusModeEnabled || dndActive;
@@ -148,7 +150,10 @@ function SettingsBody({
       orientation={mobile ? "horizontal" : "vertical"}
       value={effectiveSection}
       onValueChange={(value) => onSectionChange(value as SettingsSection)}
-      className={mobile ? "flex h-full w-full flex-col" : "flex h-full w-full"}
+      className={cn(
+        mobile ? "flex h-full w-full flex-col" : "flex h-full w-full",
+        uxRefreshEnabled && "bg-[var(--ux-content-bg)]",
+      )}
     >
       {mobile ? (
         <TabsList
@@ -162,8 +167,16 @@ function SettingsBody({
           ))}
         </TabsList>
       ) : (
-        <div className="flex w-60 shrink-0 flex-col border-r border-border p-4">
-          <span className="mb-4 text-base font-bold text-foreground">Settings</span>
+        <div
+          className={cn(
+            "flex w-60 shrink-0 flex-col border-r border-border p-4",
+            uxRefreshEnabled &&
+              "w-64 border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-bg)] p-5",
+          )}
+        >
+          <span className="mb-4 text-lg font-bold tracking-[-0.015em] text-foreground">
+            Settings
+          </span>
           <TabsList
             variant="line"
             className="h-auto flex-col items-stretch gap-1 bg-transparent p-0"
@@ -176,7 +189,7 @@ function SettingsBody({
           </TabsList>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+      <div className={cn("min-h-0 flex-1 overflow-y-auto p-6", uxRefreshEnabled && "p-7")}>
         <TabsContent value="account">
           <AccountPanel onLoggedOut={onLoggedOut} />
         </TabsContent>
@@ -258,6 +271,7 @@ function SettingsBody({
 export function SettingsScreen({ onLoggedOut, onJumpToBookmark }: SettingsScreenProps) {
   const { section, openSettings, closeSettings } = useSettingsNavigation();
   const layout = useAdaptiveLayout();
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
 
   if (!section) return null;
 
@@ -273,8 +287,18 @@ export function SettingsScreen({ onLoggedOut, onJumpToBookmark }: SettingsScreen
 
   if (layout === "mobile") {
     return (
-      <div className="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-        <div className="flex shrink-0 items-center justify-between border-b border-border p-4">
+      <div
+        className={cn(
+          "fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+          uxRefreshEnabled && "bg-[var(--ux-content-bg)]",
+        )}
+      >
+        <div
+          className={cn(
+            "flex shrink-0 items-center justify-between border-b border-border p-4",
+            uxRefreshEnabled && "min-h-16 border-[var(--ux-shell-border)]",
+          )}
+        >
           <span className="text-base font-bold text-foreground">Settings</span>
           <Button
             variant="ghost"
@@ -301,7 +325,11 @@ export function SettingsScreen({ onLoggedOut, onJumpToBookmark }: SettingsScreen
   return (
     <Dialog open onOpenChange={(open) => !open && closeSettings()}>
       <DialogContent
-        className="flex h-[36rem] max-h-[85dvh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className={cn(
+          "flex h-[36rem] max-h-[85dvh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl",
+          uxRefreshEnabled &&
+            "h-[42rem] max-h-[88dvh] rounded-3xl border-[var(--ux-shell-border)] bg-[var(--ux-content-bg)] shadow-2xl sm:max-w-5xl",
+        )}
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>

@@ -35,9 +35,9 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
-    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl,
-    discard_poll_vote_impl, end_poll_impl, pending_poll_end_impl, pending_poll_vote_impl,
-    pending_poll_relations_impl, retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
+    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl, discard_poll_vote_impl,
+    end_poll_impl, pending_poll_end_impl, pending_poll_relations_impl, pending_poll_vote_impl,
+    retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
 };
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
@@ -1650,6 +1650,7 @@ async fn finish_login(
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            include_ux_room_metadata: state.ux_refresh_v1,
             message_search: crate::sync_loop::message_search_context(
                 &stored,
                 state.encrypted_local_message_search_enabled,
@@ -2565,14 +2566,16 @@ async fn logout(
                                 .as_ref()
                                 .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
                             match matrix_session {
-                                Some(matrix_session) => persistence
-                                    .persist_teardown_revocation(
-                                        &token,
-                                        session.client.homeserver().as_str(),
-                                        &matrix_session,
-                                        live_crypto,
-                                    )
-                                    .await,
+                                Some(matrix_session) => {
+                                    persistence
+                                        .persist_teardown_revocation(
+                                            &token,
+                                            session.client.homeserver().as_str(),
+                                            &matrix_session,
+                                            live_crypto,
+                                        )
+                                        .await
+                                }
                                 None => Err("the live Matrix token pair is unavailable".into()),
                             }
                         } else {
@@ -2922,6 +2925,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            include_ux_room_metadata: state.ux_refresh_v1,
             message_search: crate::sync_loop::message_search_context(
                 &session,
                 state.encrypted_local_message_search_enabled,
@@ -2956,16 +2960,14 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // `RoomListMessagePreview`/`RoomListSort` aren't wired up for the web
-    // build yet (no feature-flag store here, unlike desktop's
-    // `feature_flags::flag`) — off for now, matching each flag's compiled-in
-    // default.
+    // The companion has an explicit server-side UX gate because the browser's
+    // local feature overrides are not available to this process.
     Ok(Json(
         snapshot_rooms(
             &session.client,
             None,
-            false,
-            false,
+            state.ux_refresh_v1,
+            state.ux_refresh_v1,
             state.space_hierarchy_reorganization,
             &session.preview_registered_rooms,
         )
@@ -3776,14 +3778,9 @@ async fn retry_poll_vote(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let retried = retry_poll_vote_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let retried = retry_poll_vote_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(Json(retried))
 }
 
@@ -3795,14 +3792,10 @@ async fn discard_poll_vote(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let discarded = discard_poll_vote_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let discarded =
+        discard_poll_vote_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+            .await
+            .map_err(ApiError::bad_request)?;
     Ok(Json(discarded))
 }
 
@@ -3830,14 +3823,9 @@ async fn retry_poll_end(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let retried = retry_poll_end_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let retried = retry_poll_end_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(Json(retried))
 }
 
@@ -3849,14 +3837,10 @@ async fn discard_poll_end(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let discarded = discard_poll_end_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let discarded =
+        discard_poll_end_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+            .await
+            .map_err(ApiError::bad_request)?;
     Ok(Json(discarded))
 }
 

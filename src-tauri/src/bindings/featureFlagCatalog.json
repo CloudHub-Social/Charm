@@ -214,5 +214,11 @@
     "description": "Customize appearance and display preferences, including clock and date formats.",
     "key": "appearance_parity",
     "owner": "Spec 47 (appearance customization)"
+  },
+  {
+    "default": false,
+    "description": "Use the renewed cross-platform application shell and people-first navigation.",
+    "key": "ux_refresh_v1",
+    "owner": "Spec 64 (cross-platform UX foundation and product polish)"
   }
 ]

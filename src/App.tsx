@@ -21,6 +21,7 @@ import { clearQuickSwitcherRecents } from "@/features/rooms/quickSwitcherRecents
 import { resetRoomSendQueueBarrier } from "@/features/rooms/useRoomSendQueueBarrier";
 import { useApnsRefresh } from "@/features/push/useApnsRefresh";
 import { RoomKeyFilesSessionProvider } from "@/features/settings/RoomKeyFilesCard";
+import { useFlag } from "@/featureFlags";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -39,6 +40,7 @@ interface AppProps {
  * completes.
  */
 function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [reauthenticationRequired, setReauthenticationRequired] = useState(false);
   useApnsRefresh(
@@ -55,6 +57,14 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const sessionRef = useRef(session);
   onLoggedOutRef.current = onLoggedOut;
   sessionRef.current = session;
+
+  useEffect(() => {
+    if (uxRefreshEnabled) document.documentElement.dataset.uxRefresh = "true";
+    else delete document.documentElement.dataset.uxRefresh;
+    return () => {
+      delete document.documentElement.dataset.uxRefresh;
+    };
+  }, [uxRefreshEnabled]);
 
   const handleSignedIn = useCallback((nextSession: LoginResponse) => {
     sessionRef.current = nextSession;

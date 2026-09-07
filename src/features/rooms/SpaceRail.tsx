@@ -1,10 +1,12 @@
 import {
+  Bell,
   ChevronDown,
   DoorOpen,
   FolderPlus,
   Home,
   LogIn,
   LogOut,
+  MessageCircle,
   Pin,
   PinOff,
   Plus,
@@ -35,6 +37,8 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
+import { PresenceDot } from "@/features/presence/PresenceDot";
+import { usePresence } from "@/features/presence/usePresence";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   getRoomDetails,
@@ -49,6 +53,7 @@ import { cn } from "@/lib/utils";
 import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
 import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
 import { LeaveSpaceDialog } from "./LeaveSpaceDialog";
+import { deriveRailAttention, type RailAttentionItem } from "./railAttention";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { moveSpaceInOrder, orderSpaceIds } from "./spaceRailPrefs";
 import { useSpaceRailPrefsSync } from "./useSpaceRailPrefsSync";
@@ -64,9 +69,15 @@ interface SpaceRailProps {
    * signed-in account, so switching accounts on the same device never
    * inherits — or overwrites — a different account's rail preferences. */
   currentUserId: string;
+  activeRoomId?: string | null;
   onSelectHome: () => void;
   onSelectDms: () => void;
+  onSelectRoom: (roomId: string) => void;
   onSelectSpace: (spaceId: string) => void;
+  activityActive?: boolean;
+  activityCount?: number;
+  onSelectActivity?: () => void;
+  onOpenAccount?: () => void;
   onCreateJoin: () => void;
   onCreateUnderSpace?: (spaceId: string) => void;
   onOpenSettings?: (spaceId: string) => void;
@@ -83,14 +94,21 @@ export function SpaceRail({
   activeSpaceId,
   showAllRooms,
   currentUserId,
+  activeRoomId = null,
   onSelectHome,
   onSelectDms,
+  onSelectRoom,
   onSelectSpace,
+  activityActive = false,
+  activityCount = 0,
+  onSelectActivity,
+  onOpenAccount,
   onCreateJoin,
   onCreateUnderSpace,
   onOpenSettings,
   onSpaceChildrenChanged,
 }: SpaceRailProps) {
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const managementEnabled = useFlag("space_rail_management");
   const hierarchyReorganizationEnabled = useFlag("space_hierarchy_reorganization");
   const contextMenuEnabled = managementEnabled || hierarchyReorganizationEnabled;
@@ -509,6 +527,10 @@ export function SpaceRail({
 
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
+  const railAttention = useMemo(() => deriveRailAttention(directRooms), [directRooms]);
+  const hasActiveDirectShortcut = railAttention.visibleItems.some(
+    (item) => activeMode === "dms" && item.room.room_id === activeRoomId,
+  );
   const homeBadge = useMemo(() => getHomeBadge(rooms, showAllRooms), [rooms, showAllRooms]);
   const hiddenDirectBadgesBySpace = useMemo(
     () => getHiddenDirectBadgesBySpace(directRooms, parentSpaceIdsByChild),
@@ -569,7 +591,12 @@ export function SpaceRail({
     const canEditOwnChildren = ownPermissions?.set_space_child ?? false;
     const canEditParentChildren = parentPermissions?.set_space_child ?? false;
     const entryTrigger = (
-      <div className="relative flex h-11 w-14 items-center justify-center">
+      <div
+        className={cn(
+          "relative flex items-center justify-center",
+          uxRefreshEnabled ? "h-13 w-16" : "h-11 w-14",
+        )}
+      >
         {visibleChildren.length > 0 && (
           <button
             type="button"
@@ -585,7 +612,7 @@ export function SpaceRail({
         )}
         <SpaceButton
           space={space}
-          active={activeMode === "space" && activeSpaceId === space.room_id}
+          active={!activityActive && activeMode === "space" && activeSpaceId === space.room_id}
           unread={counts.unread}
           highlight={counts.highlight}
           onClick={() => onSelectSpace(space.room_id)}
@@ -612,6 +639,7 @@ export function SpaceRail({
           }}
           onDragMove={updateSpaceDropFromPointer}
           onDragEnd={finishSpaceDrop}
+          uxRefresh={uxRefreshEnabled}
         />
       </div>
     );
@@ -763,7 +791,14 @@ export function SpaceRail({
           entryTrigger
         )}
         {folderOpen && visibleChildren.length > 0 && (
-          <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
+          <div
+            className={cn(
+              "flex flex-col gap-1 p-1",
+              uxRefreshEnabled
+                ? "rounded-full bg-[var(--ux-rail-folder)]"
+                : "rounded-md border border-border/60",
+            )}
+          >
             {visibleChildren.map((child) =>
               renderSpaceEntry(child, false, space.room_id, nextAncestorIds),
             )}
@@ -785,67 +820,134 @@ export function SpaceRail({
       )}
       <aside
         ref={railRef}
-        className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-muted/25 py-3"
+        data-ux-refresh={uxRefreshEnabled ? "true" : undefined}
+        className={cn(
+          "flex shrink-0 flex-col items-center py-3",
+          uxRefreshEnabled
+            ? "w-20 border-r border-[var(--ux-rail-border)] bg-[var(--ux-rail-bg)] text-[var(--ux-rail-text)]"
+            : "w-[72px] border-r border-border bg-muted/25",
+        )}
       >
-        <nav className="flex min-h-0 flex-1 flex-col items-center gap-2" aria-label="Spaces">
+        <nav
+          className={cn(
+            "flex min-h-0 flex-1 flex-col items-center",
+            uxRefreshEnabled ? "gap-2.5" : "gap-2",
+          )}
+          aria-label={uxRefreshEnabled ? "Primary navigation" : "Spaces"}
+        >
           <RailIconButton
             label="Home"
-            active={activeMode === "home"}
+            active={!activityActive && activeMode === "home"}
             unread={homeBadge.unread}
             highlight={homeBadge.highlight}
             onClick={onSelectHome}
+            uxRefresh={uxRefreshEnabled}
           >
-            <Home aria-hidden="true" />
+            {uxRefreshEnabled ? (
+              <img src="/favicon.png" alt="" className="size-8 rounded-[12px]" />
+            ) : (
+              <Home aria-hidden="true" />
+            )}
           </RailIconButton>
           <fieldset className="m-0 flex min-w-0 flex-col items-center gap-1 border-0 p-0">
             <legend className="sr-only">Direct messages</legend>
+            {uxRefreshEnabled && (
+              <div className="flex flex-col gap-1.5">
+                {railAttention.visibleItems.map((item) => (
+                  <DirectMessageShortcut
+                    key={item.room.room_id}
+                    item={item}
+                    active={
+                      !activityActive && activeMode === "dms" && activeRoomId === item.room.room_id
+                    }
+                    onClick={() => onSelectRoom(item.room.room_id)}
+                  />
+                ))}
+              </div>
+            )}
             <RailIconButton
               label="Direct messages"
-              active={activeMode === "dms"}
-              unread={directUnreadCount}
-              highlight={directHighlightCount}
+              active={
+                !activityActive &&
+                activeMode === "dms" &&
+                (!uxRefreshEnabled || !hasActiveDirectShortcut)
+              }
+              unread={uxRefreshEnabled ? railAttention.overflowUnread : directUnreadCount}
+              highlight={uxRefreshEnabled ? railAttention.overflowHighlight : directHighlightCount}
               onClick={onSelectDms}
+              uxRefresh={uxRefreshEnabled}
             >
-              <Users aria-hidden="true" />
+              {uxRefreshEnabled ? (
+                <MessageCircle aria-hidden="true" />
+              ) : (
+                <Users aria-hidden="true" />
+              )}
             </RailIconButton>
-            <div className="flex flex-col gap-1">
-              {directRooms
-                .filter((room) => room.has_unread)
-                .slice(0, 3)
-                .map((room) => (
-                  <Tooltip key={room.room_id}>
-                    <TooltipTrigger asChild>
-                      <span className="block">
-                        <Avatar size="sm">
-                          <AvatarImage
-                            src={resolveAvatar(room.avatar_path, room.avatar_url)}
-                            alt=""
-                          />
-                          <AvatarFallback
-                            style={{ background: avatarColor(room.room_id) }}
-                            className="text-[10px] font-bold text-white"
-                          >
-                            {initials(room.room_id, room.name)}
-                          </AvatarFallback>
-                        </Avatar>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      {displayName(room.room_id, room.name)}
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-            </div>
+            {!uxRefreshEnabled && (
+              <div className="flex flex-col gap-1">
+                {directRooms
+                  .filter((room) => room.has_unread)
+                  .slice(0, 3)
+                  .map((room) => (
+                    <Tooltip key={room.room_id}>
+                      <TooltipTrigger asChild>
+                        <span className="block">
+                          <Avatar size="sm">
+                            <AvatarImage
+                              src={resolveAvatar(room.avatar_path, room.avatar_url)}
+                              alt=""
+                            />
+                            <AvatarFallback
+                              style={{ background: avatarColor(room.room_id) }}
+                              className="text-[10px] font-bold text-white"
+                            >
+                              {initials(room.room_id, room.name)}
+                            </AvatarFallback>
+                          </Avatar>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">
+                        {displayName(room.room_id, room.name)}
+                      </TooltipContent>
+                    </Tooltip>
+                  ))}
+              </div>
+            )}
           </fieldset>
-          <div className="my-1 h-px w-8 bg-border" />
+          {uxRefreshEnabled && onSelectActivity && (
+            <RailIconButton
+              label="Activity"
+              active={activityActive}
+              unread={activityCount}
+              badgeLabel={activityCount > 0 ? `${activityCount} items` : undefined}
+              onClick={onSelectActivity}
+              uxRefresh
+            >
+              <Bell aria-hidden="true" />
+            </RailIconButton>
+          )}
+          <div
+            className={cn(
+              "my-1 h-px w-8",
+              uxRefreshEnabled ? "bg-[var(--ux-rail-divider)]" : "bg-border",
+            )}
+          />
           <div
             ref={railScrollRef}
-            className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1"
+            className={cn(
+              "flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-2 pt-1",
+              uxRefreshEnabled ? "gap-1.5" : "gap-2",
+            )}
           >
             {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
             {unpinnedTopLevelSpaces.length > 0 && (
               <>
-                <div className="my-1 h-px w-8 bg-border" />
+                <div
+                  className={cn(
+                    "my-1 h-px w-8",
+                    uxRefreshEnabled ? "bg-[var(--ux-rail-divider)]" : "bg-border",
+                  )}
+                />
                 <div className="flex flex-col items-center gap-2 opacity-60">
                   {unpinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
                 </div>
@@ -853,9 +955,24 @@ export function SpaceRail({
             )}
           </div>
         </nav>
-        <RailIconButton label="Create or join space" active={false} onClick={onCreateJoin}>
+        <RailIconButton
+          label="Create or join space"
+          active={false}
+          onClick={onCreateJoin}
+          uxRefresh={uxRefreshEnabled}
+        >
           <Plus aria-hidden="true" />
         </RailIconButton>
+        {uxRefreshEnabled && onOpenAccount && (
+          <RailIconButton
+            label="Account and settings"
+            active={false}
+            onClick={onOpenAccount}
+            uxRefresh
+          >
+            <Settings aria-hidden="true" />
+          </RailIconButton>
+        )}
       </aside>
       <InviteToSpaceDialog
         spaceId={inviteTarget?.spaceId ?? null}
@@ -975,6 +1092,8 @@ interface RailIconButtonProps {
   active: boolean;
   unread?: number;
   highlight?: number;
+  badgeLabel?: string;
+  uxRefresh?: boolean;
   onClick: () => void;
   children: ReactNode;
 }
@@ -984,10 +1103,14 @@ function RailIconButton({
   active,
   unread = 0,
   highlight = 0,
+  badgeLabel,
+  uxRefresh = false,
   onClick,
   children,
 }: RailIconButtonProps) {
-  const accessibleLabel = labelWithBadge(label, unread, highlight);
+  const accessibleLabel = badgeLabel
+    ? `${label}, ${badgeLabel}`
+    : labelWithBadge(label, unread, highlight);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -997,14 +1120,84 @@ function RailIconButton({
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
-            "relative flex size-11 items-center justify-center rounded-md border text-foreground transition-colors",
-            active
-              ? "border-primary/50 bg-accent"
-              : "border-transparent bg-background hover:border-border hover:bg-accent/70",
+            "relative flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2",
+            uxRefresh
+              ? "size-12 rounded-[18px_14px_17px_13px] border border-transparent text-[var(--ux-rail-text)] focus-visible:ring-[var(--ux-rail-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--ux-rail-bg)]"
+              : "size-11 rounded-md border text-foreground focus-visible:ring-ring",
+            active && uxRefresh
+              ? "bg-[var(--ux-rail-active)]"
+              : active
+                ? "border-primary/50 bg-accent"
+                : uxRefresh
+                  ? "hover:bg-[var(--ux-rail-hover)]"
+                  : "border-transparent bg-background hover:border-border hover:bg-accent/70",
           )}
         >
+          {uxRefresh && active && (
+            <span
+              aria-hidden="true"
+              className="absolute -left-[17px] h-6 w-1 rounded-r-full bg-[var(--ux-rail-marker)]"
+            />
+          )}
           {children}
-          <BadgeDot unread={unread} highlight={highlight} />
+          <BadgeDot unread={unread} highlight={highlight} uxRefresh={uxRefresh} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function DirectMessageShortcut({
+  item,
+  active,
+  onClick,
+}: {
+  item: RailAttentionItem;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const { room } = item;
+  const label = displayName(room.room_id, room.name);
+  const presence = usePresence(room.dm_peer_user_id);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={labelWithBadge(label, item.unread, item.highlight)}
+          aria-current={active ? "page" : undefined}
+          onClick={onClick}
+          className={cn(
+            "relative flex size-13 items-center justify-center rounded-[19px_14px_18px_15px] transition-colors",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ux-rail-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--ux-rail-bg)]",
+            active ? "bg-[var(--ux-rail-active)]" : "hover:bg-[var(--ux-rail-hover)]",
+          )}
+        >
+          {active && (
+            <span
+              aria-hidden="true"
+              className="absolute -left-[14px] h-7 w-1 rounded-r-full bg-[var(--ux-rail-marker)]"
+            />
+          )}
+          <Avatar size="lg" className="size-11">
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
+            <AvatarFallback
+              style={{ background: avatarColor(room.room_id) }}
+              className="text-xs font-bold text-white"
+            >
+              {initials(room.room_id, room.name)}
+            </AvatarFallback>
+            <PresenceDot
+              presence={presence?.presence}
+              statusMsg={presence?.status_msg}
+              lastActiveAgoMs={presence?.last_active_ago_ms}
+              updateToken={presence}
+              insideInteractiveParent
+            />
+          </Avatar>
+          <BadgeDot unread={item.unread} highlight={item.highlight} uxRefresh subduedUnread />
         </button>
       </TooltipTrigger>
       <TooltipContent side="right">{label}</TooltipContent>
@@ -1023,6 +1216,7 @@ interface SpaceButtonProps {
   onDragPrepare: () => void;
   onDragMove: (spaceId: string, clientX: number, clientY: number) => void;
   onDragEnd: (spaceId: string) => void;
+  uxRefresh: boolean;
 }
 
 function SpaceButton({
@@ -1036,6 +1230,7 @@ function SpaceButton({
   onDragPrepare,
   onDragMove,
   onDragEnd,
+  uxRefresh,
 }: SpaceButtonProps) {
   const label = displayName(space.room_id, space.name);
   const accessibleLabel = labelWithBadge(label, unread, highlight);
@@ -1081,19 +1276,31 @@ function SpaceButton({
             pointerEvents: dragging ? "none" : undefined,
           }}
           className={cn(
-            "relative flex size-11 items-center justify-center rounded-md border border-transparent bg-background transition-colors hover:border-border hover:bg-accent/70",
+            "relative flex items-center justify-center border border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2",
+            uxRefresh
+              ? "size-13 rounded-[19px_14px_18px_15px] focus-visible:ring-[var(--ux-rail-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--ux-rail-bg)]"
+              : "size-11 rounded-md bg-background hover:border-border hover:bg-accent/70 focus-visible:ring-ring",
+            uxRefresh && active
+              ? "bg-[var(--ux-rail-active)]"
+              : uxRefresh && "hover:bg-[var(--ux-rail-hover)]",
             dropState === "valid" && "border-primary bg-accent ring-2 ring-primary/40",
             dropState === "invalid" && "border-destructive bg-destructive/10",
             dropState === "source" && "opacity-70",
           )}
         >
-          {/* Ring lives on the (rounded-full) avatar itself, not the
-              (rounded-md) outer button — a ring on the button would render
-              as a rounded-square around the whole tile instead of a circle
-              around the avatar. The button keeps a neutral bg-background
-              regardless of active state so a transparent avatar image can't
-              pick up the rail's own bg-muted/25 showing through. */}
-          <Avatar size="sm" className={cn(active && "ring-2 ring-primary")}>
+          {uxRefresh && active && (
+            <span
+              aria-hidden="true"
+              className="absolute -left-[14px] h-7 w-1 rounded-r-full bg-[var(--ux-rail-marker)]"
+            />
+          )}
+          {/* The legacy rail keeps its selected ring on the round avatar so it
+              does not become a rounded-square outline. Spec 64 deliberately
+              moves selection to the organic backing and mint edge marker. */}
+          <Avatar
+            size={uxRefresh ? "lg" : "sm"}
+            className={cn(uxRefresh && "size-11", active && !uxRefresh && "ring-2 ring-primary")}
+          >
             <AvatarImage src={resolveAvatar(space.avatar_path, space.avatar_url)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(space.room_id) }}
@@ -1102,7 +1309,7 @@ function SpaceButton({
               {initials(space.room_id, space.name)}
             </AvatarFallback>
           </Avatar>
-          <BadgeDot unread={unread} highlight={highlight} />
+          <BadgeDot unread={unread} highlight={highlight} uxRefresh={uxRefresh} />
         </button>
       </TooltipTrigger>
       <TooltipContent side="right">{label}</TooltipContent>
@@ -1206,16 +1413,36 @@ function collectAncestorSpaceIds(spaceId: string, parentSpaceIdsByChild: Map<str
   return ancestors;
 }
 
-function BadgeDot({ unread, highlight }: { unread: number; highlight: number }) {
+function BadgeDot({
+  unread,
+  highlight,
+  uxRefresh = false,
+  subduedUnread = false,
+}: {
+  unread: number;
+  highlight: number;
+  uxRefresh?: boolean;
+  subduedUnread?: boolean;
+}) {
   if (unread <= 0 && highlight <= 0) return null;
+  if (uxRefresh && subduedUnread && highlight <= 0) {
+    return (
+      <span
+        aria-hidden="true"
+        className="absolute -right-0.5 top-1 size-2.5 rounded-full bg-[var(--ux-rail-unread)] ring-2 ring-[var(--ux-rail-bg)]"
+      />
+    );
+  }
   const label = highlight > 0 ? highlight : unread;
   return (
     <span
       className={cn(
         "absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold",
-        highlight > 0
-          ? "bg-primary-solid text-primary-foreground"
-          : "bg-muted-foreground text-background",
+        uxRefresh
+          ? "bg-[var(--ux-rail-badge)] text-[var(--ux-rail-badge-text)] ring-2 ring-[var(--ux-rail-bg)]"
+          : highlight > 0
+            ? "bg-primary-solid text-primary-foreground"
+            : "bg-muted-foreground text-background",
       )}
     >
       {label}

@@ -49,7 +49,7 @@ const REDUCED_MOTION_LABELS: Record<ReducedMotion, string> = {
 
 const MESSAGE_LAYOUT_LABELS: Record<MessageLayout, string> = {
   bubble: "Bubble",
-  discord: "Discord",
+  discord: "Modern",
   irc: "IRC",
 };
 
@@ -293,7 +293,7 @@ export function AppearancePanel() {
         <SettingTile>
           <div className="text-sm font-medium text-foreground">Message layout</div>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Bubble, Discord-style, or IRC-style density.
+            Bubbles, Modern, or IRC-style density.
           </p>
           <div className="mt-3">
             <MessageLayoutControl value={messageLayout} onChange={setMessageLayout} />

@@ -598,6 +598,26 @@
       }
     },
     {
+      "slug": "ux-refresh-navigation-rail",
+      "title": "Charm cross-platform UX renewal",
+      "summary": "A warmer, people-first responsive shell across navigation, rooms, conversations, Activity, onboarding, authentication, settings, and contextual panels.",
+      "status": "preview",
+      "spec": "Spec 64",
+      "specLinks": [
+        {
+          "label": "Spec 64",
+          "href": "/specs/day-1/spec-64--cross-platform-ux-foundation-and-product-polish/"
+        }
+      ],
+      "flag": "ux_refresh_v1",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "ux-refresh-navigation-rail",
+        "alt": "Charm's renewed desktop interface with a warm aubergine people rail, charcoal room list, focused conversation canvas, and integrated composer",
+        "caption": "The deterministic journey proves direct-message shortcuts and overflow counts are disjoint, then captures the complete default-off desktop renewal."
+      }
+    },
+    {
       "slug": "sidebar-management",
       "title": "Sidebar and space management",
       "summary": "Pin, unpin, and reorder spaces on the rail, and manage a space from a right-click context menu: invite, add an existing room or space, mark it suggested, remove it from a parent, or leave.",

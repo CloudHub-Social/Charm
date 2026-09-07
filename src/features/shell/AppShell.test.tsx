@@ -16,10 +16,17 @@ import { verificationOverlayOpenAtom } from "@/features/verification/verificatio
 
 const mockUseAdaptiveLayout = vi.fn();
 const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+const invokeDrag = vi.hoisted(() => vi.fn());
 vi.mock("./useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
+vi.mock("@use-gesture/react", () => ({
+  useDrag: (handler: (...args: unknown[]) => unknown) => {
+    invokeDrag.mockImplementation(handler);
+    return () => ({});
+  },
+}));
 
 /** Mirrors how `RoomsScreen` owns `mobileView` and passes it down controlled. */
 function Harness({
@@ -45,6 +52,7 @@ function Harness({
       isSettingsActive={isSettingsActive}
       spaceRail={<div>space-rail</div>}
       roomList={<div>room-list</div>}
+      mobileSpacesContent={<div>mobile-spaces</div>}
       content={<button onClick={() => setMobileView("list")}>chat-content</button>}
       rightPanel={rightPanel}
     />
@@ -232,6 +240,7 @@ describe("AppShell", () => {
 
   beforeEach(() => {
     mockUseFlag.mockReturnValue(true);
+    invokeDrag.mockClear();
   });
 
   it("renders the sidebar layout (room list, content, right panel side by side) on desktop", () => {
@@ -246,12 +255,58 @@ describe("AppShell", () => {
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
+  it("uses a dedicated full-width Spaces root instead of squeezing the desktop rail onto mobile", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    render(
+      <AppShell
+        activeRoomId={null}
+        selectionRequestId={0}
+        mobileView="list"
+        onMobileViewChange={vi.fn()}
+        primaryDestination="spaces"
+        spaceRail={<div>desktop-space-rail</div>}
+        roomList={<div>room-list</div>}
+        mobileSpacesContent={<main>mobile-spaces</main>}
+        content={<div>chat-content</div>}
+        rightPanel={null}
+        onSelectSpaces={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("mobile-spaces")).toBeInTheDocument();
+    expect(screen.queryByText("desktop-space-rail")).not.toBeInTheDocument();
+    expect(screen.queryByText("room-list")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spaces" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("keeps the chat owner mounted but hidden while Activity replaces the workspace", () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    render(
+      <AppShell
+        activeRoomId="!room:example.org"
+        selectionRequestId={0}
+        mobileView="detail"
+        onMobileViewChange={vi.fn()}
+        primaryDestination="activity"
+        destinationContent={<main>activity-feed</main>}
+        spaceRail={<div>space-rail</div>}
+        roomList={<div>room-list</div>}
+        content={<VisibilityProbe />}
+        rightPanel={null}
+      />,
+    );
+
+    expect(screen.getByText("activity-feed")).toBeInTheDocument();
+    expect(screen.queryByText("room-list")).not.toBeInTheDocument();
+    expect(screen.getByText("chat-hidden")).not.toBeVisible();
+  });
+
   it("renders the bottom-nav layout with the room list by default on mobile", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     renderShell(null);
 
     expect(screen.getByRole("navigation")).toBeInTheDocument();
-    expect(screen.getByText("space-rail")).toBeInTheDocument();
+    expect(screen.queryByText("space-rail")).not.toBeInTheDocument();
     expect(screen.getByText("room-list")).toBeInTheDocument();
     expect(screen.queryByText("right-panel")).not.toBeInTheDocument();
   });
@@ -262,7 +317,42 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
-    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("returns to the room list after a committed leading-edge swipe", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderShell("!room:example.org");
+
+    act(() => {
+      invokeDrag({
+        first: true,
+        last: false,
+        initial: [8, 120],
+        movement: [84, 2],
+        velocity: [0.2, 0],
+        direction: [1, 0],
+        cancel: vi.fn(),
+      });
+    });
+    expect(screen.getByText("chat-content").parentElement).toHaveStyle({
+      transform: "translateX(84px)",
+    });
+
+    act(() => {
+      invokeDrag({
+        first: false,
+        last: true,
+        initial: [8, 120],
+        movement: [84, 2],
+        velocity: [0.2, 0],
+        direction: [1, 0],
+        cancel: vi.fn(),
+      });
+    });
+
+    expect(screen.getByText("room-list")).toBeInTheDocument();
   });
 
   it("keeps the existing bottom navigation in room detail when the redesign flag is disabled", () => {

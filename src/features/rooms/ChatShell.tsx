@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, MessageCircle, Paperclip, Type, X } from "lucide-react";
+import { ChevronDown, Paperclip, Type, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import * as Sentry from "@sentry/react";
 import { usePresence } from "@/features/presence/usePresence";
@@ -11,7 +11,7 @@ import { useFeatureFlagPersistenceVersion, useFlag } from "@/featureFlags";
 import { isMessageSendingCommand } from "./slashCommands";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate } from "@/lib/matrix";
-import { avatarColor, displayName, initials } from "./roomDisplay";
+import { displayName } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
@@ -30,7 +30,7 @@ import {
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
-import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
+import { useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import {
   attachmentUploadPayload,
@@ -63,6 +63,8 @@ import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 import { PollComposerControls } from "./PollComposerControls";
 import { PollRecoveryTray } from "./PollRecoveryTray";
 import { ComposerSendButton } from "./ComposerSendButton";
+import { NoMessagesState, NoRoomSelectedState } from "./ChatEmptyState";
+import { FollowingParticipants } from "./FollowingParticipants";
 
 /**
  * Per-message affordance state: whether the current user sent it, and
@@ -182,6 +184,7 @@ export function ChatShell({
   onBack,
   onNavigateToRoom,
   onNavigateToProfileRoom,
+  onOpenMessageSearch,
   currentTombstone = null,
   currentRoomStateResolved = true,
   onFollowRoomUpgrade,
@@ -190,6 +193,7 @@ export function ChatShell({
 }: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const voiceRecordingEnabled = useFlag("voice_recording");
   const timelineStateEventsEnabled = useFlag("timeline_state_events");
@@ -201,7 +205,8 @@ export function ChatShell({
   const hideMembershipEvents = useAtomValue(hideMembershipEventsAtom);
   const showHiddenEvents = useAtomValue(showHiddenEventsAtom);
   const userProfileCardsEnabled = useFlag("user_profile_cards");
-  const mobile = layout === "mobile" && mobileChatRedesignEnabled;
+  const mobile = layout === "mobile" && (mobileChatRedesignEnabled || uxRefreshEnabled);
+  const compactComposerControls = mobile || uxRefreshEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
@@ -547,11 +552,7 @@ export function ChatShell({
   // message list.
 
   if (!room) {
-    return (
-      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-        Select a room to start chatting
-      </div>
-    );
+    return <NoRoomSelectedState refreshed={uxRefreshEnabled} />;
   }
 
   const editingMessage = messages.find((m) => m.event_id === editingEventId) ?? null;
@@ -696,7 +697,10 @@ export function ChatShell({
   return (
     <div
       data-testid="chat-shell"
-      className="relative flex min-w-0 flex-1 flex-col"
+      className={cn(
+        "relative flex min-w-0 flex-1 flex-col",
+        uxRefreshEnabled && "bg-[var(--ux-content-bg)]",
+      )}
       onDragEnter={handleDragEnter}
       onDragOver={handleAttachmentDragOver}
       onDragLeave={handleDragLeave}
@@ -738,6 +742,7 @@ export function ChatShell({
         }
         jumpToDateEnabled={jumpToDateEnabled}
         onJumpToDate={() => setJumpToDateOpen(true)}
+        onOpenMessageSearch={onOpenMessageSearch}
       />
       <div className="relative flex min-h-0 flex-1 flex-col">
         {/* Keep loading while older pages are auto-fetched for a renderable message;
@@ -745,22 +750,17 @@ export function ChatShell({
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
-        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && mobile && (
-          <div className="flex flex-1 items-center justify-center px-6 text-center">
-            <div className="flex max-w-xs flex-col items-center">
-              <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-                <MessageCircle className="size-6" aria-hidden="true" />
-              </span>
-              <p className="text-sm font-semibold text-foreground">No messages yet</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Send the first message to start the conversation.
-              </p>
-            </div>
-          </div>
-        )}
-        {!loading && messages.length === 0 && !hasMore && !hasVisibleNotices && !mobile && (
-          <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
-        )}
+        {!loading &&
+          messages.length === 0 &&
+          !hasMore &&
+          !hasVisibleNotices &&
+          (mobile || uxRefreshEnabled) && <NoMessagesState />}
+        {!loading &&
+          messages.length === 0 &&
+          !hasMore &&
+          !hasVisibleNotices &&
+          !mobile &&
+          !uxRefreshEnabled && <p className="p-4 text-sm text-muted-foreground">No messages yet</p>}
         {!loading && messages.length === 0 && hasVisibleNotices && (
           <div
             ref={noticeOnlyScrollerRef}
@@ -799,7 +799,7 @@ export function ChatShell({
             // enough messages to scroll, it grows to fit its own content
             // instead of owning the remaining chat pane, breaking viewport
             // measurement and potentially pushing the composer offscreen.
-            className="flex-1 p-4"
+            className={cn("flex-1 p-4", uxRefreshEnabled && "px-3 py-5 sm:px-6")}
             data={messages}
             firstItemIndex={firstItemIndex}
             initialTopMostItemIndex={messages.length - 1}
@@ -1029,30 +1029,12 @@ export function ChatShell({
         </div>
       )}
 
-      {mobile && participants.length > 0 && (
-        <button
-          type="button"
-          aria-expanded={followingExpanded}
-          onClick={() => setFollowingExpanded((expanded) => !expanded)}
-          className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
-        >
-          {followingLabel(participants.map((p) => p.display_name ?? p.user_id))}
-          {followingExpanded && (
-            <div className="mt-1.5 flex flex-col gap-1">
-              {participants.map((p) => (
-                <span key={p.user_id} className="flex items-center gap-2 text-foreground">
-                  <span
-                    className="flex size-4 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white"
-                    style={{ background: avatarColor(p.user_id) }}
-                  >
-                    {initials(p.user_id, p.display_name)}
-                  </span>
-                  {p.display_name ?? p.user_id}
-                </span>
-              ))}
-            </div>
-          )}
-        </button>
+      {(mobile || uxRefreshEnabled) && participants.length > 0 && (
+        <FollowingParticipants
+          participants={participants}
+          expanded={followingExpanded}
+          onToggle={() => setFollowingExpanded((expanded) => !expanded)}
+        />
       )}
       {tombstone ? (
         <RoomUpgradeBanner
@@ -1067,6 +1049,7 @@ export function ChatShell({
           className={cn(
             "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
             mobile ? "px-2" : "px-3",
+            uxRefreshEnabled && "mx-auto w-full max-w-[64rem] px-3 sm:px-6",
           )}
         >
           <input
@@ -1079,6 +1062,8 @@ export function ChatShell({
             className={cn(
               "flex items-end border border-border bg-card",
               mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+              uxRefreshEnabled &&
+                "gap-1 rounded-[20px] border-[var(--ux-shell-border)] bg-[var(--ux-composer-bg)] p-1.5 shadow-[0_12px_35px_rgba(0,0,0,0.16)]",
             )}
             onPaste={handlePaste}
           >
@@ -1088,7 +1073,7 @@ export function ChatShell({
               disabled={voiceCaptureActive}
               className={cn(
                 "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
-                mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+                compactComposerControls ? "size-11 rounded-full" : "size-9 rounded-md",
               )}
             >
               <Paperclip size={18} />
@@ -1124,9 +1109,11 @@ export function ChatShell({
               onBlur={stopTyping}
               onEmptyChange={setIsComposerEmpty}
               onEditLastMessage={() => messageActionController.editLastMessage(messages)}
-              showFormattingToolbar={!mobile || showMobileFormatting}
+              showFormattingToolbar={
+                uxRefreshEnabled ? showMobileFormatting : !mobile || showMobileFormatting
+              }
             />
-            {mobile && (
+            {(mobile || uxRefreshEnabled) && (
               <button
                 type="button"
                 aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
@@ -1146,7 +1133,7 @@ export function ChatShell({
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
             <ComposerSendButton
-              mobile={mobile}
+              mobile={compactComposerControls}
               disabled={isComposerEmpty}
               onClick={() => composerRef.current?.submit()}
             />
@@ -1162,30 +1149,12 @@ export function ChatShell({
           )}
         </div>
       )}
-      {!mobile && participants.length > 0 && (
-        <button
-          type="button"
-          aria-expanded={followingExpanded}
-          onClick={() => setFollowingExpanded((expanded) => !expanded)}
-          className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
-        >
-          {followingLabel(participants.map((p) => p.display_name ?? p.user_id))}
-          {followingExpanded && (
-            <div className="mt-1.5 flex flex-col gap-1">
-              {participants.map((p) => (
-                <span key={p.user_id} className="flex items-center gap-2 text-foreground">
-                  <span
-                    className="flex size-4 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white"
-                    style={{ background: avatarColor(p.user_id) }}
-                  >
-                    {initials(p.user_id, p.display_name)}
-                  </span>
-                  {p.display_name ?? p.user_id}
-                </span>
-              ))}
-            </div>
-          )}
-        </button>
+      {!mobile && !uxRefreshEnabled && participants.length > 0 && (
+        <FollowingParticipants
+          participants={participants}
+          expanded={followingExpanded}
+          onToggle={() => setFollowingExpanded((expanded) => !expanded)}
+        />
       )}
       <MessagePillProfileDialog
         profile={pillProfile}

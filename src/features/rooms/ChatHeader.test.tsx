@@ -100,4 +100,17 @@ describe("ChatHeader", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Room settings" }));
     expect(props.onOpenRoomSettings).toHaveBeenCalledOnce();
   });
+
+  it("keeps mobile message search dark until the UX refresh is enabled", async () => {
+    renderHeader({ mobile: true, onOpenMessageSearch: vi.fn() });
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    await screen.findByRole("menuitem", { name: "Show members" });
+    expect(screen.queryByRole("menuitem", { name: "Search messages" })).not.toBeInTheDocument();
+  });
 });

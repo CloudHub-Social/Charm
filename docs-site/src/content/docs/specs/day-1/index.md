@@ -103,6 +103,7 @@ build; paid Apple membership gates APNs and distribution, not local installation
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
 | 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **Shipped** | Removal gating [#320](https://github.com/CloudHub-Social/Charm/pull/320), settings [#334](https://github.com/CloudHub-Social/Charm/pull/334), and child management [#335](https://github.com/CloudHub-Social/Charm/pull/335) are merged; Spec 33's real-Synapse suite closes the paired hierarchy-write evidence |
+| 64 | [Cross-platform UX foundation and product polish](/specs/day-1/spec-64--cross-platform-ux-foundation-and-product-polish/) | **In progress** | Program tracked in [#539](https://github.com/CloudHub-Social/Charm/issues/539); first default-off rail foundation is in [#540](https://github.com/CloudHub-Social/Charm/pull/540) |
 
 ## Cross-cutting rules
 

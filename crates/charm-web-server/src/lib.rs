@@ -26,6 +26,10 @@ pub struct AppState {
     /// Server-side rollout gate for Spec 33's Matrix write operations.
     /// Read-only hierarchy browsing remains available independently.
     pub space_hierarchy_reorganization: bool,
+    /// Server-side metadata gate for the `ux_refresh_v1` web shell. This
+    /// controls message previews and room-activity timestamps only; the
+    /// browser still owns the visible shell rollout.
+    pub ux_refresh_v1: bool,
     /// Server-side half of the `registration_and_recovery` kill switch.
     /// Defaults off; the companion enables it explicitly from its deployment
     /// environment.

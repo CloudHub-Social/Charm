@@ -1012,9 +1012,37 @@ describe("RoomsScreen", () => {
       />,
     );
 
-    await screen.findByText("space-rail:space:!space:example.org");
+    await screen.findByRole("button", { name: "!space:example.org" });
     expect(screen.getByRole("button", { name: /chats/i })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText(/chat-content:/)).not.toBeVisible();
+  });
+
+  it("uses the compact Spaces root to choose a space without mounting the desktop rail", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    listRooms.mockResolvedValue([
+      room({ room_id: "!room:example.org", name: "Room" }),
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+    ]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:!room:example.org");
+
+    fireEvent.click(screen.getByRole("button", { name: "Spaces" }));
+
+    expect(screen.getByRole("heading", { name: /^Spaces$/ })).toBeInTheDocument();
+    expect(screen.queryByText(/space-rail:/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Team" }));
+
+    expect(screen.queryByRole("heading", { name: /^Spaces$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "!space:example.org" })).toBeInTheDocument();
   });
 
   it("returns to the mobile list when the active room disappears", async () => {

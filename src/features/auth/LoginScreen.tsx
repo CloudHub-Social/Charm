@@ -37,6 +37,7 @@ import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
@@ -125,6 +126,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [showQrLogin, setShowQrLogin] = useState(false);
   const showNativeSignInOptions = !isWebBuild();
   const registrationUiaEnabled = useFlag("registration_and_recovery");
+  const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const showAlternativeSignInOptions =
     showNativeSignInOptions ||
     (registrationUiaEnabled && (loginFlows?.token === true || loginFlows?.sso === true));
@@ -748,8 +750,20 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   ]);
 
   return (
-    <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
-      <div className="flex w-full max-w-90 flex-col gap-5">
+    <main
+      className={cn(
+        "flex min-h-[100dvh] items-center justify-center p-4 sm:p-8",
+        uxRefreshEnabled &&
+          "bg-[radial-gradient(circle_at_top_left,var(--ux-selection),transparent_38%),var(--ux-content-bg)]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex w-full max-w-90 flex-col gap-5",
+          uxRefreshEnabled &&
+            "max-w-md rounded-3xl border border-[var(--ux-shell-border)] bg-[var(--ux-content-raised)] p-6 shadow-[0_28px_90px_rgba(0,0,0,0.28)] sm:p-8",
+        )}
+      >
         <div className="flex flex-col gap-1 text-center">
           <h1 className="text-xl font-bold text-foreground">Charm</h1>
           <p className="text-sm text-muted-foreground">Sign in to your homeserver</p>

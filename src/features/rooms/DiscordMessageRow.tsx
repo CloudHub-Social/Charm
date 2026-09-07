@@ -71,7 +71,7 @@ export function DiscordMessageRow({
       id={`message-${message.event_id}`}
       style={spacingStyle}
       className={cn(
-        "group flex max-w-160 gap-2",
+        "group flex w-full max-w-[48rem] gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}

@@ -858,10 +858,11 @@ pub async fn list_rooms(
         crate::feature_flags::flag(
             &dir,
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
-        )
+        ) || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::UxRefreshV1)
     });
     let include_activity_sort = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::RoomListSort)
+            || crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::UxRefreshV1)
     });
     let include_canonical_space_hierarchy = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(

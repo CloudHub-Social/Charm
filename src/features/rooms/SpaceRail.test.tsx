@@ -45,8 +45,8 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
 // itself, so it's enabled here the same way `ChatShell.test.tsx` enables
 // its own flags. The one test that specifically checks the flagged-off
 // fallback (below) overrides this per-test.
-const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
-vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
+const mockUseFlag = vi.hoisted(() => vi.fn<(key: string) => boolean>(() => true));
+vi.mock("@/featureFlags", () => ({ useFlag: (key: string) => mockUseFlag(key) }));
 
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {
   badgeState?: BadgeState;
@@ -94,6 +94,7 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
     currentUserId: "@e2e:localhost",
     onSelectHome: vi.fn(),
     onSelectDms: vi.fn(),
+    onSelectRoom: vi.fn(),
     onSelectSpace: vi.fn(),
     onCreateJoin: vi.fn(),
     ...overrides,
@@ -144,17 +145,25 @@ describe("SpaceRail", () => {
     setSpaceParent.mockResolvedValue(undefined);
   });
 
-  it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
-    renderRail();
+  it("renders the refreshed primary destinations and account entry", () => {
+    const onSelectActivity = vi.fn();
+    const onOpenAccount = vi.fn();
+    renderRail({ activityCount: 4, onSelectActivity, onOpenAccount });
 
-    expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
-    expect(
-      screen.getByRole("button", { name: "Direct messages, 1 unread, 1 mentions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
+    const activity = screen.getByRole("button", { name: "Activity, 4 items" });
+    expect(activity).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create or join space" })).toBeInTheDocument();
+    const account = screen.getByRole("button", { name: "Account and settings" });
+    fireEvent.click(activity);
+    fireEvent.click(account);
+    expect(onSelectActivity).toHaveBeenCalledOnce();
+    expect(onOpenAccount).toHaveBeenCalledOnce();
   });
 
   it("scopes the Home badge to rooms visible in Home mode", () => {
@@ -185,9 +194,8 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Home, 1 unread, 2 mentions" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Direct messages, 1 unread, 3 mentions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Alice, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
   it("includes non-DM space children in the Home badge when Show all rooms is enabled", () => {
@@ -219,9 +227,8 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Home, 2 unread, 6 mentions" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Direct messages, 1 unread, 3 mentions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Alice, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
   it("expands child spaces as a collapsible folder and selects them", () => {
@@ -292,7 +299,7 @@ describe("SpaceRail", () => {
       ],
     });
 
-    expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
   });
 
   it("guards recursive folder rendering against reachable cyclic child links", () => {
@@ -370,21 +377,91 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Team" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Direct messages, 1 unread, 2 mentions" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Alice, 1 unread, 2 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
   it("wires Home, DM, and create/join actions", () => {
     const props = renderRail({ activeMode: "dms" });
 
     fireEvent.click(screen.getByRole("button", { name: "Home" }));
-    fireEvent.click(screen.getByRole("button", { name: "Direct messages, 1 unread, 1 mentions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Direct messages" }));
     fireEvent.click(screen.getByRole("button", { name: "Create or join space" }));
 
     expect(props.onSelectHome).toHaveBeenCalledOnce();
     expect(props.onSelectDms).toHaveBeenCalledOnce();
     expect(props.onCreateJoin).toHaveBeenCalledOnce();
+  });
+
+  it("opens a visible unread-DM shortcut without duplicating it in the overflow badge", () => {
+    const props = renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" }));
+
+    expect(props.onSelectRoom).toHaveBeenCalledWith("!dm:localhost");
+    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
+  });
+
+  it("marks only the selected DM shortcut as the current rail destination", () => {
+    renderRail({ activeMode: "dms", activeRoomId: "!dm:localhost" });
+
+    expect(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "Direct messages" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("counts only unread DMs beyond the three visible shortcuts in the overflow badge", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({
+          room_id: "!one:localhost",
+          name: "One",
+          is_direct: true,
+          has_unread: true,
+          last_activity_ts: 5,
+        }),
+        makeRoomSummary({
+          room_id: "!two:localhost",
+          name: "Two",
+          is_direct: true,
+          has_unread: true,
+          last_activity_ts: 4,
+        }),
+        makeRoomSummary({
+          room_id: "!three:localhost",
+          name: "Three",
+          is_direct: true,
+          has_unread: true,
+          last_activity_ts: 3,
+        }),
+        makeRoomSummary({
+          room_id: "!four:localhost",
+          name: "Four",
+          is_direct: true,
+          has_unread: true,
+          unread_count: 2,
+          last_activity_ts: 2,
+        }),
+        makeRoomSummary({
+          room_id: "!five:localhost",
+          name: "Five",
+          is_direct: true,
+          has_unread: true,
+          unread_count: 3,
+          last_activity_ts: 1,
+        }),
+      ],
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Direct messages, 2 unread, 5 mentions" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Four,/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Five,/ })).not.toBeInTheDocument();
   });
 
   it("opens a context menu on a top-level space with Open lobby, Invite, and Pin actions", () => {
@@ -765,7 +842,7 @@ describe("SpaceRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
     expect(leaveRoom).toHaveBeenCalledWith("!space:localhost");
-    await screen.findByRole("navigation", { name: "Spaces" });
+    await screen.findByRole("navigation", { name: /^(?:Primary navigation|Spaces)$/ });
   });
 
   it("redirects home after leaving the currently active space", async () => {
