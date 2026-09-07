@@ -1604,6 +1604,20 @@ jobs:
             done
             gpg --batch --armor --export "$key_id" > "$RUNNER_TEMP/charm-ios-nightly-signing-key.asc"
             signature_assets+=("$RUNNER_TEMP/charm-ios-nightly-signing-key.asc")
+          else
+            # `--clobber` replaces a re-run's IPA and sidecars but does not
+            # remove their detached signatures. Never leave a signature for
+            # bytes published by a later unsigned run, nor a manifest
+            # signature for the newly generated rolling source. Keep the
+            # public key: retained earlier builds can still have valid
+            # signatures made with it.
+            for stale in \
+              "${asset}.asc" "${asset}.sha256.asc" "${asset}.spdx.json.asc" "${asset}.build-metadata.txt.asc" \
+              altstore-source.json.asc; do
+              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$stale"; then
+                gh release delete-asset "$tag" --repo "$GITHUB_REPOSITORY" "$stale" --yes
+              fi
+            done
           fi
           # The canonical manifest is deliberately uploaded last: every IPA it
           # references is already present and size-verified when clients see it.
