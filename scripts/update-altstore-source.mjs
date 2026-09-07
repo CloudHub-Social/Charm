@@ -37,8 +37,12 @@ const size = Number(sizeText);
 if (!Number.isSafeInteger(size) || size < 1) {
   throw new Error("AltStore IPA size must be a positive safe integer");
 }
-if (!URL.canParse(downloadURL) || Number.isNaN(Date.parse(date))) {
-  throw new Error("AltStore download URL and release date must be valid ISO 8601 values");
+if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(date) || Number.isNaN(Date.parse(date))) {
+  throw new Error("AltStore release date must be a UTC ISO 8601 timestamp");
+}
+const parsedURL = new URL(downloadURL);
+if (parsedURL.protocol !== "https:") {
+  throw new Error("AltStore download URL must use HTTPS");
 }
 
 const source = JSON.parse(readFileSync(templatePath, "utf8"));

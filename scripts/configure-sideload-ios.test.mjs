@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { configureSideloadIos } from "./configure-sideload-ios.mjs";
@@ -116,6 +116,35 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
       updated.apps[0].versions.map((entry) => entry.buildVersion),
       ["124", "123", "122"],
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects nonportable AltStore release metadata", () => {
+  const directory = mkdtempSync(join(tmpdir(), "charm-altstore-source-"));
+  try {
+    const template = join(root, ".github/templates/altstore-source.json");
+    const output = join(directory, "altstore-source.json");
+    const args = [template, output, "0.1.3", "123", "456"];
+    const run = (downloadURL, date) =>
+      spawnSync(
+        process.execPath,
+        [
+          join(root, "scripts/update-altstore-source.mjs"),
+          ...args,
+          downloadURL,
+          date,
+          "Charm nightly",
+        ],
+        { encoding: "utf8" },
+      );
+    const insecureURL = run("http://example.test/Charm.ipa", "2026-09-07T00:00:00Z");
+    assert.notEqual(insecureURL.status, 0);
+    assert.match(insecureURL.stderr, /HTTPS/);
+    const nonportableDate = run("https://example.test/Charm.ipa", "September 7, 2026");
+    assert.notEqual(nonportableDate.status, 0);
+    assert.match(nonportableDate.stderr, /ISO 8601/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
