@@ -1646,15 +1646,17 @@ jobs:
               echo '::warning::existing iOS nightly has no usable source manifest; recovering it from retained metadata'
               manifest_recovered=true
             fi
-            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+              > "$RUNNER_TEMP/available-ios-nightly-assets.json"
+            jq -r '.assets[].name' "$RUNNER_TEMP/available-ios-nightly-assets.json" \
               > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
             if [ "$manifest_recovered" = true ]; then
               metadata_dir="$RUNNER_TEMP/recovered-ios-metadata"
               mkdir -p "$metadata_dir"
-              gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-                --pattern 'Charm-*-ios-arm64.ipa.build-metadata.txt' --dir "$metadata_dir" --clobber || true
-              gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
-                > "$RUNNER_TEMP/available-ios-nightly-assets.json"
+              if [ "$(jq '[.assets[] | select(.name | endswith(".ipa.build-metadata.txt"))] | length' "$RUNNER_TEMP/available-ios-nightly-assets.json")" -gt 0 ]; then
+                gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                  --pattern 'Charm-*-ios-arm64.ipa.build-metadata.txt' --dir "$metadata_dir" --clobber
+              fi
               node scripts/recover-altstore-source.mjs .github/templates/altstore-source.json "$metadata_dir" \
                 "$RUNNER_TEMP/available-ios-nightly-assets.json" "$manifest_input" \
                 "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
