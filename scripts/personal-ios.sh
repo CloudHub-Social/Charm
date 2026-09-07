@@ -137,16 +137,19 @@ verify_profile_devices() {
 }
 
 build_install_devices() {
-  local worktree=$1 output_root=$2 index device_id device_name device_root app_bundle
-  # `ios build` creates a release IPA and an extracted Payload/Charm.app. Build
-  # once, then install that same signed bundle on every selected physical device.
+  local worktree=$1 output_root=$2 index device_id device_name device_root ipa_path app_bundle
+  # `ios build` creates a release IPA. Extract its Payload/Charm.app once, then
+  # install that same signed bundle on every selected physical device.
   (
     cd "$worktree"
     CI=true pnpm tauri ios build --target aarch64 --export-method debugging
   ) 2>&1 | tee "$output_root/build.log"
 
-  app_bundle=$(find "$worktree/src-tauri/gen/apple/build" -type d -path '*/Payload/*.app' -print -quit)
-  [[ -n $app_bundle ]] || fail "the release app bundle was not produced; see $output_root/build.log"
+  ipa_path=$(find "$worktree/src-tauri/gen/apple/build" -type f -path '*/arm64/*.ipa' -print -quit)
+  [[ -n $ipa_path ]] || fail "the release IPA was not produced; see $output_root/build.log"
+  /usr/bin/ditto -x -k "$ipa_path" "$output_root"
+  app_bundle=$(find "$output_root/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)
+  [[ -n $app_bundle ]] || fail "the release IPA did not contain an app bundle: $ipa_path"
   verify_profile_devices "$app_bundle" "$output_root"
 
   for ((index = 0; index < ${#install_device_ids[@]}; index++)); do
