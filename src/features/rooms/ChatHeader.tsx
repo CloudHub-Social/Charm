@@ -148,7 +148,7 @@ export function ChatHeader({
               onClick={onOpenMessageSearch}
               className={cn(
                 "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+                uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               )}
             >
               <Search className="size-4" />
@@ -161,7 +161,7 @@ export function ChatHeader({
             onClick={onToggleMembers}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+              uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               membersDrawerOpen && "bg-accent text-accent-foreground",
             )}
           >
@@ -177,7 +177,7 @@ export function ChatHeader({
               onClick={onTogglePinnedMessages}
               className={cn(
                 "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+                uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
                 pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
               )}
             >
@@ -196,7 +196,7 @@ export function ChatHeader({
               onClick={onJumpToDate}
               className={cn(
                 "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+                uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               )}
             >
               <CalendarDays className="size-4" />
@@ -208,7 +208,7 @@ export function ChatHeader({
             onClick={onOpenRoomSettings}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              uxRefreshEnabled && "size-10 rounded-xl hover:bg-[var(--ux-selection-hover)]",
+              uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
             )}
           >
             <Settings className="size-4" />

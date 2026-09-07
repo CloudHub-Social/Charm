@@ -99,6 +99,11 @@ export function AppShell({
     rightPanel === null &&
     !isSettingsActive &&
     !showingActivity;
+  useEffect(() => {
+    if (mobileBackGestureEnabled) return;
+    setMobileDragging(false);
+    setMobileDragX(0);
+  }, [mobileBackGestureEnabled]);
   const bindMobileBack = useDrag(
     ({
       first,

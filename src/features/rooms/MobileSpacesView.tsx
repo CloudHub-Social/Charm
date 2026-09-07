@@ -1,6 +1,7 @@
 import { ChevronRight, Home, MessageCircle, Plus, UsersRound } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useFlag } from "@/featureFlags";
 import type { RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import type { RoomListMode } from "./SpaceRail";
@@ -32,9 +33,13 @@ export function MobileSpacesView({
   onSelectSpace,
   onCreateJoin,
 }: MobileSpacesViewProps) {
+  const hierarchyReorganizationEnabled = useFlag("space_hierarchy_reorganization");
   const { spaces, unreadSpaceIds } = useMemo(
-    () => ({ spaces: flattenSpaces(rooms), unreadSpaceIds: getUnreadSpaceIds(rooms) }),
-    [rooms],
+    () => ({
+      spaces: flattenSpaces(rooms, hierarchyReorganizationEnabled),
+      unreadSpaceIds: getUnreadSpaceIds(rooms, hierarchyReorganizationEnabled),
+    }),
+    [hierarchyReorganizationEnabled, rooms],
   );
   const homeUnread = rooms.filter(
     (room) =>
@@ -212,18 +217,28 @@ function DestinationRow({
   );
 }
 
-function flattenSpaces(rooms: RoomSummary[]): SpaceEntry[] {
+function parentSpaceIds(room: RoomSummary, hierarchyReorganizationEnabled: boolean): string[] {
+  return hierarchyReorganizationEnabled ? room.parent_space_ids.slice(0, 1) : room.parent_space_ids;
+}
+
+function flattenSpaces(
+  rooms: RoomSummary[],
+  hierarchyReorganizationEnabled: boolean,
+): SpaceEntry[] {
   const spaces = rooms.filter((room) => room.is_space);
   const knownIds = new Set(spaces.map((room) => room.room_id));
   const children = new Map<string, RoomSummary[]>();
   for (const space of spaces) {
-    for (const parentId of space.parent_space_ids) {
+    for (const parentId of parentSpaceIds(space, hierarchyReorganizationEnabled)) {
       if (!knownIds.has(parentId)) continue;
       children.set(parentId, [...(children.get(parentId) ?? []), space]);
     }
   }
   const roots = spaces.filter(
-    (space) => !space.parent_space_ids.some((parentId) => knownIds.has(parentId)),
+    (space) =>
+      !parentSpaceIds(space, hierarchyReorganizationEnabled).some((parentId) =>
+        knownIds.has(parentId),
+      ),
   );
   const entries: SpaceEntry[] = [];
   const visited = new Set<string>();
@@ -238,9 +253,14 @@ function flattenSpaces(rooms: RoomSummary[]): SpaceEntry[] {
   return entries;
 }
 
-function getUnreadSpaceIds(rooms: RoomSummary[]): Set<string> {
+function getUnreadSpaceIds(
+  rooms: RoomSummary[],
+  hierarchyReorganizationEnabled: boolean,
+): Set<string> {
   const parentIdsBySpace = new Map(
-    rooms.filter((room) => room.is_space).map((room) => [room.room_id, room.parent_space_ids]),
+    rooms
+      .filter((room) => room.is_space)
+      .map((room) => [room.room_id, parentSpaceIds(room, hierarchyReorganizationEnabled)]),
   );
   const unreadSpaceIds = new Set<string>();
   for (const room of rooms) {
@@ -250,8 +270,8 @@ function getUnreadSpaceIds(rooms: RoomSummary[]): Set<string> {
     // persisted parent list during the first render; a later render then
     // silently lost nested-space unread indicators.
     const pending = room.is_space
-      ? [room.room_id, ...room.parent_space_ids]
-      : [...room.parent_space_ids];
+      ? [room.room_id, ...parentSpaceIds(room, hierarchyReorganizationEnabled)]
+      : [...parentSpaceIds(room, hierarchyReorganizationEnabled)];
     while (pending.length > 0) {
       const spaceId = pending.pop();
       if (!spaceId || unreadSpaceIds.has(spaceId)) continue;
