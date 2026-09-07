@@ -315,6 +315,7 @@ pub struct MatrixState {
     /// client is being handed back to the sync task. iOS may deliver more
     /// than one lifecycle notification during a foreground transition; each
     /// one must not restart the long-poll independently.
+    #[cfg(mobile)]
     pub(crate) resume_sync_in_flight: std::sync::atomic::AtomicBool,
     /// The room currently open/focused in the frontend, set by
     /// `shell::set_focused_room` — read by each room's timeline listener to
@@ -480,6 +481,7 @@ impl Default for MatrixState {
             timeline_lifecycle: tokio::sync::RwLock::default(),
             latest_jump_target: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
+            #[cfg(mobile)]
             resume_sync_in_flight: std::sync::atomic::AtomicBool::default(),
             focused_room_id: std::sync::Mutex::default(),
             notified_event_ids: std::sync::Mutex::new(lru::LruCache::new(

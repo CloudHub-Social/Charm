@@ -2,6 +2,7 @@
 //! iteration. Room-list snapshotting itself (`RoomSummary`/`snapshot_rooms`)
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
+#[cfg(mobile)]
 use std::sync::atomic::Ordering;
 
 use futures_util::StreamExt;
@@ -1128,6 +1129,7 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 /// them again would make later events emit duplicate presence, profile, and
 /// verification updates. The existing task is atomically replaced by
 /// `spawn_sync_task` before the resumed task is started.
+#[cfg(mobile)]
 pub(crate) fn restart_sync_after_mobile_resume(app: AppHandle) {
     let state = app.state::<MatrixState>();
     if state.resume_sync_in_flight.swap(true, Ordering::AcqRel) {
