@@ -83,6 +83,7 @@ jobs:
           xcode_version=$(xcodebuild -version | awk '/^Xcode / { version = $2 } END { print version }')
           [[ "$xcode_version" == 27.* ]] || { echo "::error::selected Xcode is $xcode_version, not 27.x"; exit 1; }
           echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/xcode27-swiftrs-tools" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:

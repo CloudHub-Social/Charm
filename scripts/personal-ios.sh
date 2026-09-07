@@ -119,6 +119,7 @@ build_install() {
 
   export CARGO_TARGET_DIR="$output_root/cargo-target"
   export DEVELOPER_DIR
+  export PATH="$worktree/scripts/xcode27-swiftrs-tools:$PATH"
   rustup target add aarch64-apple-ios
   rustup component add llvm-tools-preview
 

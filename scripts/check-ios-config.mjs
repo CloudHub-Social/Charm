@@ -19,6 +19,7 @@ const pbxproj = read("src-tauri/gen/apple/charm.xcodeproj/project.pbxproj");
 const plist = read("src-tauri/gen/apple/charm_iOS/Info.plist");
 const cargoLock = read("Cargo.lock");
 const cargoManifest = read("Cargo.toml");
+const swiftRsNmWrapper = read("scripts/xcode27-swiftrs-tools/nm");
 
 requireCondition(
   tauri.bundle?.iOS?.minimumSystemVersion === "15.0",
@@ -78,6 +79,13 @@ requireCondition(
 requireCondition(
   !/fix-ios-swiftrs-archive\.sh/.test(project + pbxproj),
   "the generated Apple build phase must not call the retired custom Swift archive repair",
+);
+requireCondition(
+  /swift-rs Xcode 27 bridge repair/.test(swiftRsNmWrapper) &&
+    /--globalize-symbol=_release_object/.test(swiftRsNmWrapper) &&
+    /--globalize-symbol=_retain_object/.test(swiftRsNmWrapper) &&
+    /--globalize-symbol=_string_from_bytes/.test(swiftRsNmWrapper),
+  "the Xcode 27 swift-rs bridge repair must export the required Swift runtime symbols",
 );
 requireCondition(
   /&& test -f [^\n]*libapp\.a/.test(project) && /&& test -f [^\n]*libapp\.a/.test(pbxproj),
