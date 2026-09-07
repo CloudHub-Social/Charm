@@ -117,7 +117,9 @@ jobs:
           BUNDLE_ID: social.cloudhub.charm
         run: |
           set -euo pipefail
-          simulator_app=$(find src-tauri/gen/apple -type d -name Charm.app -path '*iphonesimulator*' -print -quit)
+          # Tauri 2.11 writes the simulator bundle to `build/arm64-sim`, not
+          # Xcode's conventional `*-iphonesimulator` product directory.
+          simulator_app=src-tauri/gen/apple/build/arm64-sim/Charm.app
           [ -n "$simulator_app" ] || { echo '::error::release simulator .app not found'; exit 1; }
           mkdir -p .artifacts/ios/simulator
           ditto "$simulator_app" .artifacts/ios/simulator/Charm.app
