@@ -90,7 +90,11 @@ test("writes a newest-first, entitlement-free AltStore source", () => {
     assert.equal(source.apps[0].versions[0].minOSVersion, "15.0");
     assert.deepEqual(source.apps[0].appPermissions.entitlements, []);
 
-    source.apps[0].versions.push({ buildVersion: "122" }, { buildVersion: "121" }, { buildVersion: "120" });
+    source.apps[0].versions.push(
+      { buildVersion: "122" },
+      { buildVersion: "121" },
+      { buildVersion: "120" },
+    );
     writeFileSync(output, `${JSON.stringify(source)}\n`);
     execFileSync(
       process.execPath,

@@ -62,7 +62,9 @@ export function configureSideloadIos(worktree, version, build) {
     throw new Error("sideload builds must retain the canonical Charm bundle identifier");
   }
   if (tauri.version !== version) {
-    throw new Error(`Tauri version ${tauri.version} does not match requested sideload version ${version}`);
+    throw new Error(
+      `Tauri version ${tauri.version} does not match requested sideload version ${version}`,
+    );
   }
 
   let project = read("src-tauri/gen/apple/project.yml");
@@ -95,7 +97,10 @@ export function configureSideloadIos(worktree, version, build) {
 
   const pbxprojPath = "src-tauri/gen/apple/charm.xcodeproj/project.pbxproj";
   if (existsSync(join(root, pbxprojPath))) {
-    const pbxproj = read(pbxprojPath).replace(/^\s*CODE_SIGN_ENTITLEMENTS = charm_iOS\/charm_iOS\.entitlements;\n/gm, "");
+    const pbxproj = read(pbxprojPath).replace(
+      /^\s*CODE_SIGN_ENTITLEMENTS = charm_iOS\/charm_iOS\.entitlements;\n/gm,
+      "",
+    );
     if (pbxproj === read(pbxprojPath)) {
       throw new Error("could not remove generated CODE_SIGN_ENTITLEMENTS settings");
     }

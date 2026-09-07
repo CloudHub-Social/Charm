@@ -2,8 +2,16 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
-const [templatePath, outputPath, version, buildVersion, sizeText, downloadURL, date, marketingVersion] =
-  process.argv.slice(2);
+const [
+  templatePath,
+  outputPath,
+  version,
+  buildVersion,
+  sizeText,
+  downloadURL,
+  date,
+  marketingVersion,
+] = process.argv.slice(2);
 
 if (
   !templatePath ||
