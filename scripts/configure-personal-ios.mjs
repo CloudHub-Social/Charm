@@ -35,7 +35,10 @@ write(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`);
 const projectPath = "src-tauri/gen/apple/project.yml";
 let project = read(projectPath)
   .replace(/^  bundleIdPrefix: social\.cloudhub\.charm$/m, `  bundleIdPrefix: ${bundleId}`)
-  .replace(/^      PRODUCT_BUNDLE_IDENTIFIER: social\.cloudhub\.charm$/m, `      PRODUCT_BUNDLE_IDENTIFIER: ${bundleId}`);
+  .replace(
+    /^      PRODUCT_BUNDLE_IDENTIFIER: social\.cloudhub\.charm$/m,
+    `      PRODUCT_BUNDLE_IDENTIFIER: ${bundleId}`,
+  );
 
 // XcodeGen owns the committed project. Remove only the charm_iOS entitlement
 // block in this disposable copy, because Personal Team provisioning cannot sign
@@ -56,7 +59,10 @@ write(projectPath, project);
 const pbxprojPath = "src-tauri/gen/apple/charm.xcodeproj/project.pbxproj";
 if (existsSync(join(root, pbxprojPath))) {
   let pbxproj = read(pbxprojPath)
-    .replaceAll("PRODUCT_BUNDLE_IDENTIFIER = social.cloudhub.charm;", `PRODUCT_BUNDLE_IDENTIFIER = ${bundleId};`)
+    .replaceAll(
+      "PRODUCT_BUNDLE_IDENTIFIER = social.cloudhub.charm;",
+      `PRODUCT_BUNDLE_IDENTIFIER = ${bundleId};`,
+    )
     .replace(/^\s*CODE_SIGN_ENTITLEMENTS = charm_iOS\/charm_iOS\.entitlements;\n/gm, "")
     .replace(
       /^(\s*CODE_SIGN_IDENTITY = "iPhone Developer";\n)/gm,
