@@ -27,7 +27,7 @@ export function RoomListSection({
       <CollapsibleTrigger
         className={cn(
           "flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase hover:text-foreground",
-          uxRefreshEnabled && "mt-1 min-h-8 px-2 text-[11px] tracking-[0.12em]",
+          uxRefreshEnabled && "mt-1 min-h-11 px-2 text-[11px] tracking-[0.12em]",
         )}
       >
         <ChevronDown className={cn("size-3.5 transition-transform", !expanded && "-rotate-90")} />

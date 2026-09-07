@@ -963,7 +963,7 @@ export function RoomList({
                 className={cn(
                   "h-8 pl-8 text-sm",
                   uxRefreshEnabled &&
-                    "h-10 rounded-xl border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-raised)]",
+                    "h-11 rounded-xl border-[var(--ux-shell-border)] bg-[var(--ux-sidebar-raised)]",
                 )}
               />
             </div>
