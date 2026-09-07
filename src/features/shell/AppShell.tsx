@@ -10,9 +10,13 @@ import type { PrimaryDestination } from "./navigationState";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { usePanePreferences } from "./usePanePreferences";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { MIN_ROOM_SIDEBAR_WIDTH } from "./navigationState";
 import { cn } from "@/lib/utils";
 
 export type MobileView = "list" | "detail";
+
+const SPACE_RAIL_WIDTH = 80;
+const MIN_CONVERSATION_WIDTH = 360;
 
 interface AppShellProps {
   /** The dedicated spaces rail, shown beside the room list on desktop. */
@@ -78,6 +82,7 @@ export function AppShell({
   const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
   const { preferences, setRoomSidebarWidth } = usePanePreferences();
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const contentRef = useRef<HTMLDivElement>(null);
   const [mobileDragX, setMobileDragX] = useState(0);
   const [mobileDragging, setMobileDragging] = useState(false);
@@ -99,6 +104,18 @@ export function AppShell({
     rightPanel === null &&
     !isSettingsActive &&
     !showingActivity;
+  const roomSidebarWidth = Math.max(
+    MIN_ROOM_SIDEBAR_WIDTH,
+    Math.min(
+      preferences.roomSidebarWidth,
+      viewportWidth - SPACE_RAIL_WIDTH - MIN_CONVERSATION_WIDTH,
+    ),
+  );
+  useEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", updateViewportWidth);
+    return () => window.removeEventListener("resize", updateViewportWidth);
+  }, []);
   useEffect(() => {
     if (mobileBackGestureEnabled) return;
     setMobileDragging(false);
@@ -171,14 +188,11 @@ export function AppShell({
           <>
             <div
               className="h-full shrink-0 [&>aside]:h-full [&>aside]:w-full"
-              style={{ width: preferences.roomSidebarWidth }}
+              style={{ width: roomSidebarWidth }}
             >
               {roomList}
             </div>
-            <PaneResizeHandle
-              width={preferences.roomSidebarWidth}
-              onWidthChange={setRoomSidebarWidth}
-            />
+            <PaneResizeHandle width={roomSidebarWidth} onWidthChange={setRoomSidebarWidth} />
           </>
         ) : (
           roomList
