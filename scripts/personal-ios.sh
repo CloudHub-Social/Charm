@@ -70,11 +70,11 @@ validate_inputs() {
 }
 
 install_device_ids=()
-install_device_udids=()
+install_device_names=()
 
 resolve_install_devices() {
   install_device_ids=()
-  install_device_udids=()
+  install_device_names=()
 
   local devices_json
   devices_json=$(mktemp -t charm-personal-ios-devices.XXXXXX.json)
@@ -83,10 +83,10 @@ resolve_install_devices() {
     fail "could not list connected Apple devices"
   fi
 
-  while IFS=$'\t' read -r device_id device_udid; do
-    [[ -n $device_id && -n $device_udid ]] || continue
+  while IFS=$'\t' read -r device_id device_name; do
+    [[ -n $device_id && -n $device_name ]] || continue
     install_device_ids+=("$device_id")
-    install_device_udids+=("$device_udid")
+    install_device_names+=("$device_name")
   done < <(
     node -e '
       const fs = require("node:fs");
@@ -95,14 +95,16 @@ resolve_install_devices() {
       for (const device of devices) {
         const properties = device.properties ?? {};
         const udid = properties.hardware?.udid;
+        const name = device.deviceProperties?.name;
         if (
           properties.connection?.state === "connected" &&
           properties.hardware?.reality === "physical" &&
           typeof device.identifier === "string" &&
           typeof udid === "string" &&
+          typeof name === "string" &&
           (!selectedDevice || selectedDevice === device.identifier || selectedDevice === udid)
         ) {
-          console.log(`${device.identifier}\t${udid}`);
+          console.log(`${device.identifier}\t${name}`);
         }
       }
     ' "$devices_json" "${CHARM_IOS_DEVICE_ID:-}"
@@ -112,44 +114,22 @@ resolve_install_devices() {
   ((${#install_device_ids[@]} > 0)) || fail "no connected physical iPhone or iPad was found"
 }
 
-provision_install_devices() {
-  local worktree=$1 output_root=$2 index device_id device_udid device_root
+build_install_devices() {
+  local worktree=$1 output_root=$2 index device_id device_name device_root
   for ((index = 0; index < ${#install_device_ids[@]}; index++)); do
     device_id=${install_device_ids[index]}
-    device_udid=${install_device_udids[index]}
+    device_name=${install_device_names[index]}
     device_root="$output_root/devices/$device_id"
     mkdir -p "$device_root"
-    # Match `tauri ios build --ci`: Tauri's Xcode phase invokes pnpm, which
-    # otherwise refuses its non-interactive dependency safety check.
-    # The generated Xcode project names configurations `debug` and `release`.
-    # `Release` is invalid and silently falls back to the dev-server path.
-    CI=true "$DEVELOPER_DIR/usr/bin/xcodebuild" \
-      -project "$worktree/src-tauri/gen/apple/charm.xcodeproj" \
-      -scheme charm_iOS \
-      -configuration release \
-      -destination "id=$device_udid" \
-      -allowProvisioningUpdates \
-      -allowProvisioningDeviceRegistration \
-      build 2>&1 | tee "$device_root/provision.log"
+    # This is deliberately the Tauri-managed runner, not raw xcodebuild.
+    # The runner owns the local options server consumed by the Xcode Rust
+    # phase, builds for this exact device, and lets automatic signing register
+    # it before installing and launching the release app.
+    (
+      cd "$worktree"
+      CI=true pnpm tauri ios dev --release --no-watch "$device_name"
+    ) 2>&1 | tee "$device_root/build-install.log"
   done
-}
-
-verify_profile_devices() {
-  local app_path=$1 output_root=$2 profile_plist profile_devices missing_udids
-  profile_plist="$output_root/embedded.mobileprovision.plist"
-  profile_devices="$output_root/provisioned-devices.json"
-  [[ -f "$app_path/embedded.mobileprovision" ]] || fail "the signed app has no embedded provisioning profile"
-  security cms -D -i "$app_path/embedded.mobileprovision" > "$profile_plist"
-  /usr/bin/plutil -extract ProvisionedDevices json -o "$profile_devices" "$profile_plist" \
-    || fail "the embedded provisioning profile has no registered-device list"
-  missing_udids=$(node -e '
-    const fs = require("node:fs");
-    const provisioned = new Set(JSON.parse(fs.readFileSync(process.argv[1], "utf8")));
-    for (const udid of process.argv.slice(2)) {
-      if (!provisioned.has(udid)) console.log(udid);
-    }
-  ' "$profile_devices" "${install_device_udids[@]}")
-  [[ -z $missing_udids ]] || fail "the signed provisioning profile does not include selected device UDID(s): $missing_udids; see the device provisioning logs under $output_root/devices"
 }
 
 commit_sha() {
@@ -224,7 +204,7 @@ validate_prepared_worktree() {
 
 build_install() {
   validate_inputs
-  local worktree sha output_root build_log app_path profile_plist index device_id device_root
+  local worktree sha output_root
   if [[ -n ${CHARM_IOS_WORK_DIR:-} ]]; then
     worktree=$CHARM_IOS_WORK_DIR
     [[ -f "$worktree/.charm-personal-ios.json" ]] || fail "CHARM_IOS_WORK_DIR is not a prepared Personal Team worktree"
@@ -239,39 +219,19 @@ build_install() {
   output_root="$worktree/.personal-ios-evidence/${sha:0:12}"
   [[ ! -e "$output_root" ]] || fail "this prepared worktree already has build evidence; prepare a fresh worktree for a clean gate"
   mkdir -p "$output_root"
-  build_log="$output_root/build.log"
 
   export CARGO_TARGET_DIR="$output_root/cargo-target"
   export DEVELOPER_DIR
   export PATH="$worktree/scripts/xcode27-swiftrs-tools:$PATH"
   rustup target add aarch64-apple-ios
   rustup component add llvm-tools-preview
-  provision_install_devices "$worktree" "$output_root"
+  build_install_devices "$worktree" "$output_root"
 
-  (
-    cd "$worktree"
-    pnpm tauri ios build --target aarch64 --export-method debugging --ci --verbose
-  ) 2>&1 | tee "$build_log"
-
-  app_path=$(find "$worktree/src-tauri/gen/apple" -type d -path '*.xcarchive/Products/Applications/*.app' -print -quit)
-  [[ -n $app_path ]] || fail "the signed .app was not found in the fresh Xcode archive; see $build_log"
-
-  verify_profile_devices "$app_path" "$output_root"
-  for ((index = 0; index < ${#install_device_ids[@]}; index++)); do
-    device_id=${install_device_ids[index]}
-    device_root="$output_root/devices/$device_id"
-    xcrun devicectl device install app --device "$device_id" "$app_path" | tee "$device_root/install.log"
-    xcrun devicectl device process launch --device "$device_id" --terminate-existing "$CHARM_IOS_BUNDLE_ID" | tee "$device_root/launch.log"
-  done
-
-  profile_plist="$output_root/embedded.mobileprovision.plist"
   {
     printf 'commit=%s\n' "$sha"
     "$DEVELOPER_DIR/usr/bin/xcodebuild" -version
     printf 'bundle_id=%s\n' "$CHARM_IOS_BUNDLE_ID"
     printf 'device_ids=%s\n' "${install_device_ids[*]}"
-    printf 'app_path=%s\n' "$app_path"
-    [[ -f $profile_plist ]] && /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist" || true
   } > "$output_root/build-metadata.txt"
 
   printf 'Installed and launched %s from %s on %s\n' "$CHARM_IOS_BUNDLE_ID" "$sha" "${install_device_ids[*]}"
