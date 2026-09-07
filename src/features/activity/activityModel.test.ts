@@ -8,7 +8,7 @@ describe("activityModel", () => {
       makeRoomSummary({ room_id: "!space:test", is_space: true, unread_count: 9 }),
       makeRoomSummary({ room_id: "!quiet:test" }),
       makeRoomSummary({ room_id: "!marked:test", is_marked_unread: true }),
-      makeRoomSummary({ room_id: "!unread:test", unread_count: 4 }),
+      makeRoomSummary({ room_id: "!unread:test", has_unread: true, unread_count: 4 }),
       makeRoomSummary({ room_id: "!invite:test", membership: "invite" }),
     ];
 

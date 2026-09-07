@@ -141,7 +141,7 @@ export function ChatHeader({
         </DropdownMenu>
       ) : (
         <div className="flex shrink-0 items-center gap-1">
-          {onOpenMessageSearch && (
+          {uxRefreshEnabled && onOpenMessageSearch && (
             <button
               type="button"
               aria-label="Search messages"
