@@ -71,10 +71,12 @@ validate_inputs() {
 
 install_device_ids=()
 install_device_names=()
+install_device_udids=()
 
 resolve_install_devices() {
   install_device_ids=()
   install_device_names=()
+  install_device_udids=()
 
   local devices_json
   devices_json=$(mktemp -t charm-personal-ios-devices.XXXXXX.json)
@@ -83,10 +85,11 @@ resolve_install_devices() {
     fail "could not list connected Apple devices"
   fi
 
-  while IFS=$'\t' read -r device_id device_name; do
-    [[ -n $device_id && -n $device_name ]] || continue
+  while IFS=$'\t' read -r device_id device_name device_udid; do
+    [[ -n $device_id && -n $device_name && -n $device_udid ]] || continue
     install_device_ids+=("$device_id")
     install_device_names+=("$device_name")
+    install_device_udids+=("$device_udid")
   done < <(
     node -e '
       const fs = require("node:fs");
@@ -104,7 +107,7 @@ resolve_install_devices() {
           typeof name === "string" &&
           (!selectedDevice || selectedDevice === device.identifier || selectedDevice === udid)
         ) {
-          console.log(`${device.identifier}\t${name}`);
+          console.log(`${device.identifier}\t${name}\t${udid}`);
         }
       }
     ' "$devices_json" "${CHARM_IOS_DEVICE_ID:-}"
@@ -114,25 +117,47 @@ resolve_install_devices() {
   ((${#install_device_ids[@]} > 0)) || fail "no connected physical iPhone or iPad was found"
 }
 
+verify_profile_devices() {
+  local app_bundle=$1 output_root=$2 profile_plist profile_devices missing_udids
+  profile_plist="$output_root/embedded.mobileprovision.plist"
+  profile_devices="$output_root/provisioned-devices.json"
+
+  [[ -f "$app_bundle/embedded.mobileprovision" ]] || fail "the signed app has no embedded provisioning profile"
+  security cms -D -i "$app_bundle/embedded.mobileprovision" > "$profile_plist"
+  /usr/bin/plutil -extract ProvisionedDevices json -o "$profile_devices" "$profile_plist" \
+    || fail "the embedded provisioning profile has no registered-device list"
+  missing_udids=$(node -e '
+    const fs = require("node:fs");
+    const provisioned = new Set(JSON.parse(fs.readFileSync(process.argv[1], "utf8")));
+    for (const udid of process.argv.slice(2)) {
+      if (!provisioned.has(udid)) console.log(udid);
+    }
+  ' "$profile_devices" "${install_device_udids[@]}")
+  [[ -z $missing_udids ]] || fail "the signed provisioning profile does not include selected device UDID(s): $missing_udids"
+}
+
 build_install_devices() {
-  local worktree=$1 output_root=$2 index device_id device_name device_root
+  local worktree=$1 output_root=$2 index device_id device_name device_root app_bundle
+  # `ios build` creates a release IPA and an extracted Payload/Charm.app. Build
+  # once, then install that same signed bundle on every selected physical device.
+  (
+    cd "$worktree"
+    CI=true pnpm tauri ios build --target aarch64 --export-method debugging
+  ) 2>&1 | tee "$output_root/build.log"
+
+  app_bundle=$(find "$worktree/src-tauri/gen/apple/build" -type d -path '*/Payload/*.app' -print -quit)
+  [[ -n $app_bundle ]] || fail "the release app bundle was not produced; see $output_root/build.log"
+  verify_profile_devices "$app_bundle" "$output_root"
+
   for ((index = 0; index < ${#install_device_ids[@]}; index++)); do
     device_id=${install_device_ids[index]}
     device_name=${install_device_names[index]}
     device_root="$output_root/devices/$device_id"
     mkdir -p "$device_root"
-    # Build a standalone Release bundle rather than using Tauri's development
-    # runner: a daily-driver install must not depend on the build Mac's dev
-    # server or `beforeDevCommand`. Tauri still owns the Xcode Rust phase and
-    # automatic Personal Team signing; devicectl installs the resulting app.
     (
-      cd "$worktree"
-      CI=true pnpm tauri ios build --target aarch64
-      app_bundle=src-tauri/gen/apple/build/arm64/Charm.app
-      [[ -d $app_bundle ]] || { echo "personal-ios: Release app bundle was not produced: $app_bundle" >&2; exit 1; }
       DEVELOPER_DIR="$DEVELOPER_DIR" xcrun devicectl device install app --device "$device_id" "$app_bundle"
-      DEVELOPER_DIR="$DEVELOPER_DIR" xcrun devicectl device process launch --device "$device_id" "$CHARM_IOS_BUNDLE_ID"
-    ) 2>&1 | tee "$device_root/build-install.log"
+      DEVELOPER_DIR="$DEVELOPER_DIR" xcrun devicectl device process launch --device "$device_id" --terminate-existing "$CHARM_IOS_BUNDLE_ID"
+    ) 2>&1 | tee "$device_root/install.log"
   done
 }
 
