@@ -280,6 +280,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Enable Swift bridge symbol repair
+        run: echo "$GITHUB_WORKSPACE/scripts/xcode27-swiftrs-tools" >> "$GITHUB_PATH"
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           # Required by swift-rs to globalize the Swift @_cdecl symbols before
