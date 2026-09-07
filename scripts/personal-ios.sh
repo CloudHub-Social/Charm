@@ -209,29 +209,54 @@ prepare_worktree() {
   fi
   CHARM_IOS_COMMIT=$sha node "$worktree/scripts/configure-personal-ios.mjs" \
     "$worktree" "$CHARM_APPLE_TEAM_ID" "$CHARM_IOS_BUNDLE_ID"
+  record_prepared_worktree_fingerprint "$worktree"
 
   printf 'Prepared disposable iOS worktree:\n%s\n' "$worktree"
   printf 'Run evidence will be written inside that disposable worktree.\n'
   PREPARED_WORKTREE=$worktree
 }
 
+prepared_worktree_fingerprint() {
+  local worktree=$1 node_modules_target
+  node_modules_target=$(readlink "$worktree/node_modules") || fail "prepared worktree has no node_modules symlink"
+  {
+    git -C "$worktree" status --porcelain --untracked-files=all
+    git -C "$worktree" diff --binary
+    printf 'node_modules=%s\n' "$node_modules_target"
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+record_prepared_worktree_fingerprint() {
+  local worktree=$1 fingerprint
+  fingerprint=$(prepared_worktree_fingerprint "$worktree")
+  node -e '
+    const fs = require("node:fs");
+    const [markerPath, fingerprint] = process.argv.slice(1);
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    marker.preparedFingerprint = fingerprint;
+    fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  ' "$worktree/.charm-personal-ios.json" "$fingerprint"
+}
+
 validate_prepared_worktree() {
-  local worktree=$1 marker expected_sha actual_sha recorded_team recorded_bundle recorded_commit
+  local worktree=$1 marker expected_sha actual_sha recorded_team recorded_bundle recorded_commit recorded_fingerprint actual_fingerprint
   marker=$worktree/.charm-personal-ios.json
   expected_sha=$(commit_sha)
   actual_sha=$(git -C "$worktree" rev-parse HEAD) || fail "CHARM_IOS_WORK_DIR is not a Git worktree: $worktree"
-  IFS=$'\t' read -r recorded_team recorded_bundle recorded_commit < <(
+  IFS=$'\t' read -r recorded_team recorded_bundle recorded_commit recorded_fingerprint < <(
     node -e '
       const fs = require("node:fs");
       const marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      if (![marker.teamId, marker.bundleId, marker.commit].every((value) => typeof value === "string")) process.exit(1);
-      process.stdout.write(`${marker.teamId}\t${marker.bundleId}\t${marker.commit}\n`);
+      if (![marker.teamId, marker.bundleId, marker.commit, marker.preparedFingerprint].every((value) => typeof value === "string")) process.exit(1);
+      process.stdout.write(`${marker.teamId}\t${marker.bundleId}\t${marker.commit}\t${marker.preparedFingerprint}\n`);
     ' "$marker"
   ) || fail "CHARM_IOS_WORK_DIR has invalid Personal Team metadata"
   [[ $recorded_team == "$CHARM_APPLE_TEAM_ID" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different Apple Team"
   [[ $recorded_bundle == "$CHARM_IOS_BUNDLE_ID" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different bundle identifier"
   [[ $recorded_commit == "$actual_sha" ]] || fail "CHARM_IOS_WORK_DIR metadata does not match its checked-out commit"
   [[ $recorded_commit == "$expected_sha" ]] || fail "CHARM_IOS_WORK_DIR was prepared for a different selected commit"
+  actual_fingerprint=$(prepared_worktree_fingerprint "$worktree")
+  [[ $recorded_fingerprint == "$actual_fingerprint" ]] || fail "CHARM_IOS_WORK_DIR was modified after preparation; prepare a fresh worktree for an exact-commit build"
 }
 
 build_install() {

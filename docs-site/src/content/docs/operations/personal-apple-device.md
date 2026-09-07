@@ -66,7 +66,12 @@ Do not describe the paid-program row as a blocker for a Personal Team build.
 5. If Xcode asks for renewed Apple-account authentication, complete that one UI step
    and rerun the same command. Otherwise no Xcode UI interaction is required.
 
-## Personal Team signing
+## Manual Xcode fallback
+
+The `build-install` command applies this disposable Personal Team signing overlay
+automatically. Use these Xcode steps only when Xcode asks for account
+authentication or automatic provisioning cannot complete from the command line;
+do not make a second, differently configured install after the CLI path succeeds.
 
 1. Select the `charm_iOS` target and the connected iPad as the run destination.
 2. Enable automatic signing and choose the owner's Personal Team.

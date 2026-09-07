@@ -33,12 +33,17 @@ tauri.bundle.iOS = {
 write(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`);
 
 const projectPath = "src-tauri/gen/apple/project.yml";
-let project = read(projectPath)
+let project = read(projectPath);
+const projectWithIdentifiers = project
   .replace(/^  bundleIdPrefix: social\.cloudhub\.charm$/m, `  bundleIdPrefix: ${bundleId}`)
   .replace(
     /^      PRODUCT_BUNDLE_IDENTIFIER: social\.cloudhub\.charm$/m,
     `      PRODUCT_BUNDLE_IDENTIFIER: ${bundleId}`,
   );
+if (projectWithIdentifiers === project) {
+  throw new Error("could not set the Personal Team bundle identifier in project.yml");
+}
+project = projectWithIdentifiers;
 
 // XcodeGen owns the committed project. Remove only the charm_iOS entitlement
 // block in this disposable copy, because Personal Team provisioning cannot sign
@@ -50,10 +55,14 @@ if (entitlementsStart === -1 || schemeStart === -1) {
   throw new Error("could not locate the charm_iOS entitlements block in project.yml");
 }
 project = `${project.slice(0, entitlementsStart)}${project.slice(schemeStart)}`;
-project = project.replace(
+const projectWithSigning = project.replace(
   /    settings:\n      base:\n        ENABLE_BITCODE: false/m,
   `    settings:\n      base:\n        CODE_SIGN_STYLE: Automatic\n        DEVELOPMENT_TEAM: ${teamId}\n        ENABLE_BITCODE: false`,
 );
+if (projectWithSigning === project) {
+  throw new Error("could not add Personal Team signing settings to project.yml");
+}
+project = projectWithSigning;
 write(projectPath, project);
 
 const pbxprojPath = "src-tauri/gen/apple/charm.xcodeproj/project.pbxproj";

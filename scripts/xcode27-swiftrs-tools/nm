@@ -7,6 +7,7 @@ set -euo pipefail
 
 real_nm=/usr/bin/nm
 archive=${1:-}
+original_directory=$PWD
 
 case "$archive" in
   */swift-rs/Tauri/*/libTauri.a)
@@ -45,6 +46,10 @@ case "$archive" in
         print -u2 'swift-rs Xcode 27 bridge repair did not export the required symbols'
         exit 1
       }
+      # llvm-ar needs a scratch directory for the extracted object, but the
+      # caller may have supplied relative paths to nm. Restore its directory
+      # before delegating so those paths retain their original meaning.
+      cd "$original_directory"
     fi
     ;;
 esac

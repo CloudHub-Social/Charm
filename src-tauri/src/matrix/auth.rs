@@ -1090,12 +1090,16 @@ async fn reopen_relocated_matrix_client(
     homeserver_url: &str,
     session: &matrix_sdk::authentication::matrix::MatrixSession,
 ) -> Result<Client, ReopenRelocatedMatrixClientError> {
+    // Keep a separate authenticated handle for rejection cleanup. The
+    // replacement client cannot be built from a temporarily moved SQLite
+    // store, but this client can still revoke the server-side session.
+    let revocation_client = client.clone();
     drop(client);
 
     let client = build_client(app, homeserver_url, account_key)
         .await
         .map_err(|error| ReopenRelocatedMatrixClientError {
-            client: None,
+            client: Some(revocation_client.clone()),
             message: format!(
                 "login was saved, but its account store could not be reopened: {error}"
             ),
@@ -1106,7 +1110,7 @@ async fn reopen_relocated_matrix_client(
         .await
     {
         return Err(ReopenRelocatedMatrixClientError {
-            client: Some(client),
+            client: Some(revocation_client),
             message: format!("login was saved, but its session could not be restored: {error}"),
         });
     }
@@ -1125,12 +1129,15 @@ pub(crate) async fn reopen_relocated_oauth_client(
     homeserver_url: &str,
     session: &OAuthSession,
 ) -> Result<Client, ReopenRelocatedMatrixClientError> {
+    // As above, retain the authenticated temporary client solely so a failed
+    // reopen can revoke the server-side OAuth session before local cleanup.
+    let revocation_client = client.clone();
     drop(client);
 
     let client = build_client(app, homeserver_url, account_key)
         .await
         .map_err(|error| ReopenRelocatedMatrixClientError {
-            client: None,
+            client: Some(revocation_client.clone()),
             message: format!(
                 "QR login was saved, but its account store could not be reopened: {error}"
             ),
@@ -1141,7 +1148,7 @@ pub(crate) async fn reopen_relocated_oauth_client(
         .await
     {
         return Err(ReopenRelocatedMatrixClientError {
-            client: Some(client),
+            client: Some(revocation_client),
             message: format!("QR login was saved, but its session could not be restored: {error}"),
         });
     }
