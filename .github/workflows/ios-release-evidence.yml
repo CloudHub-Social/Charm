@@ -45,7 +45,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
-          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|license-texts/)|\.github/workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml$)'
+          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml$)'
           if grep -Eq "$ios_pattern" <<< "$changed"; then
             echo 'ios=true' >> "$GITHUB_OUTPUT"
           else

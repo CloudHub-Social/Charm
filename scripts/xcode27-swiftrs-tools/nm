@@ -12,7 +12,7 @@ case "$archive" in
   */swift-rs/Tauri/*/libTauri.a)
     # Do not use grep -q here: it closes its input early, which makes nm fail
     # with SIGPIPE under pipefail and silently skips the repair.
-    if [[ -f "$archive" ]] && "$real_nm" "$archive" 2>/dev/null | grep -F ' t _release_object$' >/dev/null; then
+    if [[ -f "$archive" ]] && "$real_nm" "$archive" 2>/dev/null | grep ' t _release_object$' >/dev/null; then
       host=$(rustc -vV | sed -n 's/^host: //p')
       tool_dir=$(rustc --print sysroot)/lib/rustlib/$host/bin
       ar_tool=$tool_dir/llvm-ar
@@ -40,7 +40,7 @@ case "$archive" in
       "$ar_tool" q "$archive" SwiftRs.o
       "$ar_tool" s "$archive"
 
-      "$real_nm" "$archive" 2>/dev/null | grep -F ' T _release_object$' >/dev/null || {
+      "$real_nm" "$archive" 2>/dev/null | grep ' T _release_object$' >/dev/null || {
         print -u2 'swift-rs Xcode 27 bridge repair did not export the required symbols'
         exit 1
       }
