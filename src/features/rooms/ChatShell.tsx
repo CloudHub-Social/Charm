@@ -1028,7 +1028,7 @@ export function ChatShell({
         </div>
       )}
 
-      {participants.length > 0 && (
+      {(mobile || uxRefreshEnabled) && participants.length > 0 && (
         <FollowingParticipants
           participants={participants}
           expanded={followingExpanded}
@@ -1147,6 +1147,13 @@ export function ChatShell({
             />
           )}
         </div>
+      )}
+      {!mobile && !uxRefreshEnabled && participants.length > 0 && (
+        <FollowingParticipants
+          participants={participants}
+          expanded={followingExpanded}
+          onToggle={() => setFollowingExpanded((expanded) => !expanded)}
+        />
       )}
       <MessagePillProfileDialog
         profile={pillProfile}
