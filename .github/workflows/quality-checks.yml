@@ -76,7 +76,7 @@ jobs:
           # the workspace can alter src-tauri's build/resolution: the root
           # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
           # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
-          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|sync-android-version-code\.mjs|validate-changeset-packages\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|nightly)\.yml)$|knope\.toml$)'
+          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|recover-altstore-source\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|sync-android-version-code\.mjs|validate-changeset-packages\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|nightly)\.yml)$|knope\.toml$)'
           # The Synapse/Dex/MAS integration jobs additionally mount and execute
           # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
@@ -92,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses|sync-android-version-code|validate-changeset-packages|check-ios-config|configure-sideload-ios|update-altstore-source)\.(mjs|test\.mjs)|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|release-builds|nightly)\.yml|scripts/configure-sentry-release-env\.sh)$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|knope\.toml$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses|sync-android-version-code|validate-changeset-packages|check-ios-config|configure-sideload-ios|recover-altstore-source|update-altstore-source)\.(mjs|test\.mjs)|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|release-builds|nightly)\.yml|scripts/configure-sentry-release-env\.sh)$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|knope\.toml$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against

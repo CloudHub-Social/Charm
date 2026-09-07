@@ -30,9 +30,11 @@ const app = source.apps?.[0];
 if (!app || app.bundleIdentifier !== "social.cloudhub.charm") {
   throw new Error("AltStore template must contain canonical Charm as apps[0]");
 }
-const assets = new Map(
-  JSON.parse(readFileSync(releaseAssetsPath, "utf8")).map(({ name, size }) => [name, size]),
-);
+const releaseAssets = JSON.parse(readFileSync(releaseAssetsPath, "utf8")).assets;
+if (!Array.isArray(releaseAssets)) {
+  throw new Error("GitHub release asset input must contain an assets array");
+}
+const assets = new Map(releaseAssets.map(({ name, size }) => [name, size]));
 const entries = [];
 for (const filename of readdirSync(metadataDirectory)) {
   if (!filename.endsWith(".ipa.build-metadata.txt")) continue;
