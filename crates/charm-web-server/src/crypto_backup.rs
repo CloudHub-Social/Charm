@@ -265,7 +265,10 @@ impl CryptoBackupStore {
             }
             fence.previous_writer_id = None;
             fence.activation_expires_at_ms = None;
-            if self.write_active_writer_fence(&fence, Some(version)).await? {
+            if self
+                .write_active_writer_fence(&fence, Some(version))
+                .await?
+            {
                 return Ok(());
             }
             tokio::time::sleep(cas_retry_delay(attempt)).await;

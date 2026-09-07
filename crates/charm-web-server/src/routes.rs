@@ -26,7 +26,7 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{
     DiscoverHomeserverResponse, LoginRequest, RegisterRequest, RegistrationAuthResponse,
 };
-use charm_lib::matrix::commands::{SlashCommand, require_command_feature, run_command_impl};
+use charm_lib::matrix::commands::{require_command_feature, run_command_impl, SlashCommand};
 use charm_lib::matrix::devices::{
     delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
     list_devices_impl,
@@ -39,22 +39,21 @@ use charm_lib::matrix::polls::{
     end_poll_impl, pending_poll_end_impl, pending_poll_relations_impl, pending_poll_vote_impl,
     retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
 };
-use charm_lib::matrix::presence::{PresenceStateDto, get_presence_impl, set_presence_impl};
+use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{
-    OwnProfile, get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl,
-    set_room_profile_impl, start_direct_message_impl,
+    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
+    start_direct_message_impl, OwnProfile,
 };
 use charm_lib::matrix::room_admin::{
-    HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds, add_room_alias_impl,
-    ban_member_impl, build_room_details, check_room_alias_available_impl,
+    add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
     enable_room_encryption_impl, get_room_local_aliases_impl, get_room_member_list_impl,
     invite_member_impl, kick_member_impl, leave_room_impl, remove_alt_alias_impl,
     remove_room_alias_impl, remove_room_avatar_impl, set_canonical_alias_impl,
     set_member_power_level_impl, set_room_history_visibility_impl, set_room_join_rule_impl,
     set_room_name_impl, set_room_power_level_thresholds_impl, set_room_topic_impl,
-    unban_member_impl,
+    unban_member_impl, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
 };
-use charm_lib::matrix::room_directory::{PublicRoomPage, search_public_rooms_impl};
+use charm_lib::matrix::room_directory::{search_public_rooms_impl, PublicRoomPage};
 use charm_lib::matrix::rooms::{
     accept_invite_impl, decline_invite_impl, resolve_alias, set_room_favourite_impl,
     set_room_low_priority_impl, set_room_manual_order_impl, set_room_marked_unread_impl,
@@ -69,19 +68,19 @@ use charm_lib::matrix::spaces::{
     list_manageable_space_children_impl, list_space_children_impl, list_space_hierarchy_impl,
     remove_space_child_impl, set_space_child_suggested_impl, set_space_parent_impl,
 };
-use charm_lib::matrix::timeline::{JumpToEventResult, get_timeline_page_impl};
+use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
     recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
-use matrix_sdk::ruma::RoomId;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+use matrix_sdk::ruma::RoomId;
 
-use crate::AppState;
 use crate::session::{self, Session};
+use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
 const PREAUTH_COOKIE: &str = "charm_preauth";
@@ -1482,7 +1481,7 @@ fn redacted_route_uri(matched_path: Option<&str>) -> axum::http::Uri {
 /// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WebSocket check
 /// requires for that same deployment shape.
 fn cors_layer() -> tower_http::cors::CorsLayer {
-    use axum::http::{Method, header};
+    use axum::http::{header, Method};
     use tower_http::cors::{AllowOrigin, CorsLayer};
 
     // `Any` for methods/headers is a literal `*` on the wire — the CORS
@@ -1739,8 +1738,8 @@ fn require_registration_and_recovery(state: &AppState) -> Result<(), ApiError> {
 }
 
 fn new_preauth_owner() -> String {
-    use rand::RngExt;
     use rand::distr::Alphanumeric;
+    use rand::RngExt;
     rand::rng()
         .sample_iter(&Alphanumeric)
         .take(48)
@@ -2078,7 +2077,7 @@ struct CancelAttemptRequest {
 #[cfg(test)]
 mod cancel_attempt_request_tests {
     use super::CancelAttemptRequest;
-    use axum::{Json, extract::State, response::IntoResponse};
+    use axum::{extract::State, response::IntoResponse, Json};
     use axum_extra::extract::cookie::{Cookie, CookieJar};
 
     #[test]
@@ -2695,7 +2694,7 @@ fn session_cookie(token: String) -> Cookie<'static> {
 
 #[cfg(test)]
 mod session_cookie_tests {
-    use super::{PREAUTH_COOKIE, preauth_cookie, session_cookie};
+    use super::{preauth_cookie, session_cookie, PREAUTH_COOKIE};
 
     /// Regression test: a cookie with no `Max-Age`/`Expires` is a
     /// browser-session cookie that most browsers discard on close, forcing a
@@ -5783,21 +5782,9 @@ fn sniffed_av_mime(bytes: &[u8], is_audio_hint: bool) -> Option<String> {
             "video/webm".to_string()
         }),
         [b'O', b'g', b'g', b'S', ..] => Some("audio/ogg".to_string()),
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'A',
-            b'V',
-            b'E',
-            ..,
-        ] => Some("audio/wav".to_string()),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => {
+            Some("audio/wav".to_string())
+        }
         [b'I', b'D', b'3', ..] | [0xFF, 0xFB, ..] | [0xFF, 0xF3, ..] | [0xFF, 0xF2, ..] => {
             Some("audio/mpeg".to_string())
         }

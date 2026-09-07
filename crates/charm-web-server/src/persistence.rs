@@ -666,7 +666,9 @@ impl PersistenceStore {
                 return Err("The admitted teardown record is no longer available.".into());
             };
             if !entry.recovery_teardown_started || entry.recovery_teardown_revoked {
-                return Err("The session teardown is no longer eligible for revocation retry.".into());
+                return Err(
+                    "The session teardown is no longer eligible for revocation retry.".into(),
+                );
             }
             entry.homeserver_url = homeserver_url.to_string();
             entry.session = session.clone();
@@ -1581,12 +1583,10 @@ impl PersistenceStore {
         }
         let ciphertext = BASE64.decode(&blob.ciphertext).map_err(|e| e.to_string())?;
         let plaintext = match blob.version {
-            0 => self
-                .key
-                .decrypt(
-                    Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
-                    ciphertext.as_ref(),
-                ),
+            0 => self.key.decrypt(
+                Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
+                ciphertext.as_ref(),
+            ),
             1 => self.key.decrypt(
                 Nonce::<Aes256Gcm>::from_slice(&nonce_bytes),
                 Payload {
@@ -2992,14 +2992,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store
-            .clear_pending_recovery_if_unchanged_at(
-                "expired-conditional-token",
-                &pending,
-                u64::MAX,
-            )
-            .await
-            .unwrap());
+        assert!(
+            store
+                .clear_pending_recovery_if_unchanged_at(
+                    "expired-conditional-token",
+                    &pending,
+                    u64::MAX,
+                )
+                .await
+                .unwrap()
+        );
         assert!(store
             .pending_recovery("expired-conditional-token")
             .await
@@ -3028,12 +3030,7 @@ mod tests {
         refreshed.tokens.refresh_token = Some("newest-live-refresh-token".into());
 
         store
-            .persist_teardown_revocation(
-                token,
-                "https://new.example.invalid",
-                &refreshed,
-                None,
-            )
+            .persist_teardown_revocation(token, "https://new.example.invalid", &refreshed, None)
             .await
             .unwrap();
 
@@ -3535,12 +3532,7 @@ mod tests {
         }))
         .unwrap();
         store
-            .claim_pending_recovery_at(
-                "expired-stale-key-token",
-                &issued,
-                "crashed-owner",
-                1_000,
-            )
+            .claim_pending_recovery_at("expired-stale-key-token", &issued, "crashed-owner", 1_000)
             .await
             .unwrap();
 

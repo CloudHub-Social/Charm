@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use charm_web_server::{AppState, observability, persistence::PersistenceStore, routes, sync_loop};
+use charm_web_server::{observability, persistence::PersistenceStore, routes, sync_loop, AppState};
 
 const SPACE_HIERARCHY_REORGANIZATION_ENV: &str = "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
 const UX_REFRESH_V1_ENV: &str = "CHARM_FEATURE_UX_REFRESH_V1";

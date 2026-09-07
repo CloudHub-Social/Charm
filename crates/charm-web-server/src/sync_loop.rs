@@ -27,12 +27,12 @@ use charm_lib::matrix::shell;
 use charm_lib::matrix::sync::SyncStateEvent;
 use charm_lib::matrix::verification::{self, SasUpdateEvent, VerificationRequestSummary};
 use futures_util::StreamExt;
-use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::encryption::verification::SasState;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::room::member::SyncRoomMemberEvent;
+use matrix_sdk::Client;
 use tokio::sync::broadcast;
 
 use crate::events::{SasUpdatePayload, ServerEvent};
@@ -1835,12 +1835,10 @@ mod tests {
         assert!(!metadata.completes_backfill);
         assert!(sender.try_send(queued(true)).is_ok());
         assert!(receiver.recv().await.unwrap().completes_backfill);
-        assert!(
-            !incomplete
-                .lock()
-                .unwrap()
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(!incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1850,21 +1848,17 @@ mod tests {
 
         record_search_work_outcome(&incomplete, &pending, true, false);
         assert!(pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(
-            !incomplete
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
 
         record_search_work_outcome(&incomplete, &pending, true, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(
-            !incomplete
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(!incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1890,12 +1884,10 @@ mod tests {
         record_search_work_outcome(&incomplete, &pending, false, false);
         assert!(!claim_reconciliation_retry(&incomplete, &pending));
         record_search_work_outcome(&incomplete, &pending, true, true);
-        assert!(
-            incomplete
-                .lock()
-                .unwrap()
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(incomplete
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::Acquire));
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
     }
 
@@ -1906,12 +1898,10 @@ mod tests {
 
         record_search_work_outcome(&incomplete, &pending, false, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(
-            incomplete
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(incomplete
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
