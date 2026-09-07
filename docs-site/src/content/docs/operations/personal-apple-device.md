@@ -168,8 +168,9 @@ time. A Personal Team build is accepted as a personal daily-driver when it passe
   recorded source SHA, and threads only after
   [Day-2 Spec 01](/specs/day-2/spec-01--threads/) has landed; neither blocks the
   baseline while its implementation is unreleased;
-- offline send and reconnect, Wi-Fi changes, foreground/background transitions,
-  process termination/relaunch, and device restart;
+- offline send and reconnect, Wi-Fi changes, foreground/background transitions (including a
+  prompt timeline and badge catch-up after returning to a still-running app), process
+  termination/relaunch, and device restart;
 - supported foreground notification behavior and honest unavailable state for
   remote background push;
 - calls after the hosted MatrixRTC work is released;

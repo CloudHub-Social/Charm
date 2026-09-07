@@ -1475,6 +1475,17 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
+
+            // iOS/iPadOS suspend the app's process while it is in the
+            // background, so its Matrix long-poll cannot provide a prompt
+            // foreground catch-up by itself. Restart the already-configured
+            // sync task when Tauri reports that the app resumed. This is not
+            // a background-delivery mechanism: a terminated or suspended app
+            // still requires APNs for a visible notification.
+            #[cfg(mobile)]
+            if let tauri::WindowEvent::Resumed = event {
+                matrix::sync::restart_sync_after_mobile_resume(window.app_handle().clone());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             greet,
