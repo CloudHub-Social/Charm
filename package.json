@@ -36,6 +36,7 @@
     "docs:features:sync": "node scripts/sync-feature-docs.mjs --write",
     "knip": "knip",
     "tokens:pull": "node scripts/tokens-pull.mjs",
+    "check:ios-config": "node scripts/check-ios-config.mjs",
     "check:observability-ratchet": "node scripts/check-observability-ratchet.mjs",
     "license:check": "node scripts/check-license-boundaries.mjs",
     "license:bundle:npm": "node scripts/generate-third-party-licenses.mjs --npm --copy-project-licenses --output dist/THIRD_PARTY_LICENSES.txt",

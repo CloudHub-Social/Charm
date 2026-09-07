@@ -55,6 +55,9 @@
     "android": {
       "versionCode": 1004
     },
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -69,6 +72,13 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4RTdERjJFMjdFMURGNDMKUldSRDMrRW5MdC9udU03a1VBWjNVVzdWSlAySDd4cnZXb1JHMUwzeWtuSmNISnp1ZDJkeFEvNGUK"
     },
     "deep-link": {
+      "mobile": [
+        {
+          "scheme": [
+            "charm"
+          ]
+        }
+      ],
       "desktop": {
         "schemes": [
           "charm"
