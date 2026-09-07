@@ -110,7 +110,7 @@ export function ChatHeader({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-48">
-            {onOpenMessageSearch && (
+            {uxRefreshEnabled && onOpenMessageSearch && (
               <DropdownMenuItem className="min-h-11" onSelect={onOpenMessageSearch}>
                 <Search />
                 Search messages
