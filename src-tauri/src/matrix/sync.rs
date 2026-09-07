@@ -2,6 +2,8 @@
 //! iteration. Room-list snapshotting itself (`RoomSummary`/`snapshot_rooms`)
 //! lives in `rooms`, alongside the rest of the room-list-shaping logic.
 
+use std::sync::atomic::Ordering;
+
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::api::error::ErrorKind;
@@ -1114,6 +1116,37 @@ mod cleanup_cancellation_tests {
 /// subsequent event.
 pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     spawn_sync_task_with_presence(app, client, false);
+}
+
+/// Restarts the existing Matrix sync task after a mobile foreground
+/// transition. iOS can suspend a long-poll while the app is backgrounded; a
+/// new initial `sync_once` on resume catches up promptly instead of waiting
+/// for the suspended request to time out.
+///
+/// This intentionally calls [`spawn_sync_task`], not [`spawn_sync_loop`].
+/// The client has already registered its SDK event handlers, and registering
+/// them again would make later events emit duplicate presence, profile, and
+/// verification updates. The existing task is atomically replaced by
+/// `spawn_sync_task` before the resumed task is started.
+pub(crate) fn restart_sync_after_mobile_resume(app: AppHandle) {
+    let state = app.state::<MatrixState>();
+    if state.resume_sync_in_flight.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<MatrixState>();
+        // Keep the client slot locked through task replacement. Logout clears
+        // this same slot before it aborts the active task, so it cannot clear
+        // the client between this check and `spawn_sync_task` and leave an
+        // old account's loop running after sign-out.
+        let client_slot = state.client.lock().await;
+        if let Some(client) = client_slot.clone() {
+            spawn_sync_task(app.clone(), client);
+        }
+        drop(client_slot);
+        state.resume_sync_in_flight.store(false, Ordering::Release);
+    });
 }
 
 fn initial_sync_presence(

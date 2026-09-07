@@ -56,6 +56,9 @@ workstream in the launch set.
 - iOS killed/background delivery is **not complete**: the Notification Service Extension target,
   shared App Group crypto access, and extension-to-Rust decrypt bridge remain to be implemented
   and verified.
+- On iOS and Android, resuming a still-running app restarts its existing Matrix sync task for a
+  prompt foreground catch-up. This preserves the registered SDK handlers and is deliberately
+  separate from remote push: it cannot notify while the app is suspended or terminated.
 - Live iOS delivery remains externally gated on a paid Apple Developer team, a Push-enabled App
   ID/profile, and a matching APNs provider credential in the gateway. Personal Team
   AltStore/SideStore re-signing cannot provide that remote-push capability.
