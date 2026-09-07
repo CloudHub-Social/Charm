@@ -1127,8 +1127,8 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 /// This intentionally calls [`spawn_sync_task`], not [`spawn_sync_loop`].
 /// The client has already registered its SDK event handlers, and registering
 /// them again would make later events emit duplicate presence, profile, and
-/// verification updates. The existing task is atomically replaced by
-/// `spawn_sync_task` before the resumed task is started.
+/// verification updates. `spawn_sync_task` owns replacement of the prior
+/// task's handle, so a resume never creates a second addressable sync loop.
 #[cfg(mobile)]
 pub(crate) fn restart_sync_after_mobile_resume(app: AppHandle) {
     let state = app.state::<MatrixState>();
@@ -1137,18 +1137,33 @@ pub(crate) fn restart_sync_after_mobile_resume(app: AppHandle) {
     }
 
     tauri::async_runtime::spawn(async move {
+        // Drop resets the coalescing flag even if the runtime cancels this
+        // task while the app is suspended again.
+        let _reset_in_flight = ResumeSyncInFlightReset(app.clone());
         let state = app.state::<MatrixState>();
-        // Keep the client slot locked through task replacement. Logout clears
-        // this same slot before it aborts the active task, so it cannot clear
-        // the client between this check and `spawn_sync_task` and leave an
-        // old account's loop running after sign-out.
+        // Account replacement and logout hold this lock across teardown and
+        // adoption. Take it before reading the client so a foreground event
+        // cannot revive a previous account's loop while its store is moving.
+        let _completion_guard = state.login_completion_lock.lock().await;
         let client_slot = state.client.lock().await;
         if let Some(client) = client_slot.clone() {
             spawn_sync_task(app.clone(), client);
         }
         drop(client_slot);
-        state.resume_sync_in_flight.store(false, Ordering::Release);
     });
+}
+
+#[cfg(mobile)]
+struct ResumeSyncInFlightReset(AppHandle);
+
+#[cfg(mobile)]
+impl Drop for ResumeSyncInFlightReset {
+    fn drop(&mut self) {
+        self.0
+            .state::<MatrixState>()
+            .resume_sync_in_flight
+            .store(false, Ordering::Release);
+    }
 }
 
 fn initial_sync_presence(
