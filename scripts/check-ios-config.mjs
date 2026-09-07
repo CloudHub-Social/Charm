@@ -119,8 +119,7 @@ requireCondition(
 );
 
 if (errors.length > 0) {
-  console.error("iOS configuration consistency check failed:");
-  for (const error of errors) console.error(`- ${error}`);
+  process.stderr.write(`iOS configuration consistency check failed:\n${errors.map((error) => `- ${error}`).join("\n")}\n`);
   process.exitCode = 1;
 } else {
   console.log("iOS configuration is consistent (iOS 15+, canonical ID, deep link, scene delegate, swift-rs 1.0.8).");
