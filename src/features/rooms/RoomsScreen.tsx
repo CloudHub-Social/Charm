@@ -800,6 +800,10 @@ export function RoomsScreen({
               if (!room) return;
               if (room.membership === "invite") {
                 selectHome();
+                // Invites are actionable in the home inbox rather than as
+                // timelines. Keep the normal first-room auto-selection from
+                // replacing the inbox immediately after this explicit choice.
+                autoSelectSuppressedRef.current = { kind: "invite", roomId };
                 setMobileView("list");
                 return;
               }

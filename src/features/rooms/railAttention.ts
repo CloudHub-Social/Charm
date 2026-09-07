@@ -20,7 +20,6 @@ export interface RailAttentionState {
 }
 
 export interface RailAttentionOptions {
-  activeRoomId?: string | null;
   visibleLimit?: number;
 }
 
@@ -41,7 +40,7 @@ function toRailAttentionItem(room: RoomSummary): RailAttentionItem {
  */
 export function deriveRailAttention(
   rooms: RoomSummary[],
-  { activeRoomId = null, visibleLimit = MAX_VISIBLE_RAIL_DMS }: RailAttentionOptions = {},
+  { visibleLimit = MAX_VISIBLE_RAIL_DMS }: RailAttentionOptions = {},
 ): RailAttentionState {
   const unreadRooms = rooms
     .map((room, index) => ({ room, index }))
@@ -54,14 +53,8 @@ export function deriveRailAttention(
       if (bTimestamp === null) return -1;
       return bTimestamp - aTimestamp;
     });
-  const activeRoom = rooms.find(
-    (room) => room.room_id === activeRoomId && room.is_direct && !room.is_space,
-  );
-  const orderedRooms = activeRoom
-    ? [activeRoom, ...unreadRooms.map(({ room }) => room).filter((room) => room !== activeRoom)]
-    : unreadRooms.map(({ room }) => room);
   const limit = Math.max(0, visibleLimit);
-  const visibleRooms = orderedRooms.slice(0, limit);
+  const visibleRooms = unreadRooms.map(({ room }) => room).slice(0, limit);
   const visibleRoomIds = new Set(visibleRooms.map((room) => room.room_id));
   const overflowRooms = unreadRooms
     .map(({ room }) => room)

@@ -64,29 +64,25 @@ describe("deriveRailAttention", () => {
     ).toBe(0);
   });
 
-  it("keeps the active DM visible after reading it without adding it to overflow", () => {
+  it("keeps a read active DM out of unread shortcuts and overflow", () => {
     const activeRoom = makeRoomSummary({
       room_id: "!active:example.org",
       name: "Active",
       is_direct: true,
       has_unread: false,
     });
-    const state = deriveRailAttention(
-      [
-        unreadDm("!one:example.org", 3),
-        unreadDm("!two:example.org", 2),
-        unreadDm("!three:example.org", 1),
-        activeRoom,
-      ],
-      { activeRoomId: activeRoom.room_id },
-    );
+    const state = deriveRailAttention([
+      unreadDm("!one:example.org", 3),
+      unreadDm("!two:example.org", 2),
+      unreadDm("!three:example.org", 1),
+      activeRoom,
+    ]);
 
     expect(state.visibleItems.map((item) => item.room.room_id)).toEqual([
-      activeRoom.room_id,
       "!one:example.org",
       "!two:example.org",
+      "!three:example.org",
     ]);
-    expect(state.visibleItems[0]?.unread).toBe(0);
-    expect(state.overflowUnread).toBe(1);
+    expect(state.overflowUnread).toBe(0);
   });
 });
