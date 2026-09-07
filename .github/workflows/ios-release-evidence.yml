@@ -125,7 +125,9 @@ jobs:
           ditto "$simulator_app" .artifacts/ios/simulator/Charm.app
           device_id=$(xcrun simctl list devices available -j | node -e '
             let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => {
-              const devices = Object.values(JSON.parse(data).devices).flat();
+              const devices = Object.entries(JSON.parse(data).devices)
+                .filter(([runtime]) => runtime.includes("iOS"))
+                .flatMap(([, devices]) => devices);
               const device = devices.find(item => item.isAvailable && item.state !== "Booted");
               if (!device) process.exit(1);
               process.stdout.write(device.udid);
