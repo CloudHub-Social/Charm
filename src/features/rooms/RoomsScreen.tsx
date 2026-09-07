@@ -775,14 +775,17 @@ export function RoomsScreen({
       <AppShell
         primaryDestination={navigationState.destination}
         onSelectChats={() => {
-          if (primaryDestination !== "activity" && primaryDestination !== "spaces") return;
-          setPrimaryDestination(
-            roomListMode === "dms"
-              ? "direct-messages"
-              : roomListMode === "space"
-                ? "space"
-                : "home",
-          );
+          setMembersDrawerOpen(false);
+          setPinnedMessagesDrawerOpen(false);
+          if (primaryDestination === "activity" || primaryDestination === "spaces") {
+            setPrimaryDestination(
+              roomListMode === "dms"
+                ? "direct-messages"
+                : roomListMode === "space"
+                  ? "space"
+                  : "home",
+            );
+          }
         }}
         onSelectActivity={() => {
           setPrimaryDestination("activity");

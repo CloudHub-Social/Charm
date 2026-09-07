@@ -27,12 +27,12 @@ use charm_lib::matrix::shell;
 use charm_lib::matrix::sync::SyncStateEvent;
 use charm_lib::matrix::verification::{self, SasUpdateEvent, VerificationRequestSummary};
 use futures_util::StreamExt;
+use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::encryption::verification::SasState;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::room::member::SyncRoomMemberEvent;
-use matrix_sdk::Client;
 use tokio::sync::broadcast;
 
 use crate::events::{SasUpdatePayload, ServerEvent};
@@ -146,6 +146,7 @@ fn record_search_work_outcome(
 pub struct SpawnOptions {
     pub session_closed: Arc<std::sync::atomic::AtomicBool>,
     pub include_canonical_space_hierarchy: bool,
+    pub include_ux_room_metadata: bool,
     pub message_search: Option<MessageSearchContext>,
     pub sessions: crate::session::SessionStore,
     pub token: String,
@@ -1152,6 +1153,7 @@ pub fn spawn(
     let SpawnOptions {
         session_closed,
         include_canonical_space_hierarchy,
+        include_ux_room_metadata,
         message_search,
         sessions,
         token,
@@ -1200,6 +1202,7 @@ pub fn spawn(
             last_snapshot,
             &snapshots.preview_registered_rooms,
             include_canonical_space_hierarchy,
+            include_ux_room_metadata,
         )
         .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
@@ -1264,6 +1267,7 @@ pub fn spawn(
                         last_snapshot,
                         &snapshots.preview_registered_rooms,
                         include_canonical_space_hierarchy,
+                        include_ux_room_metadata,
                     )
                     .await;
                     emit_room_updates(&client, &events, &response, &snapshots).await;
@@ -1343,19 +1347,18 @@ async fn emit_room_list_and_badge(
         std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
     >,
     include_canonical_space_hierarchy: bool,
+    include_ux_room_metadata: bool,
 ) {
     // No media cache in this crate yet (matches sub-PR A's `snapshot_rooms`
     // calls in `routes.rs`) — room avatars carry their bare `mxc://` url but
-    // no locally resolved thumbnail path. `include_message_preview`/
-    // `include_activity_sort` are both `false` — neither
-    // `RoomListMessagePreview` nor `RoomListSort` is wired up for the web
-    // build yet (no feature-flag store here, unlike desktop's
-    // `feature_flags::flag`).
+    // no locally resolved thumbnail path. The companion has an explicit
+    // server-side UX gate because the browser's local feature overrides are
+    // not available to this process.
     let snapshot = rooms::snapshot_rooms(
         client,
         None,
-        false,
-        false,
+        include_ux_room_metadata,
+        include_ux_room_metadata,
         include_canonical_space_hierarchy,
         preview_registered_rooms,
     )
@@ -1832,10 +1835,12 @@ mod tests {
         assert!(!metadata.completes_backfill);
         assert!(sender.try_send(queued(true)).is_ok());
         assert!(receiver.recv().await.unwrap().completes_backfill);
-        assert!(!incomplete
-            .lock()
-            .unwrap()
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !incomplete
+                .lock()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 
     #[test]
@@ -1845,17 +1850,21 @@ mod tests {
 
         record_search_work_outcome(&incomplete, &pending, true, false);
         assert!(pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
 
         record_search_work_outcome(&incomplete, &pending, true, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!incomplete
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 
     #[test]
@@ -1881,10 +1890,12 @@ mod tests {
         record_search_work_outcome(&incomplete, &pending, false, false);
         assert!(!claim_reconciliation_retry(&incomplete, &pending));
         record_search_work_outcome(&incomplete, &pending, true, true);
-        assert!(incomplete
-            .lock()
-            .unwrap()
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            incomplete
+                .lock()
+                .unwrap()
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
     }
 
@@ -1895,10 +1906,12 @@ mod tests {
 
         record_search_work_outcome(&incomplete, &pending, false, true);
         assert!(!pending.load(std::sync::atomic::Ordering::Acquire));
-        assert!(incomplete
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            incomplete
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 
     #[test]

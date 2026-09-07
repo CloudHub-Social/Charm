@@ -38,6 +38,11 @@ space-parent creation and reorganization remain disabled unless
 `CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION` is set to `1` or `true`.
 Read-only space hierarchy browsing and top-level space creation are unaffected.
 
+The refreshed browser shell also requires
+`CHARM_FEATURE_UX_REFRESH_V1=1` on the companion to include the message-preview
+and recent-activity metadata it renders. This server-side metadata gate defaults
+off and must be enabled alongside the browser's `ux_refresh_v1` rollout.
+
 First-time recovery setup requires both the browser's `crypto_backup_setup` flag
 and `CHARM_WEB_CRYPTO_BACKUP_SETUP=1` on the companion. The server gate defaults
 off. `POST /api/verification/recovery/setup` authenticates the session, validates

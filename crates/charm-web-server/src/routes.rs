@@ -26,7 +26,7 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{
     DiscoverHomeserverResponse, LoginRequest, RegisterRequest, RegistrationAuthResponse,
 };
-use charm_lib::matrix::commands::{require_command_feature, run_command_impl, SlashCommand};
+use charm_lib::matrix::commands::{SlashCommand, require_command_feature, run_command_impl};
 use charm_lib::matrix::devices::{
     delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
     list_devices_impl,
@@ -35,25 +35,26 @@ use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, 
 use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::polls::{
-    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl,
-    discard_poll_vote_impl, end_poll_impl, pending_poll_end_impl, pending_poll_vote_impl,
-    pending_poll_relations_impl, retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
+    confirm_poll_end_synced_impl, create_poll_impl, discard_poll_end_impl, discard_poll_vote_impl,
+    end_poll_impl, pending_poll_end_impl, pending_poll_relations_impl, pending_poll_vote_impl,
+    retry_poll_end_impl, retry_poll_vote_impl, vote_on_poll_impl,
 };
-use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
+use charm_lib::matrix::presence::{PresenceStateDto, get_presence_impl, set_presence_impl};
 use charm_lib::matrix::profiles::{
-    get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl, set_room_profile_impl,
-    start_direct_message_impl, OwnProfile,
+    OwnProfile, get_mutual_rooms_impl, get_own_profile_impl, get_user_profile_impl,
+    set_room_profile_impl, start_direct_message_impl,
 };
 use charm_lib::matrix::room_admin::{
-    add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
+    HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds, add_room_alias_impl,
+    ban_member_impl, build_room_details, check_room_alias_available_impl,
     enable_room_encryption_impl, get_room_local_aliases_impl, get_room_member_list_impl,
     invite_member_impl, kick_member_impl, leave_room_impl, remove_alt_alias_impl,
     remove_room_alias_impl, remove_room_avatar_impl, set_canonical_alias_impl,
     set_member_power_level_impl, set_room_history_visibility_impl, set_room_join_rule_impl,
     set_room_name_impl, set_room_power_level_thresholds_impl, set_room_topic_impl,
-    unban_member_impl, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
+    unban_member_impl,
 };
-use charm_lib::matrix::room_directory::{search_public_rooms_impl, PublicRoomPage};
+use charm_lib::matrix::room_directory::{PublicRoomPage, search_public_rooms_impl};
 use charm_lib::matrix::rooms::{
     accept_invite_impl, decline_invite_impl, resolve_alias, set_room_favourite_impl,
     set_room_low_priority_impl, set_room_manual_order_impl, set_room_marked_unread_impl,
@@ -68,19 +69,19 @@ use charm_lib::matrix::spaces::{
     list_manageable_space_children_impl, list_space_children_impl, list_space_hierarchy_impl,
     remove_space_child_impl, set_space_child_suggested_impl, set_space_parent_impl,
 };
-use charm_lib::matrix::timeline::{get_timeline_page_impl, JumpToEventResult};
+use charm_lib::matrix::timeline::{JumpToEventResult, get_timeline_page_impl};
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
     recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::ruma::RoomId;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
-use matrix_sdk::ruma::RoomId;
 
-use crate::session::{self, Session};
 use crate::AppState;
+use crate::session::{self, Session};
 
 pub const SESSION_COOKIE: &str = "charm_session";
 const PREAUTH_COOKIE: &str = "charm_preauth";
@@ -1481,7 +1482,7 @@ fn redacted_route_uri(matched_path: Option<&str>) -> axum::http::Uri {
 /// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WebSocket check
 /// requires for that same deployment shape.
 fn cors_layer() -> tower_http::cors::CorsLayer {
-    use axum::http::{header, Method};
+    use axum::http::{Method, header};
     use tower_http::cors::{AllowOrigin, CorsLayer};
 
     // `Any` for methods/headers is a literal `*` on the wire — the CORS
@@ -1650,6 +1651,7 @@ async fn finish_login(
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            include_ux_room_metadata: state.ux_refresh_v1,
             message_search: crate::sync_loop::message_search_context(
                 &stored,
                 state.encrypted_local_message_search_enabled,
@@ -1737,8 +1739,8 @@ fn require_registration_and_recovery(state: &AppState) -> Result<(), ApiError> {
 }
 
 fn new_preauth_owner() -> String {
-    use rand::distr::Alphanumeric;
     use rand::RngExt;
+    use rand::distr::Alphanumeric;
     rand::rng()
         .sample_iter(&Alphanumeric)
         .take(48)
@@ -2076,7 +2078,7 @@ struct CancelAttemptRequest {
 #[cfg(test)]
 mod cancel_attempt_request_tests {
     use super::CancelAttemptRequest;
-    use axum::{extract::State, response::IntoResponse, Json};
+    use axum::{Json, extract::State, response::IntoResponse};
     use axum_extra::extract::cookie::{Cookie, CookieJar};
 
     #[test]
@@ -2565,14 +2567,16 @@ async fn logout(
                                 .as_ref()
                                 .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
                             match matrix_session {
-                                Some(matrix_session) => persistence
-                                    .persist_teardown_revocation(
-                                        &token,
-                                        session.client.homeserver().as_str(),
-                                        &matrix_session,
-                                        live_crypto,
-                                    )
-                                    .await,
+                                Some(matrix_session) => {
+                                    persistence
+                                        .persist_teardown_revocation(
+                                            &token,
+                                            session.client.homeserver().as_str(),
+                                            &matrix_session,
+                                            live_crypto,
+                                        )
+                                        .await
+                                }
                                 None => Err("the live Matrix token pair is unavailable".into()),
                             }
                         } else {
@@ -2691,7 +2695,7 @@ fn session_cookie(token: String) -> Cookie<'static> {
 
 #[cfg(test)]
 mod session_cookie_tests {
-    use super::{preauth_cookie, session_cookie, PREAUTH_COOKIE};
+    use super::{PREAUTH_COOKIE, preauth_cookie, session_cookie};
 
     /// Regression test: a cookie with no `Max-Age`/`Expires` is a
     /// browser-session cookie that most browsers discard on close, forcing a
@@ -2922,6 +2926,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
             sessions: state.sessions.clone(),
             token: token.clone(),
             include_canonical_space_hierarchy: state.space_hierarchy_reorganization,
+            include_ux_room_metadata: state.ux_refresh_v1,
             message_search: crate::sync_loop::message_search_context(
                 &session,
                 state.encrypted_local_message_search_enabled,
@@ -2956,16 +2961,14 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // `RoomListMessagePreview`/`RoomListSort` aren't wired up for the web
-    // build yet (no feature-flag store here, unlike desktop's
-    // `feature_flags::flag`) — off for now, matching each flag's compiled-in
-    // default.
+    // The companion has an explicit server-side UX gate because the browser's
+    // local feature overrides are not available to this process.
     Ok(Json(
         snapshot_rooms(
             &session.client,
             None,
-            false,
-            false,
+            state.ux_refresh_v1,
+            state.ux_refresh_v1,
             state.space_hierarchy_reorganization,
             &session.preview_registered_rooms,
         )
@@ -3776,14 +3779,9 @@ async fn retry_poll_vote(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let retried = retry_poll_vote_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let retried = retry_poll_vote_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(Json(retried))
 }
 
@@ -3795,14 +3793,10 @@ async fn discard_poll_vote(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let discarded = discard_poll_vote_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let discarded =
+        discard_poll_vote_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+            .await
+            .map_err(ApiError::bad_request)?;
     Ok(Json(discarded))
 }
 
@@ -3830,14 +3824,9 @@ async fn retry_poll_end(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let retried = retry_poll_end_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let retried = retry_poll_end_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(Json(retried))
 }
 
@@ -3849,14 +3838,10 @@ async fn discard_poll_end(
 ) -> Result<impl IntoResponse, ApiError> {
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let discarded = discard_poll_end_impl(
-        &session.client,
-        &room_id,
-        &poll_event_id,
-        &transaction_id,
-    )
-    .await
-    .map_err(ApiError::bad_request)?;
+    let discarded =
+        discard_poll_end_impl(&session.client, &room_id, &poll_event_id, &transaction_id)
+            .await
+            .map_err(ApiError::bad_request)?;
     Ok(Json(discarded))
 }
 
@@ -5798,9 +5783,21 @@ fn sniffed_av_mime(bytes: &[u8], is_audio_hint: bool) -> Option<String> {
             "video/webm".to_string()
         }),
         [b'O', b'g', b'g', b'S', ..] => Some("audio/ogg".to_string()),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => {
-            Some("audio/wav".to_string())
-        }
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'A',
+            b'V',
+            b'E',
+            ..,
+        ] => Some("audio/wav".to_string()),
         [b'I', b'D', b'3', ..] | [0xFF, 0xFB, ..] | [0xFF, 0xF3, ..] | [0xFF, 0xF2, ..] => {
             Some("audio/mpeg".to_string())
         }
