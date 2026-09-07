@@ -1297,6 +1297,18 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
+      - name: Configure Sentry release environment
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          REQUIRE_VITE_SENTRY_DSN: "true"
+          WRITE_RUST_DEBUG_ENV: "true"
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
       # NOT a step-level `env:` on the build command below, unlike every
       # other platform job in this workflow. `pnpm tauri ios build` shells
       # out to `xcodebuild`, and the actual `cargo build` runs inside a
@@ -1326,6 +1338,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
           SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           BUILD_ID: ${{ steps.build-id.outputs.build-id }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
         run: |
           set -euo pipefail
           cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -1351,6 +1364,8 @@ jobs:
             fi
             if [ "$HAS_SENTRY_CREDS" = "true" ]; then
               echo 'CARGO_PROFILE_RELEASE_DEBUG = "1"'
+              echo "SENTRY_DSN = \"${SENTRY_DSN}\""
+              echo 'SENTRY_ENVIRONMENT = "development"'
             fi
             echo "BUILD_ID = \"${BUILD_ID}\""
           } >> "$config"
@@ -1360,7 +1375,11 @@ jobs:
       # signing identity configured for CI, and simulator builds don't need
       # one — compile verification only, not a distributable IPA. Release
       # mode (no --debug), same as every other job in this workflow.
-      - run: pnpm tauri ios build --target aarch64-sim --ci
+      - name: Build unsigned release simulator app
+        env:
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_ENVIRONMENT: development
+        run: VITE_SENTRY_RELEASE="${SENTRY_RELEASE:-}" pnpm tauri ios build --target aarch64-sim --ci
 
       - name: Resolve Apple debug-file directories
         id: apple-debug-files
@@ -1413,13 +1432,16 @@ jobs:
 
       - name: Build and validate unsigned arm64 sideload IPA
         id: sideload-ipa
+        env:
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_ENVIRONMENT: development
         run: |
           set -euo pipefail
           version=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
           build="$GITHUB_RUN_NUMBER"
           sha_short="${GITHUB_SHA:0:7}"
           node scripts/configure-sideload-ios.mjs "$GITHUB_WORKSPACE" "$version" "$build"
-          pnpm tauri ios build --target aarch64 --no-sign --ci
+          VITE_SENTRY_RELEASE="${SENTRY_RELEASE:-}" pnpm tauri ios build --target aarch64 --no-sign --ci
           ipa=$(find src-tauri/gen/apple/build -type f -path '*/arm64/*.ipa' -print -quit)
           [ -n "$ipa" ] || { echo '::error::unsigned arm64 IPA was not produced'; exit 1; }
           asset="Charm-${version}-nightly.${build}.${sha_short}-ios-arm64.ipa"
@@ -1443,13 +1465,15 @@ jobs:
           fi
           mkdir -p "$RUNNER_TEMP/charm-ios-sideload"
           ditto -x -k "$ipa" "$RUNNER_TEMP/charm-ios-sideload"
+          app_path=$(find "$RUNNER_TEMP/charm-ios-sideload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)
+          [ -n "$app_path" ] || { echo '::error::unpacked sideload IPA has no app bundle'; exit 1; }
           executable=$(plutil -extract CFBundleExecutable raw -o - .artifacts/ios-sideload/Info.plist)
-          lipo -archs "$RUNNER_TEMP/charm-ios-sideload/Payload/Charm.app/$executable" | grep -qx arm64
-          if codesign -dvv "$RUNNER_TEMP/charm-ios-sideload/Payload/Charm.app" 2>&1 | grep -q '^Authority='; then
+          lipo -archs "$app_path/$executable" | grep -qx arm64
+          if codesign -dvv "$app_path" 2>&1 | grep -q '^Authority='; then
             echo '::error::sideload IPA must not carry a publisher signing authority'
             exit 1
           fi
-          ditto "$RUNNER_TEMP/charm-ios-sideload/Payload/Charm.app" .artifacts/ios-sideload/Charm.app
+          ditto "$app_path" .artifacts/ios-sideload/Charm.app
           # Release assets are downloaded by basename, so record that same
           # portable filename instead of the runner-only artifacts path.
           (cd .artifacts/ios-sideload && shasum -a 256 "$asset" > "${asset}.sha256")
@@ -1608,6 +1632,7 @@ jobs:
           version=$(sed -n 's/^version=//p' "$metadata")
           build=$(sed -n 's/^build=//p' "$metadata")
           [ -n "$version" ] && [ -n "$build" ] || { echo '::error::sideload metadata is incomplete'; exit 1; }
+          manifest_recovered=false
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             manifest_input="$RUNNER_TEMP/previous-altstore-source.json"
             if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
@@ -1618,6 +1643,7 @@ jobs:
               # of permanently wedging subsequent nightly publication.
               echo '::warning::existing iOS nightly has no usable source manifest; rebuilding it from the template'
               manifest_input=.github/templates/altstore-source.json
+              manifest_recovered=true
             fi
             gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
               > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
@@ -1627,6 +1653,26 @@ jobs:
               --notes 'Rolling unsigned Charm IPA for AltStore and SideStore.'
             manifest_input=.github/templates/altstore-source.json
             : > "$RUNNER_TEMP/available-ios-nightly-assets.txt"
+          fi
+          # Without a prior manifest, an older re-run cannot be recognized by
+          # the normal manifest ordering guard below. The asset filenames are
+          # immutable and include their numeric build, so use the retained
+          # IPAs as the authority before reconstructing the manifest.
+          if [ "$manifest_recovered" = true ]; then
+            highest_published_build=$(node - "$RUNNER_TEMP/available-ios-nightly-assets.txt" <<'NODE'
+const fs = require("node:fs");
+const assets = fs.readFileSync(process.argv[2], "utf8").trim().split("\n").filter(Boolean);
+const builds = assets.flatMap((name) => {
+  const match = name.match(/^Charm-\d+\.\d+\.\d+-nightly\.(\d+)\.[0-9a-f]{7}-ios-arm64\.ipa$/);
+  return match ? [BigInt(match[1])] : [];
+});
+if (builds.length > 0) console.log(builds.reduce((highest, candidate) => highest > candidate ? highest : candidate).toString());
+NODE
+)
+            if [ -n "$highest_published_build" ] && node -e 'process.exit(BigInt(process.argv[1]) < BigInt(process.argv[2]) ? 0 : 1)' "$build" "$highest_published_build"; then
+              echo "::notice::build $build is older than retained iOS nightly build $highest_published_build; leaving ios-nightly unchanged"
+              exit 0
+            fi
           fi
           download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$asset"
           manifest="$RUNNER_TEMP/altstore-source.json"

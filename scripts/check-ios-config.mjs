@@ -121,6 +121,8 @@ requireCondition(
 );
 
 const altstoreApp = altstoreSource.apps?.[0];
+const plistString = (key) =>
+  plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]+)</string>`))?.[1];
 requireCondition(
   altstoreSource.identifier === "social.cloudhub.charm.ios-nightly.source" &&
     altstoreApp?.bundleIdentifier === "social.cloudhub.charm",
@@ -133,9 +135,9 @@ requireCondition(
 );
 requireCondition(
   altstoreApp?.appPermissions?.privacy?.NSCameraUsageDescription ===
-    "Charm needs camera access for video calls." &&
+    plistString("NSCameraUsageDescription") &&
     altstoreApp.appPermissions.privacy.NSMicrophoneUsageDescription ===
-      "Charm uses the microphone to record voice messages you choose to send and for calls.",
+      plistString("NSMicrophoneUsageDescription"),
   "AltStore source privacy declarations must match Charm's iOS Info.plist",
 );
 
