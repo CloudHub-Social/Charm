@@ -74,9 +74,7 @@
     "deep-link": {
       "mobile": [
         {
-          "scheme": [
-            "charm"
-          ]
+          "scheme": "charm"
         }
       ],
       "desktop": {

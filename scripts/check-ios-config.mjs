@@ -55,7 +55,10 @@ requireCondition(
   "the generated Xcode project must retain the canonical bundle identifier",
 );
 
-const mobileSchemes = tauri.plugins?.["deep-link"]?.mobile?.flatMap((entry) => entry.scheme) ?? [];
+const mobileSchemes =
+  tauri.plugins?.["deep-link"]?.mobile?.flatMap((entry) =>
+    Array.isArray(entry.scheme) ? entry.scheme : [entry.scheme],
+  ) ?? [];
 requireCondition(
   mobileSchemes.includes("charm"),
   "tauri.conf.json must register the charm mobile URL scheme",

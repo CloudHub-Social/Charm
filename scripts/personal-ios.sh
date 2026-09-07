@@ -58,6 +58,7 @@ commit_sha() {
 }
 
 find_compatible_node_modules() {
+  local selected_root=$1
   if [[ -n ${CHARM_NODE_MODULES_DIR:-} ]]; then
     [[ -d $CHARM_NODE_MODULES_DIR ]] || fail "CHARM_NODE_MODULES_DIR does not exist: $CHARM_NODE_MODULES_DIR"
     printf '%s\n' "$(cd "$CHARM_NODE_MODULES_DIR" && pwd -P)"
@@ -65,7 +66,7 @@ find_compatible_node_modules() {
   fi
 
   local candidate candidate_lock source_lock
-  source_lock=$(shasum -a 256 "$source_root/pnpm-lock.yaml" | awk '{print $1}')
+  source_lock=$(shasum -a 256 "$selected_root/pnpm-lock.yaml" | awk '{print $1}')
   for candidate in "$source_root"/../Charm*/node_modules; do
     [[ -d $candidate ]] || continue
     candidate_lock=$(dirname "$candidate")/pnpm-lock.yaml
@@ -80,7 +81,6 @@ find_compatible_node_modules() {
 prepare_worktree() {
   validate_inputs
   local sha short run_root worktree node_modules
-  node "$source_root/scripts/check-ios-config.mjs"
   sha=$(commit_sha)
   short=${sha:0:12}
   run_root=${CHARM_IOS_RUN_ROOT:-"${TMPDIR:-/tmp}/charm-personal-ios"}
@@ -88,7 +88,8 @@ prepare_worktree() {
   [[ ! -e $worktree ]] || fail "refusing to reuse or overwrite existing worktree: $worktree"
 
   git -C "$source_root" worktree add --detach "$worktree" "$sha"
-  node_modules=$(find_compatible_node_modules)
+  node "$worktree/scripts/check-ios-config.mjs"
+  node_modules=$(find_compatible_node_modules "$worktree")
   if [[ ! -e "$worktree/node_modules" ]]; then
     ln -s "$node_modules" "$worktree/node_modules"
   fi

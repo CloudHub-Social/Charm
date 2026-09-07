@@ -158,7 +158,11 @@ jobs:
             xcodebuild -version
             du -sk .artifacts/ios/simulator/Charm.app .artifacts/ios/device/Charm.xcarchive
           } > .artifacts/ios/build-metadata.txt
-          find .artifacts/ios -type f -print0 | sort -z | xargs -0 shasum -a 256 > .artifacts/ios/SHA256SUMS.txt
+          checksum_manifest=.artifacts/ios/SHA256SUMS.txt
+          checksum_temp="$checksum_manifest.tmp"
+          find .artifacts/ios -type f ! -path "$checksum_manifest" ! -path "$checksum_temp" -print0 \
+            | sort -z | xargs -0 shasum -a 256 > "$checksum_temp"
+          mv "$checksum_temp" "$checksum_manifest"
 
       - name: Generate iOS SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2

@@ -272,7 +272,12 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     }
                     if e.committed_session {
                         let message =
-                            super::auth::reject_committed_login(&app, &client, &account_key).await;
+                            super::auth::reject_committed_login(
+                                &app,
+                                Some(&client),
+                                &account_key,
+                            )
+                            .await;
                         super::auth::restore_unaffected_account(
                             &app,
                             &state,

@@ -698,7 +698,7 @@ pub async fn login(
                 return Err(e.into());
             }
             if e.committed_session {
-                let error = reject_committed_login(&app, &client, &account_key).await;
+                let error = reject_committed_login(&app, Some(&client), &account_key).await;
                 restore_unaffected_account(
                     &app,
                     &state,
@@ -767,6 +767,8 @@ pub async fn login(
         {
             Ok(client) => client,
             Err(error) => {
+                let cleanup_error =
+                    reject_committed_login(&app, error.client.as_ref(), &account_key).await;
                 restore_unaffected_account(
                     &app,
                     &state,
@@ -775,7 +777,7 @@ pub async fn login(
                     previous_timelines,
                 )
                 .await;
-                return Err(error);
+                return Err(format!("{} {cleanup_error}", error.message));
             }
         };
 
@@ -1075,27 +1077,38 @@ pub(crate) async fn build_client(
 /// file` for the now-missing `tmp-*` path. Drop every handle owned by the
 /// temporary client, then restore the same session into a client opened at
 /// the permanent path before installing callbacks or starting sync.
+struct ReopenRelocatedMatrixClientError {
+    client: Option<Client>,
+    message: String,
+}
+
 async fn reopen_relocated_matrix_client(
     app: &AppHandle,
     client: Client,
     account_key: &str,
     homeserver_url: &str,
     session: &matrix_sdk::authentication::matrix::MatrixSession,
-) -> Result<Client, String> {
+) -> Result<Client, ReopenRelocatedMatrixClientError> {
     drop(client);
 
     let client = build_client(app, homeserver_url, account_key)
         .await
-        .map_err(|error| {
-            format!("login was saved, but its account store could not be reopened: {error}")
+        .map_err(|error| ReopenRelocatedMatrixClientError {
+            client: None,
+            message: format!(
+                "login was saved, but its account store could not be reopened: {error}"
+            ),
         })?;
-    client
+    if let Err(error) = client
         .matrix_auth()
         .restore_session(session.clone(), RoomLoadSettings::default())
         .await
-        .map_err(|error| {
-            format!("login was saved, but its session could not be restored: {error}")
-        })?;
+    {
+        return Err(ReopenRelocatedMatrixClientError {
+            client: Some(client),
+            message: format!("login was saved, but its session could not be restored: {error}"),
+        });
+    }
 
     Ok(client)
 }
@@ -1411,7 +1424,7 @@ async fn finish_registration(
         }
         // See `login`'s identical safe_to_resume_previous check.
         if e.committed_session {
-            let error = reject_committed_login(&app, &client, &account_key).await;
+            let error = reject_committed_login(&app, Some(&client), &account_key).await;
             restore_unaffected_account(
                 &app,
                 state,
@@ -1502,6 +1515,8 @@ async fn finish_registration(
         {
             Ok(client) => client,
             Err(error) => {
+                let cleanup_error =
+                    reject_committed_login(&app, error.client.as_ref(), &account_key).await;
                 restore_unaffected_account(
                     &app,
                     state,
@@ -1510,7 +1525,7 @@ async fn finish_registration(
                     previous_timelines,
                 )
                 .await;
-                return Err(error);
+                return Err(format!("{} {cleanup_error}", error.message));
             }
         };
 
@@ -4791,7 +4806,7 @@ pub async fn complete_sso_login(
         }
         // See `login`'s identical safe_to_resume_previous check.
         if e.committed_session {
-            let error = reject_committed_login(&app, &client, &account_key).await;
+            let error = reject_committed_login(&app, Some(&client), &account_key).await;
             restore_unaffected_account(
                 &app,
                 &state,
@@ -4838,6 +4853,8 @@ pub async fn complete_sso_login(
         {
             Ok(client) => client,
             Err(error) => {
+                let cleanup_error =
+                    reject_committed_login(&app, error.client.as_ref(), &account_key).await;
                 restore_unaffected_account(
                     &app,
                     &state,
@@ -4846,7 +4863,7 @@ pub async fn complete_sso_login(
                     previous_timelines,
                 )
                 .await;
-                return Err(error);
+                return Err(format!("{} {cleanup_error}", error.message));
             }
         };
 
@@ -4873,11 +4890,14 @@ pub async fn complete_sso_login(
 /// have its credentials removed by this rejected attempt's network cleanup.
 pub(crate) async fn reject_committed_login(
     app: &AppHandle,
-    client: &Client,
+    client: Option<&Client>,
     account_key: &str,
 ) -> String {
     let local_cleanup = persistence::invalidate_rejected_session(app, account_key);
-    let revoked = revoke_rejected_login_device(client).await;
+    let revoked = match client {
+        Some(client) => revoke_rejected_login_device(client).await,
+        None => false,
+    };
     match (local_cleanup, revoked) {
         (true, true) => "Login could not be finalized. The new session was signed out; please try again.",
         (true, false) => "Login could not be finalized. Local sign-in was removed, but server sign-out could not be confirmed. Review this device from another session.",
