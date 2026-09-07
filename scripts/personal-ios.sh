@@ -119,7 +119,9 @@ provision_install_devices() {
     device_udid=${install_device_udids[index]}
     device_root="$output_root/devices/$device_id"
     mkdir -p "$device_root"
-    "$DEVELOPER_DIR/usr/bin/xcodebuild" \
+    # Match `tauri ios build --ci`: Tauri's Xcode phase invokes pnpm, which
+    # otherwise refuses its non-interactive dependency safety check.
+    CI=true "$DEVELOPER_DIR/usr/bin/xcodebuild" \
       -project "$worktree/src-tauri/gen/apple/charm.xcodeproj" \
       -scheme charm_iOS \
       -configuration Release \
