@@ -121,13 +121,17 @@ build_install_devices() {
     device_name=${install_device_names[index]}
     device_root="$output_root/devices/$device_id"
     mkdir -p "$device_root"
-    # This is deliberately the Tauri-managed runner, not raw xcodebuild.
-    # The runner owns the local options server consumed by the Xcode Rust
-    # phase, builds for this exact device, and lets automatic signing register
-    # it before installing and launching the release app.
+    # Build a standalone Release bundle rather than using Tauri's development
+    # runner: a daily-driver install must not depend on the build Mac's dev
+    # server or `beforeDevCommand`. Tauri still owns the Xcode Rust phase and
+    # automatic Personal Team signing; devicectl installs the resulting app.
     (
       cd "$worktree"
-      CI=true pnpm tauri ios dev --release --no-watch "$device_name"
+      CI=true pnpm tauri ios build --target aarch64
+      app_bundle=src-tauri/gen/apple/build/arm64/Charm.app
+      [[ -d $app_bundle ]] || { echo "personal-ios: Release app bundle was not produced: $app_bundle" >&2; exit 1; }
+      DEVELOPER_DIR="$DEVELOPER_DIR" xcrun devicectl device install app --device "$device_id" "$app_bundle"
+      DEVELOPER_DIR="$DEVELOPER_DIR" xcrun devicectl device process launch --device "$device_id" "$CHARM_IOS_BUNDLE_ID"
     ) 2>&1 | tee "$device_root/build-install.log"
   done
 }

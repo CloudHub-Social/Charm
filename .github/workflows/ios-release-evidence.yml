@@ -150,7 +150,9 @@ jobs:
           [ -n "$archive" ] || { echo '::error::unsigned device xcarchive not found'; exit 1; }
           mkdir -p .artifacts/ios/device .artifacts/ios/debug-symbols
           ditto "$archive" .artifacts/ios/device/Charm.xcarchive
-          find src-tauri/gen/apple target -type d -name '*.dSYM' -exec ditto {} .artifacts/ios/debug-symbols/ \; 2>/dev/null || true
+          while IFS= read -r -d '' dsym; do
+            ditto "$dsym" ".artifacts/ios/debug-symbols/$(basename "$dsym")"
+          done < <(find src-tauri/gen/apple target -type d -name '*.dSYM' -print0 2>/dev/null)
           find src-tauri/gen/apple target -type f \( -name '*.bcsymbolmap' -o -name '*.dwarf' \) -exec cp {} .artifacts/ios/debug-symbols/ \; 2>/dev/null || true
           # GitHub artifact uploads flatten POSIX modes. Package executable
           # app/archive trees first so a downloaded artifact remains usable.
