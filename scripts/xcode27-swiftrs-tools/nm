@@ -1,0 +1,57 @@
+#!/bin/zsh
+# Work around Xcode 27 making swift-rs' @_cdecl exports private in SwiftPM
+# static archives. This runs while swift-rs inspects libTauri.a, before Rust's
+# final link. Only the primary Tauri archive is altered; plugin archives retain
+# their private SwiftRs.o copies so the linker sees exactly one definition.
+set -euo pipefail
+
+real_nm=/usr/bin/nm
+archive=${1:-}
+original_directory=$PWD
+
+case "$archive" in
+  */swift-rs/Tauri/*/libTauri.a)
+    # Do not use grep -q here: it closes its input early, which makes nm fail
+    # with SIGPIPE under pipefail and silently skips the repair.
+    if [[ -f "$archive" ]] && "$real_nm" "$archive" 2>/dev/null | grep ' t _release_object$' >/dev/null; then
+      archive=$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")
+      host=$(rustc -vV | sed -n 's/^host: //p')
+      tool_dir=$(rustc --print sysroot)/lib/rustlib/$host/bin
+      ar_tool=$tool_dir/llvm-ar
+      objcopy_tool=$tool_dir/llvm-objcopy
+      [[ -x "$ar_tool" && -x "$objcopy_tool" ]] || {
+        print -u2 'swift-rs Xcode 27 bridge repair requires rustup llvm-tools-preview'
+        exit 1
+      }
+
+      scratch=$(mktemp -d)
+      cleanup() {
+        [[ -f "$scratch/SwiftRs.o" ]] && unlink "$scratch/SwiftRs.o"
+        [[ -d "$scratch" ]] && rmdir "$scratch"
+      }
+      trap cleanup EXIT
+
+      cd "$scratch"
+      "$ar_tool" xN 1 "$archive" SwiftRs.o
+      "$ar_tool" dN 1 "$archive" SwiftRs.o
+      "$objcopy_tool" \
+        --globalize-symbol=_release_object \
+        --globalize-symbol=_retain_object \
+        --globalize-symbol=_string_from_bytes \
+        SwiftRs.o
+      "$ar_tool" q "$archive" SwiftRs.o
+      "$ar_tool" s "$archive"
+
+      "$real_nm" "$archive" 2>/dev/null | grep ' T _release_object$' >/dev/null || {
+        print -u2 'swift-rs Xcode 27 bridge repair did not export the required symbols'
+        exit 1
+      }
+      # llvm-ar needs a scratch directory for the extracted object, but the
+      # caller may have supplied relative paths to nm. Restore its directory
+      # before delegating so those paths retain their original meaning.
+      cd "$original_directory"
+    fi
+    ;;
+esac
+
+exec "$real_nm" "$@"

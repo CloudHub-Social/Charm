@@ -1231,8 +1231,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Enable Swift bridge symbol repair
+        run: echo "$GITHUB_WORKSPACE/scripts/xcode27-swiftrs-tools" >> "$GITHUB_PATH"
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          # swift-rs uses llvm-objcopy to export @_cdecl Swift bridge symbols.
+          # Without this, Xcode 27 reaches the final arm64 link and fails with
+          # undefined _register_plugin/_init_plugin_* symbols.
+          components: llvm-tools-preview
           targets: aarch64-apple-ios-sim
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -1241,6 +1248,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          # Rotate away from Swift archives cached before llvm-tools was
+          # installed; those archives contain local rather than global bridge
+          # symbols and remain link-broken even after the component appears.
+          key: ios-swift-rs-1.0.8-llvm-tools-xcode27-v2
           workspaces: src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

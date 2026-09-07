@@ -46,9 +46,11 @@ same day. On-demand validation builds use the commit-qualified tag
 `nightly-YYYY-MM-DD-SHA`, so their binaries and source archives stay aligned;
 re-running the same commit updates that commit's release. These are
 release-profile builds for testing — not signed by a trusted publisher, not
-auto-updating, not for production use. iOS is intentionally not published
-here: Apple requires a paid Developer Program membership to install on a real
-device, so iOS nightlies stay a CI-only compile check.
+auto-updating, not for production use. iOS is intentionally not published here:
+signed cloud IPAs require protected Apple distribution credentials. A paid Apple
+Developer Program membership is **not** required to install a local Personal Team
+build on an owned iPhone or iPad; use the
+[personal-device runbook](docs-site/src/content/docs/operations/personal-apple-device.md).
 
 Because the builds aren't signed by a certificate a trusted authority
 recognizes, each OS's normal "this isn't from a known publisher" gate needs

@@ -272,7 +272,8 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     }
                     if e.committed_session {
                         let message =
-                            super::auth::reject_committed_login(&app, &client, &account_key).await;
+                            super::auth::reject_committed_login(&app, Some(&client), &account_key)
+                                .await;
                         super::auth::restore_unaffected_account(
                             &app,
                             &state,
@@ -366,6 +367,46 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // roll back the OAuth session that already succeeded and
                 // was just saved above.
                 let _ = persistence::clear_session(&account_key);
+
+                // The relocation above renames the temporary SQLCipher
+                // directory. Drop the QR client that still owns handles to
+                // that old path, then restore its OAuth session into a new
+                // client opened at the permanent account directory before
+                // callbacks or sync can lazily open another database.
+                let client = match super::auth::reopen_relocated_oauth_client(
+                    &app,
+                    client,
+                    &account_key,
+                    &homeserver_url,
+                    &session,
+                )
+                .await
+                {
+                    Ok(client) => client,
+                    Err(error) => {
+                        let cleanup_error = super::auth::reject_committed_login(
+                            &app,
+                            error.client.as_ref(),
+                            &account_key,
+                        )
+                        .await;
+                        super::auth::restore_unaffected_account(
+                            &app,
+                            &state,
+                            previous_client.as_ref(),
+                            &account_key,
+                            previous_timelines,
+                        )
+                        .await;
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error {
+                                message: format!("{} {cleanup_error}", error.message),
+                            },
+                        );
+                        return;
+                    }
+                };
 
                 if let Err(message) =
                     super::auth::install_session_callbacks(&client, &account_key, &homeserver_url)

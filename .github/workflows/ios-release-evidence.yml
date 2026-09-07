@@ -1,0 +1,244 @@
+name: iOS release evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect iOS-affecting changes
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.paths.outputs.ios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # A merge-queue or manually dispatched build is explicit release
+          # evidence. Pushes to main prove the merged tree. PRs diff just the
+          # base and head trees; on retrieval failure we run rather than skip.
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo 'ios=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+            echo '::warning::could not fetch the PR base; running iOS proof'
+            echo 'ios=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
+          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml$)'
+          if grep -Eq "$ios_pattern" <<< "$changed"; then
+            echo 'ios=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ios=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  ios-release:
+    name: iOS release build and smoke test
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    # `macos-latest` currently defaults to Xcode 26.6. The dedicated preview
+    # image is the only hosted runner that supplies the Xcode 27 / iOS 27 SDK
+    # required by this release-evidence lane.
+    runs-on: xcode-27
+    # A clean Xcode 27 runner needs roughly 20 minutes for the simulator proof
+    # and can need another 30 minutes to compile the separate arm64 archive.
+    # Keep enough headroom to collect the archive, symbols, SBOM, and checksums.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select and record Xcode 27
+        run: |
+          set -euo pipefail
+          current_developer_dir=$(xcode-select -p)
+          current_version=$(xcodebuild -version | awk '/^Xcode / { version = $2 } END { print version }')
+          if [[ "$current_version" == 27.* ]]; then
+            developer_dir="$current_developer_dir"
+          else
+            xcode_app=$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' -print | sort | tail -1)
+            if [ -z "$xcode_app" ]; then
+              echo "::error::Xcode 27 is required, but the runner selected $current_version and no Xcode_27*.app is installed"
+              exit 1
+            fi
+            developer_dir="$xcode_app/Contents/Developer"
+          fi
+          export DEVELOPER_DIR="$developer_dir"
+          xcodebuild -version | tee .xcode-version.txt
+          xcode_version=$(xcodebuild -version | awk '/^Xcode / { version = $2 } END { print version }')
+          [[ "$xcode_version" == 27.* ]] || { echo "::error::selected Xcode is $xcode_version, not 27.x"; exit 1; }
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/scripts/xcode27-swiftrs-tools" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: llvm-tools-preview
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: ios-release-xcode27-swift-rs-1.0.8-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:ios-config
+
+      - name: Build unsigned release simulator app
+        run: pnpm tauri ios build --target aarch64-sim --no-sign --ci
+
+      - name: Install, launch, and deep-link the simulator app
+        env:
+          BUNDLE_ID: social.cloudhub.charm
+        run: |
+          set -euo pipefail
+          # Tauri 2.11 writes the simulator bundle to `build/arm64-sim`, not
+          # Xcode's conventional `*-iphonesimulator` product directory.
+          simulator_app=src-tauri/gen/apple/build/arm64-sim/Charm.app
+          [ -d "$simulator_app" ] || { echo '::error::release simulator .app not found'; exit 1; }
+          mkdir -p .artifacts/ios/simulator
+          ditto "$simulator_app" .artifacts/ios/simulator/Charm.app
+          device_id=''
+          dump_simulator_log() {
+            [ -n "$device_id" ] || return 0
+            echo '::group::Charm simulator logs after smoke-test failure'
+            xcrun simctl spawn "$device_id" log show --style compact --last 2m \
+              --predicate 'process == "Charm"' || true
+            echo '::endgroup::'
+          }
+          trap dump_simulator_log ERR
+          device_id=$(xcrun simctl list devices available -j | node -e '
+            let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => {
+              const devices = Object.entries(JSON.parse(data).devices)
+                .filter(([runtime]) => runtime.includes("iOS"))
+                .flatMap(([, devices]) => devices);
+              const device = devices.find(item => item.isAvailable && item.state !== "Booted");
+              if (!device) process.exit(1);
+              process.stdout.write(device.udid);
+            });')
+          xcrun simctl boot "$device_id" || true
+          xcrun simctl bootstatus "$device_id" -b
+          xcrun simctl install "$device_id" "$simulator_app"
+          app_launch=$(xcrun simctl launch "$device_id" "$BUNDLE_ID")
+          app_pid=${app_launch##*: }
+          case "$app_pid" in
+            (*[!0-9]*) echo "::error::could not parse simulator app PID: $app_launch"; exit 1 ;;
+          esac
+          sleep 10
+          kill -0 "$app_pid"
+          xcrun simctl openurl "$device_id" 'charm://sso-callback?state=ci-smoke'
+          sleep 5
+          kill -0 "$app_pid"
+
+      - name: Build unsigned arm64 device archive
+        run: pnpm tauri ios build --target aarch64 --no-sign --archive-only --ci
+
+      - name: Collect iOS evidence
+        run: |
+          set -euo pipefail
+          archive=$(find src-tauri/gen/apple -type d -name '*.xcarchive' -print -quit)
+          [ -n "$archive" ] || { echo '::error::unsigned device xcarchive not found'; exit 1; }
+          mkdir -p .artifacts/ios/device .artifacts/ios/debug-symbols
+          ditto "$archive" .artifacts/ios/device/Charm.xcarchive
+          while IFS= read -r -d '' dsym; do
+            ditto "$dsym" ".artifacts/ios/debug-symbols/$(basename "$dsym")"
+          done < <(find src-tauri/gen/apple target -type d -name '*.dSYM' -print0 2>/dev/null)
+          find src-tauri/gen/apple target -type f \( -name '*.bcsymbolmap' -o -name '*.dwarf' \) -exec cp {} .artifacts/ios/debug-symbols/ \; 2>/dev/null || true
+          # GitHub artifact uploads flatten POSIX modes. Package executable
+          # app/archive trees first so a downloaded artifact remains usable.
+          tar -C .artifacts/ios/simulator -cf .artifacts/ios/charm-ios-simulator-release.tar Charm.app
+          tar -C .artifacts/ios/device -cf .artifacts/ios/charm-ios-device-unsigned-xcarchive.tar Charm.xcarchive
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            xcodebuild -version
+            du -sk .artifacts/ios/simulator/Charm.app .artifacts/ios/device/Charm.xcarchive
+          } > .artifacts/ios/build-metadata.txt
+          checksum_manifest=.artifacts/ios/SHA256SUMS.txt
+          checksum_temp="$checksum_manifest.tmp"
+          find .artifacts/ios -type f ! -path "$checksum_manifest" ! -path "$checksum_temp" -print0 \
+            | sort -z | xargs -0 shasum -a 256 > "$checksum_temp"
+          mv "$checksum_temp" "$checksum_manifest"
+
+      - name: Generate iOS SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .artifacts/ios/device/Charm.xcarchive
+          format: spdx-json
+          syft-version: v1.51.1
+          output-file: charm-ios.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: charm-ios-simulator-release
+          path: .artifacts/ios/charm-ios-simulator-release.tar
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: charm-ios-device-unsigned-xcarchive
+          path: .artifacts/ios/charm-ios-device-unsigned-xcarchive.tar
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: charm-ios-debug-symbols
+          path: .artifacts/ios/debug-symbols
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: charm-ios-build-metadata
+          path: |
+            .xcode-version.txt
+            .artifacts/ios/build-metadata.txt
+            .artifacts/ios/SHA256SUMS.txt
+            charm-ios.spdx.json
+          if-no-files-found: error
+
+  ios-required:
+    name: iOS release evidence (required)
+    needs: [changes, ios-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.result != 'success'
+        run: |
+          echo "::error::iOS change detection did not complete: ${{ needs.changes.result }}"
+          exit 1
+      - if: needs.changes.outputs.ios == 'true' && needs.ios-release.result != 'success'
+        run: |
+          echo "::error::iOS release evidence did not pass: ${{ needs.ios-release.result }}"
+          exit 1
+      - if: needs.changes.outputs.ios != 'true'
+        run: echo 'No iOS-affecting paths changed; release proof intentionally skipped.'

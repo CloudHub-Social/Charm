@@ -7742,9 +7742,9 @@ dependencies = [
 
 [[package]]
 name = "swift-rs"
-version = "1.0.7"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4057c98e2e852d51fdcfca832aac7b571f6b351ad159f9eda5db1655f8d0c4d7"
+checksum = "e45c444e496845d3f2a351146bff59aae4975b2280238df1dfaa0c7d1846f38e"
 dependencies = [
  "base64 0.21.7",
  "serde",
@@ -7847,8 +7847,7 @@ dependencies = [
 [[package]]
 name = "tao"
 version = "0.35.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1c93047acf68669466a34690ac58cca7010bd1b201e1ec86f1fd0a75d3dd4a9"
+source = "git+https://github.com/Just-Insane/tao?rev=b3c73f064541011f6a99704982485a662d6b0561#b3c73f064541011f6a99704982485a662d6b0561"
 dependencies = [
  "bitflags 2.13.0",
  "block2",
@@ -7875,7 +7874,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "raw-window-handle",
- "tao-macros",
+ "tao-macros 0.1.3 (git+https://github.com/Just-Insane/tao?rev=b3c73f064541011f6a99704982485a662d6b0561)",
  "unicode-segmentation",
  "url",
  "windows",
@@ -7889,6 +7888,16 @@ name = "tao-macros"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4e16beb8b2ac17db28eab8bca40e62dbfbb34c0fcdc6d9826b11b7b5d047dfd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "tao-macros"
+version = "0.1.3"
+source = "git+https://github.com/Just-Insane/tao?rev=b3c73f064541011f6a99704982485a662d6b0561#b3c73f064541011f6a99704982485a662d6b0561"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8016,8 +8025,7 @@ dependencies = [
 [[package]]
 name = "tauri-macros"
 version = "2.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8b394794f399a421811d06966343e7933fcae92d59f5180b9388d1174497a45"
+source = "git+https://github.com/Just-Insane/tauri?rev=33cc42413974783edd5c7590c0b8a3b22f3b5472#33cc42413974783edd5c7590c0b8a3b22f3b5472"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -10167,7 +10175,7 @@ dependencies = [
  "raw-window-handle",
  "sha2 0.10.9",
  "soup3",
- "tao-macros",
+ "tao-macros 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.18",
  "url",
  "webkit2gtk",
