@@ -245,9 +245,13 @@ function getUnreadSpaceIds(rooms: RoomSummary[]): Set<string> {
   const unreadSpaceIds = new Set<string>();
   for (const room of rooms) {
     if (!room.has_unread) continue;
+    // `pending.pop()` below walks the ancestry, so it must always own its
+    // array. Reusing `room.parent_space_ids` consumed the summary's
+    // persisted parent list during the first render; a later render then
+    // silently lost nested-space unread indicators.
     const pending = room.is_space
       ? [room.room_id, ...room.parent_space_ids]
-      : room.parent_space_ids;
+      : [...room.parent_space_ids];
     while (pending.length > 0) {
       const spaceId = pending.pop();
       if (!spaceId || unreadSpaceIds.has(spaceId)) continue;
