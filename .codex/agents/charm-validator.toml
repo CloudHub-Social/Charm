@@ -1,5 +1,3 @@
-name = "charm-validator"
-description = "Charm CI-only validation role for Evie's Mac."
 model = "gpt-5.6-luna"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
