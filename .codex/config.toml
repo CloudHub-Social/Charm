@@ -4,4 +4,4 @@
 
 [agents.charm-validator]
 description = "Charm CI-only validation role for Evie's Mac."
-config_file = ".codex/agents/charm-validator.toml"
+config_file = "agents/charm-validator.toml"

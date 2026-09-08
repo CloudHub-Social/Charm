@@ -33,6 +33,9 @@ pnpm knip             # dead-code / unused-dependency check
 pnpm build            # tsc && vite build — must succeed with no errors
 ```
 
+On environments other than Evie's Mac, run these checks before committing and
+fix all failures.
+
 ### Evie's Mac CI-only override
 
 On this Mac, agents must **not** run any local build, test, lint,
