@@ -1,0 +1,15 @@
+schema_version: 1
+project_id: charm
+verification_strategy: github-actions-only-on-evie-mac
+review_sources:
+  - codex-review-gate
+  - seer-code-review
+  - github-review-threads
+policies:
+  delegated_agent_default:
+    model: gpt-5.6-terra
+    reasoning_effort: medium
+  local_telemetry_only: true
+  external_insight_sink: disabled
+  require_all_findings_dispositioned: true
+  require_current_head_review_state: true

@@ -1,0 +1,7 @@
+# This repository opts into the independent AI engineering control plane.
+# Reusable role pins are declared by their registered role profiles; this file
+# intentionally does not override Codex-wide parent/default routing.
+
+[agents.charm-validator]
+description = "Charm CI-only validation role for Evie's Mac."
+config_file = "agents/charm-validator.toml"

@@ -21,7 +21,7 @@ Workflow and process rules for AI agents working on the Charm 2.0 rewrite. See
 
 ## Quality Gates
 
-Run before committing and fix all failures. These mirror the `frontend` job in
+The following commands mirror the `frontend` job in
 `.github/workflows/quality-checks.yml` and are enforced in CI:
 
 ```
@@ -32,6 +32,18 @@ pnpm test:coverage    # vitest run --coverage — enforces the coverage floor
 pnpm knip             # dead-code / unused-dependency check
 pnpm build            # tsc && vite build — must succeed with no errors
 ```
+
+On environments other than Evie's Mac, run these checks before committing and
+fix all failures.
+
+### Evie's Mac CI-only override
+
+On this Mac, agents must **not** run any local build, test, lint,
+formatting-check, benchmark, browser-test, documentation-build, or graph-build
+command. GitHub Actions is the verification authority. Record the exact head
+SHA and required workflow result; report device acceptance and live behavior as
+separate evidence. The command list above is CI reference material, not local
+agent authorization on this Mac.
 
 ## Pull Requests
 
@@ -49,8 +61,17 @@ pnpm build            # tsc && vite build — must succeed with no errors
 - Personal notes and historical vault captures can provide context, but they do not
   override the repository docs. Do not add private workspace paths or Obsidian
   wikilinks to published content.
-- Run `pnpm --dir docs-site check:content` and `pnpm --dir docs-site build` for docs
-  changes.
+- On Evie's Mac, documentation validation is run in GitHub Actions; do not run
+  the local docs commands from an agent session. Other environments follow the
+  documentation checks required by `CLAUDE.md`.
+
+## AI engineering control-plane opt-in
+
+This repository opts into the independent local `ai-task` workflow. Record
+payload-free task milestones, model routing, and review dispositions. The
+global reusable role agents are model-pinned; use `charm-validator` for CI-only
+evidence collection. A task is not converged until every finding is
+dispositioned and current-head GitHub review threads are resolved.
 
 ## Reusable agent skills
 
