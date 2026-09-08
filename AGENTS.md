@@ -61,8 +61,9 @@ agent authorization on this Mac.
 - Personal notes and historical vault captures can provide context, but they do not
   override the repository docs. Do not add private workspace paths or Obsidian
   wikilinks to published content.
-- Documentation validation is run in GitHub Actions on Evie's Mac; do not run the
-  local docs commands from an agent session.
+- On Evie's Mac, documentation validation is run in GitHub Actions; do not run
+  the local docs commands from an agent session. Other environments follow the
+  documentation checks required by `CLAUDE.md`.
 
 ## AI engineering control-plane opt-in
 
