@@ -22,6 +22,9 @@
 //! `Timeline` accumulating sends/edits/reactions/redactions/replies over many
 //! sync round-trips, the same way a real chat session would.
 
+// SDK 0.19's nested async send future exceeds rustc's default layout depth.
+#![recursion_limit = "256"]
+
 mod common;
 
 use std::time::Duration;

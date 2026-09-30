@@ -112,7 +112,7 @@ pattern as every other `set_*` permission field).
 ## Trade-offs
 
 - **Granular `pin_event`/`unpin_event` vs a single `set_pinned_events(room_id,
-  event_ids[])`**: implemented granular. matrix-sdk 0.18's `Room::pin_event`/
+  event_ids[])`**: implemented granular. matrix-sdk 0.19.1's `Room::pin_event`/
   `Room::unpin_event` already perform the read-modify-write themselves, so a
   granular IPC surface avoids adding a second, coarser race window on top of an
   SDK primitive that already avoids one — see "API/contract changes" above for

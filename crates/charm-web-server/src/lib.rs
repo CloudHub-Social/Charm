@@ -1,3 +1,6 @@
+// SDK 0.19's nested async timeline future exceeds rustc's default layout depth.
+#![recursion_limit = "256"]
+
 pub mod auth;
 pub mod crypto_backup;
 pub mod crypto_store;

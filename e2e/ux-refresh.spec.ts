@@ -5,6 +5,9 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 test("UX refresh rail prioritizes unread people without double-counting overflow", async ({
   page,
 }) => {
+  // The message fixtures are dated September 6. Keep relative date labels
+  // stable so documentation captures do not change with the runner's date.
+  await page.clock.setFixedTime(new Date("2026-09-07T12:00:00Z"));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     localStorage.setItem(

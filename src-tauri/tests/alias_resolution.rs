@@ -8,18 +8,26 @@
 mod common;
 
 use charm_lib::matrix::rooms::resolve_alias;
-use common::logged_in_client;
+use common::{logged_in_client, synced_client};
 
 #[tokio::test]
 async fn resolve_alias_returns_the_room_id() {
-    let client = logged_in_client().await;
+    let client = synced_client().await;
+    let expected_room = client
+        .joined_rooms()
+        .into_iter()
+        .find(|room| {
+            room.canonical_alias()
+                .is_some_and(|alias| alias.as_str() == "#alias-test-room:localhost")
+        })
+        .expect("fixture room is joined and has its canonical alias");
 
     let room_id = resolve_alias(&client, "#alias-test-room:localhost")
         .await
         .expect("alias resolves");
 
-    assert!(room_id.starts_with('!'));
-    assert!(room_id.ends_with(":localhost"));
+    // Room IDs are opaque; modern room versions do not include a server name.
+    assert_eq!(room_id, expected_room.room_id().as_str());
 }
 
 #[tokio::test]

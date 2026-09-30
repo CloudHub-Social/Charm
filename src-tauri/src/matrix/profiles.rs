@@ -335,14 +335,13 @@ pub async fn get_mutual_rooms_impl(
 
             let (name, is_direct) = tokio::join!(room.display_name(), room.is_direct());
             let is_direct = is_direct.unwrap_or(false);
-            let avatar_url = room.avatar_url().map(|url| url.to_string()).or_else(|| {
-                is_direct
-                    .then(|| room.heroes())
-                    .and_then(|heroes| match heroes.as_slice() {
-                        [hero] => hero.avatar_url.as_ref().map(ToString::to_string),
-                        _ => None,
-                    })
-            });
+            let mut avatar_url = room.avatar_url().map(|url| url.to_string());
+            if avatar_url.is_none() && is_direct {
+                avatar_url = match room.heroes().await.as_slice() {
+                    [hero] => hero.avatar_url.as_ref().map(ToString::to_string),
+                    _ => None,
+                };
+            }
             let avatar_path = match avatar_url.as_deref() {
                 Some(mxc) => resolve_avatar_path(client, media_cache, mxc).await,
                 None => None,
