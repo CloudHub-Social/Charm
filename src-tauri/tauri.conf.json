@@ -53,7 +53,7 @@
       "entitlements": "Entitlements.plist"
     },
     "android": {
-      "versionCode": 1004
+      "versionCode": 1005
     },
     "iOS": {
       "minimumSystemVersion": "15.0"

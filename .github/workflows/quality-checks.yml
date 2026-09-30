@@ -197,6 +197,11 @@ jobs:
       - id: frontend_install
         run: pnpm install --frozen-lockfile
 
+      - name: Check Android version synchronization
+        run: |
+          node --test scripts/sync-android-version-code.test.mjs
+          node scripts/sync-android-version-code.mjs --check
+
       - name: Check iOS configuration and sideload tooling
         run: |
           pnpm check:ios-config
