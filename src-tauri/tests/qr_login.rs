@@ -365,7 +365,7 @@ async fn qr_login_completes_with_a_real_working_session() {
                         GrantLoginProgress::EstablishingSecureChannel(QrProgress {
                             check_code,
                         }) => {
-                            let digit = check_code.to_digit();
+                            let digit = check_code;
                             loop {
                                 if let Some(sender) = check_code_sender.lock().await.take() {
                                     sender
@@ -377,7 +377,14 @@ async fn qr_login_completes_with_a_real_working_session() {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             }
                         }
-                        GrantLoginProgress::WaitingForAuth { verification_uri } => {
+                        GrantLoginProgress::WaitingForAuth {
+                            verification_uri,
+                            continuation_sender,
+                        } => {
+                            continuation_sender
+                                .confirm()
+                                .await
+                                .expect("grant device is ready to approve authorization");
                             approve_device_code(&http, verification_uri).await;
                             break;
                         }

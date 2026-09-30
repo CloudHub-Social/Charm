@@ -376,7 +376,7 @@ session IDs, email `sid`s, and provider IDs are data, not authority: the backend
 must bind them to the pending attempt rather than accepting arbitrary combinations
 from the frontend.
 
-matrix-sdk 0.18 already exposes the raw registration/UIA response used by Charm's
+matrix-sdk 0.19.1 already exposes the raw registration/UIA response used by Charm's
 dummy-only flow. Prefer its typed requests where available; use Ruma request types
 through `client.send` for missing password-reset or login-flow discovery helpers
 instead of adding a second HTTP stack.

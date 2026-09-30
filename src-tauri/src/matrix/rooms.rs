@@ -547,7 +547,7 @@ async fn resolve_room_identity(
     let raw_avatar_url = room.avatar_url();
 
     let heroes = if is_direct {
-        room.heroes()
+        room.heroes().await
     } else {
         Default::default()
     };

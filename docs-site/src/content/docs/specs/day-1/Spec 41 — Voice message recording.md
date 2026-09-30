@@ -70,7 +70,7 @@ waveform for voice messages).
 
 ### Implementation boundary
 
-The pinned matrix-sdk 0.18.0 provides `AttachmentInfo::Voice(BaseAudioInfo)`.
+The pinned matrix-sdk 0.19.1 provides `AttachmentInfo::Voice(BaseAudioInfo)`.
 Its attachment send path constructs the voice marker and audio details from that
 variant; use it rather than constructing a second upload/send implementation.
 `BaseAudioInfo::waveform` accepts normalized floating-point amplitudes in `[0, 1]`;
