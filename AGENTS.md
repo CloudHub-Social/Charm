@@ -160,3 +160,19 @@ Rules:
 ## Imported Claude Cowork project instructions
 
 This is Charm 2.0, a ground-up rewrite of a Matrix client. It is unrelated to Charm 1.0 in every way except the name.
+
+## ECP routing precedence
+
+For engineering model selection, explicit owner instructions for the task
+take precedence. A named role uses its registered role profile; unnamed
+delegated work uses `policies.delegated_agent_default` in `ai-workflow.yaml`.
+The repository adopts ECP's September 25, 2026 routing policy explicitly:
+GPT-6 Sol Medium for coordination, exploration, implementation and review
+triage; GPT-6 Luna High for formatting, hygiene and validation; GPT-6 Astra
+High for difficult debugging, review and workflow analysis. Repository safety
+and verification rules still apply to every role. A future ECP default change
+requires deliberate repository adoption. Do not change global client settings
+as a side effect or claim that active chats or the hosted catalog adopted a
+repository change. Record the actual invoked model and effort; compare total
+parent and worker tokens, model cost, elapsed time, rework and review quality
+only where measured.
