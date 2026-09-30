@@ -7,7 +7,7 @@ review_sources:
   - github-review-threads
 policies:
   delegated_agent_default:
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     reasoning_effort: medium
   local_telemetry_only: true
   external_insight_sink: disabled
