@@ -178,6 +178,8 @@ model/effort selection or report the role unavailable. Repository safety and
 verification rules apply to every role. These are deliberate owner overrides
 of ECP's September 25 defaults. Future ECP changes require deliberate repository
 adoption. Do not change global client settings as a side effect or claim that
-active chats or the hosted catalog adopted a repository change. Record actual
+active chats or the hosted catalog adopted a repository change. This is an
+agent-selection policy, not a platform-enforced spending or reasoning cap.
+Record actual
 invoked models and efforts; compare total parent and worker tokens, model cost,
 elapsed time, rework and review quality only where measured.
