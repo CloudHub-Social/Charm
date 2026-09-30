@@ -194,3 +194,19 @@ dependency on the hand-rolled fold and make the migration more expensive.
 the per-room `Timeline` lifecycle/subscription bridge and its memory bounding, plus
 deleting/rewiring the echo path and migrating Spec 03's tests. Contained because the IPC
 DTO stays stable, so no downstream spec has to change.
+
+## September 2026 dependency security maintenance
+
+The native client and companion server use Matrix SDK and matrix-sdk-ui 0.19.1
+with imbl 7.0.2. These versions select imbl-sized-chunks 0.2.0, which fixes
+RUSTSEC-2026-0292. Keep the SDK, UI, test fixtures, and direct imbl dependency
+aligned to preserve the timeline Vector type bridge. The SDK requires Rust
+1.96 or newer; CI uses the stable toolchain.
+
+The shared SQLite dependencies move together to rusqlite 0.40.2 and
+libsqlite3-sys 0.38.2. The native search database keeps its bundled SQLCipher
+feature and the existing platform bundling features remain enabled.
+Rustls is locked to 0.23.45 or newer for RUSTSEC-2026-0285, and the frontend
+js-yaml 3.x override starts at 3.15.2 for the merge-source CPU advisory.
+Validation and device acceptance are recorded in the maintenance PR; these
+version changes alone do not establish runtime acceptance.
