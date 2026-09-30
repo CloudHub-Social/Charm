@@ -12,7 +12,7 @@ status: shipped
 
 Charm ships single-select Matrix polls behind the default-off `polls` feature
 flag on desktop and the authenticated web companion. The implementation uses
-matrix-sdk-ui 0.18's aggregated `PollState` for timeline updates and Ruma's
+matrix-sdk-ui 0.19.1's aggregated `PollState` for timeline updates and Ruma's
 maintained MSC3381 event types for creation, responses, and ending; Charm does
 not parse or aggregate poll relations itself. The bounded implementation is
 [PR #468](https://github.com/CloudHub-Social/Charm/pull/468).
