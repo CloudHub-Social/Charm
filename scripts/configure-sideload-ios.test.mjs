@@ -64,6 +64,64 @@ test("rejects non-Apple version values before editing", () => {
   }
 });
 
+test("configures a plist rewritten without XML comments", () => {
+  const directory = fixture();
+  try {
+    const path = join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/<!--[\s\S]*?-->/g, ""));
+    configureSideloadIos(directory, "0.1.3", "123");
+    const plist = readFileSync(path, "utf8");
+    assert.doesNotMatch(plist, /UIBackgroundModes|remote-notification/);
+    assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>123<\/string>/);
+    assert.match(plist, /<key>NSCameraUsageDescription<\/key>/);
+    assert.match(plist, /<key>NSMicrophoneUsageDescription<\/key>/);
+    assert.match(plist, /<string>TaoSceneDelegate<\/string>/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test(
+  "configures the source plist after agvtool updates the simulator version",
+  { skip: process.platform !== "darwin" },
+  () => {
+    const directory = fixture();
+    try {
+      execFileSync("xcrun", ["agvtool", "new-version", "-all", "0.1.3"], {
+        cwd: join(directory, "src-tauri/gen/apple"),
+        stdio: "pipe",
+      });
+      const path = join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist");
+      assert.doesNotMatch(readFileSync(path, "utf8"), /<!--/);
+      configureSideloadIos(directory, "0.1.3", "123");
+      const plist = readFileSync(path, "utf8");
+      assert.doesNotMatch(plist, /UIBackgroundModes|remote-notification/);
+      assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>123<\/string>/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("rejects missing or duplicated remote-notification plist blocks", () => {
+  for (const copies of [0, 2]) {
+    const directory = fixture();
+    try {
+      const path = join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist");
+      const plist = readFileSync(path, "utf8").replace(/<!--[\s\S]*?-->/g, "");
+      const block =
+        /<key>UIBackgroundModes<\/key>\s*<array>\s*<string>remote-notification<\/string>\s*<\/array>/;
+      writeFileSync(path, plist.replace(block, (match) => match.repeat(copies)));
+      assert.throws(
+        () => configureSideloadIos(directory, "0.1.3", "123"),
+        new RegExp(`expected one remote-notification plist block, found ${copies}`),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("writes a newest-first, entitlement-free AltStore source", () => {
   const directory = mkdtempSync(join(tmpdir(), "charm-altstore-source-"));
   try {
