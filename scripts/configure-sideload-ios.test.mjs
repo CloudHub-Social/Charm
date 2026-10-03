@@ -82,15 +82,11 @@ test("configures a plist rewritten without XML comments", () => {
 });
 
 test(
-  "configures the source plist after agvtool updates the simulator version",
-  { skip: process.platform !== "darwin" },
+  "configures the source plist after a simulator build",
+  { skip: process.env.CHARM_POST_SIMULATOR_TEST !== "true" },
   () => {
     const directory = fixture();
     try {
-      execFileSync("xcrun", ["agvtool", "new-version", "-all", "0.1.3"], {
-        cwd: join(directory, "src-tauri/gen/apple"),
-        stdio: "pipe",
-      });
       const path = join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist");
       assert.doesNotMatch(readFileSync(path, "utf8"), /<!--/);
       configureSideloadIos(directory, "0.1.3", "123");
@@ -111,7 +107,10 @@ test("rejects missing or duplicated remote-notification plist blocks", () => {
       const plist = readFileSync(path, "utf8").replace(/<!--[\s\S]*?-->/g, "");
       const block =
         /<key>UIBackgroundModes<\/key>\s*<array>\s*<string>remote-notification<\/string>\s*<\/array>/;
-      writeFileSync(path, plist.replace(block, (match) => match.repeat(copies)));
+      writeFileSync(
+        path,
+        plist.replace(block, (match) => match.repeat(copies)),
+      );
       assert.throws(
         () => configureSideloadIos(directory, "0.1.3", "123"),
         new RegExp(`expected one remote-notification plist block, found ${copies}`),
