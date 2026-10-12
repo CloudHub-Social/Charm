@@ -116,6 +116,11 @@ jobs:
       - name: Build unsigned release simulator app
         run: pnpm tauri ios build --target aarch64-sim --no-sign --ci
 
+      - name: Check sideload overlay after simulator plist serialization
+        env:
+          CHARM_POST_SIMULATOR_TEST: "true"
+        run: node --test --test-name-pattern='configures the source plist after a simulator build' scripts/configure-sideload-ios.test.mjs
+
       - name: Install, launch, and deep-link the simulator app
         env:
           BUNDLE_ID: social.cloudhub.charm

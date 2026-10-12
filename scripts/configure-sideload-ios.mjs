@@ -87,9 +87,11 @@ export function configureSideloadIos(worktree, version, build) {
   let plist = read("src-tauri/gen/apple/charm_iOS/Info.plist");
   plist = replacePlistString(plist, "CFBundleShortVersionString", version);
   plist = replacePlistString(plist, "CFBundleVersion", build);
+  // Tauri serializes the source plist before a simulator build, removing XML
+  // comments. Require the capability block, not its comment.
   plist = replaceOnce(
     plist,
-    /\s*<!-- Spec 11: lets the app receive remote \(APNs\) notifications,[\s\S]*?<key>UIBackgroundModes<\/key>\s*<array>\s*<string>remote-notification<\/string>\s*<\/array>/,
+    /(?:\s*<!-- Spec 11: lets the app receive remote \(APNs\) notifications,[\s\S]*?-->)?\s*<key>UIBackgroundModes<\/key>\s*<array>\s*<string>remote-notification<\/string>\s*<\/array>/,
     "",
     "remote-notification plist block",
   );
