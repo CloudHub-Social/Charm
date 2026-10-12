@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   ignoreUser: vi.fn().mockResolvedValue(undefined),
   unignoreUser: vi.fn().mockResolvedValue(undefined),
   joinRoom: vi.fn().mockResolvedValue({ room_id: "!joined:example.org", is_space: false }),
+  getUserProfile: vi.fn().mockResolvedValue({ room_avatar_url: "mxc://example.org/room-avatar" }),
+  setRoomProfile: vi.fn().mockResolvedValue(undefined),
+  startDirectMessage: vi.fn().mockResolvedValue("!dm:example.org"),
   useFlag: vi.fn(() => true),
   invalidateQueries: vi.fn().mockResolvedValue(undefined),
 }));
@@ -490,4 +493,312 @@ describe("formatted composer submission", () => {
     );
     expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
+});
+
+describe("room nickname and direct-message commands", () => {
+  const userId = "@self:example.org";
+  const room = makeRoomSummary();
+  const replyTarget = {
+    event_id: "$reply",
+    sender: "@alice:example.org",
+    sender_display_name: "Alice",
+    preview: "keep this reply",
+  };
+
+  function setup() {
+    const setReplyTarget = vi.fn();
+    const onNavigateToRoom = vi.fn();
+    const mutationsBlockedRef = { current: false };
+    const hook = renderHook(
+      ({ activeRoom, currentUserId }) =>
+        useMessageSend({
+          room: activeRoom,
+          currentUserId,
+          editingEventId: null,
+          replyTarget,
+          setEditingEventId: vi.fn(),
+          setReplyTarget,
+          stopTyping: vi.fn(),
+          onNavigateToRoom,
+          mutationsBlockedRef,
+        }),
+      { initialProps: { activeRoom: room, currentUserId: userId } },
+    );
+    return { ...hook, setReplyTarget, onNavigateToRoom, mutationsBlockedRef };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.useFlag.mockReturnValue(true);
+  });
+
+  it.each(["myroomnick", "startdm"] as const)(
+    "rejects missing /%s arguments, disabled dispatch and mutation locks",
+    async (command) => {
+      const { result, rerender, mutationsBlockedRef } = setup();
+      await act(async () => {
+        expect(
+          await result.current.handleSlashCommand(parseSlashCommand(`/${command}`, true)!),
+        ).toBe(false);
+      });
+      expect(result.current.commandFeedback).toContain(`Usage: /${command}`);
+      mocks.useFlag.mockReturnValue(false);
+      rerender({ activeRoom: room, currentUserId: userId });
+      await act(async () => {
+        await result.current.handleSlashCommand(
+          parseSlashCommand(`/${command} @alice:example.org`, true)!,
+        );
+        await result.current.handleSlashCommand(
+          parseSlashCommand(`/${command} @alice:example.org`)!,
+        );
+      });
+      expect(result.current.commandFeedback).toContain("unavailable");
+      mocks.useFlag.mockReturnValue(true);
+      rerender({ activeRoom: room, currentUserId: userId });
+      mutationsBlockedRef.current = true;
+      await act(async () => {
+        await result.current.handleSlashCommand(
+          parseSlashCommand(`/${command} @alice:example.org`, true)!,
+        );
+      });
+      expect(mocks.getUserProfile).not.toHaveBeenCalled();
+      expect(mocks.setRoomProfile).not.toHaveBeenCalled();
+      expect(mocks.startDirectMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["mxc://example.org/room-avatar", null])(
+    "changes only the room nickname, preserving avatar %s and reply context",
+    async (avatarUrl) => {
+      mocks.getUserProfile.mockResolvedValueOnce({
+        room_avatar_url: avatarUrl,
+        avatar_url: "mxc://example.org/global",
+      });
+      const { result, setReplyTarget, onNavigateToRoom } = setup();
+      await act(async () => {
+        expect(
+          await result.current.handleSlashCommand(
+            parseSlashCommand("/myroomnick Room Name", true)!,
+          ),
+        ).toBe(true);
+      });
+      expect(mocks.getUserProfile).toHaveBeenCalledExactlyOnceWith(userId, room.room_id, false);
+      expect(mocks.setRoomProfile).toHaveBeenCalledExactlyOnceWith(
+        room.room_id,
+        "Room Name",
+        avatarUrl,
+      );
+      expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({
+        queryKey: ["user-profile", userId, userId, room.room_id],
+      });
+      expect(mocks.setDisplayName).not.toHaveBeenCalled();
+      expect(mocks.sendMessage).not.toHaveBeenCalled();
+      expect(mocks.sendReply).not.toHaveBeenCalled();
+      expect(mocks.runCommand).not.toHaveBeenCalled();
+      expect(setReplyTarget).not.toHaveBeenCalled();
+      expect(onNavigateToRoom).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens the SDK-returned DM without sending a message or consuming a reply", async () => {
+    const { result, setReplyTarget, onNavigateToRoom } = setup();
+    await act(async () => {
+      expect(
+        await result.current.handleSlashCommand(
+          parseSlashCommand("/startdm @alice:example.org", true)!,
+        ),
+      ).toBe(true);
+    });
+    expect(mocks.startDirectMessage).toHaveBeenCalledExactlyOnceWith("@alice:example.org");
+    expect(onNavigateToRoom).toHaveBeenCalledExactlyOnceWith(
+      "!dm:example.org",
+      expect.any(AbortSignal),
+    );
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+    expect(mocks.sendReply).not.toHaveBeenCalled();
+    expect(mocks.runCommand).not.toHaveBeenCalled();
+    expect(setReplyTarget).not.toHaveBeenCalled();
+    expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("rejects extra DM arguments", async () => {
+    const { result } = setup();
+    await act(async () => {
+      expect(
+        await result.current.handleSlashCommand(
+          parseSlashCommand("/startdm @alice:example.org extra", true)!,
+        ),
+      ).toBe(false);
+    });
+    expect(result.current.commandFeedback).toBe("Usage: /startdm <user id>");
+    expect(mocks.startDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["getUserProfile", "setRoomProfile", "startDirectMessage"] as const)(
+    "shows inline failure without invalidation, navigation, or reply loss when %s fails",
+    async (operation) => {
+      mocks[operation].mockRejectedValueOnce(new Error("private arguments must not be logged"));
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const command = operation === "startDirectMessage" ? "startdm" : "myroomnick";
+      const { result, setReplyTarget, onNavigateToRoom } = setup();
+      await act(async () => {
+        expect(
+          await result.current.handleSlashCommand(
+            parseSlashCommand(`/${command} @alice:example.org`, true)!,
+          ),
+        ).toBe(false);
+      });
+      expect(result.current.commandFeedback).toContain(`Could not complete /${command}`);
+      expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+      expect(onNavigateToRoom).not.toHaveBeenCalled();
+      expect(setReplyTarget).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      log.mockRestore();
+    },
+  );
+
+  it.each(["myroomnick", "startdm"] as const)(
+    "rejects duplicate /%s while in flight and admits a later retry",
+    async (command) => {
+      let resolve!: (value: never) => void;
+      const operation = command === "myroomnick" ? mocks.getUserProfile : mocks.startDirectMessage;
+      operation.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      const { result } = setup();
+      const parsed = parseSlashCommand(`/${command} @alice:example.org`, true)!;
+      let pending!: Promise<boolean>;
+      act(() => {
+        pending = result.current.handleSlashCommand(parsed);
+      });
+      await act(async () => {
+        expect(await result.current.handleSlashCommand(parsed)).toBe(false);
+      });
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(result.current.commandFeedback).toContain("already");
+      await act(async () => {
+        resolve(
+          (command === "myroomnick" ? { room_avatar_url: null } : "!dm:example.org") as never,
+        );
+        await pending;
+        await result.current.handleSlashCommand(parsed);
+      });
+      expect(operation).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["room", "account", "away-and-back", "lock", "flag", "unmount"] as const)(
+    "does not write a nickname after its profile read becomes stale (%s)",
+    async (change) => {
+      let resolve!: (value: { room_avatar_url: null }) => void;
+      mocks.getUserProfile.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      const { result, rerender, unmount, mutationsBlockedRef } = setup();
+      let pending!: Promise<boolean>;
+      act(() => {
+        pending = result.current.handleSlashCommand(
+          parseSlashCommand("/myroomnick New Name", true)!,
+        );
+      });
+      if (change === "room" || change === "away-and-back") {
+        rerender({ activeRoom: { ...room, room_id: "!next:example.org" }, currentUserId: userId });
+        if (change === "away-and-back") rerender({ activeRoom: room, currentUserId: userId });
+      } else if (change === "account") {
+        rerender({ activeRoom: room, currentUserId: "@other:example.org" });
+      } else if (change === "lock") {
+        mutationsBlockedRef.current = true;
+      } else if (change === "flag") {
+        mocks.useFlag.mockReturnValue(false);
+        rerender({ activeRoom: room, currentUserId: userId });
+      } else {
+        unmount();
+      }
+      await act(async () => {
+        resolve({ room_avatar_url: null });
+        expect(await pending).toBe(false);
+      });
+      expect(mocks.setRoomProfile).not.toHaveBeenCalled();
+      expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["room", "account", "away-and-back", "unmount"] as const)(
+    "does not navigate after a DM result becomes stale (%s)",
+    async (change) => {
+      let resolve!: (value: string) => void;
+      mocks.startDirectMessage.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      const { result, rerender, unmount, onNavigateToRoom } = setup();
+      let pending!: Promise<boolean>;
+      act(() => {
+        pending = result.current.handleSlashCommand(
+          parseSlashCommand("/startdm @alice:example.org", true)!,
+        );
+      });
+      if (change === "room" || change === "away-and-back") {
+        rerender({ activeRoom: { ...room, room_id: "!next:example.org" }, currentUserId: userId });
+        if (change === "away-and-back") rerender({ activeRoom: room, currentUserId: userId });
+      } else if (change === "account") {
+        rerender({ activeRoom: room, currentUserId: "@other:example.org" });
+      } else {
+        unmount();
+      }
+      await act(async () => {
+        resolve("!dm:example.org");
+        expect(await pending).toBe(false);
+      });
+      expect(onNavigateToRoom).not.toHaveBeenCalled();
+    },
+  );
+
+  it("aborts the normal room refresh navigation if the source room changes", async () => {
+    const { result, rerender, onNavigateToRoom } = setup();
+    await act(async () => {
+      await result.current.handleSlashCommand(
+        parseSlashCommand("/startdm @alice:example.org", true)!,
+      );
+    });
+    const signal = onNavigateToRoom.mock.calls[0][1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    rerender({ activeRoom: { ...room, room_id: "!next:example.org" }, currentUserId: userId });
+    expect(signal.aborted).toBe(true);
+  });
+
+  it.each([false, true])(
+    "ignores a late nickname write completion (failure %s)",
+    async (failure) => {
+      let complete!: () => void;
+      mocks.setRoomProfile.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            complete = () => (failure ? reject(new Error("Late failure")) : resolve());
+          }),
+      );
+      const { result, rerender } = setup();
+      let pending!: Promise<boolean>;
+      await act(async () => {
+        pending = result.current.handleSlashCommand(parseSlashCommand("/myroomnick Name", true)!);
+        await Promise.resolve();
+      });
+      expect(mocks.setRoomProfile).toHaveBeenCalledTimes(1);
+      rerender({ activeRoom: room, currentUserId: "@other:example.org" });
+      await act(async () => {
+        complete();
+        expect(await pending).toBe(false);
+      });
+      expect(result.current.commandFeedback).toBeNull();
+      expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+    },
+  );
 });

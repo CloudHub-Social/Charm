@@ -1,7 +1,14 @@
 import type { SlashCommand } from "@/lib/matrix";
 
 type MessageStyleCommand = "plain" | "shrug" | "tableflip";
-type LocalActionCommand = "unban" | "nick" | "ignore" | "unignore" | "join";
+type LocalActionCommand =
+  | "unban"
+  | "nick"
+  | "ignore"
+  | "unignore"
+  | "join"
+  | "myroomnick"
+  | "startdm";
 type ComposerParityCommand = MessageStyleCommand | LocalActionCommand | "notice";
 
 export interface SlashCommandSpec {
@@ -51,6 +58,18 @@ export const STAGED_BACKEND_COMMANDS: (SlashCommandSpec & { name: SlashCommand }
 ];
 
 export const LOCAL_ACTION_COMMANDS: (SlashCommandSpec & { name: LocalActionCommand })[] = [
+  {
+    name: "myroomnick",
+    trigger: "/myroomnick",
+    argsHint: "<display name>",
+    description: "Change your display name in this room",
+  },
+  {
+    name: "startdm",
+    trigger: "/startdm",
+    argsHint: "<user id>",
+    description: "Open a direct message",
+  },
   { name: "join", trigger: "/join", argsHint: "<room id or alias>", description: "Join a room" },
   {
     name: "unban",

@@ -239,6 +239,51 @@ The link dialog contains Escape so dismissal does not cancel an unsaved message
 edit. Formatting controls wrap within the composer at narrow mobile widths;
 regressions cover 320px and 375px layouts with the parity flag on and off.
 
+## Room nickname and direct-message increment
+
+`/myroomnick <display name>` and `/startdm <user id>` are staged behind the
+existing default-off `composer_parity` flag in parsing, suggestions, and dispatch.
+The room nickname command accepts a multiword name, reads the signed-in user's
+current room profile, and reuses `setRoomProfile` with the existing room avatar
+URL, including an absent avatar. It changes the room membership profile rather
+than the global display name. A successful current-context update invalidates
+the account/user/room-scoped profile-card queries. The existing SDK helper
+preserves other membership fields. A concurrent avatar change from another
+client between the profile read and write can still race this operation.
+
+`/startdm` requires exactly one Matrix user ID. It reuses `startDirectMessage`,
+which opens an existing direct room or creates an encrypted direct room and
+rejects self-DMs. Its result uses the existing profile-card room navigation path,
+including refreshing the room list when a newly created room is not visible yet.
+Identifier validation and authorization remain SDK/backend responsibilities.
+
+Both commands retain reply context and send no chat message. Missing/extra
+arguments and failures produce local feedback. Enabled command submissions
+retain the established composer behavior of clearing command text at dispatch,
+including failures; disabled commands retain their text. Overlapping submissions
+of each operation are rejected until it settles. A room/account switch, including
+switching away and back, prevents late feedback or navigation. Unmounting also
+invalidates completion. The nickname read rechecks the feature flag and room
+mutation lock before writing; the DM result rechecks both before navigation.
+Navigation receives an abort signal so a pending room-list refresh cannot select
+the DM after the source room/account changes. An already-dispatched SDK operation
+can finish against its original context; this does not cancel server mutations.
+
+Parser, hook, composer, and mocked-transport Playwright regressions cover these
+contracts. Verification for this increment is pending GitHub Actions; no local
+test/build/lint/format-check commands were run. Live homeserver interoperability
+and physical-device acceptance remain outstanding. Remaining command gaps include
+`/rainbow`, `/html`, `/leave`, `/op`, `/deop`, and `/discardsession`; this increment
+does not establish full composer parity.
+
+This follows Matrix's
+[room membership profile](https://spec.matrix.org/latest/client-server-api/#mroommember)
+and [direct messaging](https://spec.matrix.org/latest/client-server-api/#direct-messaging)
+contracts. The maintained Element client's
+[slash commands](https://github.com/element-hq/element-web/blob/develop/apps/web/src/slash-commands/SlashCommands.tsx)
+change only the nickname in `/myroomnick` and open an existing-or-created DM via
+`/query`; Charm retains this spec's `/startdm` command name.
+
 ## What I'd revisit as this grows
 
 - Custom/user-defined command aliases — not in Charm 1.0, not built now.

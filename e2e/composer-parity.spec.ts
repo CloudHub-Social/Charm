@@ -3,6 +3,19 @@ import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
 
 const ROOM = { room_id: "!composer:localhost", name: "Composer Room", unread_count: 0 };
+const DIRECT_ROOM = {
+  room_id: "!direct:localhost",
+  name: "Direct Conversation",
+  unread_count: 0,
+  is_direct: true,
+  dm_peer_user_id: "@alice:localhost",
+};
+
+declare global {
+  interface Window {
+    __e2eComposerActions: Array<{ command: string; args?: Record<string, unknown> }>;
+  }
+}
 
 for (const enabled of [false, true]) {
   test.describe(`composer parity flag ${enabled ? "on" : "off"}`, () => {
@@ -22,6 +35,23 @@ for (const enabled of [false, true]) {
         userId: "@composer:localhost",
         deviceId: "COMPOSER_DEVICE",
         room: ROOM,
+        extraRooms: [DIRECT_ROOM],
+      });
+      await page.addInitScript(() => {
+        window.__e2eComposerActions = [];
+        const originalInvoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = (command, args) => {
+          if (command === "set_room_profile" || command === "start_direct_message") {
+            window.__e2eComposerActions.push({ command, args });
+          }
+          if (command === "get_user_profile") {
+            return originalInvoke(command, args).then((profile) => ({
+              ...(profile as Record<string, unknown>),
+              room_avatar_url: "mxc://localhost/room-avatar",
+            }));
+          }
+          return originalInvoke(command, args);
+        };
       });
       await page.goto("/");
       await page.getByRole("button", { name: ROOM.name }).click();
@@ -89,6 +119,50 @@ for (const enabled of [false, true]) {
         ).toHaveCount(0);
       }
       await expect(page.getByText(/sending…/)).toHaveCount(0);
+    });
+
+    test("gates room nicknames and opens direct messages without posting command text", async ({
+      page,
+    }) => {
+      const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+      await composer.fill("/myroomnick Room Display Name");
+      await composer.press("Enter");
+      if (enabled) {
+        await expect
+          .poll(() => page.evaluate(() => window.__e2eComposerActions))
+          .toEqual([
+            {
+              command: "set_room_profile",
+              args: {
+                roomId: ROOM.room_id,
+                displayName: "Room Display Name",
+                avatarUrl: "mxc://localhost/room-avatar",
+              },
+            },
+          ]);
+        await expect(composer).toHaveText("");
+      } else {
+        await expect(composer).toHaveText("/myroomnick Room Display Name");
+        await expect(page.getByText(/\/myroomnick is unavailable/)).toBeVisible();
+      }
+      await expect(page.locator('[id^="message-"]')).toHaveCount(0);
+
+      await composer.fill("/startdm @alice:localhost");
+      await composer.press("Enter");
+      if (enabled) {
+        await expect(page.getByPlaceholder(`Message ${DIRECT_ROOM.name}`)).toBeVisible();
+        await expect
+          .poll(() => page.evaluate(() => window.__e2eComposerActions.at(-1)))
+          .toEqual({
+            command: "start_direct_message",
+            args: { userId: "@alice:localhost" },
+          });
+      } else {
+        await expect(composer).toHaveText("/startdm @alice:localhost");
+        await expect(page.getByText(/\/startdm is unavailable/)).toBeVisible();
+        expect(await page.evaluate(() => window.__e2eComposerActions)).toEqual([]);
+      }
+      await expect(page.locator('[id^="message-"]')).toHaveCount(0);
     });
 
     for (const width of [320, 375]) {
