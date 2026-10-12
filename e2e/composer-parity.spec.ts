@@ -37,7 +37,8 @@ for (const enabled of [false, true]) {
         room: ROOM,
         extraRooms: [DIRECT_ROOM],
       });
-      await page.addInitScript(() => {
+      await page.goto("/");
+      await page.evaluate(() => {
         window.__e2eComposerActions = [];
         const originalInvoke = window.__TAURI_INTERNALS__.invoke;
         window.__TAURI_INTERNALS__.invoke = (command, args) => {
@@ -53,7 +54,6 @@ for (const enabled of [false, true]) {
           return originalInvoke(command, args);
         };
       });
-      await page.goto("/");
       await page.getByRole("button", { name: ROOM.name }).click();
       await expect(page.getByText("No messages yet")).toBeVisible();
     });

@@ -729,7 +729,7 @@ describe("room nickname and direct-message commands", () => {
     },
   );
 
-  it.each(["room", "account", "away-and-back", "unmount"] as const)(
+  it.each(["room", "account", "away-and-back", "lock", "flag", "unmount"] as const)(
     "does not navigate after a DM result becomes stale (%s)",
     async (change) => {
       let resolve!: (value: string) => void;
@@ -739,7 +739,7 @@ describe("room nickname and direct-message commands", () => {
             resolve = done;
           }),
       );
-      const { result, rerender, unmount, onNavigateToRoom } = setup();
+      const { result, rerender, unmount, onNavigateToRoom, mutationsBlockedRef } = setup();
       let pending!: Promise<boolean>;
       act(() => {
         pending = result.current.handleSlashCommand(
@@ -751,6 +751,11 @@ describe("room nickname and direct-message commands", () => {
         if (change === "away-and-back") rerender({ activeRoom: room, currentUserId: userId });
       } else if (change === "account") {
         rerender({ activeRoom: room, currentUserId: "@other:example.org" });
+      } else if (change === "lock") {
+        mutationsBlockedRef.current = true;
+      } else if (change === "flag") {
+        mocks.useFlag.mockReturnValue(false);
+        rerender({ activeRoom: room, currentUserId: userId });
       } else {
         unmount();
       }
