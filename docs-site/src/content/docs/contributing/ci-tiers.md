@@ -22,8 +22,10 @@ CodeQL, dependency audits. No native platform bundling. A path-based
 `changes` job skips whole categories when nothing relevant changed.
 
 The separate iOS release-evidence gate builds a release simulator app, checks
-launch and deep-link handling, then creates an unsigned arm64 archive on the
-same runner. Native build logs include compiler progress and bounded CPU,
+launch and deep-link handling, then shuts down its selected simulator before
+creating an unsigned arm64 archive on the same runner. Failed smoke tests retain
+simulator logs before shutdown; a shutdown failure also fails the gate. Native
+build logs include compiler progress and bounded CPU,
 memory, swap and disk samples. Resource artifact upload is best effort; the
 archive, smoke test and required gate still fail normally on errors or timeout.
 

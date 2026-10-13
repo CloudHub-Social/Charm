@@ -141,7 +141,25 @@ jobs:
               --predicate 'process == "Charm"' || true
             echo '::endgroup::'
           }
-          trap dump_simulator_log ERR
+          cleanup_simulator() {
+            smoke_status=$?
+            trap - EXIT
+            if [ "$smoke_status" -ne 0 ]; then
+              dump_simulator_log || true
+            fi
+            # Release only the simulator selected by this smoke test before
+            # compiling the separate device archive on the same runner.
+            if [ -n "$device_id" ]; then
+              if ! xcrun simctl shutdown "$device_id"; then
+                echo '::error::smoke-test simulator could not be shut down'
+                if [ "$smoke_status" -eq 0 ]; then
+                  smoke_status=1
+                fi
+              fi
+            fi
+            exit "$smoke_status"
+          }
+          trap cleanup_simulator EXIT
           device_id=$(xcrun simctl list devices available -j | node -e '
             let data=""; process.stdin.on("data", chunk => data += chunk); process.stdin.on("end", () => {
               const devices = Object.entries(JSON.parse(data).devices)
