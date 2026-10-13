@@ -21,6 +21,12 @@ tests, Rust fmt/clippy/nextest, Storybook + axe a11y, Playwright e2e,
 CodeQL, dependency audits. No native platform bundling. A path-based
 `changes` job skips whole categories when nothing relevant changed.
 
+Changes to the companion API container inputs also build its actual Dockerfile
+on a Linux runner. The Rust required gate includes this result, so the deployment
+builder's compiler and system packages are verified before merge. This check
+does not publish the image, start the server or access production credentials.
+The builder is pinned to Rust 1.96 to meet matrix-sdk 0.19's minimum version.
+
 The separate iOS release-evidence gate builds a release simulator app, checks
 launch and deep-link handling, then shuts down its selected simulator before
 creating an unsigned arm64 archive on the same runner. Failed smoke tests retain

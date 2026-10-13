@@ -49,6 +49,7 @@ jobs:
       platform: ${{ steps.filter.outputs.platform }}
       integration: ${{ steps.filter.outputs.integration }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      companion_container: ${{ steps.filter.outputs.companion_container }}
     steps:
       # Shallow checkout (default depth 1). This job only needs a two-tree
       # `git diff base..head`, which compares the two commits' trees directly
@@ -82,6 +83,9 @@ jobs:
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
           # there must run them even with no Rust diff.
           integration_pattern='^dev/synapse/'
+          # Compile the actual deployment image when its source, workspace,
+          # license inputs or this verification workflow changes.
+          companion_pattern='^(crates/|src-tauri/|Cargo\.(toml|lock)$|LICENSE$|NOTICE$|LICENSING\.md$|THIRD_PARTY_NOTICES\.md$|scripts/(generate-third-party-licenses\.mjs|license-texts/)|\.dockerignore$|\.github/workflows/quality-checks\.yml$)'
           # frontend/storybook-a11y/e2e are all pure JS/TS: a Rust-only or
           # docs-only PR can't change any of their results, so gate them the
           # same way rust/platform builds are already gated above. Deliberately
@@ -168,6 +172,11 @@ jobs:
             echo "platform=$platform"
             echo "integration=$integration"
             echo "frontend=$frontend"
+            if echo "$changed" | grep -qE "$companion_pattern"; then
+              echo "companion_container=true"
+            else
+              echo "companion_container=false"
+            fi
           } >> "$GITHUB_OUTPUT"
 
   frontend:
@@ -907,9 +916,25 @@ jobs:
         if: always()
         run: docker rm -f synapse-mas charm-dev-mas mas-db
 
+  companion-container:
+    name: Companion API container build
+    needs: changes
+    if: needs.changes.outputs.companion_container == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the deployment image without publishing or starting it
+        run: docker build --file crates/charm-web-server/Dockerfile --tag charm-companion-ci:${{ github.sha }} .
+
   # Stable required status check standing in for the gated Rust jobs above
   # (rust / rust-integration / rust-integration-qr — plus rust-audit, which
-  # always runs). Branch protection requires THIS context — not the individual
+  # always runs) and the gated companion container build. Branch protection
+  # requires THIS context — not the individual
   # Rust jobs — because a required check that reports "skipped" (which the gated
   # jobs do on a frontend-only PR) blocks the merge instead of passing. This job
   # always runs and turns red only if a needed job actually failed or was
@@ -925,7 +950,7 @@ jobs:
   # itself skipped (same trap), and it would never report the required status.
   rust-required:
     name: Rust CI (required)
-    needs: [changes, rust, rust-audit, rust-integration, rust-integration-qr]
+    needs: [changes, rust, rust-audit, rust-integration, rust-integration-qr, companion-container]
     if: always()
     runs-on: ubuntu-latest
     steps:
