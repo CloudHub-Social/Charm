@@ -83,6 +83,7 @@ export async function publishRelease({
   context,
   candidate = stagedRelease(context.sha),
   runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT),
+  warn = console.warn,
 }) {
   const repo = context.repo;
   const base = context.sha;
@@ -132,11 +133,17 @@ export async function publishRelease({
       draft: true,
       body: `> [!IMPORTANT]\n> Merging this PR will create a new release.\n\nPrepares ${candidate.version}; see CHANGELOG.md for release notes.\n\nGenerated from ${base}. Required checks, release readiness and owner provenance attestation remain pending.`,
     });
-    await github.rest.issues.addLabels({
-      ...repo,
-      issue_number: pull.data.number,
-      labels: ["internal"],
-    });
+    try {
+      await github.rest.issues.addLabels({
+        ...repo,
+        issue_number: pull.data.number,
+        labels: ["internal"],
+      });
+    } catch {
+      // Metadata is repairable without changing candidate identity. Do not lose
+      // the verified receipt merely because labeling is temporarily unavailable.
+      warn(`Could not label release PR #${pull.data.number}; reconcile its internal label.`);
+    }
     return {
       sha,
       url: pull.data.html_url,

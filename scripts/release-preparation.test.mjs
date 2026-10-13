@@ -250,6 +250,25 @@ test("creates a draft only after matching signed content and uses an atomic expe
   assert.equal(input.calls.length, before);
 });
 
+test("a label API failure preserves the verified candidate receipt and warns", async () => {
+  const input = fixture();
+  const warnings = [];
+  input.warn = (message) => warnings.push(message);
+  input.github.rest.issues.addLabels = async () => {
+    throw new Error("Label API unavailable");
+  };
+  const result = await publishRelease(input);
+  assert.equal(result.sha, "signed");
+  assert.equal(result.receipt.sha, result.sha);
+  assert.equal(result.receipt.tree, "tree");
+  assert.equal(result.receipt.runAttempt, 1);
+  assert.equal(input.refs.get(result.receipt.branch), "signed");
+  assert.equal(input.pulls.length, 1);
+  assert.deepEqual(warnings, ["Could not label release PR #1; reconcile its internal label."]);
+  // A warning does not authorize duplicating or overwriting the preserved PR.
+  await assert.rejects(publishRelease(input), /Existing open/);
+});
+
 function mergedPull(branch = "release", sha = "previous") {
   return {
     number: 541,

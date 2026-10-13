@@ -100,6 +100,11 @@ receipt by artifact ID, rejects digest mismatches, and verifies the exact
 successful main-push preparation attempt and signed candidate. A later failed
 rerun does not invalidate a receipt from the successful original attempt. Missing,
 expired or ambiguous receipts fail closed; receipts are retained for 90 days.
+PR labeling failure emits a warning and does not prevent receipt creation; repair
+the missing label through normal PR metadata review. Artifact upload is essential
+provenance, so an upload failure retains the draft/ref for explicit operator
+reconciliation. Automatic retries do not delete or overwrite that partial state
+or invent replacement evidence for an unsuccessful originating attempt.
 Only after eligibility and consumed-changeset validation succeed does the
 publication job receive its existing write permissions and App token. A branch
 prefix, PR body or signature alone is not candidate provenance. The legacy
