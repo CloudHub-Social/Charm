@@ -54,6 +54,29 @@ daily cron plus manual dispatch, off the current tip of `main`.
 than gating anyone's work. Builds in release profile so the published
 nightly and Sentry symbolication both reflect what actually ships.
 
+## Release candidate preparation
+
+Knope stages version changes and the changelog without pushing or editing a PR.
+Android version-code synchronization and staging are separate commands; both the
+staged result and the version-independent iOS fixtures are exercised in hosted CI.
+The publication workflow enriches and formats the changelog before publication.
+
+Automatic preparation stops if a `release` branch or open release PR already
+exists. It preserves reviewed fixes, owner-authored readiness notes and provenance
+statements rather than replacing them on the next main push. Refreshing or
+replacing an existing candidate requires explicit operator reconciliation with
+current main and fresh checks; closing a PR alone does not remove this guard.
+
+For an initial candidate, the existing GitHub App creates a GitHub-signed commit
+with the captured main SHA as its expected parent. Publication verifies the
+signature, parent, exact staged tree and branch head before opening a draft PR.
+It never force-pushes or deletes a branch. A failed publication may leave a partial
+`release` ref or draft: retain its exact SHA for operator review instead of
+resetting or retrying over it. GitHub App signing of the commit does not establish
+owner provenance attestation, artifact signing or release approval. Existing
+unsigned candidates require separate reconciliation; this workflow does not
+rewrite their ancestry.
+
 ## Tier 4 — Production release _(signing-dependent)_
 
 The release-PR workflow checks out the exact merge commit, creates or verifies the

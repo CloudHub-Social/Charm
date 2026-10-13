@@ -8,16 +8,17 @@ import test from "node:test";
 import { configureSideloadIos } from "./configure-sideload-ios.mjs";
 
 const root = new URL("..", import.meta.url).pathname;
+const fixturePaths = [
+  "src-tauri/tauri.conf.json",
+  "src-tauri/gen/apple/project.yml",
+  "src-tauri/gen/apple/charm_iOS/Info.plist",
+  "src-tauri/gen/apple/charm_iOS/charm_iOS.entitlements",
+  "src-tauri/gen/apple/charm.xcodeproj/project.pbxproj",
+];
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "charm-sideload-ios-"));
-  for (const path of [
-    "src-tauri/tauri.conf.json",
-    "src-tauri/gen/apple/project.yml",
-    "src-tauri/gen/apple/charm_iOS/Info.plist",
-    "src-tauri/gen/apple/charm_iOS/charm_iOS.entitlements",
-    "src-tauri/gen/apple/charm.xcodeproj/project.pbxproj",
-  ]) {
+  for (const path of fixturePaths) {
     const destination = join(directory, path);
     mkdirSync(dirname(destination), { recursive: true });
     cpSync(join(root, path), destination, { recursive: false });
@@ -25,10 +26,15 @@ function fixture() {
   return directory;
 }
 
+function fixtureVersion(directory) {
+  return JSON.parse(readFileSync(join(directory, "src-tauri/tauri.conf.json"), "utf8")).version;
+}
+
 test("creates a canonical capability-reduced sideload overlay", () => {
   const directory = fixture();
   try {
-    configureSideloadIos(directory, "0.1.3", "123");
+    const version = fixtureVersion(directory);
+    configureSideloadIos(directory, version, "123");
     const project = readFileSync(join(directory, "src-tauri/gen/apple/project.yml"), "utf8");
     const plist = readFileSync(join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist"), "utf8");
     const entitlements = readFileSync(
@@ -40,10 +46,13 @@ test("creates a canonical capability-reduced sideload overlay", () => {
       "utf8",
     );
 
-    assert.match(project, /CFBundleShortVersionString: 0\.1\.3/);
+    assert.ok(project.includes(`CFBundleShortVersionString: ${version}\n`));
     assert.match(project, /CFBundleVersion: "123"/);
     assert.doesNotMatch(project, /entitlements:|remote-notification/);
-    assert.match(plist, /<string>0\.1\.3<\/string>/);
+    assert.equal(
+      plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/)?.[1],
+      version,
+    );
     assert.match(plist, /<string>123<\/string>/);
     assert.doesNotMatch(plist, /UIBackgroundModes|remote-notification/);
     assert.equal(entitlements.includes("aps-environment"), false);
@@ -54,11 +63,59 @@ test("creates a canonical capability-reduced sideload overlay", () => {
   }
 });
 
+test("configures a sideload overlay after the release version changes", () => {
+  const directory = fixture();
+  try {
+    const path = join(directory, "src-tauri/tauri.conf.json");
+    const tauri = JSON.parse(readFileSync(path, "utf8"));
+    const [major, minor, patch] = tauri.version.split(".").map(Number);
+    const bumpedVersion = `${major}.${minor}.${patch + 1}`;
+    writeFileSync(path, JSON.stringify({ ...tauri, version: bumpedVersion }));
+
+    configureSideloadIos(directory, fixtureVersion(directory), "456");
+
+    const project = readFileSync(join(directory, "src-tauri/gen/apple/project.yml"), "utf8");
+    const plist = readFileSync(join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist"), "utf8");
+    assert.ok(project.includes(`CFBundleShortVersionString: ${bumpedVersion}\n`));
+    assert.match(project, /CFBundleVersion: "456"/);
+    assert.equal(
+      plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/)?.[1],
+      bumpedVersion,
+    );
+    assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>456<\/string>/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects a mismatched release version before editing", () => {
+  const directory = fixture();
+  try {
+    const [major, minor, patch] = fixtureVersion(directory).split(".").map(Number);
+    const mismatchedVersion = `${major}.${minor}.${patch + 1}`;
+    const originalFiles = fixturePaths.map((path) => readFileSync(join(directory, path), "utf8"));
+
+    assert.throws(
+      () => configureSideloadIos(directory, mismatchedVersion, "123"),
+      /does not match requested sideload version/,
+    );
+    assert.deepEqual(
+      fixturePaths.map((path) => readFileSync(join(directory, path), "utf8")),
+      originalFiles,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects non-Apple version values before editing", () => {
   const directory = fixture();
   try {
     assert.throws(() => configureSideloadIos(directory, "0.1", "123"), /three period-separated/);
-    assert.throws(() => configureSideloadIos(directory, "0.1.3", "0"), /positive numeric/);
+    assert.throws(
+      () => configureSideloadIos(directory, fixtureVersion(directory), "0"),
+      /positive numeric/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -80,7 +137,7 @@ test("configures a plist rewritten without XML comments", () => {
         { input: readFileSync(path) },
       ),
     );
-    configureSideloadIos(directory, "0.1.3", "123");
+    configureSideloadIos(directory, fixtureVersion(directory), "123");
     const plist = readFileSync(path, "utf8");
     assert.doesNotMatch(plist, /UIBackgroundModes|remote-notification/);
     assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>123<\/string>/);
@@ -100,7 +157,7 @@ test(
     try {
       const path = join(directory, "src-tauri/gen/apple/charm_iOS/Info.plist");
       assert.doesNotMatch(readFileSync(path, "utf8"), /<!--/);
-      configureSideloadIos(directory, "0.1.3", "123");
+      configureSideloadIos(directory, fixtureVersion(directory), "123");
       const plist = readFileSync(path, "utf8");
       assert.doesNotMatch(plist, /UIBackgroundModes|remote-notification/);
       assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>123<\/string>/);
@@ -123,7 +180,7 @@ test("rejects missing or duplicated remote-notification plist blocks", () => {
         plist.replace(block, (match) => match.repeat(copies)),
       );
       assert.throws(
-        () => configureSideloadIos(directory, "0.1.3", "123"),
+        () => configureSideloadIos(directory, fixtureVersion(directory), "123"),
         new RegExp(`expected one remote-notification plist block, found ${copies}`),
       );
     } finally {
