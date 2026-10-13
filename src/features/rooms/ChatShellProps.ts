@@ -6,7 +6,7 @@ export interface ChatShellProps {
   currentUserId: string;
   onBack?: () => void;
   onNavigateToRoom?: (roomIdentifier: string) => void;
-  onNavigateToProfileRoom?: (roomId: string) => void;
+  onNavigateToProfileRoom?: (roomId: string, signal?: AbortSignal) => void | Promise<void>;
   onOpenMessageSearch?: () => void;
   currentTombstone?: RoomTombstoneDetails | null;
   currentRoomStateResolved?: boolean;
