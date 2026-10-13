@@ -128,7 +128,10 @@ jobs:
             // The generated in-repository release PR consumes pending
             // changesets; it does not add a new one of its own. A fork can
             // also name its branch `release`, so the branch name alone is not
-            // sufficient for this exemption. Internal PRs returned above.
+            // sufficient for this exemption. New release-candidate-* PRs use
+            // the existing bot/internal policy, not a broad prefix exemption;
+            // their publication provenance is checked separately in release.yml.
+            // Internal PRs returned above.
             const head = context.payload.pull_request.head;
             const isRepositoryRelease =
               head.ref === "release" &&

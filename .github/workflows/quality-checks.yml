@@ -221,7 +221,7 @@ jobs:
       - name: Reject release candidates with unconsumed changesets
         env:
           RELEASE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'refs/heads/main' }}
-          CHARM_RELEASE_CANDIDATE: ${{ github.event.pull_request.head.ref == 'release' && github.event.pull_request.head.repo.full_name == github.repository }}
+          CHARM_RELEASE_CANDIDATE: ${{ (github.event.pull_request.head.ref == 'release' || startsWith(github.event.pull_request.head.ref, 'release-candidate-')) && github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           git fetch --no-tags --depth=1 origin "$RELEASE_BASE_REF"
           node scripts/check-release-candidate.mjs FETCH_HEAD

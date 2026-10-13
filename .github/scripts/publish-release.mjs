@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { candidateBranch, candidateIdentity, isReleaseBranch } from "./release-candidate.mjs";
 
 function git(...args) {
   return execFileSync("git", args);
@@ -6,26 +7,47 @@ function git(...args) {
 
 export async function assertNoRelease({ github, context }) {
   const repo = context.repo;
-  const pulls = await github.rest.pulls.list({
+  const repository = `${repo.owner}/${repo.repo}`;
+  const pulls = await github.paginate(github.rest.pulls.list, {
     ...repo,
-    head: `${repo.owner}:release`,
-    state: "open",
+    state: "all",
+    per_page: 100,
   });
-  if (pulls.data.length) {
-    throw new Error(
-      `Release PR #${pulls.data[0].number} already exists; preserve its head and body.`,
-    );
+  const related = pulls.filter(
+    (pull) =>
+      isReleaseBranch(pull.head.ref) &&
+      (!pull.head.repo || pull.head.repo.full_name === repository),
+  );
+  if (related.some((pull) => !pull.head.repo || pull.state === "open")) {
+    throw new Error("Existing open or ambiguous release PR; preserve its head and body.");
   }
-  let ref;
-  try {
-    ref = await github.rest.git.getRef({ ...repo, ref: "heads/release" });
-  } catch (error) {
-    if (error.status !== 404) throw error;
-  }
-  if (ref) {
-    throw new Error(
-      `Release ref ${ref.data.object.sha} already exists; operator review is required.`,
-    );
+  const refs = await github.paginate(github.rest.git.listMatchingRefs, {
+    ...repo,
+    ref: "heads/release",
+    per_page: 100,
+  });
+  for (const ref of refs) {
+    const branch = ref.ref.replace(/^refs\/heads\//, "");
+    if (!isReleaseBranch(branch)) continue;
+    if (branch !== "release") candidateIdentity(branch);
+    const latest = related
+      .filter((pull) => pull.head.ref === branch)
+      .sort((a, b) => b.number - a.number)[0];
+    if (!latest) throw new Error("Partial release ref requires operator reconciliation.");
+    const pull = (await github.rest.pulls.get({ ...repo, pull_number: latest.number })).data;
+    if (
+      !pull.merged ||
+      pull.state !== "closed" ||
+      pull.head.repo?.full_name !== repository ||
+      pull.head.ref !== branch ||
+      pull.base.repo?.full_name !== repository ||
+      pull.base.ref !== "main" ||
+      pull.head.sha !== ref.object.sha
+    ) {
+      throw new Error("Unmerged or advanced release ref requires operator reconciliation.");
+    }
+    // Conclusively merged and unchanged: leave the old ref intact. Unique new
+    // refs avoid deleting a branch if another actor opens a PR after this read.
   }
 }
 
@@ -54,24 +76,34 @@ export function stagedRelease(base, runGit = git) {
   return { fileChanges, version, tree: runGit("write-tree").toString().trim() };
 }
 
-// Initial publication only. Existing release branches, including partial runs,
-// require explicit operator reconciliation; this never force-pushes or deletes.
-export async function publishRelease({ github, context, candidate = stagedRelease(context.sha) }) {
+// Create-only publication. Existing work is never deleted or overwritten;
+// partial runs and collisions require explicit operator reconciliation.
+export async function publishRelease({
+  github,
+  context,
+  candidate = stagedRelease(context.sha),
+  runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT),
+}) {
   const repo = context.repo;
   const base = context.sha;
+  const runId = String(context.runId);
+  if (!Number.isSafeInteger(runAttempt) || runAttempt < 1) {
+    throw new Error("A valid workflow run attempt is required.");
+  }
+  const branch = candidateBranch(candidate.version, runId);
   await assertNoRelease({ github, context });
   const main = await github.rest.git.getRef({ ...repo, ref: "heads/main" });
   if (main.data.object.sha !== base)
     throw new Error("Main advanced; regenerate from its new head.");
   try {
-    await github.rest.git.createRef({ ...repo, ref: "refs/heads/release", sha: base });
+    await github.rest.git.createRef({ ...repo, ref: `refs/heads/${branch}`, sha: base });
     const result = await github.graphql(
       `mutation($input: CreateCommitOnBranchInput!) {
         createCommitOnBranch(input: $input) { commit { oid } }
       }`,
       {
         input: {
-          branch: { repositoryNameWithOwner: `${repo.owner}/${repo.repo}`, branchName: "release" },
+          branch: { repositoryNameWithOwner: `${repo.owner}/${repo.repo}`, branchName: branch },
           expectedHeadOid: base,
           message: { headline: `chore: prepare release ${candidate.version}` },
           fileChanges: candidate.fileChanges,
@@ -80,7 +112,7 @@ export async function publishRelease({ github, context, candidate = stagedReleas
     );
     const sha = result.createCommitOnBranch.commit.oid;
     const commit = (await github.rest.repos.getCommit({ ...repo, ref: sha })).data;
-    const ref = (await github.rest.git.getRef({ ...repo, ref: "heads/release" })).data;
+    const ref = (await github.rest.git.getRef({ ...repo, ref: `heads/${branch}` })).data;
     if (
       !commit.commit.verification.verified ||
       commit.commit.tree.sha !== candidate.tree ||
@@ -94,7 +126,7 @@ export async function publishRelease({ github, context, candidate = stagedReleas
     }
     const pull = await github.rest.pulls.create({
       ...repo,
-      head: "release",
+      head: branch,
       base: "main",
       title: `chore: prepare release ${candidate.version}`,
       draft: true,
@@ -105,7 +137,21 @@ export async function publishRelease({ github, context, candidate = stagedReleas
       issue_number: pull.data.number,
       labels: ["internal"],
     });
-    return { sha, url: pull.data.html_url };
+    return {
+      sha,
+      url: pull.data.html_url,
+      receipt: {
+        schema: 1,
+        repository: `${repo.owner}/${repo.repo}`,
+        branch,
+        version: candidate.version,
+        base,
+        sha,
+        tree: candidate.tree,
+        runId,
+        runAttempt,
+      },
+    };
   } catch (error) {
     throw new Error(
       "Release ref may contain a partial publication; preserve it for operator review.",

@@ -33,10 +33,6 @@ help_text = "Prepare and stage a release locally; publication is handled by CI"
 
 [[workflows.steps]]
 type = "Command"
-command = "git switch -c release"
-
-[[workflows.steps]]
-type = "Command"
 command = "node scripts/validate-changeset-packages.mjs"
 
 [[workflows.steps]]

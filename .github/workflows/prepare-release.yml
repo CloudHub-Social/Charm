@@ -25,7 +25,7 @@ jobs:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           first_line="${HEAD_COMMIT_MESSAGE%%$'\n'*}"
-          if [[ "$first_line" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ CloudHub-Social/release$ ]]; then
+          if [[ "$first_line" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ CloudHub-Social/(release|release-candidate-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+)$ ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -120,4 +120,16 @@ jobs:
           script: |
             const { publishRelease } = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/publish-release.mjs`);
             const result = await publishRelease({ github, context });
+            const { writeFileSync } = await import('node:fs');
+            writeFileSync(`${process.env.RUNNER_TEMP}/release-candidate.json`, JSON.stringify(result.receipt));
             core.info(`Prepared ${result.sha}: ${result.url}`);
+
+      - name: Retain exact candidate provenance
+        if: steps.release-merge.outputs.skip != 'true' && steps.prepare-release.outputs.prepared == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-candidate.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
