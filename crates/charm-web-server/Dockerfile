@@ -1,4 +1,5 @@
-FROM rust:1.93-bookworm AS builder
+# matrix-sdk 0.19 requires Rust 1.96; keep the production builder compatible.
+FROM rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS builder
 
 RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --no-install-recommends \
     libwebkit2gtk-4.1-dev \
@@ -15,6 +16,7 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY LICENSE ./LICENSE
+COPY NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
 COPY crates/charm-web-server ./crates/charm-web-server
 COPY src-tauri ./src-tauri
 COPY scripts/generate-third-party-licenses.mjs ./scripts/generate-third-party-licenses.mjs

@@ -224,28 +224,30 @@ describe("RoomSettingsModal", () => {
       const styles = nativeGetComputedStyle(element);
       if (element instanceof HTMLElement && element.dataset.slot === "dialog-content") {
         return new Proxy(styles, {
-          get(target, property, receiver) {
+          get(target, property) {
             if (property === "animationName") {
               return element.dataset.state === "closed" ? "keep-settings-mounted" : "none";
             }
-            return Reflect.get(target, property, receiver);
+            // CSSOM getters and methods require their native style receiver.
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
           },
         });
       }
       return styles;
     });
-    const details = makeRoomDetails({ name: "Community" });
-    getRoomDetails.mockResolvedValue(details);
-    const { store } = renderModal({
-      roomId: details.room_id,
-      section: "general",
-      kind: "space",
-    });
-
-    const closeButton = await screen.findByRole("button", { name: "Close space settings" });
-    fireEvent.click(closeButton);
-
     try {
+      const details = makeRoomDetails({ name: "Community" });
+      getRoomDetails.mockResolvedValue(details);
+      const { store } = renderModal({
+        roomId: details.room_id,
+        section: "general",
+        kind: "space",
+      });
+
+      const closeButton = await screen.findByRole("button", { name: "Close space settings" });
+      fireEvent.click(closeButton);
+
       expect(store.get(roomSettingsAtom)).toBeNull();
       expect(
         screen.getByRole("dialog", { name: "Space settings", hidden: true }),

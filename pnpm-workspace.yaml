@@ -1,10 +1,19 @@
 allowBuilds:
+  "@parcel/watcher": false
   "@sentry/cli": true
   "@swc/core": true
   esbuild: true
   unrs-resolver: true
 
 overrides:
+  # Jest 30.5 rejects the module loader used by Storybook config loading.
+  # Keep the test runner on the working Jest runtime until that boundary is fixed.
+  "@storybook/test-runner>@jest/types": 30.4.1
+  "@storybook/test-runner>jest": 30.4.2
+  "@storybook/test-runner>jest-circus": 30.4.2
+  "@storybook/test-runner>jest-environment-node": 30.4.1
+  "@storybook/test-runner>jest-runner": 30.4.2
+  "@tauri-apps/api": 2.11.1
   axios@1: ^1.20.0
   brace-expansion@1: ^1.1.20
   brace-expansion@2: ^2.1.6
@@ -14,7 +23,8 @@ overrides:
   joi@18: ^18.2.6
   undici@8: ^8.10.2
   nanoid@3: 3.3.18
-  shell-quote: ^1.10.0
+  shell-quote: 1.11.0
+  source-map-js@1: 1.2.2
 
 auditConfig:
   ignoreGhsas:

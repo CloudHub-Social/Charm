@@ -13,6 +13,10 @@ dist-ssr
 coverage
 *.local
 
+# Cargo workspace output lives at the repository root. Exclude generated Rust
+# sources from Tailwind's automatic source discovery as well as Git.
+/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
