@@ -21,6 +21,26 @@ tests, Rust fmt/clippy/nextest, Storybook + axe a11y, Playwright e2e,
 CodeQL, dependency audits. No native platform bundling. A path-based
 `changes` job skips whole categories when nothing relevant changed.
 
+Changes to the companion API container inputs also build its actual Dockerfile
+on a Linux runner. The Rust required gate includes this result, so the deployment
+builder's compiler and system packages are verified before merge. This check
+does not publish the image, start the server or access production credentials.
+The builder is pinned to Rust 1.96 to meet matrix-sdk 0.19's minimum version.
+
+The separate iOS release-evidence gate builds a release simulator app, checks
+launch and deep-link handling, then shuts down its selected simulator before
+creating an unsigned arm64 archive on the same runner. Failed smoke tests retain
+simulator logs before shutdown; a shutdown failure also fails the gate. Native
+build logs include compiler progress and bounded CPU,
+memory, swap and disk samples. Resource artifact upload is best effort; the
+archive, smoke test and required gate still fail normally on errors or timeout.
+
+Cargo workspace output under root `target/` is ignored so Tailwind does not
+scan generated Rust build files. The iOS lane plants a utility-class probe in
+that directory and verifies it never appears in CSS, then compares CSS hashes
+between the simulator and device builds. Generated native output must not alter
+the frontend. These checks reuse the existing builds and do not add an archive.
+
 ## Tier 2 — Merge queue
 
 Same checks as Tier 1, re-run against the synthetic tree GitHub's merge
