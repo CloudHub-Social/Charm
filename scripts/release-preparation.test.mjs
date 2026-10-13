@@ -233,7 +233,7 @@ test("creates a draft only after matching signed content and uses an atomic expe
   );
   assert.equal(input.calls[1][1].input.expectedHeadOid, "base");
   assert.equal(input.calls[2][1].draft, true);
-  assert.match(input.calls[2][1].body, /owner provenance attestation remain pending/);
+  assert.match(input.calls[2][1].body, /Required checks and release readiness remain pending/);
   assert.deepEqual(result.receipt, {
     schema: 1,
     repository: "fixture/repository",

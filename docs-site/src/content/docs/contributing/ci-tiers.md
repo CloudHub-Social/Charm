@@ -89,7 +89,7 @@ signature, parent, exact staged tree and branch head before opening a draft PR.
 It never force-pushes or deletes a branch. A failed publication may leave a partial
 candidate ref or draft: retain its exact SHA for operator review instead of
 resetting or retrying over it. GitHub App signing of the commit does not establish
-owner provenance attestation, artifact signing or release approval. Existing
+artifact signing or release approval. Existing
 unsigned candidates require separate reconciliation; this workflow does not
 rewrite their ancestry.
 

@@ -131,7 +131,7 @@ export async function publishRelease({
       base: "main",
       title: `chore: prepare release ${candidate.version}`,
       draft: true,
-      body: `> [!IMPORTANT]\n> Merging this PR will create a new release.\n\nPrepares ${candidate.version}; see CHANGELOG.md for release notes.\n\nGenerated from ${base}. Required checks, release readiness and owner provenance attestation remain pending.`,
+      body: `> [!IMPORTANT]\n> Merging this PR will create a new release.\n\nPrepares ${candidate.version}; see CHANGELOG.md for release notes.\n\nGenerated from ${base}. Required checks and release readiness remain pending.`,
     });
     try {
       await github.rest.issues.addLabels({
