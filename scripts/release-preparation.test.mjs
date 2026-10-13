@@ -426,6 +426,14 @@ test("a trusted exact receipt qualifies the original successful attempt, indepen
   await verifyCandidate(input);
 });
 
+test("a trusted main attempt accepts GitHub's ref-qualified workflow path", async () => {
+  const input = provenanceFixture();
+  input.run.path = ".github/workflows/prepare-release.yml@main";
+  await verifyCandidate(input);
+  input.run.workflow_id = 8;
+  await assert.rejects(verifyCandidate(input));
+});
+
 for (const change of [
   { sha: "forged" },
   { tree: "other" },
@@ -450,6 +458,9 @@ for (const change of [
   { status: "in_progress" },
   { event: "workflow_dispatch" },
   { path: ".github/workflows/other.yml" },
+  { path: ".github/workflows/prepare-release.yml@feature" },
+  { path: ".github/workflows/prepare-release.yml@main-other" },
+  { path: ".github/workflows/other.yml@main" },
   { workflow_id: 8 },
   { head_branch: "feature" },
   { head_sha: "other" },

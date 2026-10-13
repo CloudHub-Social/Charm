@@ -108,7 +108,8 @@ export async function verifyCandidate({ github, context, receipt, mergeVersion }
     String(run.id) !== runId ||
     run.run_attempt !== receipt.runAttempt ||
     run.workflow_id !== workflow.id ||
-    run.path !== ".github/workflows/prepare-release.yml" ||
+    (run.path !== ".github/workflows/prepare-release.yml" &&
+      run.path !== ".github/workflows/prepare-release.yml@main") ||
     run.event !== "push" ||
     run.head_branch !== "main" ||
     run.repository?.full_name !== repository ||
