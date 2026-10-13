@@ -64,7 +64,10 @@ The publication workflow enriches and formats the changelog before publication.
 Automatic preparation uses a unique `release-candidate-<version>-<run_id>` branch.
 The run ID remains stable across reruns. Existing branches and PR descriptions
 are never deleted, overwritten or reused. The legacy `release` branch remains
-supported for the existing candidate. Preparation enumerates all candidate refs
+supported only for PR541 at reviewed head
+`17cc3908c89e10c167c4fa5f4c8cf69aa4491f89` and version `0.1.4`.
+Any replacement head requires explicit eligibility reconciliation.
+Preparation enumerates all candidate refs
 and PRs and proceeds past an old ref only when its latest PR was conclusively
 merged into this repository's main and its recorded head still matches that ref.
 Open, closed-unmerged, advanced, partial or unreadable state stops preparation for
@@ -100,7 +103,7 @@ expired or ambiguous receipts fail closed; receipts are retained for 90 days.
 Only after eligibility and consumed-changeset validation succeed does the
 publication job receive its existing write permissions and App token. A branch
 prefix, PR body or signature alone is not candidate provenance. The legacy
-same-repository `release` path keeps its existing eligibility contract; generated
+same-repository `release` exception is bound to that exact PR541 candidate; generated
 candidates use the existing bot/internal checklist policy, with no new prefix
 exemption.
 

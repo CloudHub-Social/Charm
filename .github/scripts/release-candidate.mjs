@@ -30,11 +30,25 @@ function releasePull(context) {
   return pull;
 }
 
+// One-time compatibility for the reviewed candidate that predates receipts.
+// Replacing its head requires explicit reconciliation, not a branch-name bypass.
+function isLegacyCandidate(context, pull) {
+  if (pull.head.ref !== "release") return false;
+  if (
+    `${context.repo.owner}/${context.repo.repo}` !== "CloudHub-Social/Charm" ||
+    pull.number !== 541 ||
+    pull.head.sha !== "17cc3908c89e10c167c4fa5f4c8cf69aa4491f89"
+  ) {
+    throw new Error("Legacy release eligibility is restricted to the reviewed PR541 head.");
+  }
+  return true;
+}
+
 // Discover the artifact with read-only credentials. A branch name, PR body or
 // signed commit alone is not evidence that the preparation workflow produced it.
 export async function candidateArtifact({ github, context }) {
   const pull = releasePull(context);
-  if (pull.head.ref === "release") return null; // Existing PR541 contract.
+  if (isLegacyCandidate(context, pull)) return null;
   const { runId } = candidateIdentity(pull.head.ref);
   const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
     ...context.repo,
@@ -58,7 +72,10 @@ export async function candidateArtifact({ github, context }) {
 // receipt from a successful attempt, and may not replace that immutable receipt.
 export async function verifyCandidate({ github, context, receipt, mergeVersion }) {
   const pull = releasePull(context);
-  if (pull.head.ref === "release") return; // Do not strand the legacy candidate.
+  if (isLegacyCandidate(context, pull)) {
+    if (mergeVersion !== "0.1.4") throw new Error("Legacy candidate version must remain 0.1.4.");
+    return;
+  }
   const { version, runId } = candidateIdentity(pull.head.ref);
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   if (

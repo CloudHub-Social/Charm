@@ -454,13 +454,52 @@ for (const state of ["missing", "expired", "ambiguous", "wrong-run"]) {
   });
 }
 
-test("legacy PR541 remains eligible only when merged from this repository into main", async () => {
+function legacyFixture() {
   const input = provenanceFixture();
-  input.context.payload.pull_request = mergedPull();
+  input.context.repo = { owner: "CloudHub-Social", repo: "Charm" };
+  input.context.payload.pull_request = mergedPull(
+    "release",
+    "17cc3908c89e10c167c4fa5f4c8cf69aa4491f89",
+  );
+  input.context.payload.pull_request.head.repo.full_name = "CloudHub-Social/Charm";
+  input.context.payload.pull_request.base.repo.full_name = "CloudHub-Social/Charm";
+  return input;
+}
+
+test("only the exact reviewed legacy PR541 candidate remains eligible", async () => {
+  const input = legacyFixture();
   assert.equal(await candidateArtifact(input), null);
   await verifyCandidate(input);
-  input.context.payload.pull_request.head.repo.full_name = "fork/repository";
-  await assert.rejects(candidateArtifact(input));
+});
+
+for (const state of [
+  "future-pr",
+  "changed-head",
+  "other-repository",
+  "fork",
+  "unmerged",
+  "wrong-base",
+]) {
+  test(`legacy compatibility rejects ${state}`, async () => {
+    const input = legacyFixture();
+    const pull = input.context.payload.pull_request;
+    if (state === "future-pr") pull.number = 600;
+    if (state === "changed-head") pull.head.sha = "replacement";
+    if (state === "other-repository") {
+      input.context.repo = { owner: "other", repo: "repository" };
+      pull.head.repo.full_name = pull.base.repo.full_name = "other/repository";
+    }
+    if (state === "fork") pull.head.repo.full_name = "fork/repository";
+    if (state === "unmerged") pull.merged = false;
+    if (state === "wrong-base") pull.base.ref = "other";
+    await assert.rejects(candidateArtifact(input));
+    await assert.rejects(verifyCandidate(input));
+  });
+}
+
+test("the exact legacy candidate cannot publish a different merged version", async () => {
+  const input = legacyFixture();
+  input.mergeVersion = "0.1.5";
   await assert.rejects(verifyCandidate(input));
 });
 
