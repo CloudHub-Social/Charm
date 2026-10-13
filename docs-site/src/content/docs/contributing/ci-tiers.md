@@ -66,6 +66,10 @@ exists. It preserves reviewed fixes, owner-authored readiness notes and provenan
 statements rather than replacing them on the next main push. Refreshing or
 replacing an existing candidate requires explicit operator reconciliation with
 current main and fresh checks; closing a PR alone does not remove this guard.
+The required frontend gate rejects unconsumed changesets when the candidate
+changes the package version, including the combined merge-queue tree. The release
+workflow repeats that check before creating a tag or draft, so a later main
+changeset cannot silently ship with the preserved candidate's old metadata.
 
 For an initial candidate, the existing GitHub App creates a GitHub-signed commit
 with the captured main SHA as its expected parent. Publication verifies the

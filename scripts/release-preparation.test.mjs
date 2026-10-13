@@ -46,6 +46,14 @@ test("real Knope stages the derived Android code without committing or publishin
     git("commit", "-m", "fixture");
     const base = git("rev-parse", "HEAD").toString().trim();
     const previous = JSON.parse(readFileSync(join(directory, "package.json"))).version;
+    const checkCandidate = () =>
+      execFileSync(process.execPath, [join(root, "scripts/check-release-candidate.mjs"), base], {
+        cwd: directory,
+        env: { ...process.env, CHARM_RELEASE_CANDIDATE: "false" },
+        stdio: "pipe",
+      });
+    // Ordinary changesets on the unchanged main version remain valid.
+    checkCandidate();
     execFileSync("knope", ["prepare-release"], {
       cwd: directory,
       env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" },
@@ -61,6 +69,15 @@ test("real Knope stages the derived Android code without committing or publishin
     );
     assert.deepEqual(candidate.fileChanges.deletions, [{ path: ".changeset/regression.md" }]);
     assert.equal(git("remote").toString(), "");
+    checkCandidate();
+    // Model a merge-queue tree that combines the preserved release with a
+    // later main changeset. It must fail before that code can be tagged.
+    mkdirSync(join(directory, ".changeset"), { recursive: true });
+    writeFileSync(
+      join(directory, ".changeset/later.md"),
+      "---\ndefault: patch\n---\n\nLater change.\n",
+    );
+    assert.throws(checkCandidate, /unconsumed/);
     writeFileSync(join(directory, "CHANGELOG.md"), "unstaged change\n");
     assert.throws(() => stagedRelease(base, git), /unstaged changes/);
   } finally {

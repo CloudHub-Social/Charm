@@ -34,6 +34,13 @@ jobs:
           persist-credentials: true
           token: ${{ steps.generate-token.outputs.token }}
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+
+      - name: Reject unconsumed changesets before creating a tag
+        run: node scripts/validate-changeset-packages.mjs --expect-consumed
+
       - name: Create draft release and trigger tagged builds
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
