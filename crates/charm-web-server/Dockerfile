@@ -15,7 +15,8 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --n
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
+COPY LICENSE ./LICENSE
+COPY NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
 COPY crates/charm-web-server ./crates/charm-web-server
 COPY src-tauri ./src-tauri
 COPY scripts/generate-third-party-licenses.mjs ./scripts/generate-third-party-licenses.mjs
