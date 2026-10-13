@@ -50,4 +50,3 @@ See SENTRY.md, docs/FEATURE_FLAGS.md, and CLAUDE.md's e2e section.
 - [ ] Partially AI assisted (clarify which code was AI assisted and briefly explain what it does).
 - [ ] Fully AI generated (explain what all the generated code does in moderate detail).
 
-<!-- Write any explanation required here, but do not generate the explanation using AI!! You must prove you understand what the code in this PR does. -->
