@@ -45,7 +45,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
-          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
+          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(ios-build-diagnostics\.sh|check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
           if grep -Eq "$ios_pattern" <<< "$changed"; then
             echo 'ios=true' >> "$GITHUB_OUTPUT"
           else
@@ -114,7 +114,7 @@ jobs:
       - run: node --test scripts/configure-sideload-ios.test.mjs
 
       - name: Build unsigned release simulator app
-        run: pnpm tauri ios build --target aarch64-sim --no-sign --ci
+        run: bash scripts/ios-build-diagnostics.sh simulator pnpm tauri ios build --target aarch64-sim --no-sign --ci --verbose --verbose
 
       - name: Install, launch, and deep-link the simulator app
         env:
@@ -160,7 +160,16 @@ jobs:
           kill -0 "$app_pid"
 
       - name: Build unsigned arm64 device archive
-        run: pnpm tauri ios build --target aarch64 --no-sign --archive-only --ci
+        run: bash scripts/ios-build-diagnostics.sh archive pnpm tauri ios build --target aarch64 --no-sign --archive-only --ci --verbose --verbose
+
+      - name: Retain iOS resource diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: charm-ios-resource-diagnostics
+          path: .artifacts/ios/diagnostics
+          if-no-files-found: warn
 
       - name: Collect iOS evidence
         run: |
