@@ -35,5 +35,7 @@ if (mode === "prepare") {
       "Frontend CSS changed after the native simulator build",
     );
   }
-  console.log(`iOS frontend CSS ${mode}: ${files.length} assets; generated probe absent`);
+  process.stdout.write(
+    `iOS frontend CSS ${mode}: ${files.length} assets; generated probe absent\n`,
+  );
 }
