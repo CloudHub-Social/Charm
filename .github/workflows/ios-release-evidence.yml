@@ -45,7 +45,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
-          ios_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(ios-build-diagnostics\.sh|check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
+          ios_pattern='^(\.gitignore$|src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-frontend-css\.mjs|ios-build-diagnostics\.sh|check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
           if grep -Eq "$ios_pattern" <<< "$changed"; then
             echo 'ios=true' >> "$GITHUB_OUTPUT"
           else
@@ -113,8 +113,14 @@ jobs:
       - run: pnpm check:ios-config
       - run: node --test scripts/configure-sideload-ios.test.mjs
 
+      - name: Prepare generated-source CSS regression probe
+        run: node scripts/check-ios-frontend-css.mjs prepare
+
       - name: Build unsigned release simulator app
         run: bash scripts/ios-build-diagnostics.sh simulator pnpm tauri ios build --target aarch64-sim --no-sign --ci --verbose --verbose
+
+      - name: Record simulator frontend CSS
+        run: node scripts/check-ios-frontend-css.mjs record
 
       - name: Install, launch, and deep-link the simulator app
         env:
@@ -161,6 +167,9 @@ jobs:
 
       - name: Build unsigned arm64 device archive
         run: bash scripts/ios-build-diagnostics.sh archive pnpm tauri ios build --target aarch64 --no-sign --archive-only --ci --verbose --verbose
+
+      - name: Verify frontend CSS is independent of native build output
+        run: node scripts/check-ios-frontend-css.mjs compare
 
       - name: Retain iOS resource diagnostics
         if: always()
@@ -232,6 +241,7 @@ jobs:
           path: |
             .xcode-version.txt
             .artifacts/ios/build-metadata.txt
+            .artifacts/ios/frontend-css.json
             .artifacts/ios/SHA256SUMS.txt
             charm-ios.spdx.json
           if-no-files-found: error
