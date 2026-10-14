@@ -152,7 +152,7 @@ describe("MessageSourceDialog", () => {
 
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
     expect(getEventSource).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
   });
 });
 
@@ -178,15 +178,15 @@ describe("MessageSourceDialog request isolation", () => {
       );
       const { rerender } = render(view());
       expect(await screen.findByText(originalSource)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
 
       const roomId = target === "room" ? "!next:localhost" : "!room:localhost";
       const eventId = target === "event" ? "$next" : "$original";
       rerender(view(roomId, eventId));
       expect(screen.queryByText(originalSource)).not.toBeInTheDocument();
       expect(screen.getByText("Loading…")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeDisabled();
-      fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
+      expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
       expect(clipboardWriteText).not.toHaveBeenCalled();
       await act(async () => {
         rejectNext(new Error("new source unavailable"));
@@ -194,7 +194,7 @@ describe("MessageSourceDialog request isolation", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("new source unavailable");
       expect(screen.queryByText(originalSource)).not.toBeInTheDocument();
       expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
       expect(getEventSource).toHaveBeenLastCalledWith(roomId, eventId);
     },
   );
@@ -227,7 +227,7 @@ describe("MessageSourceDialog request isolation", () => {
     expect(screen.queryByText(originalSource)).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText(nextSource)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledExactlyOnceWith(nextSource));
   });
 
@@ -243,7 +243,7 @@ describe("MessageSourceDialog request isolation", () => {
       );
       const { rerender } = render(view());
       await screen.findByText(originalSource);
-      fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
       if (target === "reopen") {
         rerender(view("!room:localhost", "$original", false));
         rerender(view());
@@ -254,12 +254,10 @@ describe("MessageSourceDialog request isolation", () => {
       await act(async () => {
         completeCopy();
       });
-      expect(screen.queryByRole("button", { name: "Copied", exact: true })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeEnabled();
-      fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
-      expect(
-        await screen.findByRole("button", { name: "Copied", exact: true }),
-      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
       expect(clipboardWriteText.mock.calls).toEqual([[originalSource], [nextSource]]);
     },
   );
@@ -274,19 +272,19 @@ describe("MessageSourceDialog request isolation", () => {
     );
     const { rerender } = render(view());
     await screen.findByText(originalSource);
-    fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
-    await screen.findByRole("button", { name: "Copied", exact: true });
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await screen.findByRole("button", { name: "Copied" });
     rerender(view("!room:localhost", "$original", false));
     rerender(view());
     expect(screen.getByRole("dialog", { name: "View source" })).toBeInTheDocument();
     expect(screen.queryByText(originalSource)).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
     await act(async () => {
       resolveAgain(nextSource);
     });
     expect(screen.getByText(nextSource)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
     expect(getEventSource).toHaveBeenCalledTimes(2);
   });
 
@@ -304,11 +302,11 @@ describe("MessageSourceDialog request isolation", () => {
     );
     await screen.findByText(originalSource);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     });
-    expect(screen.getByRole("button", { name: "Copy", exact: true })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole("button", { name: "Close", exact: true })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
