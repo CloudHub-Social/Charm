@@ -24,6 +24,13 @@ a hover tooltip on each reaction chip naming reactors (with a "View all" overflo
 into a fuller who-reacted dialog once the list is long), and a quick-react row of
 ~4 recent/frequent one-tap emoji tracked in local storage.
 
+The raw-event source viewer isolates its state per open room/event pair. Switching
+targets or reopening starts with empty source and copy feedback; loading or failed
+requests cannot display or copy the previous event's JSON. Late fetch and clipboard
+completions are ignored after their session closes. Regression tests cover room and
+event switches, loading/failure states, stale completions, and close/reopen resets;
+verification of this fix is pending repository CI.
+
 The permalink produces the fully percent-encoded room/event form required by the
 [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
 and the redaction reason uses the existing desktop and web transport support.
