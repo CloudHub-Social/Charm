@@ -28,8 +28,7 @@ The raw-event source viewer isolates its state per open room/event pair. Switchi
 targets or reopening starts with empty source and copy feedback; loading or failed
 requests cannot display or copy the previous event's JSON. Late fetch and clipboard
 completions are ignored after their session closes. Regression tests cover room and
-event switches, loading/failure states, stale completions, and close/reopen resets;
-verification of this fix is pending repository CI.
+event switches, loading/failure states, stale completions, and close/reopen resets.
 
 The permalink produces the fully percent-encoded room/event form required by the
 [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
