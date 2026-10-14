@@ -54,6 +54,64 @@ daily cron plus manual dispatch, off the current tip of `main`.
 than gating anyone's work. Builds in release profile so the published
 nightly and Sentry symbolication both reflect what actually ships.
 
+## Release candidate preparation
+
+Knope stages version changes and the changelog without pushing or editing a PR.
+Android version-code synchronization and staging are separate commands; both the
+staged result and the version-independent iOS fixtures are exercised in hosted CI.
+The publication workflow enriches and formats the changelog before publication.
+
+Automatic preparation uses a unique `release-candidate-<version>-<run_id>` branch.
+The run ID remains stable across reruns. Existing branches and PR descriptions
+are never deleted, overwritten or reused. The legacy `release` branch remains
+supported only for PR541 at reviewed head
+`17cc3908c89e10c167c4fa5f4c8cf69aa4491f89` and version `0.1.4`.
+Any replacement head requires explicit eligibility reconciliation.
+Preparation enumerates all candidate refs
+and PRs and proceeds past an old ref only when its latest PR was conclusively
+merged into this repository's main and its recorded head still matches that ref.
+Open, closed-unmerged, advanced, partial or unreadable state stops preparation for
+operator reconciliation. Closing a PR alone does not remove this guard.
+
+Normal preparation is serialized and rechecks existing work before publication.
+An unrelated actor may create another PR after a read; this is not a global atomic
+lock on PR creation. Unique refs ensure that such a race cannot cause this workflow
+to delete or overwrite the other actor's branch. Refreshing an existing candidate
+still requires explicit reconciliation with current main and fresh checks.
+The required frontend gate rejects unconsumed changesets when the candidate
+changes the package version, including the combined merge-queue tree. The release
+workflow repeats that check before creating a tag or draft, so a later main
+changeset cannot silently ship with the preserved candidate's old metadata.
+
+For an initial candidate, the existing GitHub App creates a GitHub-signed commit
+with the captured main SHA as its expected parent. Publication verifies the
+signature, parent, exact staged tree and branch head before opening a draft PR.
+It never force-pushes or deletes a branch. A failed publication may leave a partial
+candidate ref or draft: retain its exact SHA for operator review instead of
+resetting or retrying over it. GitHub App signing of the commit does not establish
+artifact signing or release approval. Existing
+unsigned candidates require separate reconciliation; this workflow does not
+rewrite their ancestry.
+
+The preparation run uploads an immutable receipt identifying the repository,
+branch, version, parent, exact candidate commit/tree, run ID and originating
+attempt. A separate read-only release-eligibility job downloads that run's sole
+receipt by artifact ID, rejects digest mismatches, and verifies the exact
+successful main-push preparation attempt and signed candidate. A later failed
+rerun does not invalidate a receipt from the successful original attempt. Missing,
+expired or ambiguous receipts fail closed; receipts are retained for 90 days.
+PR labeling failure emits a warning and does not prevent receipt creation; repair
+the missing label through normal PR metadata review. Artifact upload is essential
+provenance, so an upload failure retains the draft/ref for explicit operator
+reconciliation. Automatic retries do not delete or overwrite that partial state
+or invent replacement evidence for an unsuccessful originating attempt.
+Only after eligibility and consumed-changeset validation succeed does the
+publication job receive its existing write permissions and App token. A branch
+prefix, PR body or signature alone is not candidate provenance. The legacy
+same-repository `release` exception is bound to that exact PR541 candidate; generated
+candidates use the existing bot/internal checklist policy, with no new prefix
+exemption.
+
 ## Tier 4 — Production release _(signing-dependent)_
 
 The release-PR workflow checks out the exact merge commit, creates or verifies the

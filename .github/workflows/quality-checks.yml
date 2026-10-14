@@ -211,6 +211,21 @@ jobs:
           pnpm check:ios-config
           node --test scripts/configure-sideload-ios.test.mjs
 
+      - uses: knope-dev/action@19617851f9f13ab2f27a05989c55efb18aca3675 # v2.1.2
+        with:
+          version: 0.22.3
+
+      - name: Check release preparation and publication safeguards
+        run: pnpm exec node --test scripts/release-preparation.test.mjs
+
+      - name: Reject release candidates with unconsumed changesets
+        env:
+          RELEASE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'refs/heads/main' }}
+          CHARM_RELEASE_CANDIDATE: ${{ (github.event.pull_request.head.ref == 'release' || startsWith(github.event.pull_request.head.ref, 'release-candidate-')) && github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$RELEASE_BASE_REF"
+          node scripts/check-release-candidate.mjs FETCH_HEAD
+
       # Licensing files and the Sable Call non-bundling boundary apply to every
       # deliverable, so verify them even when the changed-path filter skips the
       # rest of the frontend gate.
