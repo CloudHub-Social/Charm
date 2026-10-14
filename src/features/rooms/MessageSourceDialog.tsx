@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,22 +24,44 @@ export function MessageSourceDialog({
   eventId,
   onOpenChange,
 }: MessageSourceDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>View source</DialogTitle>
+          <DialogDescription>
+            The raw Matrix event JSON, as stored by the homeserver.
+          </DialogDescription>
+        </DialogHeader>
+        {open && (
+          <MessageSourceSession
+            key={JSON.stringify([roomId, eventId])}
+            roomId={roomId}
+            eventId={eventId}
+            onOpenChange={onOpenChange}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Each open target owns its source, loading state and clipboard feedback. */
+function MessageSourceSession({
+  roomId,
+  eventId,
+  onOpenChange,
+}: Omit<MessageSourceDialogProps, "open">) {
   const [source, setSource] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(Boolean(roomId && eventId));
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const sessionActiveRef = useRef(false);
 
   useEffect(() => {
-    if (!open || !roomId || !eventId) {
-      setSource(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
+    if (!roomId || !eventId) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setCopied(false);
+    sessionActiveRef.current = true;
     getEventSource(roomId, eventId)
       .then((result) => {
         if (!cancelled) setSource(result);
@@ -52,46 +74,41 @@ export function MessageSourceDialog({
       });
     return () => {
       cancelled = true;
+      sessionActiveRef.current = false;
     };
-  }, [open, roomId, eventId]);
+  }, [roomId, eventId]);
 
   function handleCopy() {
-    if (!source) return;
+    if (!source || !navigator.clipboard) return;
     navigator.clipboard
-      ?.writeText(source)
-      .then(() => setCopied(true))
+      .writeText(source)
+      .then(() => {
+        if (sessionActiveRef.current) setCopied(true);
+      })
       .catch(() => {});
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>View source</DialogTitle>
-          <DialogDescription>
-            The raw Matrix event JSON, as stored by the homeserver.
-          </DialogDescription>
-        </DialogHeader>
-        {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
-        {error && (
-          <p role="alert" className="text-sm text-destructive-foreground">
-            Could not load the event source: {error}
-          </p>
-        )}
-        {source && (
-          <pre className="max-h-96 overflow-auto rounded-md bg-secondary p-3 text-xs">
-            <code>{source}</code>
-          </pre>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-          <Button onClick={handleCopy} disabled={!source}>
-            {copied ? "Copied" : "Copy"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <>
+      {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {error && (
+        <p role="alert" className="text-sm text-destructive-foreground">
+          Could not load the event source: {error}
+        </p>
+      )}
+      {source && (
+        <pre className="max-h-96 overflow-auto rounded-md bg-secondary p-3 text-xs">
+          <code>{source}</code>
+        </pre>
+      )}
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          Close
+        </Button>
+        <Button onClick={handleCopy} disabled={!source}>
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
