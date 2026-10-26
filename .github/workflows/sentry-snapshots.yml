@@ -1,5 +1,7 @@
 name: Sentry Snapshots
 
+# PRs consume the successful Quality captures without executing browser suites again.
+# Main/manual runs retain standalone capture and the existing baseline/refresh lineage.
 # Captures a screenshot of every Storybook story, plus explicit capture points inside
 # the Playwright e2e suite, and uploads both to Sentry's visual snapshot system for
 # review/diffing — as two distinct app-ids (charm-storybook, charm-e2e) so Sentry
@@ -12,21 +14,19 @@ name: Sentry Snapshots
 # artifact, but the Sentry upload is skipped.
 
 on:
-  pull_request:
-    paths:
-      - "src/**"
-      - "e2e/**"
-      - ".storybook/**"
-      - "playwright.config.ts"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "docs-site/src/data/feature-gallery.json"
-      - "docs-site/public/features/**"
-      - "src-tauri/src/feature_flags.rs"
-      - "src-tauri/src/bindings/featureFlagCatalog.json"
-      - "src/featureFlags/catalog.ts"
-      - "scripts/sync-feature-docs.mjs"
-      - ".github/workflows/sentry-snapshots.yml"
+  workflow_call:
+    inputs:
+      reuse-captures:
+        description: Consume successful browser captures from this exact caller run
+        type: boolean
+        default: false
+    secrets:
+      SENTRY_AUTH_TOKEN:
+        required: false
+      SENTRY_ORG:
+        required: false
+      SENTRY_PROJECT:
+        required: false
   push:
     branches: [main]
     # Sentry needs a baseline upload for the exact main commit a PR is based on.
@@ -77,26 +77,41 @@ jobs:
           node-version: 24.15.0
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - if: ${{ !inputs.reuse-captures }}
+        run: pnpm install --frozen-lockfile
 
-      - run: pnpm exec playwright install --with-deps chromium
+      - if: ${{ !inputs.reuse-captures }}
+        run: pnpm exec playwright install --with-deps chromium
 
-      - run: pnpm build-storybook --quiet
+      - if: ${{ !inputs.reuse-captures }}
+        run: pnpm build-storybook --quiet
 
       # Reuses the same Storybook test-runner as the a11y job; SENTRY_SNAPSHOT_CAPTURE
       # flips on the screenshot postVisit hook (see .storybook/test-runner.ts).
       - name: Capture story snapshots
+        if: ${{ !inputs.reuse-captures }}
         env:
           SENTRY_SNAPSHOT_CAPTURE: "1"
         run: pnpm test-storybook:ci
 
       - name: Upload snapshot artifact (debug)
-        if: always() && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
+        if: always() && !inputs.reuse-captures && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
           path: .artifacts/sentry-snapshots
           retention-days: 7
+
+      - name: Download successful same-run storybook captures
+        if: inputs.reuse-captures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-snapshots
+
+      - name: Verify exact capture identity and content
+        if: inputs.reuse-captures
+        run: node scripts/ci/capture-receipt.mjs verify .artifacts/sentry-snapshots storybook
 
       # Snapshot names are the file paths within the dir (each story id = one snapshot).
       # Non-blocking on PRs so an upload/Sentry-side hiccup can't fail a contributor's PR.
@@ -157,24 +172,38 @@ jobs:
           node-version: 22.22.2
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - if: ${{ !inputs.reuse-captures }}
+        run: pnpm install --frozen-lockfile
 
-      - run: pnpm exec playwright install --with-deps chromium
+      - if: ${{ !inputs.reuse-captures }}
+        run: pnpm exec playwright install --with-deps chromium
 
       # e2e/support/sentrySnapshot.ts's captureSnapshot() no-ops unless this is set —
       # every other e2e run (local dev, the plain `e2e` CI job) is unaffected.
       - name: Capture e2e snapshots
+        if: ${{ !inputs.reuse-captures }}
         env:
           SENTRY_SNAPSHOT_CAPTURE: "1"
         run: pnpm test:e2e
 
       - name: Upload snapshot artifact (debug)
-        if: always() && hashFiles('.artifacts/sentry-e2e-snapshots/**/*.png') != ''
+        if: always() && !inputs.reuse-captures && hashFiles('.artifacts/sentry-e2e-snapshots/**/*.png') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sentry-e2e-snapshots-${{ github.event.pull_request.number || github.sha }}
           path: .artifacts/sentry-e2e-snapshots
           retention-days: 7
+
+      - name: Download successful same-run e2e captures
+        if: inputs.reuse-captures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sentry-e2e-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-e2e-snapshots
+
+      - name: Verify exact capture identity and content
+        if: inputs.reuse-captures
+        run: node scripts/ci/capture-receipt.mjs verify .artifacts/sentry-e2e-snapshots e2e
 
       # Distinct --app-id from the Storybook job so Sentry keeps these as a separate
       # baseline lineage, not diffed against Storybook's isolated-component captures.

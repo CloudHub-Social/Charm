@@ -1,0 +1,10 @@
+name: Install Tauri Linux build dependencies
+description: Shared package setup for the separate Synapse and MAS integration lanes
+runs:
+  using: composite
+  steps:
+    - name: Install required packages without unrelated recommendations
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf

@@ -18,8 +18,9 @@ PR push.
 
 Runs on every push to an open PR. **Blocking** — lint/format/typecheck/unit
 tests, Rust fmt/clippy/nextest, Storybook + axe a11y, Playwright e2e,
-CodeQL, dependency audits. No native platform bundling. A path-based
-`changes` job skips whole categories when nothing relevant changed.
+CodeQL and dependency audits. The separate iOS release-evidence lane retains
+native simulator and archive proof. A tested changed-input selector skips
+whole categories only when their inputs are known to be unaffected.
 
 Changes to the companion API container inputs also build its actual Dockerfile
 on a Linux runner. The Rust required gate includes this result, so the deployment
@@ -40,6 +41,51 @@ scan generated Rust build files. The iOS lane plants a utility-class probe in
 that directory and verifies it never appears in CSS, then compares CSS hashes
 between the simulator and device builds. Generated native output must not alter
 the frontend. These checks reuse the existing builds and do not add an archive.
+
+### Qualification ownership and artifact reuse
+
+`Quality checks` owns PR Storybook and browser execution. These required jobs
+also capture screenshots; `Sentry Snapshots` is called only after both producers
+succeed and consumes their same-run artifacts. It verifies repository, revision,
+run ID, attempt, suite and the complete PNG digest inventory before upload.
+Missing, stale, modified or partial failed-run captures cannot substitute for
+successful execution. The existing Sentry app IDs, comparison thresholds and
+feature-gallery comparisons are retained. Background scroll normalization is
+restored after capture; a bounded no-capture scroll witness also runs.
+
+Main pushes and manual Sentry runs retain standalone capture. This deliberately
+keeps exact-main baseline uploads and the existing `Feature docs refresh`
+workflow lineage. Fork and Dependabot PRs retain browser qualification without
+secret-bearing upload consumers. PR reuse adds no token permissions. Required
+check names are unchanged; optional called snapshot/gallery checks acquire the
+`Visual snapshot consumers` prefix and are not required contexts in the current
+main ruleset.
+
+`scripts/ci/selection.mjs` retains native/workspace and Synapse input coverage,
+adds binding/feature-gallery witnesses, and selects all qualification for
+unknown paths, unresolved diffs and shared dependencies/workflows. Rename diffs
+include both source and destination. Tooling-only lint/format/Knip changes run
+the frontend gate without unnecessary browser execution. Audits, licensing,
+observability and release safeguards remain unconditional. The stable Rust
+aggregate requires every selected job to succeed; a skipped or missing selected
+job is a failure. Selector, result and artifact contracts run in the frontend
+gate on every event.
+
+The Linux integration lanes share only package setup, not services or tests.
+They retain separate Synapse/Dex and MAS stacks. Package installation omits
+unrelated recommendations. Existing recovery/persistence/cancellation commands
+use the same compiler cache as their initial compilation, with read-only PR
+credentials and main-only writes; no credential or cache policy changes.
+
+Baseline observations before this cleanup: quality run `40401788799` consumed
+51.75 summed unweighted job-minutes; snapshot run `40401788645` consumed 5.03,
+including 4.6 minutes of repeated browser jobs. iOS run `40401788779` took 50.2
+minutes for simulator, smoke and archive. Linux package setup varied up to 38.7
+minutes in `40387786415`. These are individual observations, not percentiles,
+billing estimates or a claimed speedup. Compare queue, setup, execution and
+summed compute separately after hosted verification. iOS coverage and release
+workflows are unchanged; browser consolidation alone cannot remove that critical
+path.
 
 ## Tier 2 — Merge queue
 

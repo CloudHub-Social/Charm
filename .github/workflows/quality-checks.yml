@@ -49,135 +49,16 @@ jobs:
       platform: ${{ steps.filter.outputs.platform }}
       integration: ${{ steps.filter.outputs.integration }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      browser: ${{ steps.filter.outputs.browser }}
       companion_container: ${{ steps.filter.outputs.companion_container }}
     steps:
-      # Shallow checkout (default depth 1). This job only needs a two-tree
-      # `git diff base..head`, which compares the two commits' trees directly
-      # and needs no shared ancestry — so instead of fetch-depth: 0 cloning the
-      # entire history, the filter step fetches just the base commit at depth 1
-      # per event type. Head is already the checked-out commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Plain git/bash rather than a path-filter action — this repo's Actions
-      # permissions only allow a specific set of non-GitHub-owned actions
-      # (see Settings > Actions > Allow select actions), and adding a new one
-      # is a separate change from this CI job. Matches on:
-      #   - src-tauri/**  (covers src-tauri/gen/**, the iOS/Android scaffolding)
-      #   - package.json / pnpm-lock.yaml (every platform job runs `pnpm
-      #     install` then `pnpm tauri ...` — a lockfile or @tauri-apps/cli
-      #     bump can break these builds same as a src-tauri/** change)
-      #   - this workflow file itself (so edits to the platform jobs are
-      #     validated by their own PR instead of always reporting "skipped")
-      - name: Check whether src-tauri/** or its build inputs changed
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+      - name: Select qualification from changed inputs
         id: filter
-        run: |
-          # Native-build inputs — any of these can change a Rust build/clippy/
-          # nextest result or a platform bundle. `cargo` run from src-tauri
-          # resolves the repo root as its Cargo workspace, so changes anywhere in
-          # the workspace can alter src-tauri's build/resolution: the root
-          # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
-          # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
-          platform_pattern='^(\.gitignore$|src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|recover-altstore-source\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|sync-android-version-code\.mjs|validate-changeset-packages\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|nightly)\.yml)$|knope\.toml$)'
-          # The Synapse/Dex/MAS integration jobs additionally mount and execute
-          # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
-          # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
-          # there must run them even with no Rust diff.
-          integration_pattern='^dev/synapse/'
-          # Compile the actual deployment image when its source, workspace,
-          # license inputs or this verification workflow changes.
-          companion_pattern='^(crates/|src-tauri/|Cargo\.(toml|lock)$|LICENSE$|NOTICE$|LICENSING\.md$|THIRD_PARTY_NOTICES\.md$|scripts/(generate-third-party-licenses\.mjs|license-texts/)|\.dockerignore$|\.github/workflows/quality-checks\.yml$)'
-          # frontend/storybook-a11y/e2e are all pure JS/TS: a Rust-only or
-          # docs-only PR can't change any of their results, so gate them the
-          # same way rust/platform builds are already gated above. Deliberately
-          # broad (every frontend source dir + every config file that could
-          # plausibly affect lint/typecheck/build/test output) — a false
-          # negative here (wrongly skipping) is much worse than the cost of an
-          # occasional unnecessary run, so this errs toward over-matching.
-          # Mirrors sentry-snapshots.yml's own path filter, extended with the
-          # root config/test-support files that workflow doesn't need to care
-          # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(\.gitignore$|src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/((tokens-pull|review-envelope-contract\.test|generate-third-party-licenses|sync-android-version-code|validate-changeset-packages|check-ios-config|check-ios-frontend-css|configure-sideload-ios|recover-altstore-source|update-altstore-source)\.(mjs|test\.mjs)|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(pr-checklist-gate|quality-checks|release-builds|nightly)\.yml|scripts/configure-sentry-release-env\.sh)$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|knope\.toml$)'
-          zero_sha="0000000000000000000000000000000000000000"
-
-          # Fetch just the base commit (depth 1) then two-tree diff it against
-          # the already-checked-out head. A depth-1 fetch carries that commit's
-          # full tree, so the diff is complete without any history. On any
-          # fetch/diff failure, fall back to running the platform jobs (safe
-          # default) rather than silently skipping them — the fallback can only
-          # over-run, never wrongly skip.
-          diff_from() {
-            # --quiet drops fetch's normal progress chatter, but stderr is kept
-            # (not redirected to /dev/null) so a genuine fetch failure is visible
-            # in the job log rather than silently triggering the fallback below.
-            # stdout carries only the changed-file list, for capture.
-            #
-            # --no-renames: default rename detection can report ONLY the
-            # destination path for a moved file (e.g. src/Foo.tsx ->
-            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
-            # that a gated-path file left the tree entirely. Verified
-            # empirically — plain `git diff --name-only` omits the source
-            # side of a rename; --no-renames reports both.
-            git fetch --no-tags --depth=1 --quiet origin "$1" \
-              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
-          }
-          # On a fetch/diff failure, run every gated job (safe default — this
-          # can only over-run, never wrongly skip) AND log why, so an unexpected
-          # fallback (e.g. an unfetchable base) is diagnosable instead of looking
-          # like a real src-tauri/frontend change.
-          fallback() { echo "::notice::changes: could not diff against base $1; running all gated jobs"; changed=$'src-tauri/\nsrc/'; }
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            changed=$(diff_from "$base") || fallback "$base"
-          elif [ "${{ github.event_name }}" = "merge_group" ]; then
-            # A merge-queue run validates a synthetic commit combining the PR
-            # with the current tip of main — diff against the queue entry's
-            # own recorded base, not github.event.pull_request (which doesn't
-            # exist for this event type).
-            base="${{ github.event.merge_group.base_sha }}"
-            changed=$(diff_from "$base") || fallback "$base"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-            # Manual dispatch (e.g. re-running the platform jobs after a CI
-            # infra fix) and the nightly schedule run both always run every
-            # gated job — there's no "changed files" concept for either (a
-            # schedule run has no prior commit of its own to diff against).
-            changed=$'src-tauri/\nsrc/'
-          elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
-            # New branch / force-push with no prior tip to diff against —
-            # `git diff` against the all-zeros SHA isn't meaningful, so run
-            # every gated job rather than silently skip them.
-            changed=$'src-tauri/\nsrc/'
-          else
-            # push to main: diff against the pre-push tip.
-            base="${{ github.event.before }}"
-            changed=$(diff_from "$base") || fallback "$base"
-          fi
-          if echo "$changed" | grep -qE "$platform_pattern"; then
-            platform=true
-          else
-            platform=false
-          fi
-          # integration runs whenever platform does, plus on dev/synapse changes.
-          if [ "$platform" = "true" ] || echo "$changed" | grep -qE "$integration_pattern"; then
-            integration=true
-          else
-            integration=false
-          fi
-          if echo "$changed" | grep -qE "$frontend_pattern"; then
-            frontend=true
-          else
-            frontend=false
-          fi
-          {
-            echo "platform=$platform"
-            echo "integration=$integration"
-            echo "frontend=$frontend"
-            if echo "$changed" | grep -qE "$companion_pattern"; then
-              echo "companion_container=true"
-            else
-              echo "companion_container=false"
-            fi
-          } >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/selection.mjs
 
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
@@ -189,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if change detection failed
-        if: needs.changes.result == 'failure' || needs.changes.result == 'cancelled'
+        if: needs.changes.result != 'success' || (needs.changes.outputs.frontend != 'true' && needs.changes.outputs.frontend != 'false') || (needs.changes.outputs.browser != 'true' && needs.changes.outputs.browser != 'false')
         run: |
           echo "::error::changes job did not complete successfully: ${{ needs.changes.result }}"
           exit 1
@@ -202,6 +83,9 @@ jobs:
         with:
           node-version: 22.22.2
           cache: pnpm
+
+      - name: Verify CI selection, result and artifact contracts
+        run: node --test scripts/ci/*.test.mjs
 
       - id: frontend_install
         run: pnpm install --frozen-lockfile
@@ -305,18 +189,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if change detection failed
-        if: needs.changes.result == 'failure' || needs.changes.result == 'cancelled'
+        if: needs.changes.result != 'success' || (needs.changes.outputs.frontend != 'true' && needs.changes.outputs.frontend != 'false') || (needs.changes.outputs.browser != 'true' && needs.changes.outputs.browser != 'false')
         run: |
           echo "::error::changes job did not complete successfully: ${{ needs.changes.result }}"
           exit 1
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # 24, not 22 like the other jobs here: @storybook/test-runner's
@@ -327,7 +211,7 @@ jobs:
           node-version: 24.15.0
           cache: pnpm
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         run: pnpm install --frozen-lockfile
 
       # Cache the downloaded Playwright browser binaries (~130 MB) across runs.
@@ -337,7 +221,7 @@ jobs:
       # System apt libs (--with-deps) live outside this path and still install
       # each run, but those are cheap next to the browser download.
       - name: Cache Playwright browsers
-        if: needs.changes.outputs.frontend == 'true'
+        if: needs.changes.outputs.browser == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
@@ -345,17 +229,32 @@ jobs:
           restore-keys: ${{ runner.os }}-playwright-
 
       # Browser + its Linux system libs for the Storybook test-runner (Playwright).
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         run: pnpm exec playwright install --with-deps chromium
 
       # Builds the static Storybook (also fails on any story that doesn't compile),
       # then runs every story through axe in a real browser. Blocking: any a11y
       # violation fails the job. color-contrast is the one rule scoped out for now
       # (design-token work — see .storybook/preview.tsx and Charm 2.0 Spec 09).
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         run: pnpm build-storybook --quiet
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
+        env:
+          SENTRY_SNAPSHOT_CAPTURE: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: pnpm test-storybook:ci
+
+      - name: Seal successful storybook capture
+        if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
+        run: node scripts/ci/capture-receipt.mjs create .artifacts/sentry-snapshots storybook
+
+      - name: Publish successful storybook capture
+        if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-snapshots
+          if-no-files-found: error
+          retention-days: 7
 
   e2e:
     name: E2E (message actions, against the dev server)
@@ -368,37 +267,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fail if change detection failed
-        if: needs.changes.result == 'failure' || needs.changes.result == 'cancelled'
+        if: needs.changes.result != 'success' || (needs.changes.outputs.frontend != 'true' && needs.changes.outputs.frontend != 'false') || (needs.changes.outputs.browser != 'true' && needs.changes.outputs.browser != 'false')
         run: |
           echo "::error::changes job did not complete successfully: ${{ needs.changes.result }}"
           exit 1
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.22.2
           cache: pnpm
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         run: pnpm install --frozen-lockfile
 
       # Cache the Playwright browser binaries — see the storybook-a11y job above
       # for why; same key so the two jobs share one warmed cache.
       - name: Cache Playwright browsers
-        if: needs.changes.outputs.frontend == 'true'
+        if: needs.changes.outputs.browser == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-playwright-
 
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
         run: pnpm exec playwright install --with-deps chromium
 
       # Runs against the plain Vite dev server (`pnpm dev`, started by
@@ -408,8 +307,29 @@ jobs:
       # backend, so this exercises the real React code paths (ChatShell's
       # reconciliation, MessageActions, ReplyPreview, etc.) without needing
       # tauri-driver or Synapse.
-      - if: needs.changes.outputs.frontend == 'true'
+      - if: needs.changes.outputs.browser == 'true'
+        env:
+          SENTRY_SNAPSHOT_CAPTURE: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: pnpm test:e2e
+
+      - name: Retain no-capture scroll interaction witness
+        if: needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
+        env:
+          SENTRY_SNAPSHOT_CAPTURE: ""
+        run: pnpm exec playwright test e2e/snapshot-state.spec.ts
+
+      - name: Seal successful e2e capture
+        if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
+        run: node scripts/ci/capture-receipt.mjs create .artifacts/sentry-e2e-snapshots e2e
+
+      - name: Publish successful e2e capture
+        if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sentry-e2e-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-e2e-snapshots
+          if-no-files-found: error
+          retention-days: 7
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
@@ -417,6 +337,24 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  visual-consumers:
+    name: Visual snapshot consumers
+    needs: [changes, storybook-a11y, e2e]
+    if: >-
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.browser == 'true'
+      && needs.storybook-a11y.result == 'success'
+      && needs.e2e.result == 'success'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+    uses: ./.github/workflows/sentry-snapshots.yml
+    with:
+      reuse-captures: true
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
 
   rust:
     name: Rust (fmt, clippy, lib test)
@@ -646,13 +584,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Tauri Linux system dependencies
-        # This crate is a Tauri app, so even a `cargo test` build pulls in
-        # tauri-runtime-wry's Linux backend (gtk/webkit2gtk/glib), none of
-        # which ship on a bare ubuntu-latest runner. Same package list Tauri's
-        # own CI recipes use for Ubuntu 22.04+/24.04 runners.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        uses: ./.github/actions/setup-tauri-linux
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -783,19 +715,33 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
-      - name: Web recovery setup authentication and rollout
-        run: cargo test -p charm-web-server --lib recovery_setup_route_tests
-
-      - name: Protected pending recovery persistence
-        run: cargo test -p charm-web-server --lib pending_recovery
-
-      - name: Web companion password-reset cancellation contract
-        run: cargo test -p charm-web-server --lib cancel_attempt_request_tests
+      - name: Web recovery, persistence and cancellation contracts
+        run: |
+          cargo test -p charm-web-server --lib recovery_setup_route_tests
+          cargo test -p charm-web-server --lib pending_recovery
+          cargo test -p charm-web-server --lib cancel_attempt_request_tests
+        env:
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Web companion live-homeserver API
         env:
-          # This test deliberately targets the ephemeral localhost Synapse
-          # above. Production web deployments remain HTTPS-only by default.
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
           CHARM_WEB_SERVER_INSECURE_COOKIES: "1"
         run: cargo test -p charm-web-server --test http_api authenticated_web_preview_round_trips_through_synapse
 
@@ -824,9 +770,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Tauri Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        uses: ./.github/actions/setup-tauri-linux
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -969,11 +913,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if any required Rust job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: |
-          echo "::error::A required Rust job did not succeed: ${{ join(needs.*.result, ', ') }}"
-          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+      - name: Require every selected Rust job and audit to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/results.mjs
 
   # Native platform builds (macOS/iOS/Windows/Linux/Android) used to live
   # here, gated on this job's platform output. Moved to
