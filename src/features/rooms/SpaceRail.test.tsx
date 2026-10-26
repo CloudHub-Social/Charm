@@ -674,7 +674,7 @@ describe("SpaceRail", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "AL, Alpha" }));
     await waitFor(() => expectMenuItemEnabled("Move to space…"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to space…" }));
-    const beta = screen.getByRole("button", { name: "BE, Beta" });
+    const beta = screen.getByRole("button", { name: "Beta" });
     await waitFor(() => expect(beta).toBeEnabled());
     fireEvent.click(beta);
 

@@ -30,7 +30,7 @@ test("creates a new space and switches into it", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Engineering" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Create or join a space" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Engineering", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "EN, Engineering", exact: true })).toBeVisible();
   await captureSnapshot(page, "space-create-join-created");
 });
 
@@ -65,7 +65,7 @@ test("creates a new space beneath the selected parent", async ({ page }) => {
   await page.getByRole("button", { name: "Create space" }).click();
 
   await expect(page.getByRole("heading", { name: "Research" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Research", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "RE, Research", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Collapse Team" })).toBeVisible();
   await captureSnapshot(page, "space-hierarchy-create-subspace");
 });
@@ -190,7 +190,7 @@ test("opens a space in the shared settings shell", async ({ page }) => {
   });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Community", exact: true }).click({ button: "right" });
+  await page.getByRole("button", { name: "CO, Community", exact: true }).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Settings" }).click();
 
   await expect(page.getByRole("dialog", { name: "Space settings" })).toBeVisible();
