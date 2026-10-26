@@ -49,7 +49,9 @@ also capture screenshots; `Sentry Snapshots` is called only after both producers
 succeed and consumes their same-run artifacts. It verifies repository, revision,
 run ID, attempt, suite and the complete PNG digest inventory before upload.
 Missing, stale, modified or partial failed-run captures cannot substitute for
-successful execution. The existing Sentry app IDs, comparison thresholds and
+successful execution. Reused artifact names include the attempt to avoid immutable
+artifact collisions on a full rerun; rerunning only a consumer cannot reuse an
+earlier attempt's producers. The existing Sentry app IDs, comparison thresholds and
 feature-gallery comparisons are retained. Background scroll normalization is
 restored after capture; a bounded no-capture scroll witness also runs.
 
