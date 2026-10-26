@@ -1226,6 +1226,145 @@ mod tests {
         assert!(writer.require_recovery_mutation("request-a").await.is_err());
     }
 
+    #[tokio::test]
+    async fn activation_waits_for_live_mutation_without_replacing_its_owner() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [61; 32],
+            "fixture-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [61; 32],
+            "fixture-replacement",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner.acquire_recovery_mutation("fixture-request").await.unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        // Keep this synthetic lease live independently of wall-clock expiry.
+        fence.mutation_expires_at_ms = Some(u64::MAX);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        assert!(tokio::time::timeout(Duration::from_millis(20), replacement.activate_writer())
+            .await
+            .is_err());
+        let (held, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(held.writer_id, "fixture-owner");
+        assert_eq!(held.mutation_owner.as_deref(), Some("fixture-request"));
+        assert_eq!(held.mutation_expires_at_ms, Some(u64::MAX));
+
+        owner.release_recovery_mutation("fixture-request").await.unwrap();
+        replacement.activate_writer().await.unwrap();
+        let (next, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(next.writer_id, "fixture-replacement");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("fixture-owner"));
+        assert!(next.mutation_owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_mutation_allows_provisional_handoff_without_late_owner_release() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [62; 32],
+            "expired-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [62; 32],
+            "next-owner",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner.acquire_recovery_mutation("expired-request").await.unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        fence.mutation_expires_at_ms = Some(0);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        replacement.activate_writer().await.unwrap();
+        replacement.acquire_recovery_mutation("next-request").await.unwrap();
+        owner.release_recovery_mutation("expired-request").await.unwrap();
+        let (next, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(next.writer_id, "next-owner");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("expired-owner"));
+        assert_eq!(next.mutation_owner.as_deref(), Some("next-request"));
+        replacement.require_recovery_mutation("next-request").await.unwrap();
+        assert!(owner.require_recovery_mutation("expired-request").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn repeated_stale_fence_updates_fail_without_a_live_recovery_mutation() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [63; 32],
+            "cas-owner",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        let (_, stale_version) = owner.active_writer_fence().await.unwrap().unwrap();
+        owner.commit_writer().await.unwrap();
+        let (mut attempted, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert!(attempted.mutation_owner.is_none());
+        attempted.writer_id = "stale-contender".to_string();
+        for _ in 0..3 {
+            assert!(!owner
+                .write_active_writer_fence(&attempted, Some(stale_version.clone()))
+                .await
+                .unwrap());
+        }
+        // Also distinguish create collisions from a live mutation lease.
+        assert!(!owner.write_active_writer_fence(&attempted, None).await.unwrap());
+        let (retained, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(retained.writer_id, "cas-owner");
+        assert!(retained.mutation_owner.is_none());
+        assert!(retained.previous_writer_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_reader_accepts_plain_fence_then_preserves_predecessor_in_json() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        backend
+            .put(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from(b"legacy-fixture-owner".to_vec()),
+            )
+            .await
+            .unwrap();
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [64; 32],
+            "json-fixture-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let (legacy, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(legacy.writer_id, "legacy-fixture-owner");
+        assert!(legacy.mutation_owner.is_none());
+        replacement.activate_writer().await.unwrap();
+        let bytes = backend
+            .get(&ObjectPath::from(ACTIVE_WRITER_PATH))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let next: ActiveWriterFence = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(next.writer_id, "json-fixture-owner");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("legacy-fixture-owner"));
+        assert!(next.mutation_owner.is_none());
+        // This does not assert that an older binary can read the JSON fence.
+    }
+
     #[test]
     fn encrypted_objects_cannot_be_relocated_between_bindings() {
         let store = CryptoBackupStore::new_for_test([7; 32]);
