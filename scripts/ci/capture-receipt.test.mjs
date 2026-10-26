@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createReceipt, verifyReceipt } from "./capture-receipt.mjs";
+import { captureIdentity, createReceipt, verifyReceipt } from "./capture-receipt.mjs";
 const identity = {
   repository: "CloudHub-Social/Charm",
   sha: "a".repeat(40),
@@ -28,4 +28,20 @@ test("same-run complete artifacts verify; identity and content drift reject", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("partial reruns retain the successful producer attempt within the same run", () => {
+  const env = {
+    GITHUB_REPOSITORY: identity.repository,
+    GITHUB_SHA: identity.sha,
+    GITHUB_RUN_ID: identity.run,
+    GITHUB_RUN_ATTEMPT: "3",
+    CAPTURE_ATTEMPT: "2",
+  };
+  assert.deepEqual(captureIdentity(env, "e2e"), identity);
+  for (const attempt of ["", "0", "4", "02", "other"])
+    assert.throws(() => captureIdentity({ ...env, CAPTURE_ATTEMPT: attempt }, "e2e"));
+  const { CAPTURE_ATTEMPT, ...producerEnv } = env;
+  assert.equal(CAPTURE_ATTEMPT, "2");
+  assert.equal(captureIdentity(producerEnv, "e2e").attempt, "3");
 });

@@ -30,16 +30,28 @@ export function verifyReceipt(dir, identity) {
   if (JSON.stringify(receipt.files) !== JSON.stringify(inventory(dir)))
     throw new Error("Capture inventory mismatch");
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [operation, dir, suite] = process.argv.slice(2);
+export function captureIdentity(env, suite) {
+  const currentAttempt = env.GITHUB_RUN_ATTEMPT;
+  const attempt = env.CAPTURE_ATTEMPT ?? currentAttempt;
+  if (
+    !/^[1-9][0-9]*$/.test(currentAttempt ?? "") ||
+    !/^[1-9][0-9]*$/.test(attempt ?? "") ||
+    BigInt(attempt) > BigInt(currentAttempt)
+  )
+    throw new Error("Invalid producer attempt");
   const identity = {
-    repository: process.env.GITHUB_REPOSITORY,
-    sha: process.env.GITHUB_SHA,
-    run: process.env.GITHUB_RUN_ID,
-    attempt: process.env.GITHUB_RUN_ATTEMPT,
+    repository: env.GITHUB_REPOSITORY,
+    sha: env.GITHUB_SHA,
+    run: env.GITHUB_RUN_ID,
+    attempt,
     suite,
   };
   if (Object.values(identity).some((value) => !value)) throw new Error("Missing capture identity");
+  return identity;
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [operation, dir, suite] = process.argv.slice(2);
+  const identity = captureIdentity(process.env, suite);
   if (operation === "create") createReceipt(dir, identity);
   else if (operation === "verify") verifyReceipt(dir, identity);
   else throw new Error("Unknown capture operation");

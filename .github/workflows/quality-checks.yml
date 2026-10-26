@@ -187,6 +187,8 @@ jobs:
     # combined queue tree.
     if: always()
     runs-on: ubuntu-latest
+    outputs:
+      capture-attempt: ${{ steps.seal_capture.outputs.attempt }}
     steps:
       - name: Fail if change detection failed
         if: needs.changes.result != 'success' || (needs.changes.outputs.frontend != 'true' && needs.changes.outputs.frontend != 'false') || (needs.changes.outputs.browser != 'true' && needs.changes.outputs.browser != 'false')
@@ -244,8 +246,11 @@ jobs:
         run: pnpm test-storybook:ci
 
       - name: Seal successful storybook capture
+        id: seal_capture
         if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
-        run: node scripts/ci/capture-receipt.mjs create .artifacts/sentry-snapshots storybook
+        run: |
+          node scripts/ci/capture-receipt.mjs create .artifacts/sentry-snapshots storybook
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Publish successful storybook capture
         if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
@@ -265,6 +270,8 @@ jobs:
     # protection treats as passing).
     if: always()
     runs-on: ubuntu-latest
+    outputs:
+      capture-attempt: ${{ steps.seal_capture.outputs.attempt }}
     steps:
       - name: Fail if change detection failed
         if: needs.changes.result != 'success' || (needs.changes.outputs.frontend != 'true' && needs.changes.outputs.frontend != 'false') || (needs.changes.outputs.browser != 'true' && needs.changes.outputs.browser != 'false')
@@ -319,8 +326,11 @@ jobs:
         run: pnpm exec playwright test e2e/snapshot-state.spec.ts
 
       - name: Seal successful e2e capture
+        id: seal_capture
         if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
-        run: node scripts/ci/capture-receipt.mjs create .artifacts/sentry-e2e-snapshots e2e
+        run: |
+          node scripts/ci/capture-receipt.mjs create .artifacts/sentry-e2e-snapshots e2e
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Publish successful e2e capture
         if: success() && needs.changes.outputs.browser == 'true' && github.event_name == 'pull_request'
@@ -351,6 +361,8 @@ jobs:
     uses: ./.github/workflows/sentry-snapshots.yml
     with:
       reuse-captures: true
+      storybook-attempt: ${{ needs.storybook-a11y.outputs.capture-attempt }}
+      e2e-attempt: ${{ needs.e2e.outputs.capture-attempt }}
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
       SENTRY_ORG: ${{ secrets.SENTRY_ORG }}

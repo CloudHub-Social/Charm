@@ -27,3 +27,22 @@ test("visual consumer requires both successful producers and exact receipts", ()
   assert.match(snapshots, /^  push:\n    branches: \[main\]/m);
   assert.match(snapshots, /^  workflow_dispatch:/m);
 });
+
+test("consumers use successful producer attempts, including after partial reruns", () => {
+  assert.match(
+    quality,
+    /storybook-attempt: \$\{\{ needs\.storybook-a11y\.outputs\.capture-attempt \}\}/,
+  );
+  assert.match(quality, /e2e-attempt: \$\{\{ needs\.e2e\.outputs\.capture-attempt \}\}/);
+  assert.equal(
+    (quality.match(/capture-attempt: \$\{\{ steps\.seal_capture\.outputs\.attempt \}\}/g) ?? [])
+      .length,
+    2,
+  );
+  assert.match(snapshots, /name: sentry-snapshots-.*inputs\.storybook-attempt/);
+  assert.match(snapshots, /name: sentry-e2e-snapshots-.*inputs\.e2e-attempt/);
+  assert.equal(
+    (snapshots.match(/CAPTURE_ATTEMPT: \$\{\{ inputs\.e2e-attempt \}\}/g) ?? []).length,
+    2,
+  );
+});
