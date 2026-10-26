@@ -251,9 +251,10 @@ describe("SpaceRail", () => {
   it("opens the parent folder when a child space is active", () => {
     renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
 
-    expect(
-      screen.getByRole("button", { name: "PR 1, Product, 1 unread" }),
-    ).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "PR 1, Product, 1 unread" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     expect(screen.getByRole("button", { name: "Collapse Team" })).toBeInTheDocument();
   });
 
@@ -280,7 +281,10 @@ describe("SpaceRail", () => {
 
     expect(screen.getByRole("button", { name: "Collapse Team" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse Product" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "PL, Platform" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "PL, Platform" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 
   it("guards active-space ancestor expansion against cyclic parent links", () => {
@@ -333,7 +337,10 @@ describe("SpaceRail", () => {
 
     expect(screen.getByRole("button", { name: "Collapse Root" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse Space A" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "SP, Space B" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "SP, Space B" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 
   it("surfaces rootless cyclic spaces as rail entries", () => {
@@ -490,12 +497,8 @@ describe("SpaceRail", () => {
     expect(
       screen.getByRole("button", { name: "Direct messages, 2 unread, 5 mentions" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /^FO(?: \d+)?, Four,/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /^FI(?: \d+)?, Five,/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^FO(?: \d+)?, Four,/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^FI(?: \d+)?, Five,/ })).not.toBeInTheDocument();
   });
 
   it("opens a context menu on a top-level space with Open lobby, Invite, and Pin actions", () => {
@@ -539,8 +542,7 @@ describe("SpaceRail", () => {
       ],
     });
 
-    const spaceButtons = () =>
-      screen.getAllByRole("button", { name: /^(AL, Alpha|BE, Beta)$/ });
+    const spaceButtons = () => screen.getAllByRole("button", { name: /^(AL, Alpha|BE, Beta)$/ });
     expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
       "AL, Alpha",
       "BE, Beta",

@@ -144,15 +144,11 @@ export function MobileSpacesView({
                         style={{ background: avatarColor(room.room_id) }}
                         className="text-xs font-bold text-white"
                       >
-                        {avatarInitials}
-                        {" "}
+                        {avatarInitials}{" "}
                       </AvatarFallback>
                     </Avatar>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold">
-                        {label}
-                        {" "}
-                      </span>
+                      <span className="block truncate text-sm font-semibold">{label} </span>
                       <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                         {kind}
                       </span>
