@@ -42,11 +42,12 @@ describe("MobileSpacesView", () => {
 
     expect(screen.getByRole("button", { name: /Home/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Direct messages/ })).toHaveTextContent("1");
-    expect(screen.getByRole("button", { name: "Friends, unread activity" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Games, unread activity" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(
+      screen.getByRole("button", { name: "FR Friends Space, unread activity" }),
+    ).toHaveTextContent("FR Friends Space");
+    expect(
+      screen.getByRole("button", { name: "GA Games Nested space, unread activity" }),
+    ).toHaveAttribute("aria-current", "page");
     expect(screen.getAllByText("Games")).toHaveLength(1);
   });
 
@@ -66,7 +67,7 @@ describe("MobileSpacesView", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Friends, unread activity" }));
+    fireEvent.click(screen.getByRole("button", { name: "FR Friends Space, unread activity" }));
     fireEvent.click(screen.getByRole("button", { name: "Add or join a space" }));
 
     expect(onSelectSpace).toHaveBeenCalledWith("!space:example.org");

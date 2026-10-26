@@ -57,7 +57,7 @@ test.beforeEach(async ({ page }) => {
 test("opens a per-space context menu with pin, invite, add existing, and leave actions", async ({
   page,
 }) => {
-  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  const teamButton = page.getByRole("button", { name: "TE, Team", exact: true });
   await expect(teamButton).toBeVisible();
 
   await teamButton.click({ button: "right" });
@@ -75,17 +75,17 @@ test("opens a per-space context menu with pin, invite, add existing, and leave a
 });
 
 test("unpins a space from the rail, moving it below the divider", async ({ page }) => {
-  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  const teamButton = page.getByRole("button", { name: "TE, Team", exact: true });
   await teamButton.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Unpin from sidebar" }).click();
 
   // Re-opening the menu on the now-unpinned entry offers Pin instead.
-  await page.getByRole("button", { name: "Team", exact: true }).click({ button: "right" });
+  await page.getByRole("button", { name: "TE, Team", exact: true }).click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Pin to sidebar" })).toBeVisible();
 });
 
 test("shows a confirmation dialog before leaving a space", async ({ page }) => {
-  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  const teamButton = page.getByRole("button", { name: "TE, Team", exact: true });
   await teamButton.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Leave" }).click();
 
@@ -96,7 +96,7 @@ test("shows a confirmation dialog before leaving a space", async ({ page }) => {
 });
 
 test("opens the Add Existing picker scoped to the space it was invoked from", async ({ page }) => {
-  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  const teamButton = page.getByRole("button", { name: "TE, Team", exact: true });
   await teamButton.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Add existing…" }).click();
 
@@ -118,7 +118,7 @@ test("offers Remove and Set/Unset Suggested on a space with a known parent", asy
   await expect(page.getByRole("button", { name: "Expand Team" })).toBeVisible();
   await page.getByRole("button", { name: "Expand Team" }).click({ position: { x: 2, y: 2 } });
 
-  const productButton = page.getByRole("button", { name: "Product", exact: true });
+  const productButton = page.getByRole("button", { name: "PR, Product", exact: true });
   await expect(productButton).toBeVisible();
   await productButton.click({ button: "right" });
 
