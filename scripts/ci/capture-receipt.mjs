@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 function inventory(dir) {
   const files = {};
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+  for (const entry of readdirSync(dir, { withFileTypes: true }).toSorted((a, b) =>
     a.name.localeCompare(b.name),
   )) {
     if (entry.name === "capture-receipt.json") continue;

@@ -87,7 +87,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       });
       paths = diff.split("\0").filter(Boolean);
     } catch {
-      console.log("::notice::Unable to resolve changed inputs; selecting all qualification lanes");
+      process.stdout.write(
+        "::notice::Unable to resolve changed inputs; selecting all qualification lanes\n",
+      );
     }
   }
   const selected = selectJobs(paths);
@@ -97,5 +99,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       .map(([key, value]) => `${key}=${value}\n`)
       .join(""),
   );
-  console.log(JSON.stringify({ revision: head, base, selected, fallback: paths === null }));
+  process.stdout.write(
+    `${JSON.stringify({ revision: head, base, selected, fallback: paths === null })}\n`,
+  );
 }
