@@ -118,17 +118,19 @@ test("UX refresh rail prioritizes unread people without double-counting overflow
 
   const rail = page.locator('aside[data-ux-refresh="true"]');
   await expect(rail).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Alice, 1 unread, 2 mentions" })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Beatrice, 1 unread" })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Cam, 1 unread, 1 mentions" })).toBeVisible();
+  await expect(
+    rail.getByRole("button", { name: "AL 2, Alice, 1 unread, 2 mentions" }),
+  ).toBeVisible();
+  await expect(rail.getByRole("button", { name: "BE, Beatrice, 1 unread" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "CA 1, Cam, 1 unread, 1 mentions" })).toBeVisible();
   await expect(
     rail.getByRole("button", { name: "Direct messages, 2 unread, 4 mentions" }),
   ).toBeVisible();
-  await expect(rail.getByRole("button", { name: /^Devon,/ })).toHaveCount(0);
-  await expect(rail.getByRole("button", { name: /^Emery,/ })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: /^DE(?: \d+)?, Devon,/ })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: /^EM(?: \d+)?, Emery,/ })).toHaveCount(0);
 
-  await rail.getByRole("button", { name: "Alice, 1 unread, 2 mentions" }).click();
-  await expect(rail.getByRole("button", { name: /^Alice(?:,|$)/ })).toHaveCount(0);
+  await rail.getByRole("button", { name: "AL 2, Alice, 1 unread, 2 mentions" }).click();
+  await expect(rail.getByRole("button", { name: /^AL(?: \d+)?, Alice(?:,|$)/ })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "Direct messages" })).toHaveAttribute(
     "aria-current",
     "page",

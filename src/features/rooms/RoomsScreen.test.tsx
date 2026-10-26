@@ -1039,7 +1039,7 @@ describe("RoomsScreen", () => {
     expect(screen.getByRole("heading", { name: /^Spaces$/ })).toBeInTheDocument();
     expect(screen.queryByText(/space-rail:/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Team" }));
+    fireEvent.click(screen.getByRole("button", { name: "TE Team Space" }));
 
     expect(screen.queryByRole("heading", { name: /^Spaces$/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "!space:example.org" })).toBeInTheDocument();

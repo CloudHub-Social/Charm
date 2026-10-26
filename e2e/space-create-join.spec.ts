@@ -56,7 +56,7 @@ test("creates a new space beneath the selected parent", async ({ page }) => {
   });
   await page.goto("/");
 
-  const teamButton = page.getByRole("button", { name: "Team", exact: true });
+  const teamButton = page.getByRole("button", { name: "TE, Team", exact: true });
   await teamButton.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Create subspace" }).click();
 
@@ -103,8 +103,8 @@ test("drags one space beneath another and refreshes the rail hierarchy", async (
     .poll(() => page.evaluate(() => window.__e2eListenerCount("room_list:update")))
     .toBeGreaterThan(0);
 
-  const alpha = page.getByRole("button", { name: "Alpha", exact: true });
-  const beta = page.getByRole("button", { name: "Beta", exact: true });
+  const alpha = page.getByRole("button", { name: "AL, Alpha", exact: true });
+  const beta = page.getByRole("button", { name: "BE, Beta", exact: true });
   for (const space of [alpha, beta]) {
     await space.click({ button: "right" });
     await expect(page.getByRole("menuitem", { name: "Move to space…" })).toBeEnabled();
@@ -144,7 +144,7 @@ test("drags one space beneath another and refreshes the rail hierarchy", async (
 
   await expect(page.getByRole("button", { name: "Expand Beta" })).toBeVisible();
   await page.getByRole("button", { name: "Expand Beta" }).click();
-  await expect(page.getByRole("button", { name: "Alpha", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "AL, Alpha", exact: true })).toBeVisible();
   await captureSnapshot(page, "space-hierarchy-drag-to-nest");
 });
 
