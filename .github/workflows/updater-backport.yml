@@ -1,12 +1,6 @@
 name: Updater backport qualification
 
 on:
-  push:
-    branches: [codex/charm-updater-zip-backport]
-    paths:
-      - Cargo.toml
-      - vendor/tauri-plugin-updater/**
-      - .github/workflows/updater-backport.yml
   pull_request:
     paths:
       - Cargo.toml
@@ -18,32 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  prepare:
-    name: Prepare updater lockfile (no publication)
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-      - name: Resolve only the patched updater and format its new tests
-        run: |
-          cargo update -p tauri-plugin-updater --precise 2.11.0
-          rustfmt --edition 2021 vendor/tauri-plugin-updater/src/charm_backport_tests.rs
-      - name: Retain candidate files for reviewed adoption
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: updater-backport-candidate
-          path: |
-            Cargo.lock
-            vendor/tauri-plugin-updater/src/charm_backport_tests.rs
-          if-no-files-found: error
-
   qualify:
     name: Updater extraction and signature (${{ matrix.os }})
-    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -84,3 +54,12 @@ jobs:
         run: cargo fmt -p tauri-plugin-updater --check
       - name: Exercise production extraction helpers and upstream security boundary
         run: cargo test --locked -p tauri-plugin-updater --lib -- --test-threads=1
+      - name: Include the local backport in bundled third-party notices
+        run: node scripts/generate-third-party-licenses.mjs --cargo --output .artifacts/updater-licenses.txt
+      - name: Verify updater attribution is present
+        shell: python
+        run: |
+          from pathlib import Path
+          notices = Path('.artifacts/updater-licenses.txt').read_text()
+          assert 'Cargo: tauri-plugin-updater@2.11.0' in notices
+          assert 'Tauri Programme within The Commons Conservancy' in notices

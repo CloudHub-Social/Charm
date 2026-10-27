@@ -233,6 +233,5 @@ signature fixtures and ZIP's Unix permission/symlink boundary. Those Unix tests
 qualify the dependency; Charm's Linux/macOS updater uses TAR rather than ZIP.
 Existing audit thresholds and platform/release gates remain required. Preparing a
 lockfile artifact is not acceptance: the artifact must be reviewed, committed and
-tested at the resulting PR head. Remove the temporary branch-only preparation job
-when the candidate is adopted; retain PR qualification until the backport is
-removed with a supported upstream migration.
+tested at the resulting PR head. The temporary branch-only preparation job is removed after candidate adoption;
+PR qualification remains until a supported upstream migration removes the backport.

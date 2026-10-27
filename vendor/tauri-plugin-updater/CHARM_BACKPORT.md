@@ -24,3 +24,11 @@ updater with ZIP9 can be adopted with equivalent platform/security evidence.
 Remove the root path patch and this directory together after that migration;
 retain these provenance and qualification receipts in the reviewing PR.
 Never suppress the three ZIP advisories or reintroduce ZIP4 to resolve a build.
+
+Hosted lockfile preparation run40433190847 selected ZIP9.1.2. Its only added
+package is typed-path0.13.0; the existing Tauri/framework pins are unchanged.
+Other ZIP dependencies reuse already-locked packages. The normal audit still
+reports unrelated baseline advisories until integration with PR590/592.
+The application notice generator explicitly includes this local crate so path
+dependencies do not lose attribution. Only the byte-preserved generated JS is
+excluded from application lint; Rust formatting/tests still apply.

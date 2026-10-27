@@ -50,7 +50,10 @@ fn windows_installer_selection_preserves_stored_bytes_and_parameters() {
     for (bytes, is_msi) in [
         (include_bytes!("charm-fixtures/exe.zip").as_slice(), false),
         (include_bytes!("charm-fixtures/msi.zip").as_slice(), true),
-        (include_bytes!("charm-fixtures/nested.zip").as_slice(), false),
+        (
+            include_bytes!("charm-fixtures/nested.zip").as_slice(),
+            false,
+        ),
     ] {
         let update = update_fixture();
         let installer = update.extract_zip(bytes).unwrap();
@@ -65,10 +68,16 @@ fn windows_installer_selection_preserves_stored_bytes_and_parameters() {
             }
         };
         assert_eq!(std::fs::read(&path).unwrap(), b"inert installer fixture");
-        let parameters = update.updater_parameters(&installer).to_string_lossy().into_owned();
+        let parameters = update
+            .updater_parameters(&installer)
+            .to_string_lossy()
+            .into_owned();
         assert!(parameters.contains(if is_msi { "/i" } else { "/UPDATE" }));
         if path.parent().unwrap().join("nested").exists() {
-            assert_eq!(std::fs::read(path.parent().unwrap().join("nested/hello.txt")).unwrap(), b"preserved nested content");
+            assert_eq!(
+                std::fs::read(path.parent().unwrap().join("nested/hello.txt")).unwrap(),
+                b"preserved nested content"
+            );
         }
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -80,10 +89,15 @@ fn windows_rejects_missing_installer_corruption_and_parent_escape() {
     let update = update_fixture();
     let outside = std::env::temp_dir().join("charm-zip-outside-sentinel.txt");
     std::fs::write(&outside, b"untouched sentinel").unwrap();
-    assert!(update.extract_zip(include_bytes!("charm-fixtures/parent.zip")).is_err());
+    assert!(update
+        .extract_zip(include_bytes!("charm-fixtures/parent.zip"))
+        .is_err());
     assert_eq!(std::fs::read(&outside).unwrap(), b"untouched sentinel");
     std::fs::remove_file(outside).unwrap();
-    assert!(matches!(update.extract_zip(include_bytes!("charm-fixtures/no-installer.zip")), Err(Error::BinaryNotFoundInArchive)));
+    assert!(matches!(
+        update.extract_zip(include_bytes!("charm-fixtures/no-installer.zip")),
+        Err(Error::BinaryNotFoundInArchive)
+    ));
     assert!(update.extract_zip(b"PK\x03\x04truncated").is_err());
 }
 
@@ -92,18 +106,37 @@ fn windows_rejects_missing_installer_corruption_and_parent_escape() {
 fn zip_security_boundary_strips_privileged_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(include_bytes!("charm-fixtures/privileged-mode.zip"))).unwrap();
-    assert_eq!(archive.by_index(0).unwrap().unix_mode().unwrap() & 0o7000, 0o7000);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(include_bytes!(
+        "charm-fixtures/privileged-mode.zip"
+    )))
+    .unwrap();
+    assert_eq!(
+        archive.by_index(0).unwrap().unix_mode().unwrap() & 0o7000,
+        0o7000
+    );
     archive.extract(root.path()).unwrap();
-    assert_eq!(std::fs::metadata(root.path().join("payload")).unwrap().permissions().mode() & 0o7000, 0);
-    assert_eq!(std::fs::read(root.path().join("payload")).unwrap(), b"ordinary content");
+    assert_eq!(
+        std::fs::metadata(root.path().join("payload"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7000,
+        0
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("payload")).unwrap(),
+        b"ordinary content"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn zip_security_boundary_confines_symlinks_and_permission_changes() {
     use std::os::unix::fs::PermissionsExt;
-    for bytes in [include_bytes!("charm-fixtures/symlink.zip").as_slice(), include_bytes!("charm-fixtures/symlink-mode.zip").as_slice()] {
+    for bytes in [
+        include_bytes!("charm-fixtures/symlink.zip").as_slice(),
+        include_bytes!("charm-fixtures/symlink-mode.zip").as_slice(),
+    ] {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("extract");
         std::fs::create_dir(&destination).unwrap();
@@ -111,10 +144,16 @@ fn zip_security_boundary_confines_symlinks_and_permission_changes() {
         std::fs::write(&outside, b"untouched sentinel").unwrap();
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o640)).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        assert_eq!(archive.by_index(0).unwrap().unix_mode().unwrap() & 0o170000, 0o120000);
+        assert_eq!(
+            archive.by_index(0).unwrap().unix_mode().unwrap() & 0o170000,
+            0o120000
+        );
         assert!(archive.extract(&destination).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"untouched sentinel");
-        assert_eq!(std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777, 0o640);
+        assert_eq!(
+            std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777,
+            0o640
+        );
         assert!(!destination.join("link").exists());
     }
 }
