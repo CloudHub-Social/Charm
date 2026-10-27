@@ -162,6 +162,14 @@ requests. Synthetic HTTP fixtures distinguish mapped 404 from 412. This does not
 establish which status production returned before these counters existed, nor
 prove that a 412 means the provider lacks conditional-write support.
 
+An exhausted activation attempt budget is different from an individual request
+timeout. With the pinned dependency, a final transport timeout or HTTP 408 is a
+generic error and exits activation; it is not counted as a conditional conflict.
+Synthetic fixtures cover both timeout cases. Transient internal retries can
+still precede a final conditional response, so counts alone do not establish
+per-request latency or immediate rejection. Do not increase timeout settings
+merely because the application exhausted its attempt budget.
+
 
 A conflict count does not establish why publication failed or authorize clearing
 a fence. Preserve the old writer and durable data while investigating issue573.

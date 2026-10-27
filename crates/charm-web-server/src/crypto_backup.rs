@@ -1535,12 +1535,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn s3_update_404_and_412_retain_distinct_status_after_precondition_mapping() {
+    async fn s3_updates_distinguish_conflicts_from_request_timeouts() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        for status in [
-            axum::http::StatusCode::NOT_FOUND,
-            axum::http::StatusCode::PRECONDITION_FAILED,
+        for (status, delayed) in [
+            (axum::http::StatusCode::NOT_FOUND, false),
+            (axum::http::StatusCode::PRECONDITION_FAILED, false),
+            (axum::http::StatusCode::REQUEST_TIMEOUT, false),
+            (axum::http::StatusCode::OK, true),
         ] {
             let writes = Arc::new(AtomicUsize::new(0));
             let write_count = Arc::clone(&writes);
@@ -1551,6 +1553,9 @@ mod tests {
                     async move {
                         assert_eq!(headers.get("if-match").unwrap(), "\"fixture-etag\"");
                         count.fetch_add(1, Ordering::SeqCst);
+                        if delayed {
+                            tokio::time::sleep(Duration::from_secs(4)).await;
+                        }
                         (status, "synthetic-sensitive-response-body")
                     }
                 }),
@@ -1562,9 +1567,16 @@ mod tests {
                 .with_bucket_name("fixture")
                 .with_region("us-east-1")
                 .with_endpoint(format!("http://{address}"))
-                .with_allow_http(true)
                 .with_access_key_id("fixture-access")
                 .with_secret_access_key("fixture-secret")
+                .with_client_options(
+                    object_store::ClientOptions::new().with_timeout(Duration::from_secs(2)),
+                )
+                .with_retry(object_store::RetryConfig {
+                    max_retries: 0,
+                    ..Default::default()
+                })
+                .with_allow_http(true)
                 .build()
                 .unwrap();
             let result = tokio::time::timeout(
@@ -1584,8 +1596,35 @@ mod tests {
             .await;
             server.abort();
             let error = result.expect("bounded synthetic PUT").unwrap_err();
-            assert!(matches!(error, object_store::Error::Precondition { .. }));
-            assert_eq!(conflict_http_status(&error), Some(status.as_u16()));
+            if status == axum::http::StatusCode::NOT_FOUND
+                || status == axum::http::StatusCode::PRECONDITION_FAILED
+            {
+                assert!(matches!(error, object_store::Error::Precondition { .. }));
+            } else {
+                // Final transport timeout and HTTP 408 cannot feed the
+                // activation loop's conditional-conflict counter.
+                assert!(matches!(error, object_store::Error::Generic { .. }));
+            }
+            assert_eq!(
+                conflict_http_status(&error),
+                (!delayed).then_some(status.as_u16())
+            );
+            if delayed {
+                let mut source = std::error::Error::source(&error);
+                let mut is_transport_timeout = false;
+                for _ in 0..8 {
+                    let Some(current) = source else { break };
+                    if let Some(http) = current.downcast_ref::<object_store::client::HttpError>() {
+                        is_transport_timeout = matches!(
+                            http.kind(),
+                            object_store::client::HttpErrorKind::Timeout
+                        );
+                        break;
+                    }
+                    source = current.source();
+                }
+                assert!(is_transport_timeout);
+            }
             assert_eq!(writes.load(Ordering::SeqCst), 1);
         }
     }
