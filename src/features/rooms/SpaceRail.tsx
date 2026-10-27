@@ -1166,7 +1166,12 @@ function DirectMessageShortcut({
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={labelWithBadge(label, item.unread, item.highlight)}
+          aria-label={labelWithBadge(
+            label,
+            item.unread,
+            item.highlight,
+            `${initials(room.room_id, room.name)}${item.highlight > 0 ? ` ${item.highlight}` : ""}`,
+          )}
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
@@ -1233,7 +1238,10 @@ function SpaceButton({
   uxRefresh,
 }: SpaceButtonProps) {
   const label = displayName(space.room_id, space.name);
-  const accessibleLabel = labelWithBadge(label, unread, highlight);
+  const visibleLabel = `${initials(space.room_id, space.name)}${
+    highlight > 0 || unread > 0 ? ` ${highlight > 0 ? highlight : unread}` : ""
+  }`;
+  const accessibleLabel = labelWithBadge(label, unread, highlight, visibleLabel);
   const [dragging, setDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState<[number, number]>([0, 0]);
   const draggedRef = useRef(false);
@@ -1350,12 +1358,13 @@ function collectDescendantSpaceIds(
   return descendants;
 }
 
-function labelWithBadge(label: string, unread: number, highlight: number) {
+function labelWithBadge(label: string, unread: number, highlight: number, visibleLabel?: string) {
+  const name = visibleLabel ? `${visibleLabel}, ${label}` : label;
   const counts = [
     unread > 0 ? `${unread} unread` : null,
     highlight > 0 ? `${highlight} mentions` : null,
   ].filter(Boolean);
-  return counts.length > 0 ? `${label}, ${counts.join(", ")}` : label;
+  return counts.length > 0 ? `${name}, ${counts.join(", ")}` : name;
 }
 
 function getHomeBadge(rooms: RoomSummary[], showAllRooms: boolean) {
@@ -1445,6 +1454,7 @@ function BadgeDot({
             : "bg-muted-foreground text-background",
       )}
     >
+      {" "}
       {label}
     </span>
   );

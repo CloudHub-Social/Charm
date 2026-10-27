@@ -116,13 +116,15 @@ export function MobileSpacesView({
               const active = activeMode === "space" && activeSpaceId === room.room_id;
               const attention = unreadSpaceIds.has(room.room_id);
               const label = displayName(room.room_id, room.name);
+              const avatarInitials = initials(room.room_id, room.name);
+              const kind = depth > 0 ? "Nested space" : "Space";
               return (
                 <div key={room.room_id}>
                   {index > 0 && <div className="ml-16 border-t border-[var(--ux-shell-border)]" />}
                   <button
                     type="button"
                     aria-current={active ? "page" : undefined}
-                    aria-label={`${label}${attention ? ", unread activity" : ""}`}
+                    aria-label={`${avatarInitials} ${label} ${kind}${attention ? ", unread activity" : ""}`}
                     onClick={() => onSelectSpace(room.room_id)}
                     className={cn(
                       "relative flex min-h-16 w-full items-center gap-3 px-3 text-left transition active:opacity-65 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ux-shell-focus)]",
@@ -142,13 +144,13 @@ export function MobileSpacesView({
                         style={{ background: avatarColor(room.room_id) }}
                         className="text-xs font-bold text-white"
                       >
-                        {initials(room.room_id, room.name)}
+                        {avatarInitials}{" "}
                       </AvatarFallback>
                     </Avatar>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold">{label}</span>
+                      <span className="block truncate text-sm font-semibold">{label} </span>
                       <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                        {depth > 0 ? "Nested space" : "Space"}
+                        {kind}
                       </span>
                     </span>
                     {attention && (

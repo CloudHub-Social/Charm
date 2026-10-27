@@ -1,3 +1,5 @@
+> Current qualification ownership and artifact reuse are documented in the [canonical CI guide](../docs-site/src/content/docs/contributing/ci-tiers.md). The background below retains the original tier rationale.
+
 # CI / release tiers
 
 Charm 2.0's CI is split into tiers, each with a different job: fast feedback
@@ -19,7 +21,7 @@ status checks branch protection actually enforces.
 - Storybook + axe a11y, Playwright e2e
 - CodeQL, GitGuardian, dependency audits
 
-No native platform bundling happens here. A path-based `changes` job skips
+The separate iOS release-evidence lane retains simulator and unsigned archive proof. A path-based `changes` job skips
 whole categories of checks when nothing relevant changed (e.g. a Rust-only
 PR skips `Frontend`/`Storybook`/`E2E`; a docs-only PR skips almost
 everything).
@@ -39,7 +41,7 @@ instead opens/comments a tracking GitHub issue, same pattern as Tier 3.
 
 Same checks as Tier 1, re-run against the synthetic tree GitHub's merge
 queue builds (the PR combined with whatever else is ahead of it in the
-queue). Still no native platform bundling. This is the last gate before a
+queue). The iOS release-evidence lane also validates the queued tree. This is the last gate before a
 commit lands on `main`.
 
 ## Tier 3 — Nightly platform builds (`nightly.yml`)
@@ -104,7 +106,7 @@ are in [the release-tier guide](../docs-site/src/content/docs/contributing/ci-ti
 - **`sccache`** — object-level (per compilation-unit) caching, backed by a
   dedicated DigitalOcean Spaces bucket (S3-compatible) rather than GitHub's
   Actions cache, so it isn't constrained by that same 10GB cap and every
-  branch can freely read+write.
+  branch can restore; only trusted main jobs receive write credentials.
 - Native builds in Tier 1/2 (the `rust` job) build in `--debug` mode where
   they're pure compile-checks — release-mode optimization (`opt-level=3`) is
   expensive and buys nothing for "does it build." Tier 3 and Tier 4 build in

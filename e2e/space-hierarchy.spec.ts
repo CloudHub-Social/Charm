@@ -98,10 +98,10 @@ test("renders nested space rooms and exposes recursive hierarchy plus space badg
 
   await expect(page.getByRole("navigation", { name: "Spaces" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Team Space", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "TE, Team Space", exact: true })).toBeVisible();
   await expect(page.getByText("Planning")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Team Space", exact: true }).click();
+  await page.getByRole("button", { name: "TE, Team Space", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "Team Space" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Space rooms/ })).toBeVisible();

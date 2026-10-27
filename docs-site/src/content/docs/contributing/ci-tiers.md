@@ -18,8 +18,9 @@ PR push.
 
 Runs on every push to an open PR. **Blocking** — lint/format/typecheck/unit
 tests, Rust fmt/clippy/nextest, Storybook + axe a11y, Playwright e2e,
-CodeQL, dependency audits. No native platform bundling. A path-based
-`changes` job skips whole categories when nothing relevant changed.
+CodeQL and dependency audits. The separate iOS release-evidence lane retains
+native simulator and archive proof. A tested changed-input selector skips
+whole categories only when their inputs are known to be unaffected.
 
 Changes to the companion API container inputs also build its actual Dockerfile
 on a Linux runner. The Rust required gate includes this result, so the deployment
@@ -40,6 +41,55 @@ scan generated Rust build files. The iOS lane plants a utility-class probe in
 that directory and verifies it never appears in CSS, then compares CSS hashes
 between the simulator and device builds. Generated native output must not alter
 the frontend. These checks reuse the existing builds and do not add an archive.
+
+### Qualification ownership and artifact reuse
+
+`Quality checks` owns PR Storybook and browser execution. These required jobs
+also capture screenshots; `Sentry Snapshots` is called only after both producers
+succeed and consumes their same-run artifacts. It verifies repository, revision,
+run ID, attempt, suite and the complete PNG digest inventory before upload.
+Missing, stale, modified or partial failed-run captures cannot substitute for
+successful execution. Reused artifact names include the attempt to avoid immutable
+artifact collisions on a full rerun. Consumers use the attempt recorded by each
+successful producer job, so a partial rerun can reuse that same run and revision's
+earlier successful capture. They reject missing/future attempts and still verify
+repository, revision, run, suite and every PNG digest; no cross-run fallback exists. The existing Sentry app IDs, comparison thresholds and
+feature-gallery comparisons are retained. Background scroll normalization is
+restored after capture; a bounded no-capture scroll witness also runs.
+
+Main pushes and manual Sentry runs retain standalone capture. This deliberately
+keeps exact-main baseline uploads and the existing `Feature docs refresh`
+workflow lineage. Fork and Dependabot PRs retain browser qualification without
+secret-bearing upload consumers. PR reuse adds no token permissions. Required
+check names are unchanged; optional called snapshot/gallery checks acquire the
+`Visual snapshot consumers` prefix and are not required contexts in the current
+main ruleset.
+
+`scripts/ci/selection.mjs` retains native/workspace and Synapse input coverage,
+adds binding/feature-gallery witnesses, and selects all qualification for
+unknown paths, unresolved diffs and shared dependencies/workflows. Rename diffs
+include both source and destination. Tooling-only lint/format/Knip changes run
+the frontend gate without unnecessary browser execution. Audits, licensing,
+observability and release safeguards remain unconditional. The stable Rust
+aggregate requires every selected job to succeed; a skipped or missing selected
+job is a failure. Selector, result and artifact contracts run in the frontend
+gate on every event.
+
+The Linux integration lanes share only package setup, not services or tests.
+They retain separate Synapse/Dex and MAS stacks. Package installation omits
+unrelated recommendations. Existing recovery/persistence/cancellation commands
+use the same compiler cache as their initial compilation, with read-only PR
+credentials and main-only writes; no credential or cache policy changes.
+
+Baseline observations before this cleanup: quality run `40401788799` consumed
+51.75 summed unweighted job-minutes; snapshot run `40401788645` consumed 5.03,
+including 4.6 minutes of repeated browser jobs. iOS run `40401788779` took 50.2
+minutes for simulator, smoke and archive. Linux package setup varied up to 38.7
+minutes in `40387786415`. These are individual observations, not percentiles,
+billing estimates or a claimed speedup. Compare queue, setup, execution and
+summed compute separately after hosted verification. iOS coverage and release
+workflows are unchanged; browser consolidation alone cannot remove that critical
+path.
 
 ## Tier 2 — Merge queue
 
@@ -217,3 +267,44 @@ in the repository.
   curated E2E evidence generated from those checks.
 - [Documentation workflow](../documentation/) defines when a code change must
   update specs, runbooks, or feature evidence in the same pull request.
+
+### Temporary updater ZIP backport qualification
+
+The attributed `vendor/tauri-plugin-updater` crate keeps updater2.11.0 and the
+current Tauri/iOS compatibility patches while adopting upstream's ZIP9 dependency
+change. Its `CHARM_BACKPORT.md` records the immutable source, archive checksum,
+license, exact production delta and removal condition. No updater endpoints or
+signing policy change with this backport.
+
+The read-only **Updater backport qualification** workflow tests the actual private
+Windows extraction and installer-selection helpers with inert archives, without
+calling an installer or exiting the app. It also checks valid/modified public
+signature fixtures and ZIP's Unix permission/symlink boundary. Those Unix tests
+qualify the dependency; Charm's Linux/macOS updater uses TAR rather than ZIP.
+Existing audit thresholds and platform/release gates remain required. Preparing a
+lockfile artifact is not acceptance: the artifact must be reviewed, committed and
+tested at the resulting PR head. The temporary branch-only preparation job is removed after candidate adoption;
+PR qualification remains until a supported upstream migration removes the backport.
+
+The vendored updater also removes optional certificate/hostname bypass fields and
+its arbitrary custom-client callback. Legacy JSON flags fail explicitly when
+true; omitted or false values remain compatible. This preserves Charm's current
+configuration, headers, proxies, timeouts and signature checks, while deliberately
+removing optional upstream insecure/custom-client behavior. Hosted tests include
+configuration rejection and compile-fail checks for the removed Rust APIs. Both
+metadata and download paths retain standard TLS validation, and CodeQL findings
+must clear through the source change rather than suppression or dismissal.
+
+## Review receipt compatibility
+
+The Codex gate is pinned to BTCMedia/codex-review-gate-action commit
+`c3701c29489550dd61c4cea6de906aee92a21b36`. It recognizes the exact
+`codex-review-receipt:v1` first-line envelope emitted by current Codex reviews.
+Bot and application identity, reviewed-commit binding, closed result grammar,
+unresolved findings and evidence limits remain enforced. The existing read-only
+review-envelope contract runs the pinned action's tests and Charm's positive
+and negative fixtures without granting status-write access.
+
+The live pull-request-target gate reads the default branch. Preparing or testing
+a pin change in a PR does not activate it or satisfy the current live gate;
+activation requires the separately authorized protected workflow update.

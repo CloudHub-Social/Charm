@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 
 // Mirrors .storybook/test-runner.ts's capture pattern: when
-// SENTRY_SNAPSHOT_CAPTURE is set (only the sentry-snapshots CI job's e2e step sets
+// SENTRY_SNAPSHOT_CAPTURE is set (Quality PR capture and standalone Sentry capture set
 // it), write a deterministic screenshot for upload to Sentry's visual-snapshot
 // system. A no-op otherwise, so every other e2e run (local dev, the plain `e2e` CI
 // job) is unaffected by calling this.
@@ -53,24 +53,42 @@ const captureDir = process.env.SENTRY_SNAPSHOT_CAPTURE
  */
 export async function captureSnapshot(page: Page, name: string): Promise<void> {
   if (!captureDir) return;
-  await page.evaluate(() => {
+  const savedScroll = await page.evaluateHandle(() => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]'));
-    if (dialogs.length === 0) return;
+    if (dialogs.length === 0) return null;
     const topDialog = dialogs[dialogs.length - 1];
     const isBackground = (el: Element) => !topDialog.contains(el);
 
+    const windowOffset = { x: window.scrollX, y: window.scrollY };
+    const offsets: { element: Element; x: number; y: number }[] = [];
     window.scrollTo(0, 0);
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
     let node = walker.currentNode as Element | null;
     while (node) {
       if ((node.scrollTop !== 0 || node.scrollLeft !== 0) && isBackground(node)) {
+        offsets.push({ element: node, x: node.scrollLeft, y: node.scrollTop });
         node.scrollTo(0, 0);
       }
       node = walker.nextNode() as Element | null;
     }
+    return { windowOffset, offsets };
   });
-  await page.screenshot({
-    path: `${captureDir}/${name}.png`,
-    animations: "disabled",
-  });
+  try {
+    await page.screenshot({
+      path: `${captureDir}/${name}.png`,
+      animations: "disabled",
+    });
+  } finally {
+    try {
+      await savedScroll.evaluate((saved) => {
+        if (!saved) return;
+        for (const { element, x, y } of saved.offsets) {
+          if (element.isConnected) element.scrollTo(x, y);
+        }
+        window.scrollTo(saved.windowOffset.x, saved.windowOffset.y);
+      });
+    } finally {
+      await savedScroll.dispose();
+    }
+  }
 }
