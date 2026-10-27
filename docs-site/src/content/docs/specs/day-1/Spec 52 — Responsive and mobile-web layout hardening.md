@@ -75,8 +75,8 @@ Every item below records the original audit finding and proposed fix.
 1. **`100vh` → `100dvh` sweep.** The app shell is sized with `h-screen`/
    `min-h-screen` (= `100vh`), which on mobile browsers is the viewport *with the URL
    bar hidden* — so while the URL bar shows, the app is taller than the visible area
-   and the bottom nav (`AppShell.tsx:86`) and composer (`ChatShell.tsx:862`) render
-   **below the fold**. Files: `AppShell.tsx:65,75`, `App.tsx:50,62`,
+   and the bottom nav + composer sit under the fold (`AppShell.tsx:86`,
+   `ChatShell.tsx:862`). Files: `AppShell.tsx:65,75`, `App.tsx:50,62`,
    `LoginScreen.tsx:158`, `ErrorFallback.tsx:40`. Fix: `h-[100dvh]` /
    `min-h-[100dvh]` (keep a `100vh` fallback via `@supports` if desired). **This is
    the headline fix for the reported bug.**
@@ -172,5 +172,5 @@ code, tables, and other intentionally wide content retain their own bounded
 scroll containers. Gutters belong to measured virtualizer items, not to its
 absolutely positioned viewport. Test all message modes at 320/375/390/430 CSS
 pixels and preserve existing scroll-anchor checks. See the
-[implementation ledger](../../operations/ux-recovery.md) for evidence and scope.
+[implementation ledger](/operations/ux-recovery/) for evidence and scope.
 Native acceptance remains separate from the browser fixtures.
