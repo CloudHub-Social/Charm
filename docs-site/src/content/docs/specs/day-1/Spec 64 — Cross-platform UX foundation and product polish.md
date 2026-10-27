@@ -271,13 +271,15 @@ spec rather than introduce another parallel navigation or composer.
 
 PR #601 corrects the composition of existing message layouts. Message actions
 are bounded overlays and consume no prose width. Pointer hover and keyboard
-focus reveal the toolbar; a normal text tap reveals it on touch. Existing
-long-press behavior remains, with context-menu and Shift+F10/ContextMenu-key
-entry to the same permission-aware menu. Embedded controls, links, and selected
-text must retain their own interactions. Touch does not permanently show the
-quick-reaction row.
+focus reveal the toolbar; a normal text tap reveals it on touch by focusing the
+native menu button. Existing long-press and pointer context-menu entry reuse the
+same permission-aware menu. Keyboard users reach native action buttons with Tab
+and activate the menu with Enter, Space, or ArrowDown; Escape returns focus to
+its trigger. The message container is not itself a button or a tab stop. Embedded
+controls, links, selected text, scrolling, and cancelled gestures retain their
+own interactions. Touch does not permanently show the quick-reaction row.
 
 Timeline gutters are measured item content. Bubbles retain their saved visual
 mode, and IRC reactions use the next line instead of crowding sender and text.
 These repairs do not promote the refresh flag or complete composer/tablet work.
-See the [implementation ledger](../../operations/ux-recovery.md).
+See the [implementation ledger](/operations/ux-recovery/).
