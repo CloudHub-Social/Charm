@@ -217,3 +217,22 @@ in the repository.
   curated E2E evidence generated from those checks.
 - [Documentation workflow](../documentation/) defines when a code change must
   update specs, runbooks, or feature evidence in the same pull request.
+
+### Temporary updater ZIP backport qualification
+
+The attributed `vendor/tauri-plugin-updater` crate keeps updater2.11.0 and the
+current Tauri/iOS compatibility patches while adopting upstream's ZIP9 dependency
+change. Its `CHARM_BACKPORT.md` records the immutable source, archive checksum,
+license, exact production delta and removal condition. No updater endpoints or
+signing policy change with this backport.
+
+The read-only **Updater backport qualification** workflow tests the actual private
+Windows extraction and installer-selection helpers with inert archives, without
+calling an installer or exiting the app. It also checks valid/modified public
+signature fixtures and ZIP's Unix permission/symlink boundary. Those Unix tests
+qualify the dependency; Charm's Linux/macOS updater uses TAR rather than ZIP.
+Existing audit thresholds and platform/release gates remain required. Preparing a
+lockfile artifact is not acceptance: the artifact must be reviewed, committed and
+tested at the resulting PR head. Remove the temporary branch-only preparation job
+when the candidate is adopted; retain PR qualification until the backport is
+removed with a supported upstream migration.

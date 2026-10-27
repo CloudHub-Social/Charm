@@ -327,8 +327,9 @@ function collectCargoLicenses() {
   const metadata = commandJson("cargo", ["metadata", "--locked", "--format-version=1"]);
 
   for (const packageRecord of metadata.packages) {
-    if (!packageRecord.source) continue;
     const packageRoot = path.dirname(packageRecord.manifest_path);
+    const updaterBackport = path.join(repositoryRoot, "vendor", "tauri-plugin-updater");
+    if (!packageRecord.source && packageRoot !== updaterBackport) continue;
     addEntry({
       ecosystem: "Cargo",
       name: packageRecord.name,
