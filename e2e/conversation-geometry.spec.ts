@@ -1,11 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
+
+test.use({ hasTouch: true });
 
 const ROOM = { room_id: "!geometry:localhost", name: "Geometry room", unread_count: 0 };
 
 for (const layout of ["bubble", "discord", "irc"] as const) {
   for (const width of [320, 375, 390, 430]) {
     test(`${layout} contains long conversation content at ${width}px`, async ({ page }) => {
+      await page.clock.setFixedTime(new Date("2026-09-07T12:00:00Z"));
       await page.setViewportSize({ width, height: 900 });
       await page.addInitScript((messageLayout) => {
         localStorage.setItem(
@@ -65,15 +69,16 @@ for (const layout of ["bubble", "discord", "irc"] as const) {
               rowOverflow: Math.max(0, element.scrollWidth - element.clientWidth),
               rightOverflow: Math.max(0, bounds.right - viewportWidth),
               leftOverflow: Math.max(0, -bounds.left),
-              documentOverflow: Math.max(
-                0,
-                document.documentElement.scrollWidth - viewportWidth,
-              ),
+              documentOverflow: Math.max(0, document.documentElement.scrollWidth - viewportWidth),
             };
           });
         })
         .toEqual({ rowOverflow: 0, rightOverflow: 0, leftOverflow: 0, documentOverflow: 0 });
 
+      await captureSnapshot(page, `conversation-geometry-${layout}-${width}`);
+
+      await row.tap();
+      await expect(row.locator("[data-message-actions]")).toHaveCSS("opacity", "1");
       const more = row.getByRole("button", { name: "More actions" });
       await more.click();
       await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();

@@ -47,6 +47,7 @@ test("copies the canonical permalink for a sent message", async ({ page, context
   const row = page
     .getByText("copy my link", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Copy link" }).click();
 
@@ -120,6 +121,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await captureSnapshot(page, "message-actions-reacted");
 
   // --- edit ---
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit" }).click();
   await expect(page.getByText("Editing message")).toBeVisible();
@@ -134,6 +136,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
   // --- reply ---
+  await editedRow.hover();
   await editedRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Reply" }).click();
   await expect(page.getByText(`Replying to ${USER_ID}`)).toBeVisible();
@@ -147,6 +150,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await captureSnapshot(page, "message-actions-replied");
 
   // --- delete ---
+  await replyRow.hover();
   await replyRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByRole("heading", { name: "Delete message?" })).toBeVisible();
@@ -186,6 +190,7 @@ test("opening More-actions still closes another already-open Radix popover on th
     .getByRole("button", { name: "React with 👍" });
   await expect(popoverReactWithThumbsUp).toBeVisible();
 
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
 
   // The click both opened the dropdown (not a #226 self-dismiss no-op)...
@@ -203,6 +208,7 @@ test("views raw event source for a sent message", async ({ page, context }) => {
   const row = page
     .getByText("show me the source", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "View source" }).click();
 
@@ -246,6 +252,7 @@ test("reports another user's message with a reason", async ({ page }) => {
   const row = page
     .getByText("reportable message", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Report" }).click();
   await expect(page.getByRole("heading", { name: "Report message?" })).toBeVisible();
@@ -265,6 +272,7 @@ test("views edit history for an edited message", async ({ page }) => {
   const originalRow = page
     .getByText("original body", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit" }).click();
   await composer.fill("edited body");
@@ -274,6 +282,7 @@ test("views edit history for an edited message", async ({ page }) => {
   const editedRow = page
     .getByText("edited body", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await editedRow.hover();
   await editedRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit history" }).click();
 
@@ -320,6 +329,7 @@ test("forwards a message to another joined room", async ({ page }) => {
   const row = page
     .getByText("forward me", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Forward" }).click();
 

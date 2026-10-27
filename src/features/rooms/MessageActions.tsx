@@ -128,6 +128,8 @@ export interface MessageActionsProps {
 export interface MessageActionsHandle {
   startLongPress: () => void;
   cancelLongPress: () => void;
+  /** Opens the same menu from a keyboard or pointer context-menu request. */
+  openMenu?: () => void;
 }
 
 /**
@@ -207,7 +209,11 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       }
     }
 
-    useImperativeHandle(ref, () => ({ startLongPress, cancelLongPress }), []);
+    useImperativeHandle(
+      ref,
+      () => ({ startLongPress, cancelLongPress, openMenu: () => setMenuOpen(true) }),
+      [],
+    );
 
     // A touch-and-hold that outlives the item (e.g. the message list re-renders
     // out from under it after a `timeline:update`) must not fire `setMenuOpen`
@@ -222,7 +228,12 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
 
     return (
       <div
-        className={cn("flex items-center gap-1", className)}
+        data-message-actions
+        className={cn(
+          "flex items-center gap-1",
+          className,
+          menuOpen && "pointer-events-auto opacity-100",
+        )}
         // stopPropagation: `ChatShell` forwards the same long-press gesture
         // from the whole message row via the imperative handle above, so
         // without this a touch on this component's own area would bubble up
@@ -257,7 +268,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               type="button"
               aria-label={`React with ${emoji}`}
               onClick={() => react(emoji)}
-              className="flex size-11 items-center justify-center rounded-md text-base hover:bg-secondary"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-base hover:bg-secondary [@media(hover:none)]:hidden"
             >
               {emoji}
             </button>
@@ -268,7 +279,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               type="button"
               aria-label="React"
               disabled={disableRelationActions || isUndecrypted}
-              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
             >
               <SmilePlus size={16} />
             </button>
@@ -313,7 +324,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             <button
               type="button"
               aria-label="More actions"
-              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
             >
               <MoreHorizontal size={16} />
             </button>

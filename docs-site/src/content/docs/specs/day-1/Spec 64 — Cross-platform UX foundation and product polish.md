@@ -266,3 +266,18 @@ spec rather than introduce another parallel navigation or composer.
    media playback, calls, and account isolation survive pane and breakpoint changes.
 8. The legacy shell remains functional with `ux_refresh_v1` disabled throughout
    the rollback window.
+
+## Conversation repair follow-up (2026-10-27)
+
+PR #601 corrects the composition of existing message layouts. Message actions
+are bounded overlays and consume no prose width. Pointer hover and keyboard
+focus reveal the toolbar; a normal text tap reveals it on touch. Existing
+long-press behavior remains, with context-menu and Shift+F10/ContextMenu-key
+entry to the same permission-aware menu. Embedded controls, links, and selected
+text must retain their own interactions. Touch does not permanently show the
+quick-reaction row.
+
+Timeline gutters are measured item content. Bubbles retain their saved visual
+mode, and IRC reactions use the next line instead of crowding sender and text.
+These repairs do not promote the refresh flag or complete composer/tablet work.
+See the [implementation ledger](../../operations/ux-recovery.md).

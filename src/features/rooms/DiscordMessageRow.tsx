@@ -1,3 +1,9 @@
+import {
+  focusMessageActions,
+  handleMessageActionKey,
+  messageActionSurfaceClassName,
+  openMessageContextMenu,
+} from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -69,9 +75,15 @@ export function DiscordMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
+      tabIndex={0}
+      role="group"
+      aria-label={`Message from ${message.sender_display_name ?? message.sender}`}
+      onClick={focusMessageActions}
+      onKeyDown={(event) => handleMessageActionKey(event, getActionsHandle(rowKey))}
+      onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
-        "group flex w-full max-w-[48rem] gap-2",
+        "group relative flex min-w-0 w-full max-w-[48rem] gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
@@ -208,7 +220,7 @@ export function DiscordMessageRow({
               mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}
-              className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+              className={messageActionSurfaceClassName}
               onReply={onReply}
               onReact={onReact}
               onEdit={onEdit}

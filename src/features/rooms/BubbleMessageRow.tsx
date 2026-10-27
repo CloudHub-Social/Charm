@@ -1,3 +1,9 @@
+import {
+  focusMessageActions,
+  handleMessageActionKey,
+  messageActionSurfaceClassName,
+  openMessageContextMenu,
+} from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -68,9 +74,15 @@ export function BubbleMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
+      tabIndex={0}
+      role="group"
+      aria-label={`Message from ${message.sender_display_name ?? message.sender}`}
+      onClick={focusMessageActions}
+      onKeyDown={(event) => handleMessageActionKey(event, getActionsHandle(rowKey))}
+      onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
-        "group flex max-w-120 gap-2",
+        "group relative flex min-w-0 w-full max-w-120 gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         own && "ml-auto flex-row-reverse",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
@@ -125,12 +137,12 @@ export function BubbleMessageRow({
         ) : (
           <div className="w-6 shrink-0" />
         ))}
-      <div className={cn("flex min-w-0 flex-col gap-0.5", own && "items-end")}>
+      <div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", own && "items-end")}>
         {showAvatar &&
           (onSenderClick ? (
             <button
               type="button"
-              className="w-fit text-sm font-semibold text-secondary-foreground hover:underline"
+              className="max-w-full truncate text-left text-sm font-semibold text-secondary-foreground hover:underline"
               onTouchStart={(event) => event.stopPropagation()}
               onTouchEnd={(event) => event.stopPropagation()}
               onTouchCancel={(event) => event.stopPropagation()}
@@ -142,7 +154,7 @@ export function BubbleMessageRow({
               {message.sender_display_name ?? message.sender}
             </button>
           ) : (
-            <span className="text-sm font-semibold text-secondary-foreground">
+            <span className="max-w-full truncate text-sm font-semibold text-secondary-foreground">
               {message.sender_display_name ?? message.sender}
             </span>
           ))}
@@ -152,8 +164,7 @@ export function BubbleMessageRow({
             onClick={() => onJumpToMessage(message.in_reply_to!.event_id)}
           />
         )}
-        <div className="flex items-center gap-1">
-          {!own && <div className="w-11 shrink-0" />}
+        <div className="flex min-w-0 max-w-full items-center gap-1">
           {message.redacted ? (
             <div className="w-fit rounded-md bg-secondary/50 px-3 py-[var(--message-row-padding-y)] text-[15px] italic text-muted-foreground">
               Message deleted
@@ -198,7 +209,7 @@ export function BubbleMessageRow({
               mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}
-              className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+              className={messageActionSurfaceClassName}
               onReply={onReply}
               onReact={onReact}
               onEdit={onEdit}

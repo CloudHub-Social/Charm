@@ -1,3 +1,9 @@
+import {
+  focusMessageActions,
+  handleMessageActionKey,
+  messageActionSurfaceClassName,
+  openMessageContextMenu,
+} from "./messageActionSurface";
 import { cn } from "@/lib/utils";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -64,9 +70,15 @@ export function IrcMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
+      tabIndex={0}
+      role="group"
+      aria-label={`Message from ${message.sender_display_name ?? message.sender}`}
+      onClick={focusMessageActions}
+      onKeyDown={(event) => handleMessageActionKey(event, getActionsHandle(rowKey))}
+      onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
-        "group flex items-baseline gap-1 py-0.5",
+        "group relative flex min-w-0 w-full flex-wrap items-baseline gap-1 py-0.5",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
       onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
@@ -80,7 +92,7 @@ export function IrcMessageRow({
       {onSenderClick ? (
         <button
           type="button"
-          className="relative z-10 flex min-h-11 max-w-40 shrink items-center truncate font-mono text-[13px] font-semibold"
+          className="relative z-10 flex min-h-11 max-w-[30%] shrink items-center truncate font-mono text-[13px] font-semibold"
           style={{ color: nickColor(message.sender) }}
           title={nick}
           aria-label={`Open profile for ${nick}`}
@@ -94,7 +106,7 @@ export function IrcMessageRow({
         </button>
       ) : (
         <span
-          className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
+          className="max-w-[30%] shrink truncate font-mono text-[13px] font-semibold"
           style={{ color: nickColor(message.sender) }}
           title={nick}
         >
@@ -165,56 +177,56 @@ export function IrcMessageRow({
           </>
         )}
       </div>
-      {(!message.redacted || (!own && onReport)) && (
-        <>
-          {!message.redacted && (
-            <ReactionBar
-              accountId={currentUserId ?? ""}
-              reactions={message.reactions}
-              onToggle={onReact}
-              disabled={disableRelationActions || isUndecrypted}
-              roomId={roomId}
-              eventId={message.event_id}
-            />
-          )}
-          <MessageActions
-            ref={(el) => registerActionsRef(rowKey, el)}
+      {!message.redacted && (
+        <div className="min-w-0 basis-full">
+          <ReactionBar
             accountId={currentUserId ?? ""}
-            isOwn={own}
-            canEdit={
-              own && !message.poll && message.text_editable === true && message.media === null
-            }
-            canReply={!message.poll}
-            canRedact={canRedact}
-            canPin={canPin}
-            isPinned={isPinned}
-            disableRelationActions={disableRelationActions}
-            disableStableEventActions={disableStableEventActions}
-            mutationsDisabled={mutationsDisabled}
-            isUndecrypted={isUndecrypted}
-            isError={isError}
-            className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-            onReply={onReply}
-            onReact={onReact}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onPin={onPin}
-            onUnpin={onUnpin}
-            onCopy={onCopy}
-            onCopyLink={onCopyLink}
-            onBookmark={onBookmark}
-            onUnbookmark={onUnbookmark}
-            isBookmarked={isBookmarked}
-            onResend={onResend}
-            onDiscard={onDiscard}
-            onForward={message.poll ? undefined : onForward}
-            onViewSource={onViewSource}
-            onReport={onReport}
-            isRedacted={message.redacted}
-            isEdited={message.edited}
-            onViewEditHistory={onViewEditHistory}
+            reactions={message.reactions}
+            onToggle={onReact}
+            disabled={disableRelationActions || isUndecrypted}
+            roomId={roomId}
+            eventId={message.event_id}
           />
-        </>
+        </div>
+      )}
+      {(!message.redacted || (!own && onReport)) && (
+        <MessageActions
+          ref={(el) => registerActionsRef(rowKey, el)}
+          accountId={currentUserId ?? ""}
+          isOwn={own}
+          canEdit={
+            own && !message.poll && message.text_editable === true && message.media === null
+          }
+          canReply={!message.poll}
+          canRedact={canRedact}
+          canPin={canPin}
+          isPinned={isPinned}
+          disableRelationActions={disableRelationActions}
+          disableStableEventActions={disableStableEventActions}
+          mutationsDisabled={mutationsDisabled}
+          isUndecrypted={isUndecrypted}
+          isError={isError}
+          className={messageActionSurfaceClassName}
+          onReply={onReply}
+          onReact={onReact}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onPin={onPin}
+          onUnpin={onUnpin}
+          onCopy={onCopy}
+          onCopyLink={onCopyLink}
+          onBookmark={onBookmark}
+          onUnbookmark={onUnbookmark}
+          isBookmarked={isBookmarked}
+          onResend={onResend}
+          onDiscard={onDiscard}
+          onForward={message.poll ? undefined : onForward}
+          onViewSource={onViewSource}
+          onReport={onReport}
+          isRedacted={message.redacted}
+          isEdited={message.edited}
+          onViewEditHistory={onViewEditHistory}
+        />
       )}
     </div>
   );
