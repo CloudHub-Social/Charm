@@ -12,9 +12,10 @@ this script existed (DeployContainerExitNonZero / "must decode to exactly
 already carry DO's real encrypted EV[...] values) and patch only the
 structural fields .do/app.yaml is meant to drive onto it.
 
-Usage: merge-do-app-spec.py <live-spec.yaml> <repo-spec.yaml> <output.yaml>
+Usage: merge-do-app-spec.py <live-spec.yaml> <repo-spec.yaml> <output.yaml> <qualified-source-sha>
 """
 
+import re
 import sys
 
 import yaml
@@ -39,7 +40,11 @@ def find_service(spec: dict, name: str) -> dict:
 
 
 def main() -> None:
-    live_path, repo_path, output_path = sys.argv[1:4]
+    if len(sys.argv) != 5:
+        raise SystemExit("expected live spec, repo spec, output and qualified source SHA")
+    live_path, repo_path, output_path, qualified_sha = sys.argv[1:]
+    if re.fullmatch(r"[0-9a-f]{40}", qualified_sha) is None:
+        raise SystemExit("qualified source SHA must be 40 lowercase hexadecimal characters")
 
     with open(live_path) as f:
         live = yaml.safe_load(f)
@@ -92,8 +97,7 @@ def main() -> None:
 
     # A repo-declared SECRET with no live value yet must stop the deploy
     # here, before anything is written or submitted — not warn-and-continue.
-    # The caller (`doctl apps update` immediately followed by
-    # `apps create-deployment --wait`) would otherwise submit an
+    # The caller (`doctl apps update --update-sources --wait`) would otherwise submit an
     # empty-valued secret and roll it straight to production, which is
     # exactly the class of incident (DeployContainerExitNonZero / "must
     # decode to exactly 32 bytes, got 0") this whole script exists to
@@ -122,6 +126,20 @@ def main() -> None:
             )
         raise SystemExit(1)
 
+    # These are provider provenance values, never credentials. Reject a secret
+    # collision rather than replacing encrypted data with a public value.
+    guard_values = {
+        "CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA": qualified_sha,
+        "CHARM_WEB_SERVER_SOURCE_SHA": "${_self.COMMIT_HASH}",
+    }
+    for env in [*live_svc.get("envs", []), *desired_svc.get("envs", [])]:
+        if env["key"] in guard_values and env.get("type") == "SECRET":
+            raise SystemExit("release provenance key conflicts with a secret; refusing update")
+    merged_envs = [env for env in merged_envs if env["key"] not in guard_values]
+    merged_envs.extend(
+        {"key": key, "scope": "RUN_TIME", "type": "GENERAL", "value": value}
+        for key, value in guard_values.items()
+    )
     live_svc["envs"] = merged_envs
 
     with open(output_path, "w") as f:

@@ -9,6 +9,7 @@ pub mod media_cache;
 pub mod observability;
 pub mod pending_auth;
 pub mod persistence;
+pub mod release_guard;
 pub mod routes;
 pub mod session;
 pub mod sync_loop;

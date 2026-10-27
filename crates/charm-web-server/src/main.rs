@@ -13,6 +13,9 @@ const UX_REFRESH_V1_ENV: &str = "CHARM_FEATURE_UX_REFRESH_V1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Fail before telemetry, credentials, storage or background tasks initialize.
+    charm_web_server::release_guard::check_environment()?;
+
     // Bound for the rest of `main`'s lifetime, not discarded — an unbound
     // `Some(guard)` temporary would drop (and tear down the Sentry client)
     // immediately after this statement. `None` when
