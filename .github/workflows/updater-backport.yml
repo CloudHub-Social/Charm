@@ -60,6 +60,6 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          notices = Path('.artifacts/updater-licenses.txt').read_text()
+          notices = Path('.artifacts/updater-licenses.txt').read_text(encoding='utf-8')
           assert 'Cargo: tauri-plugin-updater@2.11.0' in notices
           assert 'Tauri Programme within The Commons Conservancy' in notices

@@ -19,6 +19,7 @@ COPY LICENSE ./LICENSE
 COPY NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
 COPY crates/charm-web-server ./crates/charm-web-server
 COPY src-tauri ./src-tauri
+COPY vendor/tauri-plugin-updater ./vendor/tauri-plugin-updater
 COPY scripts/generate-third-party-licenses.mjs ./scripts/generate-third-party-licenses.mjs
 COPY scripts/license-texts ./scripts/license-texts
 

@@ -32,3 +32,22 @@ reports unrelated baseline advisories until integration with PR590/592.
 The application notice generator explicitly includes this local crate so path
 dependencies do not lose attribution. Only the byte-preserved generated JS is
 excluded from application lint; Rust formatting/tests still apply.
+
+ZIP9.1.2 declares Rust1.88, so this backport's manifest records that minimum
+instead of the original updater's1.77.2. Charm already builds with newer Rust
+(including the Rust1.96 companion image). No toolchain or production resources
+change. The companion Docker build copies this workspace member explicitly.
+
+The eight stored ZIP fixtures are authored test data (120–283 bytes), each with
+only inert text payloads. An independent read-only metadata/content inspection
+confirmed their contents before registering their exact SHA256 values in the
+existing licensing gate. No extraction or local runtime verification was used.
+The fixtures cover top-level EXE/MSI selection, nested text preservation, absent
+installer, parent traversal, privileged Unix bits and escaping symlink targets.
+No executable installer or third-party source is hidden in these archives.
+
+The first hosted Unix pass showed that ZIP9 sanitizes unix_mode() before
+extraction. The permission fixture's raw central-directory attributes are
+therefore asserted directly, while the extracted mode and bytes retain their
+original safety/compatibility assertions. This corrects the test's observation
+point; it does not lower the required permission boundary.

@@ -110,10 +110,12 @@ fn zip_security_boundary_strips_privileged_permissions() {
         "charm-fixtures/privileged-mode.zip"
     )))
     .unwrap();
-    assert_eq!(
-        archive.by_index(0).unwrap().unix_mode().unwrap() & 0o7000,
-        0o7000
-    );
+    // ZIP9 sanitizes unix_mode() itself. Inspect the immutable central-directory
+    // external attributes to prove that the fixture really contains unsafe bits.
+    let bytes = include_bytes!("charm-fixtures/privileged-mode.zip");
+    let central = bytes.windows(4).position(|v| v == b"PK\x01\x02").unwrap();
+    let attributes = u32::from_le_bytes(bytes[central + 38..central + 42].try_into().unwrap());
+    assert_eq!((attributes >> 16) & 0o7000, 0o7000);
     archive.extract(root.path()).unwrap();
     assert_eq!(
         std::fs::metadata(root.path().join("payload"))
