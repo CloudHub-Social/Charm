@@ -6,6 +6,8 @@ export default {
   singleQuote: false,
   trailingComma: "all",
   ignorePatterns: [
+    // Preserve attributed upstream bytes; cargo fmt checks the Rust crate separately.
+    "vendor/tauri-plugin-updater",
     "dist",
     "coverage",
     "node_modules",

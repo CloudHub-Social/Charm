@@ -217,3 +217,31 @@ in the repository.
   curated E2E evidence generated from those checks.
 - [Documentation workflow](../documentation/) defines when a code change must
   update specs, runbooks, or feature evidence in the same pull request.
+
+### Temporary updater ZIP backport qualification
+
+The attributed `vendor/tauri-plugin-updater` crate keeps updater2.11.0 and the
+current Tauri/iOS compatibility patches while adopting upstream's ZIP9 dependency
+change. Its `CHARM_BACKPORT.md` records the immutable source, archive checksum,
+license, exact production delta and removal condition. No updater endpoints or
+signing policy change with this backport.
+
+The read-only **Updater backport qualification** workflow tests the actual private
+Windows extraction and installer-selection helpers with inert archives, without
+calling an installer or exiting the app. It also checks valid/modified public
+signature fixtures and ZIP's Unix permission/symlink boundary. Those Unix tests
+qualify the dependency; Charm's Linux/macOS updater uses TAR rather than ZIP.
+Existing audit thresholds and platform/release gates remain required. Preparing a
+lockfile artifact is not acceptance: the artifact must be reviewed, committed and
+tested at the resulting PR head. The temporary branch-only preparation job is removed after candidate adoption;
+PR qualification remains until a supported upstream migration removes the backport.
+
+
+The vendored updater also removes optional certificate/hostname bypass fields and
+its arbitrary custom-client callback. Legacy JSON flags fail explicitly when
+true; omitted or false values remain compatible. This preserves Charm's current
+configuration, headers, proxies, timeouts and signature checks, while deliberately
+removing optional upstream insecure/custom-client behavior. Hosted tests include
+configuration rejection and compile-fail checks for the removed Rust APIs. Both
+metadata and download paths retain standard TLS validation, and CodeQL findings
+must clear through the source change rather than suppression or dismissal.
