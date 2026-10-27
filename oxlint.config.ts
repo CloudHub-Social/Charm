@@ -1,6 +1,8 @@
 import { defineConfig } from "oxlint";
 
 export default defineConfig({
+  // Byte-preserved third-party generated bundle; updater Rust/tests remain checked.
+  ignorePatterns: ["vendor/tauri-plugin-updater/api-iife.js"],
   options: {
     typeAware: true,
   },

@@ -152,12 +152,16 @@ describe("SpaceRail", () => {
 
     expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "AL 1, Alice, 1 unread, 1 mentions" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
     const activity = screen.getByRole("button", { name: "Activity, 4 items" });
     expect(activity).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "LO, Loose child" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create or join space" })).toBeInTheDocument();
     const account = screen.getByRole("button", { name: "Account and settings" });
     fireEvent.click(activity);
@@ -194,7 +198,9 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Home, 1 unread, 2 mentions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Alice, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "AL 3, Alice, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
@@ -227,7 +233,9 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Home, 2 unread, 6 mentions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Alice, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "AL 3, Alice, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
@@ -235,7 +243,7 @@ describe("SpaceRail", () => {
     const props = renderRail();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.click(screen.getByRole("button", { name: "Product, 1 unread" }));
+    fireEvent.click(screen.getByRole("button", { name: "PR 1, Product, 1 unread" }));
 
     expect(props.onSelectSpace).toHaveBeenCalledWith("!child-space:localhost");
   });
@@ -243,7 +251,7 @@ describe("SpaceRail", () => {
   it("opens the parent folder when a child space is active", () => {
     renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
 
-    expect(screen.getByRole("button", { name: "Product, 1 unread" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "PR 1, Product, 1 unread" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -273,7 +281,7 @@ describe("SpaceRail", () => {
 
     expect(screen.getByRole("button", { name: "Collapse Team" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse Product" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Platform" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "PL, Platform" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -329,7 +337,10 @@ describe("SpaceRail", () => {
 
     expect(screen.getByRole("button", { name: "Collapse Root" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse Space A" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Space B" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "SP, Space B" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 
   it("surfaces rootless cyclic spaces as rail entries", () => {
@@ -350,8 +361,8 @@ describe("SpaceRail", () => {
       ],
     });
 
-    expect(screen.getByRole("button", { name: "Space A" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Space B" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SP, Space A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SP, Space B" })).toBeInTheDocument();
   });
 
   it("subtracts hidden direct-room badge counts from parent spaces", () => {
@@ -376,8 +387,10 @@ describe("SpaceRail", () => {
       ],
     });
 
-    expect(screen.getByRole("button", { name: "Team" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Alice, 1 unread, 2 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "TE, Team" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "AL 2, Alice, 1 unread, 2 mentions" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
   });
 
@@ -396,7 +409,7 @@ describe("SpaceRail", () => {
   it("opens a visible unread-DM shortcut without duplicating it in the overflow badge", () => {
     const props = renderRail();
 
-    fireEvent.click(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" }));
+    fireEvent.click(screen.getByRole("button", { name: "AL 1, Alice, 1 unread, 1 mentions" }));
 
     expect(props.onSelectRoom).toHaveBeenCalledWith("!dm:localhost");
     expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
@@ -405,13 +418,37 @@ describe("SpaceRail", () => {
   it("marks only the selected DM shortcut as the current rail destination", () => {
     renderRail({ activeMode: "dms", activeRoomId: "!dm:localhost" });
 
-    expect(screen.getByRole("button", { name: "Alice, 1 unread, 1 mentions" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(
+      screen.getByRole("button", { name: "AL 1, Alice, 1 unread, 1 mentions" }),
+    ).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Direct messages" })).not.toHaveAttribute(
       "aria-current",
     );
+  });
+
+  it("keeps visible initials and mention counts separated without numbering unread-only dots", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({
+          room_id: "!one:localhost",
+          name: "One",
+          is_direct: true,
+          has_unread: true,
+        }),
+        makeRoomSummary({
+          room_id: "!two:localhost",
+          name: "Two",
+          is_direct: true,
+          has_unread: true,
+          unread_count: 2,
+        }),
+      ],
+    });
+
+    const unreadOnly = screen.getByRole("button", { name: "ON, One, 1 unread" });
+    const mentioned = screen.getByRole("button", { name: "TW 2, Two, 1 unread, 2 mentions" });
+    expect(unreadOnly).toHaveTextContent(/^ON$/);
+    expect(mentioned).toHaveTextContent(/^TW 2$/);
   });
 
   it("counts only unread DMs beyond the three visible shortcuts in the overflow badge", () => {
@@ -460,14 +497,14 @@ describe("SpaceRail", () => {
     expect(
       screen.getByRole("button", { name: "Direct messages, 2 unread, 5 mentions" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Four,/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Five,/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^FO(?: \d+)?, Four,/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^FI(?: \d+)?, Five,/ })).not.toBeInTheDocument();
   });
 
   it("opens a context menu on a top-level space with Open lobby, Invite, and Pin actions", () => {
     const props = renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
 
     expect(screen.getByRole("menuitem", { name: /Open lobby/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Invite/ })).toBeInTheDocument();
@@ -481,7 +518,7 @@ describe("SpaceRail", () => {
     renderRail();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
 
     expect(screen.queryByRole("menuitem", { name: /Pin to sidebar/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: /Unpin from sidebar/ })).not.toBeInTheDocument();
@@ -490,10 +527,10 @@ describe("SpaceRail", () => {
   it("unpins a top-level space from the rail via its context menu, keeping it visible below a divider", () => {
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Unpin from sidebar/ }));
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     expect(screen.getByRole("menuitem", { name: /Pin to sidebar/ })).toBeInTheDocument();
   });
 
@@ -505,25 +542,25 @@ describe("SpaceRail", () => {
       ],
     });
 
-    const spaceButtons = () => screen.getAllByRole("button", { name: /^(Alpha|Beta)$/ });
+    const spaceButtons = () => screen.getAllByRole("button", { name: /^(AL, Alpha|BE, Beta)$/ });
     expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Alpha",
-      "Beta",
+      "AL, Alpha",
+      "BE, Beta",
     ]);
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Beta" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "BE, Beta" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move up" }));
 
     expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Beta",
-      "Alpha",
+      "BE, Beta",
+      "AL, Alpha",
     ]);
   });
 
   it("opens the Invite dialog for a space from its context menu", async () => {
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expectMenuItemEnabled(/Invite/));
     fireEvent.click(screen.getByRole("menuitem", { name: /Invite/ }));
 
@@ -534,7 +571,7 @@ describe("SpaceRail", () => {
     const onCreateUnderSpace = vi.fn();
     renderRail({ onCreateUnderSpace });
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expectMenuItemEnabled("Create subspace"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Create subspace" }));
 
@@ -545,7 +582,7 @@ describe("SpaceRail", () => {
     const onOpenSettings = vi.fn();
     renderRail({ onOpenSettings });
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
 
     expect(onOpenSettings).toHaveBeenCalledWith("!space:localhost");
@@ -560,8 +597,8 @@ describe("SpaceRail", () => {
         makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
       ],
     });
-    const alpha = screen.getByRole("button", { name: "Alpha" });
-    const beta = screen.getByRole("button", { name: "Beta" });
+    const alpha = screen.getByRole("button", { name: "AL, Alpha" });
+    const beta = screen.getByRole("button", { name: "BE, Beta" });
     mockPointerCapture(alpha);
     mockElementFromPoint(beta);
 
@@ -593,8 +630,8 @@ describe("SpaceRail", () => {
         makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
       ],
     });
-    const alpha = screen.getByRole("button", { name: "Alpha" });
-    const beta = screen.getByRole("button", { name: "Beta" });
+    const alpha = screen.getByRole("button", { name: "AL, Alpha" });
+    const beta = screen.getByRole("button", { name: "BE, Beta" });
     mockPointerCapture(alpha);
     mockElementFromPoint(beta);
 
@@ -634,7 +671,7 @@ describe("SpaceRail", () => {
       ],
     });
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Alpha" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "AL, Alpha" }));
     await waitFor(() => expectMenuItemEnabled("Move to space…"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to space…" }));
     const beta = screen.getByRole("button", { name: "Beta" });
@@ -653,8 +690,8 @@ describe("SpaceRail", () => {
         makeRoomSummary({ room_id: "!beta:localhost", name: "Beta", is_space: true }),
       ],
     });
-    const alpha = screen.getByRole("button", { name: "Alpha" });
-    const beta = screen.getByRole("button", { name: "Beta" });
+    const alpha = screen.getByRole("button", { name: "AL, Alpha" });
+    const beta = screen.getByRole("button", { name: "BE, Beta" });
     mockPointerCapture(alpha);
     mockElementFromPoint(beta);
 
@@ -681,8 +718,8 @@ describe("SpaceRail", () => {
   it("rejects a local drag target that is the source space's descendant", async () => {
     renderRail();
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    const team = screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" });
-    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    const team = screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" });
+    const product = screen.getByRole("button", { name: "PR 1, Product, 1 unread" });
     mockPointerCapture(team);
     mockElementFromPoint(product);
 
@@ -702,7 +739,7 @@ describe("SpaceRail", () => {
     const onSpaceChildrenChanged = vi.fn();
     renderRail({ onSpaceChildrenChanged });
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    const product = screen.getByRole("button", { name: "PR 1, Product, 1 unread" });
     mockPointerCapture(product);
     const outside = document.createElement("div");
     document.body.append(outside);
@@ -724,7 +761,7 @@ describe("SpaceRail", () => {
   it("does not un-nest a space dropped on blank rail chrome", async () => {
     renderRail();
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    const product = screen.getByRole("button", { name: "Product, 1 unread" });
+    const product = screen.getByRole("button", { name: "PR 1, Product, 1 unread" });
     const home = screen.getByRole("button", { name: "Home" });
     mockPointerCapture(product);
     mockElementFromPoint(home);
@@ -745,7 +782,7 @@ describe("SpaceRail", () => {
     );
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     expectMenuItemDisabled(/Invite/);
 
     resolveDetails(
@@ -765,7 +802,7 @@ describe("SpaceRail", () => {
     );
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(1));
     expectMenuItemDisabled(/Invite/);
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
@@ -773,7 +810,7 @@ describe("SpaceRail", () => {
     // A different admin has since promoted the user in this space; the
     // next `get_room_details` call reflects that. Re-opening the menu must
     // pick it up rather than reusing the first (now stale) result.
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(2));
     await waitFor(() => expectMenuItemEnabled(/Invite/));
   });
@@ -782,7 +819,7 @@ describe("SpaceRail", () => {
     renderRail();
 
     // First open: permitted (the default fixture), so Invite is enabled.
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expectMenuItemEnabled(/Invite/));
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
@@ -795,7 +832,7 @@ describe("SpaceRail", () => {
         resolveDetails = resolve;
       }),
     );
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     expectMenuItemDisabled(/Invite/);
 
     resolveDetails(
@@ -812,7 +849,7 @@ describe("SpaceRail", () => {
     getRoomDetails.mockRejectedValueOnce(new Error("network unreachable"));
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(1));
     expectMenuItemDisabled(/Invite/);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -826,7 +863,7 @@ describe("SpaceRail", () => {
     );
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
     expectMenuItemDisabled(/Invite/);
   });
@@ -834,7 +871,7 @@ describe("SpaceRail", () => {
   it("opens a Leave confirmation dialog rather than leaving immediately", async () => {
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
 
     expect(screen.getByRole("dialog", { name: "Leave Team?" })).toBeInTheDocument();
@@ -848,7 +885,7 @@ describe("SpaceRail", () => {
   it("redirects home after leaving the currently active space", async () => {
     const props = renderRail({ activeMode: "space", activeSpaceId: "!space:localhost" });
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
 
@@ -858,7 +895,7 @@ describe("SpaceRail", () => {
   it("does not redirect when leaving a space other than the active one", async () => {
     const props = renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
 
@@ -869,7 +906,7 @@ describe("SpaceRail", () => {
   it("opens the Add Existing dialog for a space from its context menu", async () => {
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expectMenuItemEnabled(/Add existing/));
     fireEvent.click(screen.getByRole("menuitem", { name: /Add existing/ }));
 
@@ -889,7 +926,7 @@ describe("SpaceRail", () => {
     );
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
     expectMenuItemDisabled(/Add existing/);
   });
@@ -897,19 +934,19 @@ describe("SpaceRail", () => {
   it("offers Remove and Set/Unset Suggested only on a space with a parent", async () => {
     renderRail();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     expect(screen.queryByRole("menuitem", { name: /Remove from space/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: /Mark as suggested/ })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
 
     await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child-space:localhost");
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
     await waitFor(() => expectMenuItemEnabled("Mark as suggested"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Mark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
@@ -918,7 +955,7 @@ describe("SpaceRail", () => {
       true,
     );
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
     await waitFor(() => expectMenuItemEnabled("Unmark as suggested"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Unmark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
@@ -943,7 +980,7 @@ describe("SpaceRail", () => {
     renderRail();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
 
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
     expectMenuItemDisabled("Remove from space");
@@ -956,7 +993,7 @@ describe("SpaceRail", () => {
     renderRail({ onSpaceChildrenChanged });
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
     await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
@@ -968,7 +1005,7 @@ describe("SpaceRail", () => {
     renderRail();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^PR(?: \d+)?, Product/ }));
     await waitFor(() => expectMenuItemEnabled("Remove from space"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
@@ -982,10 +1019,12 @@ describe("SpaceRail", () => {
     // Every top-level space (including one this fixture would otherwise
     // treat as pinned-by-default) renders in its natural order, with no
     // pin/unpin divider and no right-click affordance.
-    expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "LO, Loose child" })).toBeInTheDocument();
 
-    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "TE 3, Team, 1 unread, 3 mentions" }));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
   });

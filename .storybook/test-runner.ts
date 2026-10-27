@@ -1,10 +1,9 @@
 import path from "node:path";
 import type { TestRunnerConfig } from "@storybook/test-runner";
 
-// When SENTRY_SNAPSHOT_CAPTURE is set (only the `sentry-snapshots` CI job sets it), take a
+// When SENTRY_SNAPSHOT_CAPTURE is set (Quality PR capture and standalone Sentry capture set it), take a
 // screenshot of every visited story into `.artifacts/sentry-snapshots/<id>.png` for upload
-// to Sentry's visual-snapshot system. A no-op otherwise, so the `storybook-a11y` job —
-// which runs the same test-runner without this env — is completely unaffected.
+// to Sentry's visual-snapshot system. It remains a no-op outside capture runs.
 // @ts-expect-error process is a nodejs global
 const env = process.env as Record<string, string | undefined>;
 const captureDir = env.SENTRY_SNAPSHOT_CAPTURE

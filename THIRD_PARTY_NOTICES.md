@@ -45,7 +45,11 @@ platform package; package-provided terms remain preferred.
 
 Opaque executable and archive formats are rejected from release source
 archives unless their provenance has been reviewed and their exact SHA-256 is
-pinned by `license:check`. The Gradle wrapper JAR is the sole current exception.
+pinned by `license:check`. The Gradle wrapper JAR and the eight inert updater security-test ZIP fixtures
+are the current exact-hash exceptions. The ZIPs contain authored text payloads
+and deliberate path, permission and symlink metadata; they are never installed.
+Their provenance and purpose are recorded in
+`vendor/tauri-plugin-updater/CHARM_BACKPORT.md`.
 
 ## External software: Sable Call
 

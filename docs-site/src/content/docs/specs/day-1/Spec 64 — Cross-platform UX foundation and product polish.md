@@ -76,6 +76,11 @@ to communicate unread, selected, error, or presence state.
 Motion uses existing duration tokens and honors reduced motion. Selection may
 cross-fade or move over 120–200ms; no navigation state depends on animation.
 
+Rail and mobile space accessible names include their visible avatar initials and
+numeric badges or space subtitles in reading order, while retaining full room
+names and unread/mention descriptions. Text boundaries remain separated so voice
+control can match the visible label; accessibility rules stay enabled.
+
 ## Application rail contract
 
 The rail is ordered as follows:
