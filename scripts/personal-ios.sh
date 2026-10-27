@@ -36,7 +36,6 @@ Optional:
                          otherwise install on every connected physical device
   CHARM_IOS_COMMIT       exact commit to prepare (default: HEAD)
   CHARM_IOS_WORK_DIR     reusable prepared worktree path
-  CHARM_NODE_MODULES_DIR compatible existing node_modules directory
   CHARM_IOS_LOG_DIR      evidence output for collect-logs
   VITE_SENTRY_ENVIRONMENT build environment (local defaults use development)
 USAGE
@@ -169,33 +168,25 @@ commit_sha() {
   git -C "$source_root" rev-parse "${CHARM_IOS_COMMIT:-HEAD}^{commit}"
 }
 
-find_compatible_node_modules() {
-  local selected_root=$1
-  local candidate candidate_lock source_lock
-  source_lock=$(shasum -a 256 "$selected_root/pnpm-lock.yaml" | awk '{print $1}')
-  if [[ -n ${CHARM_NODE_MODULES_DIR:-} ]]; then
-    [[ -d $CHARM_NODE_MODULES_DIR ]] || fail "CHARM_NODE_MODULES_DIR does not exist: $CHARM_NODE_MODULES_DIR"
-    candidate_lock=$(dirname "$CHARM_NODE_MODULES_DIR")/pnpm-lock.yaml
-    [[ -f $candidate_lock ]] || fail "CHARM_NODE_MODULES_DIR must belong to a checkout with pnpm-lock.yaml"
-    [[ $(shasum -a 256 "$candidate_lock" | awk '{print $1}') == "$source_lock" ]] || fail "CHARM_NODE_MODULES_DIR does not match the selected commit's pnpm-lock.yaml"
-    printf '%s\n' "$(cd "$CHARM_NODE_MODULES_DIR" && pwd -P)"
-    return
+prepare_node_modules() {
+  local worktree=$1
+  # The checkout hook may link another checkout's dependencies. Unlink only
+  # that link; never install through it or modify its target.
+  if [[ -L "$worktree/node_modules" ]]; then
+    unlink "$worktree/node_modules"
   fi
-
-  for candidate in "$source_root"/../Charm*/node_modules; do
-    [[ -d $candidate ]] || continue
-    candidate_lock=$(dirname "$candidate")/pnpm-lock.yaml
-    [[ -f $candidate_lock ]] || continue
-    [[ $(shasum -a 256 "$candidate_lock" | awk '{print $1}') == "$source_lock" ]] || continue
-    printf '%s\n' "$(cd "$candidate" && pwd -P)"
-    return
-  done
-  fail "no compatible node_modules directory found; set CHARM_NODE_MODULES_DIR or install dependencies outside this script"
+  [[ ! -e "$worktree/node_modules" ]] || fail "fresh worktree already has a node_modules directory"
+  (
+    cd "$worktree"
+    # Materialize workspace-local pnpm state from the existing store. Lifecycle
+    # scripts would install shared Git hooks and download unrelated tooling.
+    CI=true pnpm install --offline --frozen-lockfile --ignore-scripts
+  ) || fail "could not prepare dependencies from the pnpm store; populate the selected lockfile's store before retrying"
 }
 
 prepare_worktree() {
   validate_inputs
-  local sha short run_root worktree node_modules
+  local sha short run_root worktree
   sha=$(commit_sha)
   short=${sha:0:12}
   run_root=${CHARM_IOS_RUN_ROOT:-"${TMPDIR:-/tmp}/charm-personal-ios"}
@@ -204,10 +195,7 @@ prepare_worktree() {
 
   git -C "$source_root" worktree add --detach "$worktree" "$sha"
   node "$worktree/scripts/check-ios-config.mjs"
-  node_modules=$(find_compatible_node_modules "$worktree")
-  if [[ ! -e "$worktree/node_modules" ]]; then
-    ln -s "$node_modules" "$worktree/node_modules"
-  fi
+  prepare_node_modules "$worktree"
   CHARM_IOS_COMMIT=$sha node "$worktree/scripts/configure-personal-ios.mjs" \
     "$worktree" "$CHARM_APPLE_TEAM_ID" "$CHARM_IOS_BUNDLE_ID"
   record_prepared_worktree_fingerprint "$worktree"
@@ -218,12 +206,12 @@ prepare_worktree() {
 }
 
 prepared_worktree_fingerprint() {
-  local worktree=$1 node_modules_target
-  node_modules_target=$(readlink "$worktree/node_modules") || fail "prepared worktree has no node_modules symlink"
+  local worktree=$1
+  [[ -d "$worktree/node_modules" && ! -L "$worktree/node_modules" ]] || fail "prepared worktree requires its own node_modules directory"
   {
     git -C "$worktree" status --porcelain --untracked-files=all
     git -C "$worktree" diff --binary
-    printf 'node_modules=%s\n' "$node_modules_target"
+    printf 'node_modules=worktree-local\n'
   } | shasum -a 256 | awk '{print $1}'
 }
 

@@ -52,7 +52,7 @@ the Matrix store as a rollback technique.
 1. Select an exact `origin/main` commit whose required GitHub Actions checks pass.
    Record the full SHA; simulator CI is repository evidence, not physical-device proof.
 2. Use the repeatable, disposable installer from the exact selected commit. It
-   creates a detached worktree, reuses only a lockfile-compatible `node_modules`,
+   creates a detached worktree, installs its locked dependencies from the local pnpm store,
    applies the Personal Team signing overlay outside Git, creates fresh build outputs,
    and installs the Release app with `devicectl`:
 
@@ -65,7 +65,7 @@ the Matrix store as a rollback technique.
    ```
 
    The command refuses a non-Xcode-27 toolchain, a canonical bundle identifier,
-   stale output, or a missing compatible dependency tree. It does not write any
+   stale output, or missing packages in the local pnpm store. It does not write any
    identifier, profile, certificate, or entitlement downgrade into the repository.
    `prepare` and `collect-logs` are available as separate commands when evidence is
    needed after a failure.
@@ -93,8 +93,12 @@ the Matrix store as a rollback technique.
    declaration in both `project.yml` and `Info.plist` so regeneration preserves it.
    Both the installer and generated Xcode build phase explicitly select the `charm`
    workspace so pnpm can verify its dependency state. Keep dependency verification
-   enabled; a dependency tree prepared for another checkout can still require a
-   fresh frozen-lockfile install in the selected worktree.
+   enabled. Preparation installs a worktree-local dependency tree with
+   `pnpm install --offline --frozen-lockfile --ignore-scripts`; it never installs
+   through a shared `node_modules` symlink. Lifecycle scripts are skipped to avoid
+   changing shared Git hooks or downloading unrelated tooling. Populate the local
+   pnpm store for the selected lockfile before preparation; a missing cached package
+   fails explicitly without falling back to a network download.
 5. If Xcode asks for renewed Apple-account authentication, complete that one UI step
    and rerun the same command. Otherwise no Xcode UI interaction is required.
 
