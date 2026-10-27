@@ -178,7 +178,10 @@ fn legacy_tls_bypass_flags_are_rejected_in_both_spellings() {
             .contains("requires TLS certificate and hostname verification"));
         value[name] = serde_json::Value::Bool(false);
         let config = serde_json::from_value::<Config>(value.clone()).unwrap();
-        assert_eq!(config.endpoints[0].as_str(), "https://updates.example.invalid/");
+        assert_eq!(
+            config.endpoints[0].as_str(),
+            "https://updates.example.invalid/"
+        );
         assert_eq!(config.pubkey, "public-fixture");
         value[name] = serde_json::Value::String("true".into());
         assert!(serde_json::from_value::<Config>(value).is_err());
