@@ -285,3 +285,17 @@ Existing audit thresholds and platform/release gates remain required. Preparing 
 lockfile artifact is not acceptance: the artifact must be reviewed, committed and
 tested at the resulting PR head. The temporary branch-only preparation job is removed after candidate adoption;
 PR qualification remains until a supported upstream migration removes the backport.
+
+## Review receipt compatibility
+
+The Codex gate is pinned to BTCMedia/codex-review-gate-action commit
+`c3701c29489550dd61c4cea6de906aee92a21b36`. It recognizes the exact
+`codex-review-receipt:v1` first-line envelope emitted by current Codex reviews.
+Bot and application identity, reviewed-commit binding, closed result grammar,
+unresolved findings and evidence limits remain enforced. The existing read-only
+review-envelope contract runs the pinned action's tests and Charm's positive
+and negative fixtures without granting status-write access.
+
+The live pull-request-target gate reads the default branch. Preparing or testing
+a pin change in a PR does not activate it or satisfy the current live gate;
+activation requires the separately authorized protected workflow update.

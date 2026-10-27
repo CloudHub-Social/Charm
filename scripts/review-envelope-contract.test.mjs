@@ -1,5 +1,4 @@
-// CI-only contract for upstream JoeyTeng/codex-review-gate-action#6.
-// The pinned Apache-2.0 fork changes only the exact disclosure allowlist.
+// CI-only contracts for the pinned review action and exact Codex receipt envelope.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -15,6 +14,8 @@ const {
   codexInlineParentReviewBodyHasClosedGrammar,
   collectCodexThreadEvidence,
   parseCodexReviewArtifact,
+  parseCodexIssueCommentArtifact,
+  isCodexCompletionComment,
 } = await import(pathToFileURL(resolve(process.env.REVIEW_GATE_ROOT, "src/core.mjs")).href);
 
 const sha = "941a6bb7db01484f8df66a683b78f510d8f74861";
@@ -51,7 +52,7 @@ test("the production action pin matches the tested fork", async () => {
   );
   assert.match(
     workflow,
-    /uses: BTCMedia\/codex-review-gate-action@3b7ee46126a75b05eaf537247254eea682ce5787/,
+    /uses: BTCMedia\/codex-review-gate-action@c3701c29489550dd61c4cea6de906aee92a21b36/,
   );
 });
 
@@ -127,4 +128,44 @@ test("missing children and forged authors cannot validate a parent", () => {
   );
   assert.ok(forged.errors.length > 0);
   assert.deepEqual(forged.validatedCodexInlineParentReviewIds, []);
+});
+
+const receipt = "<!-- codex-review-receipt:v1 -->";
+const cleanComment = (prefix = receipt) => ({
+  id: 789,
+  node_id: "IC_contract",
+  user,
+  performed_via_github_app: { slug: "chatgpt-codex-connector" },
+  created_at: "2026-10-26T23:46:44Z",
+  updated_at: "2026-10-26T23:46:44Z",
+  body: `${prefix}\n\nCodex Review: Didn't find any major issues. :+1:\n\n**Reviewed commit:** \`${sha.slice(0, 10)}\`\n\n${disclosure(false)}`,
+});
+
+test("exact receipt-prefixed clean comments are selected and retain commit identity", () => {
+  const value = cleanComment();
+  assert.equal(isCodexCompletionComment(value), true);
+  const result = parseCodexIssueCommentArtifact(value);
+  assert.equal(result.kind, "clean");
+  assert.equal(result.commitRef, sha.slice(0, 10));
+  assert.equal(
+    codexInlineParentReviewBodyHasClosedGrammar({
+      ...review(),
+      body: `${receipt}\n\n${review().body}`,
+    }),
+    true,
+  );
+});
+
+test("receipt envelopes do not relax author, application or closed-content boundaries", () => {
+  const value = cleanComment();
+  for (const changed of [
+    cleanComment("<!-- codex-review-receipt:v2 -->"),
+    cleanComment(`${receipt} extra`),
+    cleanComment(`${receipt}\n${receipt}`),
+    { ...value, user: { ...user, type: "User" } },
+    { ...value, performed_via_github_app: { slug: "other" } },
+    { ...value, body: value.body + "\n[P1] An unresolved finding" },
+    { ...value, body: value.body.replace(sha.slice(0, 10), "not-a-commit") },
+  ])
+    assert.notEqual(parseCodexIssueCommentArtifact(changed)?.kind, "clean");
 });
