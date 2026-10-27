@@ -83,13 +83,18 @@ the Matrix store as a rollback technique.
    compile every dependency and then fail the final arm64 link with undefined
    `_register_plugin`, `_init_plugin_*`, or related symbols. Charm's iOS nightly
    and release workflows install the component explicitly.
-4. The installer invokes `pnpm tauri ios build` in Release mode, which generates the
-   standalone frontend bundle and the untracked assets consumed by Xcode. Do not use
+4. The installer invokes `pnpm --filter charm tauri ios build` in Release mode,
+   which generates the standalone frontend bundle and the untracked assets consumed
+   by Xcode. Do not use
    `pnpm tauri ios dev --open` for a daily-driver install because that path can depend
    on the development server. Xcode 27 also requires the generated app manifest to
    declare `TaoSceneDelegate`; without it, iPadOS terminates the app during launch in
    `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`. Charm tracks that
    declaration in both `project.yml` and `Info.plist` so regeneration preserves it.
+   Both the installer and generated Xcode build phase explicitly select the `charm`
+   workspace so pnpm can verify its dependency state. Keep dependency verification
+   enabled; a dependency tree prepared for another checkout can still require a
+   fresh frozen-lockfile install in the selected worktree.
 5. If Xcode asks for renewed Apple-account authentication, complete that one UI step
    and rerun the same command. Otherwise no Xcode UI interaction is required.
 

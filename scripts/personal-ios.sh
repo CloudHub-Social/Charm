@@ -142,7 +142,8 @@ build_install_devices() {
   # install that same signed bundle on every selected physical device.
   (
     cd "$worktree"
-    CI=true pnpm tauri ios build --target aarch64 --export-method debugging
+    # Populate pnpm's workspace selection before its dependency consistency check.
+    CI=true pnpm --filter charm tauri ios build --target aarch64 --export-method debugging
   ) 2>&1 | tee "$output_root/build.log"
 
   ipa_path=$(find "$worktree/src-tauri/gen/apple/build" -type f -path '*/arm64/*.ipa' -print -quit)
